@@ -115,6 +115,31 @@ int matter_thread_start(const uint8_t *dataset, size_t len)
 	return MATTER_OK;
 }
 
+int matter_thread_clear(void)
+{
+	otInstance *ot = openthread_get_default_instance();
+	otOperationalDatasetTlvs empty = { 0 };
+	otError thread_err;
+	otError dataset_err;
+
+	if (ot == NULL) {
+		return MATTER_E_STATE;
+	}
+
+	/* Release SRP's references before disabling the interface it uses. */
+	matter_thread_advertise_reset();
+	openthread_mutex_lock();
+	thread_err = otThreadSetEnabled(ot, false);
+	dataset_err = otDatasetSetActiveTlvs(ot, &empty);
+	openthread_mutex_unlock();
+
+	if (thread_err != OT_ERROR_NONE || dataset_err != OT_ERROR_NONE) {
+		LOG_ERR("failed to clear Thread state (%d, %d)", thread_err, dataset_err);
+		return MATTER_E_STATE;
+	}
+	return MATTER_OK;
+}
+
 /**
  * Whether this node is already attached to the network @p xpanid names.
  * See matter_thread.h for why this exists.
@@ -356,7 +381,14 @@ struct srp_reg {
 	const char *subtype_labels[2];
 	otSrpClientService service;
 	otDnsTxtEntry txt[2];
-	bool used;
+	enum {
+		SRP_REG_FREE,
+		SRP_REG_ADDING,
+		SRP_REG_ACTIVE,
+		SRP_REG_REMOVING,
+		SRP_REG_FAILED,
+	} state;
+	bool desired;
 };
 static struct srp_reg s_regs[MATTER_SUPPORTED_FABRICS];
 
@@ -372,7 +404,11 @@ static bool s_host_ready;
  * along with everything else and have to say so. A flag left true after its
  * service was removed makes the NEXT commissioning window silently invisible.
  */
-static bool s_comm_used;
+static uint8_t s_comm_state;
+static bool s_comm_desired;
+static otSrpClientService s_comm_service;
+static bool s_recovery_pending;
+static uint32_t s_host_id;
 
 /**
  * Settings callback to read a 32-bit host ID from persistent storage. Reads exactly
@@ -400,16 +436,14 @@ static int host_id_read(const char *key, size_t len, settings_read_cb read_cb, v
  */
 static uint32_t srp_host_id(void)
 {
-	static uint32_t id;
-
-	if (id != 0u) {
-		return id;
+	if (s_host_id != 0u) {
+		return s_host_id;
 	}
 	/* Idempotent, and this can run before anything else has needed
 	 * settings. */
 	(void)settings_subsys_init();
-	(void)settings_load_subtree_direct(SRP_HOST_ID_KEY, host_id_read, &id);
-	if (id == 0u) {
+	(void)settings_load_subtree_direct(SRP_HOST_ID_KEY, host_id_read, &s_host_id);
+	if (s_host_id == 0u) {
 		/*
 		 * PSA's, not otRandomNonCryptoGetUint32(): this runs on the
 		 * Matter work queue without the OpenThread lock held. A CSPRNG
@@ -419,18 +453,18 @@ static uint32_t srp_host_id(void)
 		 * drawn once per lifetime cannot be the wrong place to pay.
 		 */
 		do {
-			if (psa_generate_random((uint8_t *)&id, sizeof(id)) != PSA_SUCCESS) {
+			if (psa_generate_random((uint8_t *)&s_host_id, sizeof(s_host_id)) != PSA_SUCCESS) {
 				LOG_ERR("no RNG for the SRP host id");
 				return 0u;
 			}
-		} while (id == 0u);
-		if (settings_save_one(SRP_HOST_ID_KEY, &id, sizeof(id)) != 0) {
+		} while (s_host_id == 0u);
+		if (settings_save_one(SRP_HOST_ID_KEY, &s_host_id, sizeof(s_host_id)) != 0) {
 			/* Registration still works; it is the NEXT boot that
 			 * would ask for a different name and orphan this one. */
 			LOG_WRN("SRP host id not persisted");
 		}
 	}
-	return id;
+	return s_host_id;
 }
 
 static otUdpSocket s_udp;
@@ -658,20 +692,54 @@ static struct openthread_state_changed_callback srp_diag_cb = {
 static bool s_srp_diag_registered;
 #endif /* CONFIG_ULTRAWIDELOCK_SRP_DIAG */
 
+static otError srp_host_register(otInstance *ot);
+static void srp_host_name_build(otInstance *ot);
+static void srp_recovery_work_fn(struct k_work *w);
+#define SRP_DUPLICATE_RETRY_S 30u
+static K_WORK_DELAYABLE_DEFINE(s_srp_recovery_work, srp_recovery_work_fn);
+
+static void srp_mark_service(const otSrpClientService *service, uint8_t state)
+{
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (service == &s_regs[i].service) {
+			s_regs[i].state = state;
+			return;
+		}
+	}
+	if (service == &s_comm_service) {
+		s_comm_state = state;
+	}
+}
+
 /** The SRP server's verdict, which otSrpClientAddService() cannot give. */
 static void srp_cb(otError err, const otSrpClientHostInfo *host, const otSrpClientService *services,
 		   const otSrpClientService *removed, void *ctx)
 {
-	ARG_UNUSED(removed);
 	ARG_UNUSED(ctx);
+	const otSrpClientService *service;
+
+	for (service = removed; service != NULL; service = service->mNext) {
+		srp_mark_service(service, SRP_REG_FREE);
+	}
 
 	if (err == OT_ERROR_NONE) {
+		for (service = services; service != NULL; service = service->mNext) {
+			srp_mark_service(service, SRP_REG_ACTIVE);
+		}
 		LOG_INF("SRP registered: host state %d, service state %d",
 			host != NULL ? (int)host->mState : -1,
 			services != NULL ? (int)services->mState : -1);
 	} else {
+		for (service = services; service != NULL; service = service->mNext) {
+			srp_mark_service(service, SRP_REG_FAILED);
+		}
 		LOG_ERR("SRP registration FAILED (%d) -- the commissioner cannot resolve this node",
 			err);
+		if (err == OT_ERROR_DUPLICATED && !s_recovery_pending) {
+			s_recovery_pending = true;
+			(void)k_work_reschedule(&s_srp_recovery_work,
+						K_SECONDS(SRP_DUPLICATE_RETRY_S));
+		}
 	}
 	log_addresses(openthread_get_default_instance());
 }
@@ -684,6 +752,10 @@ static void srp_cb(otError err, const otSrpClientHostInfo *host, const otSrpClie
 void matter_thread_advertise_reset(void)
 {
 	otInstance *ot = openthread_get_default_instance();
+	otError rm = OT_ERROR_INVALID_STATE;
+
+	(void)k_work_cancel_delayable(&s_srp_recovery_work);
+	s_recovery_pending = false;
 
 	/*
 	 * Rolling back the fabrics has to release their SRP registrations too.
@@ -716,7 +788,8 @@ void matter_thread_advertise_reset(void)
 	 * pairing that leaves rubbish behind.
 	 */
 	if (ot != NULL) {
-		otError rm = otSrpClientRemoveHostAndServices(ot, true, true);
+		openthread_mutex_lock();
+		rm = otSrpClientRemoveHostAndServices(ot, true, true);
 
 		if (rm != OT_ERROR_NONE) {
 			/* ALREADY means nothing is registered, which is the
@@ -726,11 +799,25 @@ void matter_thread_advertise_reset(void)
 			LOG_INF("SRP remove not started (%d); clearing locally", rm);
 			otSrpClientClearHostAndServices(ot);
 		}
+		openthread_mutex_unlock();
 	}
-	memset(s_regs, 0, sizeof(s_regs));
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		s_regs[i].desired = false;
+		if (rm == OT_ERROR_NONE && s_regs[i].state != SRP_REG_FREE) {
+			s_regs[i].state = SRP_REG_REMOVING;
+		} else if (rm != OT_ERROR_NONE) {
+			memset(&s_regs[i], 0, sizeof(s_regs[i]));
+		}
+	}
 	s_host_ready = false;
 	/* The commissionable service hung off that host too. */
-	s_comm_used = false;
+	s_comm_desired = false;
+	if (rm == OT_ERROR_NONE && s_comm_state != SRP_REG_FREE) {
+		s_comm_state = SRP_REG_REMOVING;
+	} else if (rm != OT_ERROR_NONE) {
+		s_comm_state = SRP_REG_FREE;
+		memset(&s_comm_service, 0, sizeof(s_comm_service));
+	}
 	LOG_INF("SRP registrations released");
 }
 
@@ -776,20 +863,10 @@ static otError srp_host_register(otInstance *ot)
 	otSrpClientSetKeyLeaseInterval(ot, SRP_KEY_LEASE_S);
 	err = otSrpClientSetHostName(ot, s_host_name);
 	if (err == OT_ERROR_INVALID_STATE) {
-		/*
-		 * The only way here is a retraction still in flight from
-		 * matter_thread_advertise_reset(): the host sits in
-		 * STATE_REMOVING and the name cannot be set until the server
-		 * answers. The next fabric must not wait on that -- an
-		 * unresolvable node is a failed pairing -- so give up the server
-		 * round-trip and take the local clear, which is exactly the
-		 * behaviour that shipped before the retraction existed.
-		 */
-		LOG_WRN("host name refused mid-retraction; clearing and retrying");
-		otSrpClientClearHostAndServices(ot);
-		/* That drops every service, the commissionable one included. */
-		s_comm_used = false;
-		err = otSrpClientSetHostName(ot, s_host_name);
+		/* The host is still retracting. Its service objects remain owned
+		 * by OpenThread until the callback returns them in `removed`; do
+		 * not clear or reuse those buffers underneath it. */
+		LOG_WRN("host name refused while an SRP retraction is in flight");
 	}
 	if (err == OT_ERROR_NONE) {
 		err = otSrpClientEnableAutoHostAddress(ot);
@@ -798,6 +875,65 @@ static otError srp_host_register(otInstance *ot)
 		s_host_ready = true;
 	}
 	return err;
+}
+
+static void srp_recovery_work_fn(struct k_work *w)
+{
+	otInstance *ot = openthread_get_default_instance();
+	otError err = OT_ERROR_INVALID_STATE;
+
+	ARG_UNUSED(w);
+	if (ot == NULL) {
+		s_recovery_pending = false;
+		return;
+	}
+
+	/* Clear is synchronous and is the only point after which OpenThread no
+	 * longer owns the service structures. The desired flags and buffers stay
+	 * intact so every live registration can be rebuilt. */
+	openthread_mutex_lock();
+	otSrpClientClearHostAndServices(ot);
+	s_host_ready = false;
+	openthread_mutex_unlock();
+
+	/* Keep the persisted host identity and SRP key. Matter operational
+	 * instance names are deterministic and cannot be rotated, so changing
+	 * only the host name cannot cure a service-name collision and can lose
+	 * the key ownership that would let the server accept it after recovery. */
+	srp_host_name_build(ot);
+
+	openthread_mutex_lock();
+	err = srp_host_register(ot);
+	if (err == OT_ERROR_NONE) {
+		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+			if (!s_regs[i].desired) {
+				s_regs[i].state = SRP_REG_FREE;
+				continue;
+			}
+			err = otSrpClientAddService(ot, &s_regs[i].service);
+			s_regs[i].state =
+				err == OT_ERROR_NONE ? SRP_REG_ADDING : SRP_REG_FAILED;
+			if (err != OT_ERROR_NONE) {
+				break;
+			}
+		}
+	}
+	if (err == OT_ERROR_NONE && s_comm_desired) {
+		err = otSrpClientAddService(ot, &s_comm_service);
+		s_comm_state = err == OT_ERROR_NONE ? SRP_REG_ADDING : SRP_REG_FAILED;
+	}
+	if (err == OT_ERROR_NONE) {
+		otSrpClientEnableAutoStartMode(ot, NULL, NULL);
+	}
+	openthread_mutex_unlock();
+	if (err == OT_ERROR_NONE) {
+		s_recovery_pending = false;
+		LOG_INF("SRP duplicate recovery retry submitted");
+	} else {
+		LOG_ERR("SRP duplicate recovery retry failed (%d); trying again", err);
+		(void)k_work_reschedule(&s_srp_recovery_work,
+					K_SECONDS(SRP_DUPLICATE_RETRY_S));
+	}
 }
 
 int matter_thread_advertise(const char *instance_name, uint16_t port)
@@ -821,12 +957,16 @@ int matter_thread_advertise(const char *instance_name, uint16_t port)
 	 * called with names already published.
 	 */
 	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (s_regs[i].used && strcmp(s_regs[i].instance_name, instance_name) == 0) {
-			return MATTER_OK;
+		if (s_regs[i].state != SRP_REG_FREE &&
+		    strcmp(s_regs[i].instance_name, instance_name) == 0) {
+			return s_regs[i].state == SRP_REG_ADDING ||
+				       s_regs[i].state == SRP_REG_ACTIVE
+				       ? MATTER_OK
+				       : MATTER_E_STATE;
 		}
 	}
 	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (!s_regs[i].used) {
+		if (s_regs[i].state == SRP_REG_FREE) {
 			reg = &s_regs[i];
 			break;
 		}
@@ -836,6 +976,7 @@ int matter_thread_advertise(const char *instance_name, uint16_t port)
 		return MATTER_E_NOSPACE;
 	}
 	(void)snprintf(reg->instance_name, sizeof(reg->instance_name), "%s", instance_name);
+	reg->desired = true;
 
 	srp_host_name_build(ot);
 
@@ -931,9 +1072,10 @@ int matter_thread_advertise(const char *instance_name, uint16_t port)
 
 	if (err != OT_ERROR_NONE) {
 		LOG_ERR("SRP registration refused (%d)", err);
+		memset(reg, 0, sizeof(*reg));
 		return MATTER_E_STATE;
 	}
-	reg->used = true;
+	reg->state = SRP_REG_ADDING;
 
 	LOG_INF("SRP: %s.%s._matter._tcp on %s.local port %u", reg->instance_name, reg->subtype,
 		s_host_name, port);
@@ -955,7 +1097,6 @@ static char s_comm_txt_d[5];   /* long discriminator, decimal */
 static char s_comm_txt_cm[2];  /* commissioning mode */
 static char s_comm_txt_vp[12]; /* "<vendor>+<product>", both decimal */
 static otDnsTxtEntry s_comm_txt[5];
-static otSrpClientService s_comm_service;
 
 int matter_thread_advertise_commissionable(uint16_t discriminator, uint16_t port)
 {
@@ -966,12 +1107,16 @@ int matter_thread_advertise_commissionable(uint16_t discriminator, uint16_t port
 	if (ot == NULL) {
 		return MATTER_E_STATE;
 	}
-	if (s_comm_used) {
+	if (s_comm_state == SRP_REG_ADDING || s_comm_state == SRP_REG_ACTIVE) {
 		/* One window at a time, and the discriminator is fixed for its
 		 * duration. Re-registering the same name would be a no-op that
 		 * costs an SRP update, so say nothing happened. */
 		return MATTER_OK;
 	}
+	if (s_comm_state != SRP_REG_FREE) {
+		return MATTER_E_STATE;
+	}
+	s_comm_desired = true;
 
 	/*
 	 * A fresh 64-bit instance name per window, per the spec's commissionable
@@ -1024,14 +1169,8 @@ int matter_thread_advertise_commissionable(uint16_t discriminator, uint16_t port
 	s_comm_txt[2].mKey = "VP";
 	s_comm_txt[2].mValue = (const uint8_t *)s_comm_txt_vp;
 	s_comm_txt[2].mValueLength = (uint16_t)strlen(s_comm_txt_vp);
-	/*
-	 * SII and SAI are not optional here in practice, whatever the spec says.
-	 * This node is a sleepy end device polling its parent every 3,000 ms; a
-	 * commissioner left on the 500 ms default retransmits PBKDFParamRequest
-	 * four times inside 3.7 s and declares the peer gone before the radio has
-	 * woken once. Announcing the poll period is what makes PASE survivable,
-	 * which is the same reason the operational service carries them.
-	 */
+	/* Keep commissionable and operational discovery aligned with the MED
+	 * retransmission intervals described above. */
 	s_comm_txt[3].mKey = "SII";
 	s_comm_txt[3].mValue = (const uint8_t *)s_txt_sii;
 	s_comm_txt[3].mValueLength = (uint16_t)strlen(s_txt_sii);
@@ -1058,9 +1197,12 @@ int matter_thread_advertise_commissionable(uint16_t discriminator, uint16_t port
 
 	if (err != OT_ERROR_NONE) {
 		LOG_ERR("commissionable SRP registration refused (%d)", err);
+		s_comm_desired = false;
+		s_comm_state = SRP_REG_FREE;
+		memset(&s_comm_service, 0, sizeof(s_comm_service));
 		return MATTER_E_STATE;
 	}
-	s_comm_used = true;
+	s_comm_state = SRP_REG_ADDING;
 	LOG_INF("SRP: %s.%s/%s._matterc._udp port %u (D=%s)", s_comm_instance, s_comm_sub_short,
 		s_comm_sub_long, port, s_comm_txt_d);
 	return MATTER_OK;
@@ -1077,7 +1219,8 @@ int matter_thread_unadvertise(const char *instance_name)
 		return MATTER_E_INVAL;
 	}
 	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (s_regs[i].used && strcmp(s_regs[i].instance_name, instance_name) == 0) {
+		if (s_regs[i].state != SRP_REG_FREE &&
+		    strcmp(s_regs[i].instance_name, instance_name) == 0) {
 			reg = &s_regs[i];
 			break;
 		}
@@ -1092,20 +1235,18 @@ int matter_thread_unadvertise(const char *instance_name)
 
 	openthread_mutex_lock();
 	err = otSrpClientRemoveService(ot, &reg->service);
+	if (err != OT_ERROR_NONE) {
+		otSrpClientClearService(ot, &reg->service);
+	}
 	openthread_mutex_unlock();
 
-	/*
-	 * Released whatever the client said, for the same reason
-	 * matter_thread_unadvertise_commissionable() gives below: a failed
-	 * removal costs a name on the border router until its lease runs out,
-	 * but a slot held hostage to it would refuse the NEXT fabric's
-	 * registration for the life of the boot.
-	 */
-	reg->used = false;
+	reg->desired = false;
 	if (err != OT_ERROR_NONE) {
-		LOG_WRN("SRP removal of %s refused (%d); slot released anyway", instance_name, err);
+		LOG_WRN("SRP removal of %s refused (%d); cleared locally", instance_name, err);
+		memset(reg, 0, sizeof(*reg));
 		return MATTER_E_STATE;
 	}
+	reg->state = SRP_REG_REMOVING;
 	LOG_INF("SRP: operational service %s withdrawn", instance_name);
 	return MATTER_OK;
 }
@@ -1115,7 +1256,7 @@ int matter_thread_unadvertise_commissionable(void)
 	otInstance *ot = openthread_get_default_instance();
 	otError err;
 
-	if (!s_comm_used) {
+	if (s_comm_state == SRP_REG_FREE) {
 		return MATTER_OK;
 	}
 	if (ot == NULL) {
@@ -1124,19 +1265,19 @@ int matter_thread_unadvertise_commissionable(void)
 
 	openthread_mutex_lock();
 	err = otSrpClientRemoveService(ot, &s_comm_service);
+	if (err != OT_ERROR_NONE) {
+		otSrpClientClearService(ot, &s_comm_service);
+	}
 	openthread_mutex_unlock();
 
-	/*
-	 * The slot is released whatever the client said. A removal that failed
-	 * leaves a name on the border router until its lease expires, which is
-	 * untidy; refusing to ever register again because of it would be worse,
-	 * since the next window would then be invisible for the life of the boot.
-	 */
-	s_comm_used = false;
+	s_comm_desired = false;
 	if (err != OT_ERROR_NONE) {
-		LOG_WRN("commissionable SRP removal refused (%d); slot released anyway", err);
+		LOG_WRN("commissionable SRP removal refused (%d); cleared locally", err);
+		s_comm_state = SRP_REG_FREE;
+		memset(&s_comm_service, 0, sizeof(s_comm_service));
 		return MATTER_E_STATE;
 	}
+	s_comm_state = SRP_REG_REMOVING;
 	LOG_INF("SRP: commissionable service withdrawn");
 	return MATTER_OK;
 }
@@ -1201,6 +1342,11 @@ int matter_thread_start(const uint8_t *dataset, size_t len)
 	ARG_UNUSED(len);
 
 	LOG_WRN("Thread dataset received, but this image has no Thread stack");
+	return MATTER_E_STATE;
+}
+
+int matter_thread_clear(void)
+{
 	return MATTER_E_STATE;
 }
 

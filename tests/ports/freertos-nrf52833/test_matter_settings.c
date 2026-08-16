@@ -20,6 +20,7 @@
 #include <ultrawidelock_freertos_kv.h>
 #include <ultrawidelock_freertos_platform.h>
 
+#include "matter_fab_settings.h"
 #include "matter_settings_freertos.h"
 
 static unsigned g_checks;
@@ -175,6 +176,125 @@ static void scenario_msub_slots(void)
 	}
 }
 
+static void scenario_mf2_paths(void)
+{
+	static const char *const fixed[] = { "mf2/meta", "mf2/net", "mf2/ic" };
+	uint8_t record[32];
+	char path[8];
+	bool ok = true;
+
+	(void)ultrawidelock_freertos_kv_init();
+	memset(record, 0xa5, sizeof(record));
+	for (size_t i = 0u; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
+		if (settings_save_one(fixed[i], record, sizeof(record)) != 0 ||
+		    !loads_back(fixed[i], record, sizeof(record))) {
+			ok = false;
+		}
+	}
+	for (unsigned i = 0u; i < 5u; i++) {
+		(void)snprintf(path, sizeof(path), "mf2/f%u", i);
+		record[0] = (uint8_t)i;
+		if (settings_save_one(path, record, sizeof(record)) != 0 ||
+		    !loads_back(path, record, sizeof(record))) {
+			ok = false;
+		}
+		(void)snprintf(path, sizeof(path), "mf2/a%u", i);
+		record[0] = (uint8_t)(0x10u + i);
+		if (settings_save_one(path, record, sizeof(record)) != 0 ||
+		    !loads_back(path, record, sizeof(record))) {
+			ok = false;
+		}
+	}
+	CHECK("mf2 meta, network, ICAC, five fabrics and five ACLs have distinct keys", ok);
+}
+
+/* The full DWM product live set must fit one logical page during compaction. */
+static void scenario_five_fabric_live_set(void)
+{
+	struct matter_device_info info;
+	struct matter_device_info loaded;
+	uint8_t large[700];
+	uint8_t medium[254];
+	uint8_t small[32];
+	bool ok = true;
+
+	(void)ultrawidelock_freertos_kv_init();
+	memset(large, 0x55, sizeof(large));
+	memset(medium, 0x66, sizeof(medium));
+	memset(small, 0x77, sizeof(small));
+
+	/* The other consumers sharing these pages at their bounded live sizes. */
+	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, large,
+					       sizeof(large)) == ULTRAWIDELOCK_KV_OK;
+	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE, medium,
+					       sizeof(medium)) == ULTRAWIDELOCK_KV_OK;
+	for (uint16_t i = 1u; i <= 12u; i++) {
+		ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + i,
+						       small, sizeof(small)) == ULTRAWIDELOCK_KV_OK;
+	}
+	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, small,
+					       sizeof(small)) == ULTRAWIDELOCK_KV_OK;
+	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_SLOT0, medium, 96u) ==
+	      ULTRAWIDELOCK_KV_OK;
+	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_SRP_HOST_ID, small, 8u) ==
+	      ULTRAWIDELOCK_KV_OK;
+	for (unsigned i = 0u; i < 6u; i++) {
+		char path[8];
+
+		(void)snprintf(path, sizeof(path), "msub/%u", i);
+		ok &= settings_save_one(path, small, sizeof(small)) == 0;
+	}
+	{
+		uint32_t relock = 120u;
+		uint8_t approach = 7u;
+
+		ok &= settings_save_one("mdl/art", &relock, sizeof(relock)) == 0;
+		ok &= settings_save_one("mdl/apd", &approach, sizeof(approach)) == 0;
+	}
+	CHECK("the bounded reader, Thread, PSA, subscription and attribute set fits", ok);
+
+	memset(&info, 0, sizeof(info));
+	memcpy(info.thread_dataset, medium, sizeof(medium));
+	info.thread_dataset_len = sizeof(medium);
+	memcpy(info.thread_xpanid, medium, MATTER_THREAD_XPANID_LEN);
+	info.have_thread_xpanid = true;
+	info.attempt.have_thread_candidate = true;
+	memcpy(info.attempt.thread_dataset, medium, sizeof(medium));
+	info.attempt.thread_dataset_len = sizeof(medium);
+	memcpy(info.attempt.thread_xpanid, medium, MATTER_THREAD_XPANID_LEN);
+	info.icac.len = MATTER_CERT_MAX;
+	info.icac.owner_index = 1u;
+	memset(info.icac.buf, 0x88, sizeof(info.icac.buf));
+
+	for (uint8_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		info.fabrics[i].index = (uint8_t)(i + 1u);
+		info.fabrics[i].have_root = true;
+		info.fabrics[i].fabric_id = 0x1000u + i;
+		info.fabrics[i].node_id = 0x2000u + i;
+		info.fabrics[i].icac_len = i == 0u ? MATTER_CERT_MAX : 0u;
+		info.fabric_acls[i].len = MATTER_ACL_MAX;
+		memset(info.fabric_acls[i].data, (int)(0x90u + i), MATTER_ACL_MAX);
+		if (matter_fab_commit(&info, MATTER_FABRIC_STORE_COMMIT_ATTEMPT, i, NULL, 0u) !=
+		    0) {
+			ok = false;
+			break;
+		}
+		info.committed_slots |= MATTER_FABRIC_SLOT_BIT(i);
+		info.attempt.have_thread_candidate = false;
+	}
+	CHECK("five maximum-size fabric and ACL records fit beside that live set", ok);
+	CHECK("compaction retains a safety margin", ultrawidelock_freertos_kv_free_bytes() >= 512u);
+
+	memset(&loaded, 0, sizeof(loaded));
+	CHECK("all five fabrics load through the production serializer",
+	      matter_fab_load(&loaded) == 0 &&
+		      loaded.committed_slots ==
+			      (uint8_t)((1u << MATTER_SUPPORTED_FABRICS) - 1u));
+	CHECK("the maximum shared ICAC survives with its owner",
+	      loaded.icac.owner_index == 1u && loaded.icac.len == MATTER_CERT_MAX);
+	CHECK("the capacity run broke no flash rule", fake_flash_violations == 0u);
+}
+
 /* ---- the reboot pair: same flash, fresh statics -------------------------- */
 
 static void scenario_populate_then_reboot(void)
@@ -222,6 +342,8 @@ enum {
 	SCENARIO_UNKNOWN_PATH,
 	SCENARIO_DL_ATTRS,
 	SCENARIO_MSUB_SLOTS,
+	SCENARIO_MF2_PATHS,
+	SCENARIO_FIVE_FABRIC_LIVE_SET,
 	SCENARIO_POPULATE_THEN_REBOOT,
 	SCENARIO_AFTER_REBOOT,
 };
@@ -237,6 +359,12 @@ static int run_scenario(int scenario)
 		break;
 	case SCENARIO_MSUB_SLOTS:
 		scenario_msub_slots();
+		break;
+	case SCENARIO_MF2_PATHS:
+		scenario_mf2_paths();
+		break;
+	case SCENARIO_FIVE_FABRIC_LIVE_SET:
+		scenario_five_fabric_live_set();
 		break;
 	case SCENARIO_POPULATE_THEN_REBOOT:
 		scenario_populate_then_reboot();
@@ -275,7 +403,8 @@ int main(void)
 	int scenario;
 
 	/* Each of these starts from a blank part. */
-	for (scenario = SCENARIO_UNKNOWN_PATH; scenario <= SCENARIO_MSUB_SLOTS; scenario++) {
+	for (scenario = SCENARIO_UNKNOWN_PATH; scenario <= SCENARIO_FIVE_FABRIC_LIVE_SET;
+	     scenario++) {
 		fake_flash_reset();
 		failures += run_child(scenario) ? 0u : 1u;
 	}
@@ -285,6 +414,6 @@ int main(void)
 	failures += run_child(SCENARIO_POPULATE_THEN_REBOOT) ? 0u : 1u;
 	failures += run_child(SCENARIO_AFTER_REBOOT) ? 0u : 1u;
 
-	printf("RESULT: %s (5 scenarios)\n", failures == 0 ? "PASS" : "FAIL");
+	printf("RESULT: %s (7 scenarios)\n", failures == 0 ? "PASS" : "FAIL");
 	return failures == 0 ? 0 : 1;
 }

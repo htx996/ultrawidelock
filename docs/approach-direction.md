@@ -110,9 +110,12 @@ removes it locally and the device never hears about it — it still boots with
 fabrics. Removing the accessory in the app clears one; the device stays commissioned on
 the other, so it still will not advertise.
 
-For both, the fix is a device-side factory reset, which clears every fabric at once. On
-the ESP32 port: `matter> factoryreset`. If the console is unresponsive, erase only the
-`nvs` partition rather than the whole flash, so `esp_secure_cert` and `fctry` survive.
+For this ESP32-specific path, the fallback is a device-side factory reset, which clears
+every fabric at once: `matter> factoryreset`. If the console is unresponsive, erase only
+the `nvs` partition rather than the whole flash, so `esp_secure_cert` and `fctry` survive.
+The portable DWM3001CDK stack now supports authenticated, durable, per-fabric removal;
+use a surviving controller's **Manage fabrics** action there and reserve SW2 factory
+reset for a node no administrator can reach.
 
 **5.3 Trust-store exhaustion.** Tangential but it will bite during repeated pairing
 cycles. A Matter factory reset does not touch the reader's own provisioning namespace,
@@ -212,10 +215,13 @@ One thing this path does get for free: `FeatureMap` and `ClusterRevision` are wr
 per cluster like any other attribute, so §3 — the trap that cost the most time on the
 other port — cannot occur here as an omission by a helper.
 
-### 9.3 It collides with the opt-in Home Assistant patches
+### 9.3 It collides with the opt-in nRF5340 Home Assistant data-model patches
 
 `ha-occupancy-endpoint.patch` adds a third endpoint and so bumps the **same** counter
 lines. Two patches cannot both change `GENERATED_ATTRIBUTE_COUNT 205`, in either order.
 The stack is therefore cumulative: Approach Direction applies first, and the HA patches
 are cut against a tree that already has it. `tests/tooling/patch_drift_check.sh` applies
 all of them in that order, so a future edit that breaks the composition fails there.
+
+That `HA=1` patch stack is unrelated to Matter multi-admin sharing on the
+DWM3001CDK. The DWM image needs no Home Assistant build variant.

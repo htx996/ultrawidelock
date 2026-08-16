@@ -265,9 +265,33 @@ static void invoke_init(struct matter_im_invoke *inv, uint32_t command, const ui
 	inv->has_fields = true;
 }
 
+static int s_store_calls;
+static int s_store_fail;
+static enum matter_fabric_store_operation s_store_operation;
+static uint8_t s_store_slot;
+
+static int fabric_store_cb(void *ctx, const struct matter_device_info *info,
+			   enum matter_fabric_store_operation operation, uint8_t slot,
+			   const uint8_t *value, size_t value_len)
+{
+	(void)ctx;
+	(void)info;
+	(void)value;
+	(void)value_len;
+	s_store_calls++;
+	s_store_operation = operation;
+	s_store_slot = slot;
+	return s_store_fail ? MATTER_E_STATE : MATTER_OK;
+}
+
+static const struct matter_commissioning_hooks k_test_hooks = {
+	.fabric_store = fabric_store_cb,
+};
+
 void test_matter_addnoc(void)
 {
 	struct matter_device_info dev;
+	struct matter_device_info saved_dev;
 	struct matter_im_server srv;
 	struct matter_im_invoke inv;
 	uint8_t fields[512];
@@ -293,7 +317,7 @@ void test_matter_addnoc(void)
 
 	t_group("a root inside one");
 
-	dev.failsafe_armed = true;
+	dev.attempt.active = true;
 	response = 0u;
 	T_EQ("accepted", srv.command(srv.ctx, &inv, &response), MATTER_IM_STATUS_SUCCESS);
 	/* AddTrustedRootCertificate has no response command; the reply is a bare
@@ -390,6 +414,7 @@ void test_matter_addnoc(void)
 	 * second AddNOC answered TableFull and the pairing never completed.
 	 */
 	dev.fabrics[1].have_root = true;
+	dev.attempt.owned_slots |= MATTER_FABRIC_SLOT_BIT(1u);
 	memcpy(dev.fabrics[1].root_public_key, dev.fabrics[0].root_public_key,
 	       sizeof(dev.fabrics[1].root_public_key));
 	T_EQ("the command itself succeeds", srv.command(srv.ctx, &inv, &response),
@@ -416,15 +441,16 @@ void test_matter_addnoc(void)
 			T_OK("wiped, not merely forgotten",
 			     memcmp(dev.op_priv, zero, sizeof(zero)) == 0);
 		}
-		T_OK("the fail-safe is disarmed", !dev.failsafe_armed);
+		T_OK("the fail-safe is disarmed", !dev.attempt.active);
 
 		/* Retry: the same AddNOC that was refused now succeeds. */
-		dev.failsafe_armed = true;
+		dev.attempt.active = true;
 		dev.have_op_key = true;
 		memcpy(dev.op_pub, k_node01_pubkey, sizeof(k_node01_pubkey));
 		memcpy(dev.fabrics[0].root_public_key, before.fabrics[0].root_public_key,
 		       sizeof(dev.fabrics[0].root_public_key));
 		dev.fabrics[0].have_root = true;
+		dev.attempt.owned_slots = MATTER_FABRIC_SLOT_BIT(0u);
 		len = fields_addnoc(fields, sizeof(fields), k_node01, sizeof(k_node01), ipk,
 				    sizeof(ipk));
 		invoke_init(&inv, MATTER_CMD_OC_ADD_NOC, fields, len);
@@ -434,11 +460,83 @@ void test_matter_addnoc(void)
 		T_EQ("on fabric index 1 again", dev.fabrics[0].index, 1);
 
 		/* A FINISHED commissioning is not the fail-safe's to remove. */
-		dev.commissioning_complete = true;
+		dev.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		memset(&dev.attempt, 0, sizeof(dev.attempt));
 		matter_clusters_failsafe_expire(&dev);
 		T_EQ("a completed fabric survives", dev.fabrics[0].index, 1);
-		dev.commissioning_complete = false;
 	}
+
+	saved_dev = dev;
+	t_group("a failed Home Assistant attempt cannot consume or erase Apple's fabric");
+	{
+		memset(&dev, 0, sizeof(dev));
+		test_matter_thread_stub_reset();
+		dev.fabrics[0].index = 1u;
+		dev.fabrics[0].fabric_id = 0x1111u;
+		memcpy(dev.fabrics[0].root_public_key, k_spec_root_pub,
+		       sizeof(dev.fabrics[0].root_public_key));
+		dev.fabric_acls[0].len = 1u;
+		dev.fabric_acls[0].data[0] = 0xa1u;
+		dev.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		dev.fabrics[1].index = 2u;
+		dev.fabrics[1].fabric_id = 0x2222u;
+		dev.fabric_acls[1].len = 1u;
+		dev.fabric_acls[1].data[0] = 0xb2u;
+		dev.attempt.active = true;
+		dev.attempt.owned_slots = MATTER_FABRIC_SLOT_BIT(1u);
+		dev.attempt.thread_applied = true;
+		dev.thread_dataset_len = 4u;
+		memcpy(dev.thread_dataset, "home", 4u);
+		dev.icac.owner_index = 2u;
+		dev.icac.len = 8u;
+
+		matter_clusters_failsafe_expire(&dev);
+		T_EQ("Apple fabric survives", dev.fabrics[0].index, 1u);
+		T_EQ("Apple ACL survives", dev.fabric_acls[0].data[0], 0xa1u);
+		T_EQ("only the provisional HA fabric is cleared", dev.fabrics[1].index, 0u);
+		T_EQ("its ACL is cleared", dev.fabric_acls[1].len, 0u);
+		T_EQ("its shared ICAC ownership is cleared", dev.icac.owner_index, 0u);
+		T_EQ("the committed Apple Thread dataset is restored", g_thread_start_calls, 1u);
+		T_EQ("and Apple's operational service is republished",
+		     g_thread_advertise_calls, 1u);
+		T_OK("the attempt is disarmed", !dev.attempt.active);
+	}
+
+	t_group("CommissioningComplete is a durability boundary");
+	{
+		memset(&dev, 0, sizeof(dev));
+		dev.commissioning_hooks = &k_test_hooks;
+		dev.fabrics[0].index = 1u;
+		dev.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		dev.fabrics[1].index = 2u;
+		dev.fabrics[1].case_admin_subject = 0x55u;
+		dev.attempt.active = true;
+		dev.attempt.owned_slots = MATTER_FABRIC_SLOT_BIT(1u);
+		dev.accessing_fabric_index = 2u;
+		dev.accessing_node_id = 0x55u;
+		invoke_init(&inv, MATTER_CMD_GC_COMMISSIONING_COMPLETE, NULL, 0u);
+		inv.cluster = MATTER_CLUSTER_GENERAL_COMMISSIONING;
+		inv.has_fields = false;
+		s_store_calls = 0;
+		s_store_fail = 1;
+		T_EQ("the command is answered", srv.command(srv.ctx, &inv, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("storage was attempted once", s_store_calls, 1u);
+		T_EQ("the provisional slot was named", s_store_slot, 1u);
+		T_EQ("the operation was a commit", s_store_operation,
+		     MATTER_FABRIC_STORE_COMMIT_ATTEMPT);
+		T_OK("a failed store leaves the attempt rollbackable", dev.attempt.active);
+		T_EQ("and does not promote its slot", dev.committed_slots,
+		     MATTER_FABRIC_SLOT_BIT(0u));
+
+		s_store_fail = 0;
+		T_EQ("retry is answered", srv.command(srv.ctx, &inv, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_OK("successful durability disarms the attempt", !dev.attempt.active);
+		T_EQ("both fabrics are now committed", dev.committed_slots,
+		     MATTER_FABRIC_SLOT_BIT(0u) | MATTER_FABRIC_SLOT_BIT(1u));
+	}
+	dev = saved_dev;
 
 	t_group("what a commissioner can read back");
 	{
@@ -469,7 +567,7 @@ void test_matter_addnoc(void)
 
 		matter_tlv_writer_init(&w, buf, sizeof(buf));
 		srv.value(srv.ctx, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_OPERATIONAL_CREDENTIALS,
-			  MATTER_ATTR_OC_COMMISSIONED_FABRICS, &w, MATTER_TLV_CTX(1u));
+			  MATTER_ATTR_OC_COMMISSIONED_FABRICS, false, &w, MATTER_TLV_CTX(1u));
 		T_EQ("CommissionedFabrics encodes", matter_tlv_writer_finish(&w, &n), MATTER_OK);
 		/* context tag 1, uint8, value 1 */
 		T_EQ("as one fabric", n, 3u);
@@ -487,6 +585,12 @@ void test_matter_addnoc(void)
 		 * setting last_noc_status would be overwritten a moment later.
 		 */
 		dev.fabrics[0].index = 0u;
+		dev.committed_slots = 0u;
+		dev.attempt.active = true;
+		dev.attempt.owned_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		len = fields_addnoc(fields, sizeof(fields), k_node01, sizeof(k_node01), ipk,
+				    sizeof(ipk));
+		invoke_init(&inv, MATTER_CMD_OC_ADD_NOC, fields, len);
 		T_EQ("encodes", matter_im_invoke_response_encode(&srv, &inv, out, sizeof(out), &n),
 		     MATTER_OK);
 		T_EQ("and it succeeded", dev.last_noc_status, MATTER_NOC_STATUS_OK);
@@ -510,6 +614,7 @@ void test_matter_addnoc(void)
 			dev.fabrics[fi].index = (uint8_t)(fi + 1u);
 			dev.fabrics[fi].have_root = true;
 		}
+		dev.committed_slots = (uint8_t)((1u << MATTER_SUPPORTED_FABRICS) - 1u);
 		T_EQ("encodes", matter_im_invoke_response_encode(&srv, &inv, out, sizeof(out), &n),
 		     MATTER_OK);
 		T_EQ("and it was refused", dev.last_noc_status, MATTER_NOC_STATUS_TABLE_FULL);
@@ -518,6 +623,7 @@ void test_matter_addnoc(void)
 		/* Put the table back: a full one is this block's fixture, not
 		 * the state every later test expects to start from. */
 		memcpy(dev.fabrics, saved, sizeof(saved));
+		dev.committed_slots = 0u;
 	}
 
 	t_group("the AddTrustedRootCertificate reply on the wire");
@@ -527,6 +633,7 @@ void test_matter_addnoc(void)
 
 		len = fields_bytes(fields, sizeof(fields), 0u, k_root01, sizeof(k_root01));
 		invoke_init(&inv, MATTER_CMD_OC_ADD_TRUSTED_ROOT_CERTIFICATE, fields, len);
+		dev.attempt.active = true;
 		T_EQ("encodes", matter_im_invoke_response_encode(&srv, &inv, out, sizeof(out), &n),
 		     MATTER_OK);
 		/* A CommandStatusIB, not a CommandDataIB: nothing to report but
@@ -547,12 +654,16 @@ void test_matter_addnoc(void)
 static const uint8_t k_dataset[] = {
 	0x0E, 0x08, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, /* active timestamp */
 	0x00, 0x03, 0x00, 0x00, 0x0F,                               /* channel 15 */
-	0x35, 0x04, 0x07, 0xFF, 0xF8, 0x00,                         /* channel mask */
+	0x35, 0x06, 0x00, 0x04, 0x00, 0x1F, 0xFF, 0xE0,             /* channel mask */
 	0x02, 0x08, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, /* extended PAN id */
 	0x05, 0x10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, /* network key */
 	0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x03, 0x08,
 	'o',  'p',  'e',  'n',  'a',  'l',  'i',  'r', /* network name */
-	0x01, 0x02, 0x12, 0x34,                        /* PAN id */
+	0x01, 0x02, 0x12, 0x34,                                     /* PAN id */
+	0x07, 0x08, 0xFD, 0x00, 0x0D, 0xB8, 0x00, 0x00, 0x00, 0x00, /* mesh-local prefix */
+	0x04, 0x10, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, /* PSKc */
+	0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB,
+	0x0C, 0x04, 0x02, 0xA0, 0xFF, 0xF8, /* security policy */
 };
 
 static const uint8_t k_xpanid[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33};
@@ -564,7 +675,8 @@ static size_t read_attr(const struct matter_im_server *srv, uint32_t cluster, ui
 	size_t n = 0u;
 
 	matter_tlv_writer_init(&w, buf, cap);
-	srv->value(srv->ctx, MATTER_ENDPOINT_ROOT, cluster, attribute, &w, MATTER_TLV_CTX(1u));
+	srv->value(srv->ctx, MATTER_ENDPOINT_ROOT, cluster, attribute, false, &w,
+		   MATTER_TLV_CTX(1u));
 	T_EQ("attribute encodes", matter_tlv_writer_finish(&w, &n), MATTER_OK);
 	return n;
 }
@@ -611,15 +723,17 @@ void test_matter_network(void)
 
 	t_group("the dataset");
 
-	dev.failsafe_armed = true;
+	dev.attempt.active = true;
 	T_EQ("accepted", srv.command(srv.ctx, &inv, &response), MATTER_IM_STATUS_SUCCESS);
 	T_OK("answered by NetworkConfigResponse",
 	     response == MATTER_CMD_NC_NETWORK_CONFIG_RESPONSE);
 	T_EQ("status is Success", dev.last_network_status, MATTER_NC_STATUS_SUCCESS);
-	T_EQ("stored whole", dev.thread_dataset_len, sizeof(k_dataset));
-	T_OK("stored verbatim", memcmp(dev.thread_dataset, k_dataset, sizeof(k_dataset)) == 0);
-	T_OK("extended PAN id found", dev.have_thread_xpanid);
-	T_OK("and it is the right one", memcmp(dev.thread_xpanid, k_xpanid, sizeof(k_xpanid)) == 0);
+	T_EQ("staged whole", dev.attempt.thread_dataset_len, sizeof(k_dataset));
+	T_OK("staged verbatim",
+	     memcmp(dev.attempt.thread_dataset, k_dataset, sizeof(k_dataset)) == 0);
+	T_OK("extended PAN id found", dev.attempt.have_thread_candidate);
+	T_OK("and it is the right one",
+	     memcmp(dev.attempt.thread_xpanid, k_xpanid, sizeof(k_xpanid)) == 0);
 
 	n = read_attr(&srv, MATTER_CLUSTER_NETWORK_COMMISSIONING, MATTER_ATTR_NC_NETWORKS, buf,
 		      sizeof(buf));
@@ -630,15 +744,31 @@ void test_matter_network(void)
 		/* A TLV whose length runs off the end. Nothing may be read past
 		 * the buffer, and no extended PAN id may be claimed. */
 		static const uint8_t runaway[] = {0x0E, 0x08, 0x00, 0x02, 0x40};
+		static const uint8_t incomplete[] = {
+			0x00, 0x03, 0x00, 0x00, 0x0F,
+			0x01, 0x02, 0x12, 0x34,
+			0x02, 0x08, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33,
+			0x05, 0x10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+			0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+		};
 		uint8_t empty[1] = {0};
 
 		len = fields_bytes(fields, sizeof(fields), 0u, runaway, sizeof(runaway));
 		invoke_init(&inv, MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, len);
 		inv.cluster = MATTER_CLUSTER_NETWORK_COMMISSIONING;
-		T_EQ("still stored", srv.command(srv.ctx, &inv, &response),
+		T_EQ("malformed dataset is answered", srv.command(srv.ctx, &inv, &response),
 		     MATTER_IM_STATUS_SUCCESS);
-		T_EQ("status is Success", dev.last_network_status, MATTER_NC_STATUS_SUCCESS);
-		T_OK("but no extended PAN id claimed", !dev.have_thread_xpanid);
+		T_EQ("status is OutOfRange", dev.last_network_status,
+		     MATTER_NC_STATUS_OUT_OF_RANGE);
+		T_OK("the valid candidate remains staged", dev.attempt.have_thread_candidate);
+
+		len = fields_bytes(fields, sizeof(fields), 0u, incomplete, sizeof(incomplete));
+		invoke_init(&inv, MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, len);
+		inv.cluster = MATTER_CLUSTER_NETWORK_COMMISSIONING;
+		T_EQ("an incomplete dataset is answered", srv.command(srv.ctx, &inv, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and rejected before OpenThread", dev.last_network_status,
+		     MATTER_NC_STATUS_OUT_OF_RANGE);
 
 		len = fields_bytes(fields, sizeof(fields), 0u, empty, 0u);
 		invoke_init(&inv, MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, len);
@@ -671,15 +801,7 @@ void test_matter_network(void)
 		inv.cluster = MATTER_CLUSTER_NETWORK_COMMISSIONING;
 		T_EQ("the dataset is accepted", srv.command(srv.ctx, &inv, &response),
 		     MATTER_IM_STATUS_SUCCESS);
-		/*
-		 * Handed to the stack at AddOrUpdate, not at ConnectNetwork: the
-		 * attach costs seconds and the commissioner sends a round trip
-		 * in between that would otherwise be wasted.
-		 */
-		T_EQ("and handed straight to the stack", g_thread_start_calls, 1);
-		T_EQ("verbatim", g_thread_last_len, sizeof(k_dataset));
-		T_OK("and unaltered",
-		     memcmp(g_thread_last_dataset, k_dataset, sizeof(k_dataset)) == 0);
+		T_EQ("and remains staged until ConnectNetwork", g_thread_start_calls, 0);
 		T_EQ("nothing waited on yet", g_thread_wait_calls, 0);
 
 		len = fields_bytes(fields, sizeof(fields), 0u, k_xpanid, sizeof(k_xpanid));
@@ -690,6 +812,10 @@ void test_matter_network(void)
 		T_OK("answered by ConnectNetworkResponse",
 		     response == MATTER_CMD_NC_CONNECT_NETWORK_RESPONSE);
 		T_EQ("it waited", g_thread_wait_calls, 1);
+		T_EQ("ConnectNetwork applied the candidate", g_thread_start_calls, 1);
+		T_OK("verbatim",
+		     g_thread_last_len == sizeof(k_dataset) &&
+			     memcmp(g_thread_last_dataset, k_dataset, sizeof(k_dataset)) == 0);
 		T_OK("within the advertised ConnectMaxTimeSeconds",
 		     g_thread_last_timeout_ms < 60000u);
 		T_EQ("and reports Success", dev.last_network_status, MATTER_NC_STATUS_SUCCESS);
@@ -769,5 +895,9 @@ void test_matter_network(void)
 		 * waiting 20 s to say so would block the commissioner for
 		 * nothing. */
 		T_EQ("without waiting at all", g_thread_wait_calls, 0);
+		T_OK("the possibly partial apply is rollback-owned",
+		     dev.attempt.thread_applied);
+		matter_clusters_failsafe_expire(&dev);
+		T_EQ("and fail-safe expiry clears it", g_thread_clear_calls, 1);
 	}
 }

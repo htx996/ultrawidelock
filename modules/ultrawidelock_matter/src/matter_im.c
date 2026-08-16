@@ -463,7 +463,7 @@ static void put_status_report(struct matter_tlv_writer *w, const struct matter_i
  * reason about container depth that was never incremented.
  */
 static void put_report(struct matter_tlv_writer *w, const struct matter_im_server *srv,
-		       const struct matter_im_path *p)
+		       const struct matter_im_path *p, bool fabric_filtered)
 {
 	uint8_t status = srv->status(srv->ctx, p->endpoint, p->cluster, p->attribute);
 
@@ -476,7 +476,7 @@ static void put_report(struct matter_tlv_writer *w, const struct matter_im_serve
 	(void)matter_tlv_start_container(w, MATTER_TLV_CTX(TAG_AREPORT_DATA), MATTER_TLV_STRUCTURE);
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_ADATA_VERSION), DATA_VERSION);
 	put_path(w, MATTER_TLV_CTX(TAG_ADATA_PATH), p);
-	srv->value(srv->ctx, p->endpoint, p->cluster, p->attribute, w,
+	srv->value(srv->ctx, p->endpoint, p->cluster, p->attribute, fabric_filtered, w,
 		   MATTER_TLV_CTX(TAG_ADATA_DATA));
 	(void)matter_tlv_end_container(w);
 	(void)matter_tlv_end_container(w);
@@ -518,14 +518,14 @@ static int report_encode(const struct matter_im_server *srv, const struct matter
  * complete one.
  */
 static void emit(struct matter_tlv_writer *w, const struct matter_im_server *srv,
-		 const struct matter_im_path *p, struct chunk_ctx *cc)
+		 const struct matter_im_path *p, bool fabric_filtered, struct chunk_ctx *cc)
 {
 	size_t save_len;
 	int save_rc;
 	uint8_t save_depth;
 
 	if (cc == NULL) {
-		put_report(w, srv, p);
+		put_report(w, srv, p, fabric_filtered);
 		return;
 	}
 	if (cc->full) {
@@ -545,7 +545,7 @@ static void emit(struct matter_tlv_writer *w, const struct matter_im_server *srv
 	 * instead of finishing it.
 	 */
 	save_depth = w->depth;
-	put_report(w, srv, p);
+	put_report(w, srv, p, fabric_filtered);
 	/* Out of room, or into the tail reserve, which amounts to the same
 	 * thing: MoreChunkedMessages and the revision still have to fit. */
 	if (w->rc != MATTER_TLV_OK || w->len + cc->reserve > w->cap) {
@@ -567,7 +567,7 @@ static void emit(struct matter_tlv_writer *w, const struct matter_im_server *srv
  */
 static void expand_on_endpoint(struct matter_tlv_writer *w, const struct matter_im_server *srv,
 			       const struct matter_im_path *p, struct matter_im_report_stats *stats,
-			       struct chunk_ctx *cc)
+			       bool fabric_filtered, struct chunk_ctx *cc)
 {
 	const uint32_t *attrs = NULL;
 	size_t n_attrs = 0u;
@@ -588,7 +588,7 @@ static void expand_on_endpoint(struct matter_tlv_writer *w, const struct matter_
 			}
 			return;
 		}
-		emit(w, srv, p, cc);
+		emit(w, srv, p, fabric_filtered, cc);
 		return;
 	}
 
@@ -606,7 +606,7 @@ static void expand_on_endpoint(struct matter_tlv_writer *w, const struct matter_
 
 		one.attribute = attrs[k];
 		one.have_attribute = true;
-		emit(w, srv, &one, cc);
+		emit(w, srv, &one, fabric_filtered, cc);
 	}
 }
 
@@ -801,7 +801,7 @@ static int report_encode(const struct matter_im_server *srv, const struct matter
 		size_t e;
 
 		if (!matter_im_path_is_wildcard(p)) {
-			emit(&w, srv, p, cc);
+			emit(&w, srv, p, req->fabric_filtered, cc);
 			continue;
 		}
 
@@ -850,13 +850,14 @@ static int report_encode(const struct matter_im_server *srv, const struct matter
 				for (c = 0; c < n_cls; c++) {
 					at.cluster = cls[c];
 					at.have_cluster = true;
-					expand_on_endpoint(&w, srv, &at, stats, cc);
+					expand_on_endpoint(&w, srv, &at, stats, req->fabric_filtered,
+							   cc);
 				}
 				continue;
 			}
 
 			at.have_endpoint = true;
-			expand_on_endpoint(&w, srv, &at, stats, cc);
+			expand_on_endpoint(&w, srv, &at, stats, req->fabric_filtered, cc);
 		}
 	}
 

@@ -33,7 +33,10 @@ reader IC, and the nRF52833's own NFC peripheral is tag-emulation only.
   is gitignored, so a fresh clone or a new git worktree stops at configure until
   it has one of its own.
 - A Thread border router the phone already reaches, for the Matter image
-  (`make build`). A `make reader` image needs neither that nor a commissioner.
+  (`make build`). For Apple Home plus Home Assistant, import the Apple Thread
+  credentials into Home Assistant and join every border router to that one
+  dataset before sharing the accessory. A `make reader` image needs neither a
+  border router nor a commissioner.
 - An iPhone with the lock's Aliro key in Wallet. Apple Home mints it during
   CDK-7; a `reader` image takes an imported credential instead, per
   [`apps/dwm3001cdk-lock/README.md`](../apps/dwm3001cdk-lock/README.md).
@@ -49,7 +52,7 @@ this one.
 | ID | Procedure | Pass criterion | Recorded |
 |---|---|---|---|
 | CDK-1 | `make test` on the release commit | Exit 0, all host KATs pass | CI gate |
-| CDK-2 | `make dfu-key`, then `make rebuild` (pristine) | Exit 0; the image links and fits the 433,664 B `app` partition | yes: 409,988 B (94.54%), 125,012 B RAM (95.38%), 6,060 B of RAM spare |
+| CDK-2 | `make dfu-key`, then `make build RELEASE=1 SMP=1 PRISTINE=1` | Exit 0; the production image links and fits the 433,664 B `app` partition and 128 KB RAM | yes, 2026-08-16: 397,360 B flash (91.63%), 120,740 B RAM (92.12%), 10,332 B RAM spare |
 | CDK-3 | `make reader PRISTINE=1` | Exit 0; the reader-only image links and fits | yes: 285,664 B (65.87%), 79,908 B RAM (60.96%) |
 | CDK-4 | Flash a `make selftest` build, boot with no phone present | `DW3000 raw DEV_ID = 0xdeca0302` on the RTT console | yes |
 | CDK-5 | `make flash-erase` with the release image, then boot | Clean boot, `ECDH self-test: PASS`, BLE advertising starts, no faults | yes |
@@ -63,15 +66,24 @@ this one.
 | CDK-13 | `make fota`, push the file from a phone with nRF Device Manager's **Images** tab, then `make fota-done` | The board comes back reporting the target image's SHA-256 | yes, on the commissioned lock (`53b2fe1`, `8447e91`) |
 | CDK-14 | 100 walk-ups, counting the ones that unlock | 95% or better | **open, never run**; the sample so far is single digits |
 | CDK-15 | Cut the power in the middle of a CDK-11 apply, then restore it | The board resumes at the right step and boots the target image | **open, never run** |
+| CDK-16 | In Home Assistant's Thread integration, send the iPhone's Apple Thread credentials, make that dataset preferred, and join the Home Assistant OTBR to it | Apple and Home Assistant border routers report one Extended PAN ID; no second preferred dataset is created | **open, never run** |
+| CDK-17 | With CDK-7 still live, use the Home Assistant iOS app's **Matter > Add device > already in use** path and share from Apple Home | Home Assistant completes commissioning; Apple Home, Home Key, and Home Assistant all operate the same lock; three fabrics are present and two slots remain | **open, never run** |
+| CDK-18 | Power-cycle the lock and each border router after CDK-17, then operate it from both controllers and walk up | Both controllers rediscover and operate it without re-pairing; Wallet walk-up still succeeds | **open, never run** |
+| CDK-19 | Start another share, abort after `AddNOC`, and wait past the fail-safe | Only the provisional fabric disappears; Apple and Home Assistant remain live and the slot is reusable | **open, never run** |
+| CDK-20 | Remove the Home Assistant fabric with **Manage fabrics**, power-cycle, then share it again | Removal survives reboot, Apple and Home Key remain live throughout, and the freed slot is reusable | **open, never run** |
+| CDK-21 | Reproduce an SRP duplicate registration, then leave the border router running | The lock retries with a fresh service name and becomes CASE-reachable without restarting the border router | **open, never run** |
+| CDK-22 | While Apple Home is live, offer the lock a different Home Assistant Thread dataset | Commissioning refuses that dataset without detaching or replacing the working Apple network | **open, never run** |
+| CDK-23 | Cut power once during a fabric commit and once during `RemoveFabric`, reboot after each cut | Each boot loads an old or new valid per-slot record; no torn table, resurrected removal, or damage to another fabric | **open, never run** |
 
 CDK-8 is this target's EV-7, and it is faked the same way: the bolt moving is not a
 pass. The Wallet animation is, because that is what proves the reader told the phone
 it granted access rather than just actuating locally.
 
-CDK-14 and CDK-15 are the two open rows, and neither has ever been run. CDK-14 is
-the only rate on this list: everything above it has been demonstrated at least once,
-and none of it at a rate. CDK-15 is the resumable apply, whose step counter is
-exercised by design and by host test but has never met a real power cut.
+CDK-14 and CDK-15 remain the original open reliability rows. CDK-16 through
+CDK-23 are the Apple Home plus Home Assistant release gate added with the
+five-fabric transaction work. Host tests and the target build cover their local
+state machines, but none inherits a hardware result from those tests. Do not
+describe multi-admin operation as hardware-robust until all eight rows pass.
 
 ## nRF5340 DK
 

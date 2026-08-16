@@ -130,6 +130,15 @@ static void fill_info(struct matter_device_info *info)
 	info->ultrawidelock_credential_cb = cred_cb;
 	info->ultrawidelock_credential_clear_cb = clear_cred_cb;
 	info->ultrawidelock_user_clear_cb = clear_user_cb;
+	/* Most cluster tests exercise an operational administrator. Tests of
+	 * commissioning replace this state explicitly in test_matter_fabric. */
+	info->fabrics[0].index = 1u;
+	info->fabrics[0].fabric_id = 1u;
+	info->fabrics[0].node_id = 1u;
+	info->fabrics[0].case_admin_subject = 1u;
+	info->committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+	info->accessing_fabric_index = 1u;
+	info->accessing_node_id = 1u;
 }
 
 /* A byte pattern that differs per field, so a handler that mixes two of them up
@@ -250,6 +259,36 @@ static size_t build_clear_user_fields(uint8_t *buf, size_t cap, bool have_index,
 	if (have_index) {
 		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_CLEARUSER_INDEX), user_index);
 	}
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_writer_finish(&w, &len);
+	return len;
+}
+
+static size_t build_acl(uint8_t *buf, size_t cap, uint8_t privilege, uint64_t subject,
+			bool scoped, uint16_t endpoint, uint32_t cluster)
+{
+	struct matter_tlv_writer w;
+	size_t len = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2u), MATTER_TLV_ARRAY);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), privilege);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1u), 2u); /* CASE */
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2u), MATTER_TLV_ARRAY);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_ANON, subject);
+	(void)matter_tlv_end_container(&w);
+	if (scoped) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(3u), MATTER_TLV_ARRAY);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), cluster);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1u), endpoint);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_end_container(&w);
+	} else {
+		(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(3u));
+	}
+	(void)matter_tlv_end_container(&w);
 	(void)matter_tlv_end_container(&w);
 	(void)matter_tlv_writer_finish(&w, &len);
 	return len;
@@ -624,17 +663,23 @@ void test_matter_clusters(void)
 		path.endpoint = MATTER_ENDPOINT_ROOT;
 		path.cluster = MATTER_CLUSTER_ACCESS_CONTROL;
 		path.attribute = MATTER_ATTR_AC_ACL;
+		info.fabrics[0].index = 1u;
+		info.fabrics[0].case_admin_subject = 1u;
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		info.accessing_fabric_index = 1u;
+		info.accessing_node_id = 1u;
 		T_EQ("ACL write accepted", srv.write(srv.ctx, &path, acl, sizeof(acl)),
 		     MATTER_IM_STATUS_SUCCESS);
-		T_EQ("length recorded", info.acl_len, sizeof(acl));
-		T_OK("bytes stored verbatim", memcmp(info.acl, acl, sizeof(acl)) == 0);
+		T_EQ("length recorded", info.fabric_acls[0].len, sizeof(acl));
+		T_OK("bytes stored verbatim",
+		     memcmp(info.fabric_acls[0].data, acl, sizeof(acl)) == 0);
 
 		/* Truncating would read back as a shorter list than was written, which
 		 * looks like the node silently dropped entries it was asked to grant. */
 		T_EQ("an oversized ACL is refused, not truncated",
 		     srv.write(srv.ctx, &path, oversized, sizeof(oversized)),
 		     MATTER_IM_STATUS_RESOURCE_EXHAUSTED);
-		T_EQ("and the stored one is untouched", info.acl_len, sizeof(acl));
+		T_EQ("and the stored one is untouched", info.fabric_acls[0].len, sizeof(acl));
 
 		T_EQ("an empty write is an invalid command", srv.write(srv.ctx, &path, acl, 0u),
 		     MATTER_IM_STATUS_INVALID_COMMAND);
@@ -673,6 +718,80 @@ void test_matter_clusters(void)
 		     MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT);
 	}
 
+	t_group("fabric ACLs delegate access without authorizing PASE");
+	{
+		struct matter_im_path path = {
+			.endpoint = MATTER_ENDPOINT_ROOT,
+			.cluster = MATTER_CLUSTER_ACCESS_CONTROL,
+			.attribute = MATTER_ATTR_AC_ACL,
+		};
+		struct matter_tlv_writer w;
+		uint8_t acl[128];
+		uint8_t args[64];
+		size_t acl_len;
+		size_t args_len = 0u;
+		uint32_t response = 0u;
+
+		reset_doubles();
+		fill_info(&info);
+		matter_clusters_init(&srv, &info);
+
+		acl_len = build_acl(acl, sizeof(acl), 5u, 0x77u, false, 0u, 0u);
+		T_OK("administrator ACL builds", acl_len > 0u);
+		T_EQ("bootstrap administrator stores it",
+		     srv.write(srv.ctx, &path, acl, acl_len), MATTER_IM_STATUS_SUCCESS);
+
+		info.accessing_node_id = 0x77u;
+		matter_tlv_writer_init(&w, args, sizeof(args));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETUSER_INDEX), 1u);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &args_len);
+		T_EQ("delegated administrator can manage Door Lock",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, args,
+				 args_len, NULL),
+		     MATTER_IM_STATUS_SUCCESS);
+
+		matter_tlv_writer_init(&w, args, sizeof(args));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), MATTER_SUPPORTED_FABRICS);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &args_len);
+		T_EQ("delegated administrator reaches RemoveFabric",
+		     run_root_command(&srv, MATTER_CLUSTER_OPERATIONAL_CREDENTIALS,
+				      MATTER_CMD_OC_REMOVE_FABRIC, args, args_len, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("invalid target still answers with NOCResponse", response,
+		     MATTER_CMD_OC_NOC_RESPONSE);
+
+		/* Replace it with an Operate grant scoped to Door Lock. The delegated
+		 * administrator above is allowed to make this ACL change. */
+		acl_len = build_acl(acl, sizeof(acl), 3u, 0x88u, true, MATTER_ENDPOINT_LOCK,
+				    MATTER_CLUSTER_DOOR_LOCK);
+		T_EQ("delegated administrator can replace the ACL",
+		     srv.write(srv.ctx, &path, acl, acl_len), MATTER_IM_STATUS_SUCCESS);
+		info.accessing_node_id = 0x88u;
+		T_EQ("scoped operator can unlock",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_UNLOCK_DOOR,
+				 NULL, 0u, NULL),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("but cannot manage users",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, args,
+				 args_len, NULL),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_EQ("and cannot remove a fabric",
+		     run_root_command(&srv, MATTER_CLUSTER_OPERATIONAL_CREDENTIALS,
+				      MATTER_CMD_OC_REMOVE_FABRIC, args, args_len, NULL),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+
+		info.accessing_fabric_index = 0u;
+		info.accessing_node_id = 0u;
+		T_EQ("PASE cannot operate the lock",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_UNLOCK_DOOR,
+				 NULL, 0u, NULL),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+	}
+
 	t_group("AutoRelockTime is the lock endpoint's writable attribute");
 	{
 		struct matter_im_path path;
@@ -704,7 +823,7 @@ void test_matter_clusters(void)
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_DOOR_LOCK,
-			  MATTER_ATTR_DL_AUTO_RELOCK_TIME, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_DL_AUTO_RELOCK_TIME, false, &w, MATTER_TLV_ANON);
 		n = w.len;
 		T_OK("the read emits a value", n > 0u);
 		{
@@ -755,7 +874,7 @@ void test_matter_clusters(void)
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_DOOR_LOCK,
-			  MATTER_ATTR_CLUSTER_REVISION, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_CLUSTER_REVISION, false, &w, MATTER_TLV_ANON);
 		matter_tlv_reader_init(&r, out, w.len);
 		v = 0u;
 		T_OK("ClusterRevision decodes",
@@ -765,7 +884,7 @@ void test_matter_clusters(void)
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_DOOR_LOCK,
-			  MATTER_ATTR_ATTRIBUTE_LIST, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_ATTRIBUTE_LIST, false, &w, MATTER_TLV_ANON);
 		matter_tlv_reader_init(&r, out, w.len);
 		T_OK("AttributeList is a container",
 		     matter_tlv_next(&r) == 0 && matter_tlv_is_container(&r));
@@ -780,7 +899,7 @@ void test_matter_clusters(void)
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_DOOR_LOCK,
-			  MATTER_ATTR_ACCEPTED_CMD_LIST, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_ACCEPTED_CMD_LIST, false, &w, MATTER_TLV_ANON);
 		matter_tlv_reader_init(&r, out, w.len);
 		T_OK("AcceptedCommandList decodes",
 		     matter_tlv_next(&r) == 0 && matter_tlv_enter(&r) == 0);
@@ -827,7 +946,7 @@ void test_matter_clusters(void)
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_APPROACH_DIRECTION,
-			  MATTER_ATTR_APPROACH_DIRECTION, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_APPROACH_DIRECTION, false, &w, MATTER_TLV_ANON);
 		matter_tlv_reader_init(&r, out, w.len);
 		v = 0u;
 		T_OK("the direction decodes",
@@ -899,7 +1018,13 @@ void test_matter_clusters(void)
 
 		reset_doubles();
 		fill_info(&info);
+		info.fabrics[1].index = 2u;
+		info.fabrics[1].fabric_id = 2u;
+		info.fabrics[1].node_id = 2u;
+		info.fabrics[1].case_admin_subject = 2u;
+		info.committed_slots |= MATTER_FABRIC_SLOT_BIT(1u);
 		info.accessing_fabric_index = 2u;
+		info.accessing_node_id = 2u;
 		matter_clusters_init(&srv, &info);
 
 		matter_tlv_writer_init(&w, fields, sizeof(fields));
@@ -1097,7 +1222,13 @@ void test_matter_clusters(void)
 
 		reset_doubles();
 		fill_info(&info);
+		info.fabrics[1].index = 2u;
+		info.fabrics[1].fabric_id = 2u;
+		info.fabrics[1].node_id = 2u;
+		info.fabrics[1].case_admin_subject = 2u;
+		info.committed_slots |= MATTER_FABRIC_SLOT_BIT(1u);
 		info.accessing_fabric_index = 2u;
+		info.accessing_node_id = 2u;
 		matter_clusters_init(&srv, &info);
 
 		/* Fill slot 1 the way a controller does, then take it away. */
@@ -1267,14 +1398,25 @@ void test_matter_clusters(void)
 		static const uint8_t k_xpanid[MATTER_THREAD_XPANID_LEN] = {
 			0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04,
 		};
-		/* Ext PAN ID TLV (type 0x02, len 8) plus a Channel TLV, so the
-		 * id really is being parsed out rather than read off the front. */
-		uint8_t ds[] = {0x00, 0x03, 0x00, 0x00, 0x19, 0x02, 0x08, 0, 0, 0, 0, 0, 0, 0, 0};
-		uint8_t fields[64];
+		uint8_t ds[] = {
+			0x0e, 0x08, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x03, 0x00, 0x00, 0x19,
+			0x35, 0x06, 0x00, 0x04, 0x00, 0x1f, 0xff, 0xe0,
+			0x02, 0x08, 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04,
+			0x05, 0x10, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+			0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+			0x03, 0x04, 'h',  'o',  'm',  'e',
+			0x01, 0x02, 0x12, 0x34,
+			0x07, 0x08, 0xfd, 0x00, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+			0x04, 0x10, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+			0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+			0x0c, 0x04, 0x02, 0xa0, 0xff, 0xf8,
+		};
+		uint8_t candidate[sizeof(ds)];
+		uint8_t fields[256];
 		size_t flen = 0u;
 		struct matter_tlv_writer w;
 
-		memcpy(&ds[7], k_xpanid, sizeof(k_xpanid));
 		matter_tlv_writer_init(&w, fields, sizeof(fields));
 		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
 		(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(0u), ds, sizeof(ds));
@@ -1285,7 +1427,13 @@ void test_matter_clusters(void)
 		reset_doubles();
 		fill_info(&info);
 		matter_clusters_init(&srv, &info);
-		info.failsafe_armed = true;
+		info.attempt.active = true;
+		info.fabrics[0].index = 1u;
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		memcpy(info.thread_dataset, ds, sizeof(ds));
+		info.thread_dataset_len = sizeof(ds);
+		memcpy(info.thread_xpanid, k_xpanid, sizeof(k_xpanid));
+		info.have_thread_xpanid = true;
 		test_matter_thread_stub_reset();
 		g_thread_attached_to = 1;
 		T_EQ("the dataset is accepted",
@@ -1293,34 +1441,76 @@ void test_matter_clusters(void)
 				      MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, flen, NULL),
 		     MATTER_IM_STATUS_SUCCESS);
 		T_EQ("the stack is NOT restarted", g_thread_start_calls, 0);
-		T_OK("but the node counts as on the network", info.thread_started);
-		T_EQ("and it asked about a network", g_thread_attached_to_calls, 1);
-		T_OK("the one the commissioner named, not a stored one",
-		     memcmp(g_thread_attached_to_xpanid, k_xpanid, sizeof(k_xpanid)) == 0);
-		T_OK("the dataset is still remembered",
-		     info.thread_dataset_len == sizeof(ds) &&
-			     memcmp(info.thread_dataset, ds, sizeof(ds)) == 0);
+		T_OK("the dataset is staged", info.attempt.have_thread_candidate);
+		T_EQ("attachment is not touched before ConnectNetwork",
+		     g_thread_attached_to_calls, 0);
 
-		/*
-		 * A commissioner moving this node to a DIFFERENT network must
-		 * still restart the stack. Skipping that would strand the node
-		 * on its old network while telling the commissioner it complied,
-		 * which is worse than the slow path this guard avoids.
-		 */
+		/* A second controller may carry a newer timestamp or even stale
+		 * credentials for the same Extended PAN ID. Accept the network
+		 * identity but retain the dataset that already keeps the lock
+		 * reachable. */
 		reset_doubles();
 		fill_info(&info);
 		matter_clusters_init(&srv, &info);
-		info.failsafe_armed = true;
+		info.attempt.active = true;
+		info.fabrics[0].index = 1u;
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		memcpy(info.thread_dataset, ds, sizeof(ds));
+		info.thread_dataset_len = sizeof(ds);
+		memcpy(info.thread_xpanid, k_xpanid, sizeof(k_xpanid));
+		info.have_thread_xpanid = true;
 		test_matter_thread_stub_reset();
-		g_thread_attached_to = 0;
-		T_EQ("a different network is accepted too",
+		memcpy(candidate, ds, sizeof(candidate));
+		for (size_t i = 0u; i + 2u <= sizeof(candidate);) {
+			size_t len = candidate[i + 1u];
+
+			if (candidate[i] == 0x05u) {
+				candidate[i + 2u] ^= 1u;
+				break;
+			}
+			i += 2u + len;
+		}
+		matter_tlv_writer_init(&w, fields, sizeof(fields));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(0u), candidate,
+					   sizeof(candidate));
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &flen);
+		T_EQ("same-network credentials are answered",
 		     run_root_command(&srv, MATTER_CLUSTER_NETWORK_COMMISSIONING,
 				      MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, flen, NULL),
 		     MATTER_IM_STATUS_SUCCESS);
-		T_EQ("and the stack IS restarted", g_thread_start_calls, 1);
-		T_OK("with the commissioner's dataset verbatim",
-		     g_thread_last_len == sizeof(ds) &&
-			     memcmp(g_thread_last_dataset, ds, sizeof(ds)) == 0);
+		T_EQ("and accepted", info.last_network_status, MATTER_NC_STATUS_SUCCESS);
+		T_OK("while the committed dataset wins",
+		     info.attempt.thread_dataset_len == sizeof(ds) &&
+			     memcmp(info.attempt.thread_dataset, ds, sizeof(ds)) == 0);
+		T_EQ("the stack is untouched", g_thread_start_calls, 0);
+
+		/* A genuinely different Extended PAN ID is a migration request.
+		 * Multi-admin commissioning must reject it without moving the lock. */
+		memcpy(candidate, ds, sizeof(candidate));
+		for (size_t i = 0u; i + 2u <= sizeof(candidate);) {
+			size_t len = candidate[i + 1u];
+
+			if (candidate[i] == 0x02u) {
+				candidate[i + 2u] ^= 1u;
+				break;
+			}
+			i += 2u + len;
+		}
+		matter_tlv_writer_init(&w, fields, sizeof(fields));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(0u), candidate,
+					   sizeof(candidate));
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &flen);
+		T_EQ("a different network is answered",
+		     run_root_command(&srv, MATTER_CLUSTER_NETWORK_COMMISSIONING,
+				      MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, flen, NULL),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and rejected without moving the lock", info.last_network_status,
+		     MATTER_NC_STATUS_BOUNDS_EXCEEDED);
+		T_EQ("the stack is still untouched", g_thread_start_calls, 0);
 
 		/*
 		 * A dataset with no Extended PAN ID cannot be compared against
@@ -1330,20 +1520,20 @@ void test_matter_clusters(void)
 		reset_doubles();
 		fill_info(&info);
 		matter_clusters_init(&srv, &info);
-		info.failsafe_armed = true;
+		info.attempt.active = true;
 		test_matter_thread_stub_reset();
 		g_thread_attached_to = 1; /* would skip, if it were ever asked */
 		matter_tlv_writer_init(&w, fields, sizeof(fields));
 		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
-		(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(0u), ds, 5u); /* channel only */
+		(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(0u), ds, 5u); /* timestamp fragment */
 		(void)matter_tlv_end_container(&w);
 		(void)matter_tlv_writer_finish(&w, &flen);
-		T_EQ("a dataset without an ext PAN id is still accepted",
+		T_EQ("a dataset without an ext PAN id is answered",
 		     run_root_command(&srv, MATTER_CLUSTER_NETWORK_COMMISSIONING,
 				      MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK, fields, flen, NULL),
 		     MATTER_IM_STATUS_SUCCESS);
-		T_EQ("the guard is never consulted", g_thread_attached_to_calls, 0);
-		T_EQ("and the stack is restarted", g_thread_start_calls, 1);
+		T_EQ("as malformed", info.last_network_status, MATTER_NC_STATUS_OUT_OF_RANGE);
+		T_EQ("and the stack remains untouched", g_thread_start_calls, 0);
 	}
 
 	t_group("RemoveFabric frees the slot it names and only that slot");
@@ -1378,6 +1568,12 @@ void test_matter_clusters(void)
 				sizeof(info.fabrics[i].root_public_key), (uint8_t)(0x40u + i));
 			info.fabrics[i].root_public_key[0] = 0x04u;
 		}
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u) |
+				       MATTER_FABRIC_SLOT_BIT(1u) |
+				       MATTER_FABRIC_SLOT_BIT(2u);
+		info.fabrics[0].case_admin_subject = 0x1234u;
+		info.accessing_fabric_index = 1u;
+		info.accessing_node_id = 0x1234u;
 		/* Slot 2 owns the shared intermediate-certificate area. */
 		info.icac.owner_index = 2u;
 		info.icac.len = 100u;

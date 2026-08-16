@@ -92,7 +92,27 @@ established.
 Give it a moment after the tile appears, then check Wallet for a key card naming the lock.
 Only after that is there anything for a walk-up to authenticate against.
 
-## 5. What a healthy pairing looks like
+## 5. Share it with Home Assistant
+
+For a DWM3001CDK, first make Home Assistant use the Apple Thread network. In the
+iOS Companion app, open **Settings > Devices & services > Thread > Configure**,
+send the phone's credentials to Home Assistant, refresh, and make the Apple
+network preferred. If Home Assistant runs an OpenThread Border Router, join it
+to that network rather than creating a second dataset.
+
+Then open **Settings > Matter > Add device**, answer **Yes, it's already in
+use**, select Apple Home, and follow the sharing dialog. This commissions an
+additional Matter fabric; it does not replace the Apple fabrics or Home Key.
+The exact prerequisites, recovery paths, and five-fabric behavior are in the
+[DWM3001CDK multi-admin guide](../apps/dwm3001cdk-lock/README.md#apple-home-plus-home-assistant).
+Home Assistant maintains the current UI paths in its
+[Matter](https://www.home-assistant.io/integrations/matter/) and
+[Thread](https://www.home-assistant.io/integrations/thread/) documentation.
+
+This step is optional for other targets, but the same rule applies to every
+Matter-over-Thread port: all border routers must share one Thread dataset.
+
+## 6. What a healthy pairing looks like
 
 Four things, in this order:
 
@@ -115,14 +135,16 @@ per-target checklists are in [hardware-validation.md](hardware-validation.md).
 
 | Symptom | Likely cause and fix |
 |---|---|
-| Home cannot find the accessory | No home hub, Bluetooth off, or the board is already commissioned. Factory reset it, or remove the stale accessory from Home first |
+| Home cannot find the accessory | No home hub, Bluetooth off, or the board is already commissioned. If another controller still reaches it, open a commissioning window or share it instead of factory-resetting it |
 | The setup code is rejected | A code from a different build. Re-read the one your own `make build`, `make nrf-pairing-code` or `codes` printed |
-| Commissioning stalls near the end | The network join. Thread: no border router in reach. Wi-Fi: 2.4 GHz is required. Remove the half-added accessory before retrying |
-| It sat on "Adding to Home" and then timed out | On the DWM3001CDK this was SRP: the node registered no host name, so nothing resolved. Fixed in `f7d3160`; on an older tree, that is the commit to look for |
-| Pairing succeeded once, and now the board answers nothing | A commissioning that installs a fabric and then times out leaves that fabric stored, and the advert gate then offers `0xFFF2` instead of commissionable, so the controller can neither discover it nor open a window. On the DWM3001CDK, hold **SW2 through reset** to factory reset; `led0` blinks to confirm the hold registered |
+| Commissioning stalls near the end | The network join. Thread: put Apple and Home Assistant on the same dataset and keep a border router in reach. Wi-Fi: 2.4 GHz is required. Let the fail-safe expire before retrying |
+| It sat on "Adding to Home" and then timed out | On old DWM3001CDK images this was often an SRP registration failure. The current image keeps removal objects alive until OpenThread acknowledges them and retries duplicate names; capture the RTT log before restarting a border router |
+| A failed share appears to have consumed a fabric | Current DWM3001CDK images roll back only that provisional attempt on fail-safe expiry. If a controller had already completed the fabric, remove it through Home Assistant's **Manage fabrics** view from a surviving administrator |
+| The fifth controller fits but a sixth does not | Expected: `SupportedFabrics` is five. Apple Home commonly uses two and Home Assistant one, leaving two spare |
 | The tile works but no walk-up ever unlocks | Either the credential never landed or ranging is not running. Check Wallet first, then the radio: [troubleshooting.md](troubleshooting.md) |
 | Unlocks worked, then stopped after a re-pairing | The trust store, not the pairing. An Apple home installs two endpoint keys per pairing and they accumulate; see [dwm3001cdk-surgery.md](dwm3001cdk-surgery.md) §6 |
-| Reflashing lost everything | Expected. Reflashing wipes commissioning; remove the stale accessory from Home before re-adding |
+| An upgrade from v0.3 lost Matter and Home Key | Expected once for the `mf2` clean break and settings-partition move. Remove the old controller records and pair the current image again |
+| An ordinary reflash lost everything | Not expected. `make flash` preserves current settings; `make flash-erase`, SW2 factory reset, or the v0.3 schema transition intentionally clears them |
 
 Deeper symptom tables, grouped by target: [troubleshooting.md](troubleshooting.md). The
 DWM3001CDK's commissioning traps, each with the symptom that exposed it:

@@ -67,6 +67,7 @@ extern "C" {
  */
 #define MATTER_IM_STATUS_SUCCESS               0x00u /* line 31 */
 #define MATTER_IM_STATUS_FAILURE               0x01u /* line 32 */
+#define MATTER_IM_STATUS_UNSUPPORTED_ACCESS    0x7Eu /* line 34 */
 #define MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT  0x7Fu /* line 35 */
 #define MATTER_IM_STATUS_UNSUPPORTED_COMMAND   0x81u /* line 37 */
 #define MATTER_IM_STATUS_INVALID_COMMAND       0x85u /* line 41 */
@@ -269,7 +270,8 @@ typedef uint8_t (*matter_im_status_fn)(void *ctx, uint16_t endpoint, uint32_t cl
  *          latches them and the encoder reports them once at the end.
  */
 typedef void (*matter_im_value_fn)(void *ctx, uint16_t endpoint, uint32_t cluster,
-				   uint32_t attribute, struct matter_tlv_writer *w,
+				   uint32_t attribute, bool fabric_filtered,
+				   struct matter_tlv_writer *w,
 				   matter_tlv_tag_t tag);
 
 /**

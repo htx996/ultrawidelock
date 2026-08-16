@@ -31,7 +31,7 @@ project(ultrawidelock_reader_dwm3001cdk)
 
 # APPROTECT must never be locked on this board. SystemInit() re-asserts the lock
 # on every boot and the only way out is `nrfjprog --recover`, which mass-erases
-# flash AND UICR -- taking settings_storage at 0x7e000 with it, and with that the
+# flash AND UICR -- taking settings_storage at 0x7c000 with it, and with that the
 # reader private key and every iPhone key already provisioned against this board.
 #
 # This is the configure-time half of the guard: it fails the build of THIS image

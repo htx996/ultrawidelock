@@ -4,7 +4,7 @@
 
 **Portable firmware for NFC and UWB smart locks.**
 
-<img src="assets/badges.svg" width="880" alt="v0.3.0 · ISC license · Zephyr, ESP-IDF and FreeRTOS ports · 7,375 host tests"/>
+<img src="assets/badges.svg" width="880" alt="v0.3.0 · ISC license · Zephyr, ESP-IDF and FreeRTOS ports · 7,524 host tests"/>
 
 <img src="assets/divider.svg" width="880" alt=""/>
 
@@ -87,8 +87,12 @@ One nRF52833, 512 KB flash and 128 KB RAM, runs all of this at once:
 | 📏 | **DW3110 UWB ranging**, over the module's internal SPI |
 | 🧠 | **Obstruction classifier** ([`modules/ultrawidelock_ml`](modules/ultrawidelock_ml/)), 776 B of flash |
 
-It fits in 379,332 of 433,664 B flash and 111,012 of 131,072 B RAM.
-`make cdk-size-check` fails if that regresses.
+The shipping `RELEASE=1 SMP=1` image fits in 397,360 of 433,664 B flash and
+120,740 of 131,072 B RAM, leaving 10,332 B of RAM. The five-fabric Apple Home
+plus Home Assistant work added 4,992 B of RAM against the same clean `main`
+revision and NCS v3.3.0 configuration. `make cdk-size-check` guards the recorded
+configuration; the reproducible comparison is in the
+[DWM3001CDK application guide](apps/dwm3001cdk-lock/README.md#verified-size).
 
 **No tap on this board.** No NFC reader IC, and the nRF52833's own NFC is tag
 emulation only. Walk-up only here; for a tap use the nRF5340 DK.
@@ -129,6 +133,10 @@ make freertos-build && make freertos-flash           # the Zephyr-free port
 make hitl                                            # unattended end-to-end bench
 ```
 
+To use one DWM3001CDK in Apple Home and Home Assistant without splitting its
+Thread network, follow the
+[multi-admin commissioning guide](apps/dwm3001cdk-lock/README.md#apple-home-plus-home-assistant).
+
 <details>
 <summary>ESP32 toolchain paths</summary>
 
@@ -156,6 +164,10 @@ esp-matter `93b1680`.
 
 ## New since v0.3.0
 
+- **Five-fabric Apple Home plus Home Assistant coexistence** on the
+  DWM3001CDK: one committed Thread dataset, provisional commissioning rollback,
+  selective durable `RemoveFabric`, per-fabric state, SRP duplicate recovery,
+  and power-cut-safe `mf2` records.
 - **A Zephyr-free FreeRTOS port** of the same lock on the nRF52833: NimBLE,
   MPSL and the SoftDevice Controller, OpenThread, Mbed TLS, and the Matter
   node, added a layer at a time and measured as each one lands.
@@ -191,7 +203,7 @@ the board, and only the build host keeps that record.
 - **Console is RTT, not UART.** `make monitor` attaches with the ELF you
   flashed. The ring survives reset, so the first block is the previous run.
 - **`make flash-erase` costs the commissioning.** Apple Home has to add the
-  lock again.
+  lock again, and Home Assistant must be shared again afterward.
 - **Never lock APPROTECT.** Recovery needs a mass erase, which takes the
   reader's private key and every phone key on it.
   `scripts/check-approtect.sh` checks a part.

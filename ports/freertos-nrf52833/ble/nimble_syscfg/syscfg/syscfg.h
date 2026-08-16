@@ -82,7 +82,7 @@
  * the controller does not link an isochronous feature, and the product needs
  * GATT and credit-based L2CAP rather than LE Audio. The first target link
  * measured the cost at 3,480 bytes of RAM, which is worth naming in a budget
- * where the Zephyr oracle overflows 128 KB by 1,752.
+ * where the Zephyr oracle uses more than 92% of its 128 KB.
  */
 #define MYNEWT_VAL_BLE_TRANSPORT_ISO_FROM_HS_COUNT (0)
 #define MYNEWT_VAL_BLE_TRANSPORT_ISO_FROM_LL_COUNT (0)

@@ -218,6 +218,10 @@ int matter_exchange_recv(struct matter_exchange *x, const uint8_t *msg, size_t l
 	in->ack_requested = (ph.exchange_flags & MATTER_EX_FLAG_R) != 0u;
 	in->carries_ack = (ph.exchange_flags & MATTER_EX_FLAG_A) != 0u;
 	in->acked_counter = ph.ack_counter;
+	if (in->carries_ack && x->replay_len != 0u &&
+	    in->acked_counter == x->replay_out_counter) {
+		x->replay_len = 0u;
+	}
 
 	/*
 	 * A duplicate still has to be acknowledged -- the peer is retransmitting
@@ -274,6 +278,7 @@ int matter_exchange_promote(struct matter_exchange *x, uint16_t local_id, uint16
 	 * secure session, so holding the old id would refuse its first message. */
 	x->open = false;
 	x->ack_pending = false;
+	x->replay_len = 0u;
 
 	return MATTER_OK;
 }
@@ -297,6 +302,8 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	size_t mh_len = 0u;
 	size_t ph_len = 0u;
 	uint32_t counter;
+	uint32_t reply_to_counter = 0u;
+	bool cache_reply;
 	int rc;
 
 	if (x == NULL || out == NULL || out_len == NULL) {
@@ -307,6 +314,10 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	}
 	if (!x->open) {
 		return MATTER_E_STATE;
+	}
+	cache_reply = reliable && !as_initiator && x->mrp && x->ack_pending;
+	if (cache_reply) {
+		reply_to_counter = x->ack_counter;
 	}
 
 	rc = matter_counter_next(&x->counter, &counter);
@@ -416,6 +427,16 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	} else {
 		*out_len = mh_len + ph_len + payload_len;
 	}
+	if (cache_reply) {
+		if (*out_len <= sizeof(x->replay)) {
+			memcpy(x->replay, out, *out_len);
+			x->replay_len = (uint16_t)*out_len;
+			x->replay_peer_counter = reply_to_counter;
+			x->replay_out_counter = counter;
+		} else {
+			x->replay_len = 0u;
+		}
+	}
 
 	/*
 	 * Only now: an ack that was never encoded is an ack still owed.
@@ -483,6 +504,25 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
 	}
 	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, 0u, NULL,
 		     0u, out, cap, out_len);
+}
+
+int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
+			   size_t *out_len)
+{
+	if (x == NULL || out == NULL || out_len == NULL) {
+		return MATTER_E_INVAL;
+	}
+	if (!x->mrp || !x->ack_pending || x->replay_len == 0u ||
+	    x->replay_peer_counter != x->ack_counter) {
+		return MATTER_E_STATE;
+	}
+	if (cap < x->replay_len) {
+		return MATTER_E_NOSPACE;
+	}
+	memcpy(out, x->replay, x->replay_len);
+	*out_len = x->replay_len;
+	x->ack_pending = false;
+	return MATTER_OK;
 }
 
 /**

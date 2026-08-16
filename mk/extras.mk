@@ -52,7 +52,7 @@ help:
 	printf '    %sCDK_BUILD=<dir>  CDK_RTT_BUILD=<dir>  CDK_KEY=<path>  ·  DWM3001CDK%s\n' "$$d" "$$r"; \
 	printf '    %sAPP=matter-lock|reader|initiator  TARGET=esp32s3|esp32c5|esp32c6  VARIANT=presence|hamqtt|piv%s\n' "$$d" "$$r"; \
 	printf '    %sCHIP=dw3720  PRETTY=1  SELFTEST=1  STRICT=1  ·  nRF5340 DK%s\n' "$$d" "$$r"; \
-	printf '    %sHA=1  ·  Home Assistant variant; set on bootstrap AND nrf-build%s\n' "$$d" "$$r"; \
+	printf '    %sHA=1  ·  nRF5340 data-model variant; not needed for DWM multi-admin%s\n' "$$d" "$$r"; \
 	printf '    %sULTRAWIDELOCK_SOURCE=0  ·  legacy Nordic binary fallback -> build/nrf5340dk-blob%s\n' "$$d" "$$r"; \
 	printf '    %sCIR=1  ·  CIA/CIR diagnostics%s\n' "$$d" "$$r"; \
 	printf '    %sULTRAWIDELOCK_TRACE=1  ·  unavailable: required vendor trace patch is absent%s\n' "$$d" "$$r"; \

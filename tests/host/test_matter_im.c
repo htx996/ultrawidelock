@@ -339,6 +339,17 @@ static void fill_info(struct matter_device_info *info)
 	info->supports_concurrent_connection = true;
 }
 
+static void authorize_admin(struct matter_device_info *info)
+{
+	info->fabrics[0].index = 1u;
+	info->fabrics[0].fabric_id = 1u;
+	info->fabrics[0].node_id = 1u;
+	info->fabrics[0].case_admin_subject = 1u;
+	info->committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+	info->accessing_fabric_index = 1u;
+	info->accessing_node_id = 1u;
+}
+
 void test_matter_im(void)
 {
 	struct matter_im_read req;
@@ -440,6 +451,48 @@ void test_matter_im(void)
 
 	/* And the wildcard genuinely produced nothing at all. */
 	T_OK("wildcard cluster absent from report", find(reps, n, 0x0038, 0) == NULL);
+
+	t_group("FabricFiltered is carried into fabric-scoped values");
+	{
+		struct matter_device_info fabric_info;
+		struct matter_im_server fabric_srv;
+		struct matter_im_read fabric_read;
+		uint8_t all[512];
+		uint8_t own[512];
+		size_t all_len = 0u;
+		size_t own_len = 0u;
+
+		fill_info(&fabric_info);
+		fabric_info.fabrics[0].index = 1u;
+		fabric_info.fabrics[0].fabric_id = 0x1111u;
+		fabric_info.fabrics[0].node_id = 0xaaaa;
+		fabric_info.fabrics[1].index = 2u;
+		fabric_info.fabrics[1].fabric_id = 0x2222u;
+		fabric_info.fabrics[1].node_id = 0xbbbb;
+		fabric_info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u) |
+					      MATTER_FABRIC_SLOT_BIT(1u);
+		fabric_info.accessing_fabric_index = 1u;
+		matter_clusters_init(&fabric_srv, &fabric_info);
+
+		memset(&fabric_read, 0, sizeof(fabric_read));
+		fabric_read.n_paths = 1u;
+		fabric_read.paths[0].endpoint = MATTER_ENDPOINT_ROOT;
+		fabric_read.paths[0].cluster = MATTER_CLUSTER_OPERATIONAL_CREDENTIALS;
+		fabric_read.paths[0].attribute = MATTER_ATTR_OC_FABRICS;
+		fabric_read.paths[0].have_endpoint = true;
+		fabric_read.paths[0].have_cluster = true;
+		fabric_read.paths[0].have_attribute = true;
+		T_EQ("unfiltered fabric list encodes",
+		     matter_im_report_data_encode(&fabric_srv, &fabric_read, all, sizeof(all),
+					  &all_len, NULL),
+		     MATTER_OK);
+		fabric_read.fabric_filtered = true;
+		T_EQ("filtered fabric list encodes",
+		     matter_im_report_data_encode(&fabric_srv, &fabric_read, own, sizeof(own),
+					  &own_len, NULL),
+		     MATTER_OK);
+		T_OK("the filtered read contains only the accessing fabric", own_len < all_len);
+	}
 
 	/* ---------------------------------------------------- status choices --- */
 	{
@@ -1047,6 +1100,7 @@ void test_matter_im_invoke(void)
 	size_t len = 0u;
 
 	fill_info(&info);
+	authorize_admin(&info);
 	matter_clusters_init(&srv, &info);
 
 	t_group("ArmFailSafe, as a real iPhone sent it");
@@ -1063,14 +1117,14 @@ void test_matter_im_invoke(void)
 		T_OK("not timed", !inv.timed_request);
 		T_OK("no command ref", !inv.has_command_ref);
 
-		T_OK("fail-safe not armed yet", !info.failsafe_armed);
+		T_OK("fail-safe not armed yet", !info.attempt.active);
 		T_EQ("encodes a response",
 		     matter_im_invoke_response_encode(&srv, &inv, out, sizeof(out), &len),
 		     MATTER_OK);
 		T_OK("response is not empty", len > 0u);
 		/* The command RAN: the effect is the point, and the breadcrumb is
 		 * how the commissioner resumes a half-finished attempt. */
-		T_OK("fail-safe armed", info.failsafe_armed);
+		T_OK("fail-safe armed", info.attempt.active);
 		T_EQ("breadcrumb taken from the request", (long)info.breadcrumb, 3L);
 
 		T_OK("response decodes", walk_invoke_response(out, len, &ir));
@@ -1355,7 +1409,7 @@ void test_matter_im_invoke(void)
 		     matter_im_invoke_response_encode(&srv, &inv, out, sizeof(out), &len),
 		     MATTER_OK);
 		T_EQ("nothing to send", (long)len, 0L);
-		T_OK("but the command still ran", info.failsafe_armed);
+		T_OK("but the command still ran", info.attempt.active);
 	}
 }
 
@@ -1501,20 +1555,25 @@ void test_matter_im_write(void)
 		struct matter_im_write wr;
 
 		blen = build_write(buf, sizeof(buf), 1u, true, false, false);
+		info.fabrics[0].index = 1u;
+		info.fabrics[0].case_admin_subject = 1u;
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		info.accessing_fabric_index = 1u;
+		info.accessing_node_id = 1u;
 		T_EQ("decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
 		T_EQ("response encodes",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_OK("and has content", len > 0u);
-		T_EQ("the ACL reached the device", info.acl_len, wr.data_len);
+		T_EQ("the ACL reached the device", info.fabric_acls[0].len, wr.data_len);
 
 		/* Suppressed: nothing to send, but the write still ran. */
-		info.acl_len = 0u;
+		info.fabric_acls[0].len = 0u;
 		wr.suppress_response = true;
 		len = 1u;
 		T_EQ("suppressed response encodes",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_EQ("nothing to send", (long)len, 0L);
-		T_EQ("but the write still ran", info.acl_len, wr.data_len);
+		T_EQ("but the write still ran", info.fabric_acls[0].len, wr.data_len);
 
 		/*
 		 * A batch gets an ANSWER, and nothing runs. The peer asked for
@@ -1522,14 +1581,14 @@ void test_matter_im_write(void)
 		 * reporting success would be a worse answer than refusing, and
 		 * silence -- what this used to do -- is the worst of the three.
 		 */
-		info.acl_len = 0u;
+		info.fabric_acls[0].len = 0u;
 		blen = build_write(buf, sizeof(buf), 2u, true, false, false);
 		T_EQ("batch decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
 		len = 0u;
 		T_EQ("a truncated batch still encodes a response",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_OK("with something to send", len > 0u);
-		T_EQ("and nothing was written", (long)info.acl_len, 0L);
+		T_EQ("and nothing was written", (long)info.fabric_acls[0].len, 0L);
 		T_OK("status is RESOURCE_EXHAUSTED",
 		     memchr(out, MATTER_IM_STATUS_RESOURCE_EXHAUSTED, len) != NULL);
 	}
@@ -1742,11 +1801,11 @@ void test_matter_im_events(void)
 	t_group("a LockOperation event is recorded when the tile unlocks");
 	{
 		fill_info(&info);
+		authorize_admin(&info);
 		matter_clusters_init(&srv, &info);
 
 		T_EQ("a fresh node holds no events", (long)matter_clusters_event_count(&info), 0L);
 
-		info.accessing_fabric_index = 1u;
 		T_EQ("UnlockDoor accepted", run_lock_command(&srv, MATTER_CMD_DL_UNLOCK_DOOR),
 		     MATTER_IM_STATUS_SUCCESS);
 		T_EQ("and it left an event", (long)matter_clusters_event_count(&info), 1L);
