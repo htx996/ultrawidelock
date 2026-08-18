@@ -59,8 +59,22 @@ extern "C" {
 /** Protocol version. WV1 was the ASCII SF1 bench line; this is its replacement. */
 #define ULTRAWIDELOCK_WITNESS_MSG_VER 2u
 
-/** Advertiser tuples per report. Four covers a household's loud neighbours. */
-#define ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES 4u
+/**
+ * Advertiser tuples per report, loudest first.
+ *
+ * Eight, not four. The binding case is not the outside witness during a
+ * walk-up -- the phone is nearly on top of it and is certainly in the top few
+ * -- but the INSIDE witness, which hears that same phone through a door and
+ * therefore ranks it below whatever else the house is running. If the phone
+ * misses the cut there, the pair has no inside reading, quorum fails, and no
+ * clear is possible. That fails safe and feels like a broken lock.
+ *
+ * Eight tuples plus the header is 85 B, still one 802.15.4 frame with room for
+ * the seal. A denser RF environment than that wants the lock to hint the
+ * picked label back to the witnesses so it is always included; that is a
+ * protocol addition on both ends and is deliberately not done here.
+ */
+#define ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES 8u
 
 /** Fixed header bytes: ver, role, boot_id, ctr, echo_nonce, window_ms, n. */
 #define ULTRAWIDELOCK_WITNESS_MSG_HDR_LEN 21u

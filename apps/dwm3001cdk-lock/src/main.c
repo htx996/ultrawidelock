@@ -40,6 +40,13 @@
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 #include "door_alarm.h" /* impact latch + swing angle -> DoorLockAlarm */
 #endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+#include "ultrawidelock_latch.h" /* persistent inside veto layered over the side gate */
+#include <zephyr/settings/settings.h>
+#endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#include "witness_link.h"
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
 #include "ultrawidelock_side.h" /* fail-closed OUTSIDE-only passive unlock gate */
 #include "ultrawidelock_side_log.h"
@@ -264,6 +271,80 @@ static void factory_reset_if_requested(void)
  * prediction or threshold crossing, relocks on departure or abort, and exits with an error code if
  * reader startup fails.
  */
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+/*
+ * The inside veto. The side gate classifies each window; this decides what a
+ * run of those classifications is allowed to authorise, and its resting state
+ * is INSIDE. File scope because the settings handler has to reach it, and
+ * static because that is the point -- the belief outlives the session, the
+ * reboot, and the witnesses.
+ */
+static struct ultrawidelock_latch s_latch;
+static bool s_latch_dirty;
+
+/*
+ * ONE credential, for now. The module tracks ULTRAWIDELOCK_LATCH_MAX_CREDS
+ * records keyed by a derived non-identifying id, but the reader does not yet
+ * hand the main loop anything that distinguishes one credential from another,
+ * so every session maps to the same record.
+ *
+ * State the consequence rather than hiding it: with two enrolled phones, one
+ * of them leaving clears the belief for both. That is a loss of strictness
+ * against docs/inside-latch.md and it resolves in the UNSAFE direction, so it
+ * is a gap, not a simplification. It closes when the credential plumbing
+ * exposes a stable per-endpoint handle to hash here.
+ */
+#define LATCH_CRED_ID 0x00000001u
+
+static int latch_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	uint8_t blob[ULTRAWIDELOCK_LATCH_BLOB_LEN];
+	ssize_t got;
+
+	if (strcmp(name, "rec") != 0 || len > sizeof(blob)) {
+		return -ENOENT;
+	}
+	got = read_cb(cb_arg, blob, sizeof(blob));
+	if (got <= 0) {
+		return -EINVAL;
+	}
+	/* A rejected blob leaves the latch initialised-and-empty, which reads
+	 * INSIDE for everyone. Corruption must not be recoverable into a
+	 * permissive state. */
+	if (!ultrawidelock_latch_deserialize(&s_latch, NULL, blob, (size_t)got)) {
+		LOG_WRN("latch records unreadable; every credential reads INSIDE");
+	}
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(uwl_latch, "uwl/latch", NULL, latch_settings_set, NULL, NULL);
+
+static void latch_save(void)
+{
+	uint8_t blob[ULTRAWIDELOCK_LATCH_BLOB_LEN];
+	size_t n;
+
+	if (!s_latch_dirty) {
+		return;
+	}
+	s_latch_dirty = false;
+	n = ultrawidelock_latch_serialize(&s_latch, blob, sizeof(blob));
+	if (n == 0u || settings_save_one("uwl/latch/rec", blob, n) != 0) {
+		LOG_ERR("latch records could not be saved");
+	}
+}
+
+/* Any door opening at all re-asserts INSIDE. Called from every grant path the
+ * main loop can see, deliberate ones included: a phone that just walked
+ * through the door is inside regardless of what opened it. */
+static void latch_note_opened(int64_t now_ms)
+{
+	ultrawidelock_latch_note_grant(&s_latch, LATCH_CRED_ID, now_ms);
+	s_latch_dirty = true;
+	latch_save();
+}
+#endif
+
 int main(void)
 {
 	/* Off before the radio comes up: keeps the ranging callbacks print-free so the
@@ -396,6 +477,26 @@ int main(void)
 		side_dec = ultrawidelock_side_filter_feed(&side_filt, &absent);
 	}
 #endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+	{
+		struct ultrawidelock_latch_cfg latch_cfg;
+
+		ultrawidelock_latch_defaults(&latch_cfg);
+		latch_cfg.entry_dwell_ms = CONFIG_ULTRAWIDELOCK_LATCH_ENTRY_DWELL_MS;
+		latch_cfg.clear_windows = CONFIG_ULTRAWIDELOCK_LATCH_CLEAR_WINDOWS;
+		latch_cfg.clear_min_mm = CONFIG_ULTRAWIDELOCK_LATCH_CLEAR_MIN_MM;
+		latch_cfg.clear_valid_ms = CONFIG_ULTRAWIDELOCK_LATCH_CLEAR_VALID_MS;
+		ultrawidelock_latch_init(&s_latch, &latch_cfg);
+		/* Records land through the settings handler. A load that never
+		 * happens leaves every credential reading INSIDE, which is the
+		 * state an uncommissioned lock should be in. */
+		(void)settings_load_subtree("uwl/latch");
+	}
+	static uint8_t latch_why;
+#endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+	witness_link_init();
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SLAM)
 	static struct ultrawidelock_slam_state slam;
 	const struct ultrawidelock_slam_cfg slam_cfg = {
@@ -449,6 +550,9 @@ int main(void)
 		enum ultrawidelock_approach_action act;
 
 		ultrawidelock_reader_status_tick(now);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+		witness_link_tick(now);
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
 		{
 			struct ultrawidelock_side_features feat;
@@ -467,6 +571,25 @@ int main(void)
 					(unsigned)side_dec.side, side_dec.confidence,
 					side_dec.flags, feat.ble_pkts_inside,
 					feat.ble_pkts_outside);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+				/*
+				 * Only decisions the side gate would itself
+				 * release may extend a run. The two gates run in
+				 * series: this counts windows that already
+				 * cleared confidence, quorum, freshness and the
+				 * contradiction flags, so a degraded or stale
+				 * window can contradict but never accumulate.
+				 */
+				ultrawidelock_latch_note_window(
+					&s_latch, LATCH_CRED_ID,
+					ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)
+						? side_dec.side
+						: (side_dec.side ==
+							   ULTRAWIDELOCK_SIDE_LABEL_INSIDE
+							   ? ULTRAWIDELOCK_SIDE_LABEL_INSIDE
+							   : ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN),
+					feat.uwb_range_mm, now);
+#endif
 			}
 
 			/* Age the snapshot on the loop clock, not on the arrival of
@@ -569,6 +692,21 @@ int main(void)
 			 */
 			ultrawidelock_approach_session_up(&approach);
 		}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+		if (session_now != session_was_up) {
+			/* Clear progress belongs to one approach: a run of
+			 * agreeing windows must never be inherited by the next
+			 * session, which may be a different phone entirely. */
+			if (session_now) {
+				ultrawidelock_latch_session_open(&s_latch, LATCH_CRED_ID);
+			} else {
+				ultrawidelock_latch_session_close(&s_latch);
+			}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+			witness_link_session(session_now);
+#endif
+		}
+#endif
 		session_was_up = session_now;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 		/* D12: an uncommissioned node cannot unlock anything, and it is
@@ -585,6 +723,14 @@ int main(void)
 			last_obs_gen = gen;
 			present = true;
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+			/* Only ranges the integrity consensus vouches for are
+			 * published. The picker correlates advertiser RSSI
+			 * against this, so feeding it an unvouched range would
+			 * let a spoofed distance choose which advertiser the
+			 * lock believes is the phone. */
+			witness_link_set_range_mm(cm * 10);
+#endif
 			act = ml_feed_range(&approach, now, cm);
 		} else {
 			/*
@@ -667,9 +813,37 @@ int main(void)
 				break;
 			}
 #endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+			/*
+			 * The inside veto, last and unconditional. Reached only
+			 * for passive approach unlocks: NFC Express Mode, Apple
+			 * Home commands and mechanical operation do not enter
+			 * this switch and must never be gated here.
+			 *
+			 * Refusing hands the unlock back the same way the side
+			 * gate does, so the approach controller keeps offering
+			 * for the rest of the walk-up rather than being killed
+			 * by one early refusal.
+			 */
+			if (!ultrawidelock_latch_may_passive_unlock(&s_latch, LATCH_CRED_ID, now,
+								   &latch_why)) {
+				ultrawidelock_approach_veto(&approach);
+				if ((now - side_deny_log_ms) >= SIDE_DENY_LOG_MS) {
+					side_deny_log_ms = now;
+					LOG_INF("passive unlock withheld: inside latch (why=0x%02x)",
+						latch_why);
+				}
+				break;
+			}
+#endif
 			ultrawidelock_reader_notify_unlock(true); /* Reader Status -> Unsecured (animate) */
 			status_led_signal(STATUS_LED_UNLOCKED, true);
 			granted = true;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+			/* The door is open, so assume the phone goes in. This
+			 * is the pessimism the whole module rests on. */
+			latch_note_opened(now);
+#endif
 			if (ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_BOLT_DRIVEN)) {
 				/* This CDK has no motor. BOLT_DRIVEN means the software grant
 				 * and its visible output have both been committed. */
