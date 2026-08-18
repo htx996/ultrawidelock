@@ -36,6 +36,12 @@ void ultrawidelock_witness_pick_defaults(struct ultrawidelock_witness_pick_cfg *
 	cfg->rssi_eps_db = 3;
 	/* 300 mm. Below this the phone has not meaningfully moved. */
 	cfg->range_eps_mm = 300;
+	/*
+	 * 6 dB. Wide enough to hold one handset's concurrent advertising sets
+	 * together, narrow enough that two people arriving at the door a metre
+	 * apart still read as two. See the header.
+	 */
+	cfg->cluster_db = 6;
 }
 
 void ultrawidelock_witness_pick_init(struct ultrawidelock_witness_pick *p,
@@ -172,12 +178,7 @@ bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p,
 			continue;
 		}
 		if (best == NULL || c->score > best->score) {
-			if (best != NULL) {
-				runner = best->score;
-			}
 			best = c;
-		} else if ((int32_t)c->score > runner) {
-			runner = c->score;
 		}
 	}
 	if (best == NULL) {
@@ -185,6 +186,29 @@ bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p,
 	}
 	if (best->score < p->cfg.min_score || best->windows < p->cfg.min_windows) {
 		return false;
+	}
+
+	/* Runner-up, counting only labels that could be a DIFFERENT emitter.
+	 * One handset's concurrent advertising sets correlate just as well as
+	 * its main one and sit at nearly the same level; treating those as
+	 * competition would refuse every pick. See cluster_db. */
+	for (size_t i = 0; i < ULTRAWIDELOCK_WITNESS_PICK_MAX; i++) {
+		const struct ultrawidelock_witness_pick_cand *c = &p->cand[i];
+		int32_t d;
+
+		if (!c->used || c == best) {
+			continue;
+		}
+		d = (int32_t)c->last_dbm - (int32_t)best->last_dbm;
+		if (d < 0) {
+			d = -d;
+		}
+		if (c->score >= p->cfg.min_score && d <= (int32_t)p->cfg.cluster_db) {
+			continue; /* same emitter as best, not a rival */
+		}
+		if ((int32_t)c->score > runner) {
+			runner = c->score;
+		}
 	}
 	if ((int32_t)best->score - runner < (int32_t)p->cfg.min_margin) {
 		return false;

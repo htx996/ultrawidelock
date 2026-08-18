@@ -80,6 +80,128 @@ config ULTRAWIDELOCK_SIDE_FEED_RTT
 	  link over UART or Matter exists, ULTRAWIDELOCK_SIDE_GATE without this option
 	  refuses every passive unlock, exactly as its own help warns.
 
+config ULTRAWIDELOCK_INSIDE_LATCH
+	bool "Inside veto: refuse passive unlock for a phone believed indoors"
+	depends on ULTRAWIDELOCK_SIDE_GATE
+	default n
+	help
+	  Adds ultrawidelock_latch.h on top of the side gate. The side gate asks
+	  "which side is the phone on right now" every window and needs a
+	  confident OUTSIDE to release a grant. MEASURED 2026-08-11, that
+	  question is unanswerable where it matters: 49% of windows landed in
+	  the dead band at the door plane, which is exactly where the approach
+	  controller asks.
+
+	  The latch changes the question. Each credential carries a persistent
+	  INSIDE belief whose resting state is INSIDE and which no amount of
+	  missing evidence can move. Clearing it takes a live session, a
+	  recorded crossing opportunity, and a run of agreeing OUTSIDE windows
+	  that STARTS beyond ULTRAWIDELOCK_LATCH_CLEAR_MIN_MM -- and the grant
+	  then re-latches immediately, so nothing cleared ever persists.
+
+	  Costs one settings key and about 1 KB of RAM. Turning this on without
+	  a witness link refuses every passive unlock, exactly as the side gate
+	  does: that is the intended fail-closed behaviour.
+
+	  Read docs/inside-latch.md before changing any default below.
+
+config ULTRAWIDELOCK_WITNESS_LINK_OT
+	bool "Ingest BLE witness reports over Thread UDP"
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	depends on NET_L2_OPENTHREAD || OPENTHREAD
+	default n
+	help
+	  Binds a UDP socket on the Thread interface and decodes sealed WV2
+	  datagrams from the enrolled BLE witnesses, replacing the RTT SF1 feed
+	  that needed a debug probe held open for the session.
+
+	  Each report is AES-CCM sealed under a per-witness key, carries a
+	  monotonic counter per witness boot, and echoes the lock's current
+	  challenge nonce. Only reports echoing the CURRENT nonce may clear the
+	  inside veto; a replayed genuine "phone is outside" window is the one
+	  forgery that would open a door, so the clear direction is challenged
+	  and the veto direction is not.
+
+	  The witnesses hold no authority. Every rule is enforced here, and the
+	  worst a forged or flooding witness achieves is a door that does not
+	  open passively.
+
+config ULTRAWIDELOCK_WITNESS_PORT
+	int "UDP port for witness reports"
+	default 49180
+	range 1024 65535
+	depends on ULTRAWIDELOCK_WITNESS_LINK_OT
+	help
+	  Mesh-local only. Not registered with SRP: the witnesses are told the
+	  lock's address at enrollment, and publishing a service for them would
+	  advertise the lock's role to the whole fabric for no benefit.
+
+config ULTRAWIDELOCK_WITNESS_MAX
+	int "Enrolled witnesses"
+	default 3
+	range 2 4
+	depends on ULTRAWIDELOCK_WITNESS_LINK_OT
+	help
+	  Two is the working set: inside and outside. Three leaves room for the
+	  optional threshold role without a rebuild.
+
+config ULTRAWIDELOCK_WITNESS_NONCE_MS
+	int "Challenge nonce lifetime, milliseconds"
+	default 30000
+	range 1000 600000
+	depends on ULTRAWIDELOCK_WITNESS_LINK_OT
+	help
+	  How long one challenge epoch lasts while a credential session is
+	  live. Shorter narrows the replay window and costs downlink traffic to
+	  sleepy witnesses; the witnesses poll at roughly 500 ms, so anything
+	  below a couple of seconds mostly buys missed windows.
+
+config ULTRAWIDELOCK_LATCH_ENTRY_DWELL_MS
+	int "Post-grant dwell before another passive unlock, milliseconds"
+	default 60000
+	range 1000 600000
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  After any grant the phone is assumed to have gone inside, and during
+	  the walk-in it is at the door plane where every classification is
+	  noise. This is how long that assumption is held unconditionally.
+
+config ULTRAWIDELOCK_LATCH_CLEAR_WINDOWS
+	int "Agreeing OUTSIDE windows required to clear the veto"
+	default 3
+	range 1 20
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  Matches ULTRAWIDELOCK_SIDE_GATE's own agree_windows, and runs in
+	  series with it: these are windows the side filter had already
+	  committed. One would make a single misread sufficient.
+
+config ULTRAWIDELOCK_LATCH_CLEAR_MIN_MM
+	int "Range at which a clear must begin, millimetres"
+	default 3000
+	range 500 20000
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  The FIRST agreeing window must be taken at or beyond this range, so
+	  every clear starts far from the door where the two witnesses are not
+	  close to equidistant and the sign of the differential means what it
+	  says. Later windows may be closer; that is the approach happening.
+
+	  UNMEASURED as a distance. It comes from the geometry argument in
+	  ultrawidelock_fusion.h, not from a capture.
+
+config ULTRAWIDELOCK_LATCH_CLEAR_VALID_MS
+	int "How long a proven approach stays usable, milliseconds"
+	default 10000
+	range 1000 120000
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  This is what carries a proven approach across the dead band at the
+	  door plane -- the job ultrawidelock_side_cfg::outside_hold_ms was
+	  reaching for, as bounded evidence rather than a widened confidence
+	  window. Long enough to walk the last few metres, far too short to
+	  still be valid next time anyone passes the door.
+
 config ULTRAWIDELOCK_ANCHOR_BASELINE_MM
 	int "Distance between the two anchors, millimetres"
 	default 1200

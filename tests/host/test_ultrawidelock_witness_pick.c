@@ -89,18 +89,48 @@ static void test_two_movers_are_an_ambiguity(void)
 	t_group("witness_pick: two things approaching is not a pick");
 	ultrawidelock_witness_pick_init(&p, NULL);
 
-	/* Two advertisers rise together -- two people walking up, or one phone
-	 * emitting from two advertising sets. Ambiguity must not resolve. */
-	m = win(-84, -84, -75);
+	/* Two advertisers rise together at clearly different levels: two people
+	 * walking up, one nearer than the other. Ambiguity must not resolve. */
+	m = win(-84, -70, -75);
 	ultrawidelock_witness_pick_feed(&p, &m, 6000);
-	m = win(-76, -76, -74);
+	m = win(-76, -62, -74);
 	ultrawidelock_witness_pick_feed(&p, &m, 4500);
-	m = win(-68, -68, -75);
+	m = win(-68, -54, -75);
 	ultrawidelock_witness_pick_feed(&p, &m, 3000);
-	m = win(-60, -60, -74);
+	m = win(-60, -46, -74);
 	ultrawidelock_witness_pick_feed(&p, &m, 1500);
 
 	T_OK("pick.ambiguous", !ultrawidelock_witness_pick_best(&p, &got));
+}
+
+static void test_one_handset_many_advertising_sets(void)
+{
+	struct ultrawidelock_witness_pick p;
+	struct ultrawidelock_witness_msg m;
+	uint32_t got = 0u;
+
+	t_group("witness_pick: one handset, several advertising sets");
+	ultrawidelock_witness_pick_init(&p, NULL);
+
+	/* iOS advertises from several sets at once, and with extended
+	 * advertising each may carry its own address -- so one approaching
+	 * phone shows up as several labels that all correlate. They share an
+	 * antenna, so they sit within a few dB. If that read as an ambiguity
+	 * the lock would refuse every clear forever, which is a worse failure
+	 * than the one min_margin exists to prevent. */
+	m = win(-84, -82, -75);
+	ultrawidelock_witness_pick_feed(&p, &m, 6000);
+	m = win(-76, -74, -74);
+	ultrawidelock_witness_pick_feed(&p, &m, 4500);
+	m = win(-68, -66, -75);
+	ultrawidelock_witness_pick_feed(&p, &m, 3000);
+	m = win(-60, -58, -74);
+	ultrawidelock_witness_pick_feed(&p, &m, 1500);
+
+	T_OK("sets.picked", ultrawidelock_witness_pick_best(&p, &got));
+	/* Either label is the same handset, so either is a correct answer --
+	 * what matters is that the room's furniture did not win. */
+	T_OK("sets.is_a_mover", got == PHONE || got == TV);
 }
 
 static void test_receding_is_not_approaching(void)
@@ -177,6 +207,7 @@ void test_ultrawidelock_witness_pick(void)
 	test_walkup_picks_the_mover();
 	test_static_room_picks_nothing();
 	test_two_movers_are_an_ambiguity();
+	test_one_handset_many_advertising_sets();
 	test_receding_is_not_approaching();
 	test_guards();
 }

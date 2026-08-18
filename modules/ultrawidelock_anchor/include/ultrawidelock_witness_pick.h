@@ -88,6 +88,23 @@ struct ultrawidelock_witness_pick_cfg {
 	int16_t rssi_eps_db;
 	/** Range change below this is noise, same treatment. */
 	int32_t range_eps_mm;
+	/**
+	 * Two correlated labels whose levels sit within this many dB of each
+	 * other are treated as ONE emitter rather than as competition.
+	 *
+	 * A handset does not advertise once. iOS runs several advertising sets
+	 * concurrently for different subsystems, and with extended advertising
+	 * each may carry its own address -- so one approaching phone can produce
+	 * several labels that all correlate perfectly with the range. Without
+	 * this, min_margin reads that as an ambiguity and refuses to pick, which
+	 * would block every clear permanently rather than occasionally.
+	 *
+	 * Two genuinely different movers are at different distances from the
+	 * witness and so at different levels; two sets from one handset share an
+	 * antenna and sit within a few dB. UNMEASURED: the width is an estimate
+	 * and stage P0 owes it a capture from a real handset.
+	 */
+	int16_t cluster_db;
 };
 
 /** One tracked label. */
