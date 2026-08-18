@@ -20,6 +20,14 @@ if(CONFIG_ULTRAWIDELOCK_ANCHOR)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_side.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_side_log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_slam.c)
+  # The inside veto and its witness link. Gated again inside the module
+  # Kconfig: ULTRAWIDELOCK_ANCHOR alone must not grow the image.
+  if(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+    zephyr_library_sources(
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_latch.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_msg.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_pick.c)
+  endif()
   # The LIS2DH12 backend of ultrawidelock_slam_hw.h (CONFIG_ULTRAWIDELOCK_ANCHOR_SLAM) is the one
   # file that was not portable integer logic; it compiles from ports/zephyr
   # (ultrawidelock_zephyr_port) under that same gate.
