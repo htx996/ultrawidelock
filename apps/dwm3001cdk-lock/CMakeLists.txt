@@ -104,6 +104,10 @@ if(CONFIG_ULTRAWIDELOCK_BENCH_CRED_O2)
 endif()
 # Provisioning console (USB CDC-ACM, provisioning mode only).
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_SIDE_GATE app PRIVATE src/side_feed.c)
+# The deployed witness transport. Separate from SIDE_GATE's bench feed: this
+# one binds a Thread socket instead of draining an RTT buffer, so it is gated
+# on its own symbol and the RTT path stays available for bench work.
+target_sources_ifdef(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT app PRIVATE src/witness_link.c)
 # Measurement only; CONFIG_ULTRAWIDELOCK_THREAD_GATE defaults n so this is absent from
 # every shipping image.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_THREAD_GATE app PRIVATE src/thread_gate.c)
