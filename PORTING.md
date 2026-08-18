@@ -97,6 +97,9 @@ length-checks those where they are written.
 | zephyr | subtree | `mfab` | 64 | `ports/zephyr/store/matter_fab_settings.c` |
 | zephyr | subtree | `msub` | 64 | `apps/dwm3001cdk-lock/src/matter_commission.c` |
 | zephyr | key | `srp/hid` | 64 | `ports/zephyr/matter/matter_thread_port.c` |
+| zephyr | subtree | `uwl/latch` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
+| zephyr | key | `uwl/latch/rec` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
+| zephyr | subtree | `uwl/wit` | 64 | `apps/dwm3001cdk-lock/src/witness_link.c` |
 
 <!-- storage-names:end -->
 
