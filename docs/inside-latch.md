@@ -223,14 +223,25 @@ WV2 payload (before sealing):
   ctr        u32     monotonic per boot
   echo_nonce u64     latest challenge nonce heard from the lock
   window_ms  u16     summarisation window length
-  n_tuples   u8      up to K = 4
+  n_tuples   u8      up to K = 8
   tuples[]           per advertiser, loudest first:
     hash24   u24     truncated keyed hash of AdvA (per-witness key)
     mean_dbm i8
     n_pkts   u8
 CCM: key = 128-bit per-witness link key, nonce = witness_id || boot_id || ctr,
-     tag = 8 bytes. Total on the wire ~50-60 B, one 802.15.4 frame.
+     tag = 8 bytes. Header 21 B + 5 B per tuple = 61 B at K = 8, plus the
+     seal: one 802.15.4 frame.
 ```
+
+K is 8 rather than 4 because the binding case is the INSIDE witness, not the
+outside one. During a walk-up the phone is nearly on top of the outside
+witness and certainly ranks in the top few; the inside witness hears that same
+phone through a door and ranks it below whatever else the house is running. If
+it misses the cut there the pair has no inside reading, quorum fails, and no
+clear is possible -- safe, and indistinguishable from a broken lock. A denser
+RF environment than K = 8 covers wants the lock to hint the picked label back
+to the witnesses so it is always included; that is a protocol addition on both
+ends and is not built.
 
 Rules the lock enforces (all lock-side; witnesses hold no authority):
 
@@ -250,12 +261,29 @@ Rules the lock enforces (all lock-side; witnesses hold no authority):
    time. Alignment error is bounded by the poll period (~500 ms); the
    outside margin must absorb the residual smear (bench-sized in P8).
 
-Identity matching: the witness computes `hash24 = trunc24(CMAC(link_key,
-AdvA))` for the loudest K advertisers. The lock computes the same over the
-live session peer address and matches. 24 bits keeps ambient collisions
-negligible at household scale; a collision at worst contributes one wrong
-tuple to one window, and the N-consecutive-windows rule plus the paired
-second witness absorb it.
+Identity: there is none, and that is a correction to an earlier revision of
+this document rather than a refinement of it. The witness computes `hash24 =
+trunc24(hash(group_key, AdvA))` for the loudest K advertisers, under a key the
+WITNESSES share and the lock does not -- so the same advertiser carries the
+same label at both witnesses, which is what lets inside be compared against
+outside, while staying opaque to the lock and to the air.
+
+The lock does not match that label against anything. It cannot. The phone is
+the central, so the address the lock holds from the credential connection is
+an InitA generated for the initiating role, while what the witnesses hear
+comes from advertising sets with their own address state and their own
+rotation timers. The Core Spec permits one RPA across roles and does not
+require it; nothing Apple publishes promises it. Matching the two would fail
+in the ordinary case, not in a corner.
+
+Instead the lock picks the phone by TRAJECTORY: exactly one advertiser in the
+room gets louder at the outside witness while the authenticated UWB range
+falls. See `ultrawidelock_witness_pick.h`. No address is transmitted, none is
+matched, and the lock learns nothing it could persist. A label whose RPA
+rotates mid-approach retires and the scoring restarts, costing one approach.
+24 bits keeps ambient collisions negligible at household scale; a collision at
+worst contributes one wrong tuple to one window, which the N-consecutive-
+windows rule and the paired second witness absorb.
 
 ---
 
@@ -378,19 +406,27 @@ ULTRAWIDELOCK_WITNESS_STALE_MS       int, default 1500
 decisions) plus the three new bools; `SIDE_FEED_RTT` and `SIDE_PEER_EMIT`
 stay off -- no probe, no address logging.
 
-Size budget, estimate until built (against the shipping config's measured
-54,332 B flash / 20,060 B RAM free, `size-baseline.json`):
+Size, MEASURED 2026-08-19 on this tree. The estimate this section used to
+carry was ~7 KB flash / ~1.1 KB RAM, and it held.
 
-| piece | flash est. | RAM est. |
+| build | FLASH | RAM |
 |---|---|---|
-| latch module + settings glue | ~1.5 KB | ~200 B |
-| WV2 codec (shared, host-tested) | ~1 KB | ~0 |
-| witness link (socket, PSA CCM glue, pairing) | ~2.5 KB | ~600 B |
-| enrollment (separable Kconfig) | ~2 KB | ~300 B |
-| total | **~7 KB** | **~1.1 KB** |
+| `make build` (thread+lto) | 417,684 (96.32%) | 118,312 (90.26%) |
+| `make build LATCH=1` | 424,400 (97.86%) | 119,464 (91.14%) |
+| **delta** | **+6,716 B** | **+1,152 B** |
+| `RELEASE=1 SMP=1 LATCH=1` | 406,536 (93.74%) | 115,944 (88.46%) |
 
-Both fit with wide margin. A measured report is stage P9's deliverable;
-treat a large overshoot as a design problem per the brief.
+The delta is not the interesting number; the residue is. On the dev config
+LATCH=1 leaves 9,264 B free, which is not a budget anything else can be added
+to. On the shipping configuration it leaves 27,128 B, which is workable. The
+asymmetry is the logging the dev config carries, and it means the enrollment
+path (stage P7, unbuilt) must be measured against the shipping config or it
+will look affordable and not be.
+
+Default build unchanged, VERIFIED 2026-08-19: commit 588459f5 and this
+branch's HEAD both produce a 417,684 B loadable image differing in exactly 4
+bytes, the `__TIME__` inside OpenThread's version string. Every allocated
+section is identical in size and placement.
 
 ---
 
@@ -449,7 +485,14 @@ Pass: default `make build` byte-identical to baseline;
 `make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-latch` reports the
 delta against the section 10 budget.
 
-**P6 -- witness firmware v2.**
+**P6 -- witness firmware v2 (NOT BUILT; this is the gap).**
+Nothing populates a WV2 report yet. The codec, the picker and the latch are
+written and host-tested, and the lock will decode and act on reports the
+moment they arrive, but the shipped `examples/zephyr/ble-witness/src/main.c`
+is still the older LEARN design that locks onto one loudest fingerprint over
+5 s and prints ASCII on UART. Until this stage lands, a LATCH=1 lock refuses
+every passive unlock -- which is the correct fail-closed behaviour and is not
+a working product.
 Single image: role/dataset/key from NVS, WV2 reports with CCM, boot HELLO,
 challenge echo, LED states, USB `ENROLL` bench fallback. Keep the P0
 overlay as its Thread base.
