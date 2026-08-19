@@ -25,6 +25,7 @@ if(CONFIG_ULTRAWIDELOCK_ANCHOR)
   if(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
     zephyr_library_sources(
       ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_latch.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_core.c
       ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_msg.c
       ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_pick.c)
   endif()
