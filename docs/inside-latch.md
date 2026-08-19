@@ -420,12 +420,12 @@ carry was ~7 KB flash / ~1.1 KB RAM, and it held.
 | build | FLASH | RAM |
 |---|---|---|
 | `make build` (thread+lto) | 417,684 (96.32%) | 118,312 (90.26%) |
-| `make build LATCH=1` | 424,400 (97.86%) | 119,464 (91.14%) |
-| **delta** | **+6,716 B** | **+1,152 B** |
+| `make build LATCH=1` | 424,544 (97.90%) | 119,464 (91.14%) |
+| **delta** | **+6,860 B** | **+1,152 B** |
 | `RELEASE=1 SMP=1 LATCH=1` | 406,536 (93.74%) | 115,944 (88.46%) |
 
 The delta is not the interesting number; the residue is. On the dev config
-LATCH=1 leaves 9,264 B free, which is not a budget anything else can be added
+LATCH=1 leaves 9,120 B free, which is not a budget anything else can be added
 to. On the shipping configuration it leaves 27,128 B, which is workable. The
 asymmetry is the logging the dev config carries, and it means the enrollment
 path (stage P7, unbuilt) must be measured against the shipping config or it
@@ -499,7 +499,7 @@ labels every advertiser under the group key, ranks them with the shared
 accumulator, seals a WV2 window under its link key and sends it over Thread as
 a sleepy end device. `LEARN`, `ADDR`, the per-role build flag and the UART
 summary line are all gone, and it shares the lock's codec rather than
-reimplementing it. Builds at 285,608 B flash / 96,360 B RAM on the nRF52840,
+reimplementing it. Builds at 285,576 B flash / 96,360 B RAM on the nRF52840,
 27.56% and 36.76% of the part.
 Pass: two dongles, flashed identically, provisioned with different roles, each
 cold-boots to solid-LED and reports with no host attached. NOT YET RUN -- it
