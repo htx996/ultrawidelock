@@ -80,9 +80,24 @@ config ULTRAWIDELOCK_SIDE_FEED_RTT
 	  link over UART or Matter exists, ULTRAWIDELOCK_SIDE_GATE without this option
 	  refuses every passive unlock, exactly as its own help warns.
 
+config ULTRAWIDELOCK_WITNESS_CODEC
+	bool "BLE witness wire format, window accumulator and phone picker"
+	default n
+	help
+	  The three platform-free pieces both ends of the witness link share:
+	  the WV2 report codec, the per-window accumulator that decides which
+	  advertisers a witness reports, and the trajectory correlator that
+	  picks which of them is the phone.
+
+	  Selected by ULTRAWIDELOCK_INSIDE_LATCH on the lock, and set directly
+	  by the witness firmware, which links the same code without wanting
+	  the lock's side gate. Two implementations of one wire format agree
+	  until they do not, so there is only one.
+
 config ULTRAWIDELOCK_INSIDE_LATCH
 	bool "Inside veto: refuse passive unlock for a phone believed indoors"
 	depends on ULTRAWIDELOCK_SIDE_GATE
+	select ULTRAWIDELOCK_WITNESS_CODEC
 	default n
 	help
 	  Adds ultrawidelock_latch.h on top of the side gate. The side gate asks
