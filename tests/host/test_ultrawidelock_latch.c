@@ -386,6 +386,31 @@ static void test_broad_opportunity_is_safe(void)
 	     !ultrawidelock_latch_may_passive_unlock(&l, ULTRAWIDELOCK_LATCH_CRED_ANY, t, &why));
 }
 
+static void test_unattributed_evidence_is_not_evidence(void)
+{
+	struct ultrawidelock_latch l;
+	uint8_t why = 0u;
+	int64_t t;
+
+	t_group("latch: evidence with no credential attached to it");
+	ultrawidelock_latch_init(&l, NULL);
+	seed_departed(&l, CRED_A);
+
+	/* The lock passes 0 while a BLE link is up but the reader cannot yet
+	 * say whose it is. Nothing about that state may accumulate, and it may
+	 * certainly never grant: an approach the lock cannot attribute is an
+	 * approach it cannot vouch for. */
+	ultrawidelock_latch_session_open(&l, 0u);
+	t = walk_up(&l, 0u, T0, 6);
+	T_OK("unattributed.refused", !ultrawidelock_latch_may_passive_unlock(&l, 0u, t, &why));
+	T_OK("unattributed.no_record", (why & ULTRAWIDELOCK_LATCH_R_NO_RECORD) != 0u);
+
+	/* And it must not have leaked into a real credential's record. */
+	ultrawidelock_latch_session_open(&l, CRED_A);
+	T_OK("unattributed.no_leak", !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t, &why));
+	T_OK("unattributed.leak_reason", (why & ULTRAWIDELOCK_LATCH_R_WINDOWS) != 0u);
+}
+
 static void test_opportunity_expiry_knob(void)
 {
 	struct ultrawidelock_latch l;
@@ -428,5 +453,6 @@ void test_ultrawidelock_latch(void)
 	test_corrupt_storage_fails_closed();
 	test_record_eviction_fails_closed();
 	test_broad_opportunity_is_safe();
+	test_unattributed_evidence_is_not_evidence();
 	test_opportunity_expiry_knob();
 }

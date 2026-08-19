@@ -287,37 +287,45 @@ windows rule and the paired second witness absorb.
 
 ---
 
-## 6. Enrollment: once, wireless, then never again
+## 6. Provisioning: once, before the dongle goes on the wall
 
-Steady state has no operator action and no host. The one-time enrollment is
-wireless too:
+Steady state has no operator action, no host and no probe. Getting there takes
+one command per dongle, over its own USB CDC console, at install:
 
-1. Fresh witness (no NVS record) boots into enrollment mode: BLE
-   connectable advertising as `UWLW`, fast LED blink. Role is declared on
-   the witness by button taps before enrollment (1 tap = outside, 2 =
-   inside; LED pattern confirms) -- a mounting fact, declared once, exactly
-   like `ULTRAWIDELOCK_ANCHOR_SELF_INSIDE`.
-2. The installer opens a short enrollment window on the lock (user button
-   on the DWM3001CDK; board DT check in P5). The lock scans, connects as
-   central, and opens an L2CAP CoC on the witness's enrollment PSM --
-   reusing the central + CoC machinery the credential path already has.
-3. Ephemeral P-256 ECDH (both ends already carry PSA ECC), derive a wrap
-   key, and transfer one sealed record: Thread operational dataset,
-   128-bit link key, witness id, window parameters. The witness persists it
-   to NVS and reboots into steady state: join Thread, start scanning,
-   report. Solid LED when attached, heartbeat while reporting.
-4. Re-enrollment = hold the witness button 5 s to wipe and return to step 1.
+```
+PROV <role> <link-key-hex32> <group-key-hex32> <dataset-hex>
+SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
+```
 
-The Thread dataset is the home's real network secret, so it is never sent
-in the clear. Residual: no out-of-band binding, so an active MITM present
-during the seconds of enrollment could intercept it. Enrollment happens
-once, at install, with both devices in hand; the residual is stated in
-section 8 rather than engineered away.
+- **role** — `inside`, `outside` or `threshold`. A mounting fact, declared
+  once. It is no longer a build flag, so all dongles run one image and moving
+  one from inside to outside is a re-provision, not a reflash.
+- **link key** — 16 bytes, DIFFERENT per dongle. Seals that witness's reports;
+  the lock holds the same bytes under `uwl/wit/k/<role>`.
+- **group key** — 16 bytes, THE SAME on every dongle and deliberately NOT on
+  the lock. It labels advertisers so inside can be compared against outside
+  (section 5) while the labels stay opaque to the lock.
+- **dataset** — the Thread active operational dataset TLVs, from
+  `ot-ctl dataset active -x` on any node of the network.
 
-A USB CDC `ENROLL` command remains in the witness as a bench fallback
-(the hardware has the port anyway), but nothing depends on it.
+All four persist in the witness's settings. It cold-boots into scanning,
+joining and reporting, and holds that for weeks with nothing attached. The LED
+is the only diagnostic once it is on the wall: fast blink unprovisioned, slow
+blink provisioned but not attached, solid attached and reporting.
 
----
+**Why this is not over the air, which was the earlier plan.** The lock builds
+with `CONFIG_BT_OBSERVER=n` and `CONFIG_BT_CENTRAL=n`: it advertises and
+accepts a connection, and that is all its BLE stack does. Wireless enrollment
+needs the lock to either scan for a dongle or connect to one, so it means
+adding a BLE role to the stack that carries the credential -- the single most
+security-sensitive surface on the device -- to save a one-time step performed
+while the dongle is already in your hand, plugged into the machine that just
+flashed it. That trade is bad in the direction that matters. It is a deferral
+with a stated reason, not an oversight, and it does not touch the requirement
+that STEADY STATE be wireless, which it is.
+
+The provisioning console prints no key material back, so a captured session
+log does not compromise the link.
 
 ## 7. Privacy
 
@@ -485,30 +493,27 @@ Pass: default `make build` byte-identical to baseline;
 `make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-latch` reports the
 delta against the section 10 budget.
 
-**P6 -- witness firmware v2 (NOT BUILT; this is the gap).**
-Nothing populates a WV2 report yet. The codec, the picker and the latch are
-written and host-tested, and the lock will decode and act on reports the
-moment they arrive, but the shipped `examples/zephyr/ble-witness/src/main.c`
-is still the older LEARN design that locks onto one loudest fingerprint over
-5 s and prints ASCII on UART. Until this stage lands, a LATCH=1 lock refuses
-every passive unlock -- which is the correct fail-closed behaviour and is not
-a working product.
-Single image: role/dataset/key from NVS, WV2 reports with CCM, boot HELLO,
-challenge echo, LED states, USB `ENROLL` bench fallback. Keep the P0
-overlay as its Thread base.
-Pass: two dongles, flashed identically, enrolled with different roles,
-each cold-boots to "attached and reporting" with no host attached.
+**P6 -- witness firmware v2. BUILT.**
+`examples/zephyr/ble-witness/` is one image for every mounting position: it
+labels every advertiser under the group key, ranks them with the shared
+accumulator, seals a WV2 window under its link key and sends it over Thread as
+a sleepy end device. `LEARN`, `ADDR`, the per-role build flag and the UART
+summary line are all gone, and it shares the lock's codec rather than
+reimplementing it. Builds at 285,608 B flash / 96,360 B RAM on the nRF52840,
+27.56% and 36.76% of the part.
+Pass: two dongles, flashed identically, provisioned with different roles, each
+cold-boots to solid-LED and reports with no host attached. NOT YET RUN -- it
+needs the hardware, and it is the same session as P0.
 
-**P7 -- wireless enrollment + optional accel opportunity source.**
-Lock-side `ULTRAWIDELOCK_WITNESS_ENROLL` (button window, central + CoC,
-ECDH, sealed record) and witness-side enrollment mode. Separately, a bench
-capture deciding whether LIS2DH12 door-swing transients are detectable at
-low mg (UNMEASURED; the SLAM Kconfig proves the IRQ wiring exists). If
-they are not, the accel opportunity source is dropped and the
-NFC-after-mechanical-exit tax in section 3.4 stands.
-Pass (enrollment): a factory-reset witness reaches "reporting" purely over
-the air. Pass (accel): 20 normal door swings all detected, 0 false events
-overnight; otherwise record the negative result and drop the feature.
+**P7 -- optional accel opportunity source.**
+A bench capture deciding whether LIS2DH12 door-swing transients are detectable
+at low mg (UNMEASURED; the SLAM Kconfig proves the IRQ wiring exists). If they
+are not, the accel opportunity source is dropped and the NFC-after-mechanical-
+exit tax in section 3.4 stands.
+Wireless enrollment is NOT in this stage any more; see section 6 for what
+replaced it and why.
+Pass: 20 normal door swings all detected, 0 false events overnight; otherwise
+record the negative result and drop the feature.
 
 **P8 -- bench soak and margin sizing.**
 Scripted walk-ups from outside; resident-phone weekend soak inside with

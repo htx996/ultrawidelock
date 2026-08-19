@@ -42,6 +42,7 @@
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 #include "ultrawidelock_latch.h" /* persistent inside veto layered over the side gate */
+#include "ultrawidelock_hash.h" /* SHA-256, for the credential's non-identifying name */
 #include <zephyr/settings/settings.h>
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
@@ -283,18 +284,46 @@ static struct ultrawidelock_latch s_latch;
 static bool s_latch_dirty;
 
 /*
- * ONE credential, for now. The module tracks ULTRAWIDELOCK_LATCH_MAX_CREDS
- * records keyed by a derived non-identifying id, but the reader does not yet
- * hand the main loop anything that distinguishes one credential from another,
- * so every session maps to the same record.
+ * The latch key, per credential and non-identifying.
  *
- * State the consequence rather than hiding it: with two enrolled phones, one
- * of them leaving clears the belief for both. That is a loss of strictness
- * against docs/inside-latch.md and it resolves in the UNSAFE direction, so it
- * is a gap, not a simplification. It closes when the credential plumbing
- * exposes a stable per-endpoint handle to hash here.
+ * ultrawidelock_assert_cred_id() is already this tree's answer to "name a
+ * credential without naming a person": the first 8 bytes of SHA-256 over the
+ * credential's public key, stable for the life of the credential and derivable
+ * only by something that already holds the public key. The latch takes the top
+ * 32 bits of that, which is a name for a record and never leaves the device.
+ *
+ * Zero is reserved for "no authenticated credential". It is not a record and
+ * can never be granted: evidence that cannot be attributed to a credential
+ * must not accumulate against one, so the session stays closed until the
+ * reader can say whose it is.
  */
-#define LATCH_CRED_ID 0x00000001u
+#define LATCH_CRED_NONE 0x00000000u
+
+static uint32_t latch_cred_id(void)
+{
+	uint8_t cred_pub[65];
+	uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
+	uint32_t v;
+
+	if (!ultrawidelock_reader_authenticated_credential(cred_pub)) {
+		return LATCH_CRED_NONE;
+	}
+	/* The same construction ultrawidelock_assert_cred_id() uses -- SHA-256
+	 * over the credential public key -- computed here rather than called,
+	 * because ultrawidelock_assert is not linked into this image and
+	 * pulling it in for four bytes of digest would cost more than it says. */
+	ultrawidelock_sha256(cred_pub, sizeof(cred_pub), digest);
+	v = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
+	    ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
+	/* Two reserved values must never be minted from a real credential: zero
+	 * means "nobody", and CRED_ANY addresses every record at once. A
+	 * collision is a 1-in-2^31 event and costs that credential nothing but
+	 * a different record number. */
+	if (v == LATCH_CRED_NONE || v == ULTRAWIDELOCK_LATCH_CRED_ANY) {
+		v = 1u;
+	}
+	return v;
+}
 
 static int latch_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -337,9 +366,12 @@ static void latch_save(void)
 /* Any door opening at all re-asserts INSIDE. Called from every grant path the
  * main loop can see, deliberate ones included: a phone that just walked
  * through the door is inside regardless of what opened it. */
-static void latch_note_opened(int64_t now_ms)
+static void latch_note_opened(uint32_t cred_id, int64_t now_ms)
 {
-	ultrawidelock_latch_note_grant(&s_latch, LATCH_CRED_ID, now_ms);
+	if (cred_id == LATCH_CRED_NONE) {
+		return;
+	}
+	ultrawidelock_latch_note_grant(&s_latch, cred_id, now_ms);
 	s_latch_dirty = true;
 	latch_save();
 }
@@ -493,6 +525,8 @@ int main(void)
 		(void)settings_load_subtree("uwl/latch");
 	}
 	static uint8_t latch_why;
+	/* Which credential the open latch session belongs to, or CRED_NONE. */
+	uint32_t latch_cred = LATCH_CRED_NONE;
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
 	witness_link_init();
@@ -581,7 +615,7 @@ int main(void)
 				 * window can contradict but never accumulate.
 				 */
 				ultrawidelock_latch_note_window(
-					&s_latch, LATCH_CRED_ID,
+					&s_latch, latch_cred,
 					ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)
 						? side_dec.side
 						: (side_dec.side ==
@@ -693,18 +727,30 @@ int main(void)
 			ultrawidelock_approach_session_up(&approach);
 		}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
-		if (session_now != session_was_up) {
-			/* Clear progress belongs to one approach: a run of
-			 * agreeing windows must never be inherited by the next
-			 * session, which may be a different phone entirely. */
-			if (session_now) {
-				ultrawidelock_latch_session_open(&s_latch, LATCH_CRED_ID);
-			} else {
-				ultrawidelock_latch_session_close(&s_latch);
-			}
+		/*
+		 * The latch session follows the CREDENTIAL, not the BLE link.
+		 * A link that is up but not yet authenticated has no name to
+		 * accumulate evidence against, and evidence that cannot be
+		 * attributed to a credential must not be attributed to one.
+		 * So the session opens when the reader can say whose it is,
+		 * and any change of credential closes the old one -- a run of
+		 * agreeing windows must never be inherited by another phone.
+		 */
+		{
+			uint32_t cred_now = session_now ? latch_cred_id() : LATCH_CRED_NONE;
+
+			if (cred_now != latch_cred) {
+				if (latch_cred != LATCH_CRED_NONE) {
+					ultrawidelock_latch_session_close(&s_latch);
+				}
+				if (cred_now != LATCH_CRED_NONE) {
+					ultrawidelock_latch_session_open(&s_latch, cred_now);
+				}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
-			witness_link_session(session_now);
+				witness_link_session(cred_now != LATCH_CRED_NONE);
 #endif
+				latch_cred = cred_now;
+			}
 		}
 #endif
 		session_was_up = session_now;
@@ -825,7 +871,7 @@ int main(void)
 			 * for the rest of the walk-up rather than being killed
 			 * by one early refusal.
 			 */
-			if (!ultrawidelock_latch_may_passive_unlock(&s_latch, LATCH_CRED_ID, now,
+			if (!ultrawidelock_latch_may_passive_unlock(&s_latch, latch_cred, now,
 								   &latch_why)) {
 				ultrawidelock_approach_veto(&approach);
 				if ((now - side_deny_log_ms) >= SIDE_DENY_LOG_MS) {
@@ -842,7 +888,7 @@ int main(void)
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 			/* The door is open, so assume the phone goes in. This
 			 * is the pessimism the whole module rests on. */
-			latch_note_opened(now);
+			latch_note_opened(latch_cred, now);
 #endif
 			if (ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_BOLT_DRIVEN)) {
 				/* This CDK has no motor. BOLT_DRIVEN means the software grant
