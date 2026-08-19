@@ -47,6 +47,7 @@ void t_eqi_(const char *name, long got, long want, const char *file, int line);
 /* Module suites — one per file under test. */
 void test_ultrawidelock_advertising(void);
 void test_ultrawidelock_latch(void);
+void test_ultrawidelock_witness_core(void);
 void test_ultrawidelock_witness_msg(void);
 void test_ultrawidelock_witness_pick(void);
 void test_ultrawidelock_ble(void);

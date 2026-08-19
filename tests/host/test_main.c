@@ -65,6 +65,7 @@ int main(void)
 		{ "ultrawidelock_side", test_ultrawidelock_side },
 		{ "ultrawidelock_side_replay", test_ultrawidelock_side_replay },
 		{ "ultrawidelock_latch", test_ultrawidelock_latch },
+		{ "ultrawidelock_witness_core", test_ultrawidelock_witness_core },
 		{ "ultrawidelock_witness_msg", test_ultrawidelock_witness_msg },
 		{ "ultrawidelock_witness_pick", test_ultrawidelock_witness_pick },
 		{ "ultrawidelock_slam", test_ultrawidelock_slam },
