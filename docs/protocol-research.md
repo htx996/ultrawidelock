@@ -388,6 +388,108 @@ Source: `ccc-v4.txt`, the CCC Digital Key Technical Specification v4.0.0 (CCC-TS
 locally. Line numbers index that text extraction, not the PDF's pages. Quotes above were
 re-read at those lines rather than copied from notes.
 
+### The estimator's error budget: what can and cannot move a CCC distance (2026-08-21)
+
+Block-parity alternation (`second-anchor.md` stage B') produced the first authenticated
+DS-TWR distances a second anchor has ever computed from the phone's own round: 88 in one
+run, min 46 mm, median 159 mm, mean 335 mm, max 1323 mm. Those figures are the peer
+session's bench measurement, reported here rather than reproduced. What follows is the
+arithmetic that constrains their explanation. Two of the constraints refute claims made in
+this tree before they were checked; both refutations are marked below.
+
+**A constant cannot produce scatter.** A hard floor at 46 mm with a mean (335 mm) more than
+twice the median (159 mm) is a right-skewed distribution, and no additive offset produces
+skew: an offset slides a distribution and leaves its shape alone. So the run contains at
+least two phenomena -- whatever sets the centre, and whatever makes the tail -- and any
+single-cause explanation is wrong before its details are argued.
+
+**The estimator is exactly invariant to the reply/round split.** Write the six timestamps as
+`t1` poll TX, `t2` poll RX, `t3` response TX, `t4` response RX, `t5` final TX, `t6` final RX,
+and the four intervals as `R1 = t4-t1`, `r1 = t3-t2`, `R2 = t6-t3`, `r2 = t5-t4`
+(`ds_twr.h:34-37`). Now delay the responder's Response TX by `d`. The phone's Final TX is
+scheduled off its own POLL, so `t5` does not move, and the four intervals go
+`R1+d`, `r1+d`, `R2-d`, `r2-d`. The denominator is unchanged by inspection. The numerator
+changes by `d[(R2-R1) + (r1-r2)]`, and because a true flight time `T` makes `R1 = r1+2T` and
+`R2 = r2+2T`, that bracket is `(r2-r1) + (r1-r2) = 0`. The `d^2` terms cancel too, so the
+result is exact rather than first-order:
+
+    dtof/dd = 0, for every d and every reply asymmetry.
+
+Checked numerically against `ds_twr_tof_signed()`'s own formula at `T` = 21, 213 and 640
+ticks (0.1 m, 1 m, 3 m), at reply ratios 1:1, 1.66:1 and 41:1, and at `d` = 0, +-15872 and
++100000 ticks: the returned ToF is the input `T` in all 36 cases.
+
+*Correction.* This session earlier told the peer session that the sensitivity was
+`dtof = d * (r1-r2)/(r1+r2)`, and proposed logging the reply asymmetry as a diagnostic. That
+came from transposing the two relations above (`R1 = r2+2T` instead of `R1 = r1+2T`). The
+sensitivity is zero, so the diagnostic would measure nothing. The conclusion it was offered
+in support of -- that `CCC_RESP_ANT_DLY_HI32` cannot be biasing our own distance -- survives,
+and is now stronger than when it rested on a small-asymmetry argument.
+
+**So `CCC_RESP_ANT_DLY_HI32` is exonerated by construction, and the code comment beside it is
+right.** That constant (`ccc_shim_rx.c:657`, 62 hi32 = 15872 DTU ticks) moves the Response
+RMARKER earlier so that a peer computing a *single-sided* ToF -- which assumes the responder
+replied exactly one nominal slot after the POLL -- lands on the right answer. Its size is a
+receipt for that reading: 15872 ticks x 4.6917 mm is 74.5 m of round trip, so 37.2 m
+one-way, matching the "constant ~+37 m high" the comment records measuring. Our own DS-TWR
+consumes the measured `t3`, not the scheduled one, so by the invariance above it does not
+see the shift at all.
+
+**Clock offset cannot explain the spread either.** Let the responder's clock run at `1+e`
+relative to the initiator's, which scales the two intervals the responder measures (`r1`,
+`R2`) and leaves the two the initiator reports (`R1`, `r2`) alone. Then
+
+    tof = T * (2+2e)/(2+e) ~= T * (1 + e/2)
+
+so the error is `T*e/2`: proportional to the distance, independent of reply asymmetry, and
+tiny. At 1 m and 20 ppm it is 0.010 mm; at 3 m and 100 ppm, 0.150 mm; at 3 m and a
+preposterous 1000 ppm, 1.50 mm. Numerics agree with the closed form to four decimals. This
+immunity is the whole reason the asymmetric four-term estimator is the one CCC uses -- the
+symmetric variant would need the reply times balanced, which a phone's schedule never
+guarantees.
+
+**Why the anchor bench needs a 19 m calibration and the CCC path does not.** The two paths
+differ in one respect that fully accounts for it:
+
+| | anchor bench | CCC responder |
+|---|---|---|
+| TX timestamps in the estimator | **predicted** `(dx << 8)`, `anchor_twr.c:409,547` | **measured** `dwt_readtxtimestamp()`, `ccc_shim_rx.c:1611,1855` |
+| lumped correction | `- CONFIG_ANCHOR_ANT_DLY_DTU` = 4092 ticks = 19.2 m, `anchor_twr.c:636` | none |
+
+The anchor initiator must put `t5` inside the FINAL it is still transmitting, so it writes a
+predicted RMARKER; the prediction omits whatever the TX antenna-delay register contributes,
+and nothing in this tree programs that register (`anchor_twr.c:377-382`). The omission is a
+constant, and 4092 is that constant measured (2,229 samples, mean 1003.3 mm at a true 1000,
+`examples/zephyr/anchor/Kconfig:56-73`). The CCC path reads its `t3` back from the chip after
+the fact and the phone reports its own measured timestamps, so the same term is never
+introduced and must not be subtracted.
+
+*Correction.* This session earlier told the peer that the CCC path was "missing" the anchor
+path's antenna-delay subtraction and that it was worth fixing. Applying 4092 there would
+subtract 19.2 m from distances whose median is 159 mm. The empirical check refutes it
+without any of the above: an uncompensated 19.2 m offset cannot coexist with a 159 mm
+median. What remains genuinely uncompensated on the CCC path is the RF delay between the
+chip's timestamp reference plane and the antenna, at both ends -- a constant, positive, and
+of unknown size here.
+
+**What is left is the leading edge.** After the two constants are removed from suspicion, the
+tail still needs a cause, and first-path detection has the right signature: it is one-sided
+positive (the estimator can pick a later path than the true one, never an earlier one), which
+is exactly a hard floor with a right tail. `uwb_cirdiag.c` already reports the first-path
+index; stage A saw it steady at 735-744 (`second-anchor.md`), so a per-range log of it beside
+the distance would confirm or kill this in one run.
+
+**The experiment that separates centre from tail.** Tape the phone at 0.5 m, then at 2.0 m,
+and compare *medians only* -- the median is robust to the tail, which is the point. A
+difference equal to the true 1.5 m means the centre is calibrated and only the tail is left.
+A constant offset at both distances is a residual antenna delay. An offset that grows with
+distance is a clock or units error, not a delay.
+
+**Still unverified.** Whether two boards built at `NUM_RESPONDERS=1` / `RESPONDER_INDEX=0`
+and sharing one session's keys derive byte-identical per-block and per-slot material has not
+been checked in this tree. Block-parity alternation assumes they do, and the 88 authenticated
+ranges are consistent with it, but consistency across one satellite is not a proof for two.
+
 ### STS index and the key ladder
 
 ```
