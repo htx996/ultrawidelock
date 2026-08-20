@@ -26,6 +26,9 @@
 #include <ultrawidelock/reader.h>
 #include <ultrawidelock/uwb.h>
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
+#include "matter_client.h"
+#endif
 #include "matter_commission.h"
 #include "matter_fab_settings.h" /* matter_fab_erase, the Matter half of a reset */
 #endif
@@ -670,6 +673,19 @@ int main(void)
 			ultrawidelock_reader_notify_unlock(true); /* Reader Status -> Unsecured (animate) */
 			status_led_signal(STATUS_LED_UNLOCKED, true);
 			granted = true;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			/*
+			 * And the lock this one is bound to, if there is one.
+			 * Both symbols, matching the CMakeLists: the client's
+			 * routing hooks live in matter_commission.c, which is
+			 * the file CONFIG_ULTRAWIDELOCK_MATTER_BLE compiles.
+			 * AFTER the two lines above, which are this board's
+			 * entire idea of a bolt: whatever happens on the mesh
+			 * must not delay them, and matter_client_want() returns
+			 * without waiting for anything at all.
+			 */
+			matter_client_want();
+#endif
 			if (ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_BOLT_DRIVEN)) {
 				/* This CDK has no motor. BOLT_DRIVEN means the software grant
 				 * and its visible output have both been committed. */

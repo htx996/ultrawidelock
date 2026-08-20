@@ -1,0 +1,104 @@
+/* SPDX-License-Identifier: ISC */
+
+/**
+ * @file matter_client.h — the lock, telling another lock to open.
+ *
+ * modules/ultrawidelock_matter carries the pieces: a CASE initiator, a schedule
+ * with no clock in it, the Interaction Model's outbound direction, and the
+ * binding table that says who to talk to. Every one of them is a pure function
+ * over bytes, which is what makes them testable on a host and what leaves them
+ * with no caller. This file is the caller.
+ *
+ * It owns exactly three things the others cannot: the ONE client session, the
+ * clock, and the radio. Everything else it asks for.
+ *
+ *   main.c            a walk-up was granted   -> matter_client_want()
+ *   this file         resolve, Sigma1, Sigma3, TimedRequest, InvokeRequest
+ *   matter_commission.c  routes the answers back in through the two hooks below
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: retransmit. MRP runs on the sessions this
+ * node RESPONDS on, through matter_exchange, and none of it is wired up on the
+ * client's outbound path. A Sigma1 or an invoke that is dropped by the network
+ * is caught by MATTER_CLIENT_STEP_MS and retried as a whole attempt instead.
+ * That is coarser than MRP and it is the right trade here: the thing being
+ * retried is worth sending for about eight seconds (matter_client_sm.h), which
+ * is shorter than a full MRP schedule anyway.
+ */
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "matter_clusters.h"
+#include "matter_msg.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * Take the device state this client reads and start idle.
+ *
+ * @p info is borrowed for the life of the program: the binding table, the
+ * fabrics and the vendor id all live in it, and a copy would be a second
+ * binding list to keep in step with the one a controller writes.
+ */
+void matter_client_init(struct matter_device_info *info);
+
+/**
+ * An unlock was granted locally. Tell the bound lock, if there is one.
+ *
+ * Returns immediately and never blocks -- it is called from the walk-up path,
+ * after the local lock has already opened. A node with no binding, no fabric or
+ * no Thread network does nothing at all, which is the normal case.
+ */
+void matter_client_want(void);
+
+/**
+ * Is @p session_id the client's own secure session?
+ *
+ * Asked by matter_thread_on_datagram_owned() before it gives up on an encrypted
+ * datagram: a session this node INITIATED is in none of the tables that hold
+ * the ones it answered, so without this the peer's InvokeResponse is logged as
+ * "not ours" and dropped.
+ */
+bool matter_client_owns_session(uint16_t session_id);
+
+/**
+ * Handle one encrypted datagram on the client's session.
+ *
+ * @param msg the private datagram copy, decrypted in place.
+ * @return how many bytes of @p reply to send back, which is the next message of
+ *         the interaction -- an InvokeRequest after the peer's StatusResponse,
+ *         or an acknowledgement -- or 0.
+ */
+size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t cap);
+
+/**
+ * Handle one UNSECURED datagram that answers a handshake this node started.
+ *
+ * Sigma2 and the StatusReport that ends CASE both arrive here. The headers are
+ * passed already decoded because the caller decoded them to get this far, and
+ * decoding them twice is how the two copies drift.
+ *
+ * @return the framed Sigma3 in @p reply and its length, or 0. Returning 0 is
+ *         not an error -- the StatusReport that establishes the session has
+ *         nothing to answer with.
+ */
+size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
+				  const struct matter_msg_header *mh,
+				  const struct matter_proto_header *ph, uint8_t *reply, size_t cap);
+
+/**
+ * Is @p exchange_id the exchange this node opened for its handshake?
+ *
+ * The unsecured session has no session id to route by -- it is session 0 for
+ * everybody -- so the exchange id is the only thing that separates an answer to
+ * this node's Sigma1 from a Sigma1 somebody else is sending IT.
+ */
+bool matter_client_owns_exchange(uint16_t exchange_id);
+
+#ifdef __cplusplus
+}
+#endif

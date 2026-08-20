@@ -49,6 +49,10 @@
 #include "matter_attest.h"
 #include "matter_case.h"
 #include "matter_clusters.h"
+/* AFTER matter_clusters.h, which is where MATTER_FEATURE_CLIENT is defaulted. */
+#if MATTER_FEATURE_CLIENT
+#include "matter_client.h"
+#endif
 #include "matter_commission.h"
 #include "matter_exchange.h"
 #include "matter_fab_settings.h" /* the fabric table, across a reboot */
@@ -1613,6 +1617,18 @@ static void on_write_request(const struct matter_exchange_in *in)
 		return;
 	}
 	(void)matter_dl_attr_store(&s_info, prev_relock_s, prev_approach);
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * A binding lives in the fabric record, so persisting one is the whole
+	 * of matter_fab_store(). Keyed on the CLUSTER rather than on the write
+	 * status: the encoder above only mutates s_info for a write it accepted,
+	 * and re-storing an unchanged table costs one flash record against a
+	 * binding that is silently gone after the next reboot.
+	 */
+	if (wr.path.cluster == MATTER_CLUSTER_BINDING) {
+		(void)matter_fab_store(&s_info);
+	}
+#endif
 	if (resp_len == 0u) {
 		/* The write ran; the peer asked not to be told. */
 		LOG_INF("  write done, response suppressed");
@@ -3608,6 +3624,18 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 				s_thread_reply = NULL;
 				return s_thread_reply_len;
 			}
+#if MATTER_FEATURE_CLIENT
+			/*
+			 * A session this node INITIATED is in none of the tables
+			 * above: those hold the sessions it answered. Without
+			 * this the bound lock's InvokeResponse is reported as
+			 * somebody else's and dropped, and the unlock that was
+			 * sent looks from here exactly like one that was ignored.
+			 */
+			if (matter_client_owns_session(mh.session_id)) {
+				return matter_client_on_secure(msg, len, reply, cap);
+			}
+#endif
 			LOG_WRN("  encrypted for session 0x%04x, which is not ours",
 				(unsigned int)mh.session_id);
 			return 0u;
@@ -3700,6 +3728,23 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 		s_thread_reply = NULL;
 		return s_thread_reply_len;
 	}
+
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * The other half of a handshake THIS node started. Routed by exchange
+	 * id, because the unsecured session is session 0 for everybody and the
+	 * exchange is the only thing separating an answer to this node's Sigma1
+	 * from a Sigma1 somebody is sending it. Without this both the Sigma2 and
+	 * the StatusReport that ends CASE fall into the drop below, which is
+	 * where a client handshake dies with its evidence logged as a curiosity.
+	 */
+	if (ph.protocol_id == MATTER_PROTOCOL_SECURE_CHANNEL &&
+	    (ph.opcode == MATTER_OP_CASE_SIGMA2 || ph.opcode == MATTER_SC_OP_STATUS_REPORT) &&
+	    matter_client_owns_exchange(ph.exchange_id)) {
+		return matter_client_on_unsecured(msg + mh_len + ph_len, len - mh_len - ph_len, &mh,
+						  &ph, reply, cap);
+	}
+#endif
 
 	if (ph.protocol_id != MATTER_PROTOCOL_SECURE_CHANNEL ||
 	    (ph.opcode != MATTER_OP_CASE_SIGMA1 && ph.opcode != MATTER_OP_CASE_SIGMA3)) {
@@ -4098,6 +4143,13 @@ int matter_commission_init(void)
 	 * not survive -- the next commissioner reads what the last one set.
 	 */
 	(void)matter_dl_attr_load(&s_info);
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * AFTER matter_clusters_init, which zeroes the binding table this
+	 * borrows, and BEFORE matter_fab_load below, which fills it in.
+	 */
+	matter_client_init(&s_info);
+#endif
 	matter_ble_set_link_handler(on_link_reset);
 	matter_ble_set_tx_handler(matter_commission_ble_tx_complete);
 	matter_ble_set_msg_handler(on_message);

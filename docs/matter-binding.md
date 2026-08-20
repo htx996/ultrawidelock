@@ -124,6 +124,37 @@ If your target lock can be configured not to require a PIN for remote
 operation, that is the better configuration. Use the PIN only when the lock
 gives you no choice.
 
+## What it costs, and what it will not do
+
+Measured on the `thread+release+smp+lto` image, client off against client on:
+
+| | off | on | delta | free after |
+|---|---:|---:|---:|---:|
+| flash | 400,332 | 414,628 | **+14,296** | 19,036 |
+| RAM | 114,792 | 117,352 | **+2,560** | 13,720 |
+
+About 4 KB of the flash is OpenThread's DNS client, which a default build does
+not carry; the rest is the CASE initiator, the Interaction Model's outbound
+direction, the binding table and the driver. Off, the image is byte for byte
+the one that existed before any of it: the sources are not compiled and the
+two places that could not move into a source file of their own
+(`matter_clusters.c`, `matter_exchange.c`) preprocess away.
+
+Four limits, stated because none of them is visible from the outside:
+
+- **One target per unlock.** The table holds four and the first bound DoorLock
+  target that resolves is the one that gets the command. Two locks bound means
+  one of them opens.
+- **No MRP retransmission on the client's own messages.** A dropped Sigma1 or
+  invoke is caught by a five-second step timeout and retried as a whole
+  attempt, not by the reliable-messaging layer. The peer's messages *are*
+  acknowledged.
+- **A granted unlock expires after 8 seconds.** It is not retried until it
+  succeeds; see the last row of the table below for why.
+- **The binding survives a reboot, and dies with its fabric.** It is stored in
+  the same record as the operational identity, so removing the administrator
+  that wrote a binding removes the binding too.
+
 ## When it does not work
 
 | What you see | What it means | Fix |
