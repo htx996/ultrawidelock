@@ -305,8 +305,15 @@ static void publish_pair(int64_t now_ms)
 				s_miss_n = 1u;
 			}
 			if (s_miss_n >= 3u) {
-				LOG_INF("witness pick: label retired (address rotated)");
-				ultrawidelock_witness_pick_retire(&s_pick, hash);
+				uint32_t heir = ultrawidelock_witness_pick_succeed(
+					&s_pick, hash, &out->msg);
+
+				if (heir != 0u) {
+					LOG_INF("witness pick: label rotated, successor inherits");
+				} else {
+					LOG_INF("witness pick: label retired (address rotated)");
+					ultrawidelock_witness_pick_retire(&s_pick, hash);
+				}
 				s_miss_n = 0u;
 			}
 		} else {
@@ -516,11 +523,18 @@ void witness_link_session(bool up)
 		nonce_roll(now);
 		return;
 	}
-	/* Scoring belongs to one approach. Carrying it across approaches would
-	 * let a candidate proven by one walk-up decide a different one -- but a
-	 * session that flaps for seconds inside a single walk-up keeps its
-	 * evidence. */
-	if ((now - s_down_ms) > SESSION_CARRY_MS) {
+	/* UNPROVEN scoring belongs to one approach: carrying half-built score
+	 * across approaches would let a lucky candidate from one walk-up decide
+	 * a different one, so with nothing committed the table resets. A
+	 * COMMITTED pick names an address, and the address IS the phone until
+	 * it rotates -- retiring on rotation (or on both witnesses dropping it)
+	 * is what ends its authority, not the minutes between walk-ups. Without
+	 * this every approach re-derived the pick from scratch, which needs
+	 * exactly the trajectory a short walk-up does not have (measured
+	 * 2026-08-21: the pick took a full pacing pass to rebuild while the
+	 * grant it fed was over in 12 s). */
+	if ((now - s_down_ms) > SESSION_CARRY_MS &&
+	    !ultrawidelock_witness_pick_best(&s_pick, NULL)) {
 		ultrawidelock_witness_pick_reset(&s_pick);
 	}
 	nonce_roll(now);

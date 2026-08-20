@@ -206,6 +206,34 @@ void ultrawidelock_witness_pick_stats(const struct ultrawidelock_witness_pick *p
  */
 void ultrawidelock_witness_pick_retire(struct ultrawidelock_witness_pick *p, uint32_t hash24);
 
+/**
+ * Hand a vanished label's banked score to its rotation successor, if one is
+ * in @p msg. Call where retire would be called; fall back to retire when this
+ * returns 0.
+ *
+ * The successor of a rotated address is the same radio renamed: a label that
+ * FIRST appeared about when the old one vanished, at about the old label's
+ * loudness. Both conditions are required -- an established label heard
+ * alongside the old one is a different device no matter how close its level,
+ * so only newborns (few windows) within cluster_db of the old label's last
+ * level qualify, closest level winning. Without this every rotation (~15 min)
+ * kills the pick and the next walk-up must rebuild it from a trajectory a
+ * short approach does not have.
+ *
+ * A misfire inherits onto a newborn stranger at the same loudness; that costs
+ * a junk pick that decays by disagreement and retires like any other, and no
+ * unlock gate downstream (side classifier, latch, credential session) is
+ * bypassed. A pick was never an authority, only a pointer at which label's
+ * RSSI to classify.
+ *
+ * @param msg The OUTSIDE witness's current report.
+ * @return The successor's label, or 0 when none qualified (old label left
+ *         untouched so the caller can retire it).
+ */
+uint32_t ultrawidelock_witness_pick_succeed(struct ultrawidelock_witness_pick *p,
+					    uint32_t old_hash24,
+					    const struct ultrawidelock_witness_msg *msg);
+
 #ifdef __cplusplus
 }
 #endif
