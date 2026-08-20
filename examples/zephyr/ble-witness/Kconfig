@@ -25,4 +25,17 @@ config WITNESS_PORT
 	  Must match CONFIG_ULTRAWIDELOCK_WITNESS_PORT on the lock. Both ends
 	  bind it: reports go up, the challenge nonce comes down.
 
+config WITNESS_BOOT_TRACE
+	bool "Light an LED at each boot milestone (BENCH ONLY)"
+	default n
+	help
+	  The dongle has no debug connector, so firmware that dies before USB
+	  enumerates cannot be diagnosed at all: no console, no RTT, nothing to
+	  attach. This lights a different LED at PRE_KERNEL_1, POST_KERNEL,
+	  APPLICATION and main(), and never clears them, so whatever is still lit
+	  when the board stops says how far it got. See src/boot_trace.c.
+
+	  Off in anything deployed: it takes the LEDs the status indication owns,
+	  and two owners for one lamp is worse than no instrument.
+
 source "Kconfig.zephyr"
