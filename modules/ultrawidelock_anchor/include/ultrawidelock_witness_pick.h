@@ -65,8 +65,15 @@
 extern "C" {
 #endif
 
-/** Labels tracked at once. Above this the weakest-scoring is evicted. */
-#define ULTRAWIDELOCK_WITNESS_PICK_MAX 6u
+/**
+ * Labels tracked at once. Above this the least approach-like is evicted.
+ * Sized to hold one full report plus carryover: a table smaller than
+ * MSG_MAX_TUPLES is forced to evict on every report even when nothing
+ * changed, and in a room with more advertisers than slots that cycled the
+ * whole table window to window, so no label ever survived long enough to
+ * score (measured 2026-08-20).
+ */
+#define ULTRAWIDELOCK_WITNESS_PICK_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES + 4u)
 
 /** Scoring thresholds. */
 struct ultrawidelock_witness_pick_cfg {
@@ -122,6 +129,29 @@ struct ultrawidelock_witness_pick_cand {
 struct ultrawidelock_witness_pick {
 	struct ultrawidelock_witness_pick_cfg cfg;
 	struct ultrawidelock_witness_pick_cand cand[ULTRAWIDELOCK_WITNESS_PICK_MAX];
+	/** Used slots discarded to admit a new label; reset clears it. A busy
+	 *  room can cycle labels through the table faster than any of them can
+	 *  accumulate score, and only this counter makes that visible. */
+	uint32_t evictions;
+};
+
+/**
+ * Why the current state does or does not pick — the numbers behind
+ * ultrawidelock_witness_pick_best(), for diagnostics only.
+ */
+struct ultrawidelock_witness_pick_stats {
+	uint32_t best_hash24;
+	uint32_t evictions;
+	int8_t best_score;
+	/** Best cluster-aware rival score; SCORE floor (-32) when no rival. */
+	int8_t runner_score;
+	/** |last_dbm difference| between best and that rival; 0 when no rival.
+	 *  A rival tracking best at a gap just past cluster_db is one handset's
+	 *  second advertising set, not a second mover. */
+	int16_t runner_gap_db;
+	uint8_t best_windows;
+	uint8_t n_cand;
+	bool have;
 };
 
 /** Fill @p cfg with the documented defaults. */
@@ -157,6 +187,19 @@ void ultrawidelock_witness_pick_feed(struct ultrawidelock_witness_pick *p,
  *         min_margin over every other candidate.
  */
 bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p, uint32_t *hash24);
+
+/** The numbers ultrawidelock_witness_pick_best() decides on, for diagnostics. */
+void ultrawidelock_witness_pick_stats(const struct ultrawidelock_witness_pick *p,
+				      struct ultrawidelock_witness_pick_stats *st);
+
+/**
+ * Forget one label. For when the picked label stops appearing in the
+ * witnesses' reports: the handset rotated its advertising address, and the
+ * label is now a ghost whose banked score would otherwise outrank -- and so
+ * block -- the same handset's new label for the rest of the approach. Only the
+ * caller can see the reports, so only the caller can make this call.
+ */
+void ultrawidelock_witness_pick_retire(struct ultrawidelock_witness_pick *p, uint32_t hash24);
 
 #ifdef __cplusplus
 }
