@@ -96,6 +96,14 @@ distance, calibrate `ANT_DLY`, then record jitter.
 Pass: `last_mm` stable within tolerance at the taped distance across a
 report interval, raw vs median divergence understood.
 
+PASSED 2026-08-21, first run, stock `ANT_DLY_DTU=4092`: at a taped 1.000 m,
+400 samples read mean 959.5 mm / median 957 / sigma 20.5, ~95% completion at
+10 Hz, first-path index steady at 735-744. Sigma matches the calibration
+reference run, so: `tol_mm` = 62 (3 sigma), `deadband_mm` = 41 (2 sigma),
+bench values pending the install geometry. The -40 mm bias is the tape's
+reference point, not the radio's, and is deliberately not fitted -- fusion
+consumes the difference of two links and the constant cancels.
+
 Bench cost: flashing the anchor image replaces the CDK's lock image.
 Restore with `make flash LATCH=1` (never flash-erase), then wait out the
 phone's reconnect before judging anything.
