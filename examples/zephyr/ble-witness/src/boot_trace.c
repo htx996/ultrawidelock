@@ -137,15 +137,15 @@ static int mark_frame(void)
 {
 	lamp_rgb(C_OFF);
 	spin_ms(400);
-	lamp_rgb(C_BLUE);
-	spin_ms(700);
-	lamp_rgb(C_OFF);
-	spin_ms(400);
 	lamp_rgb(C_RED);
 	spin_ms(700);
 	lamp_rgb(C_OFF);
 	spin_ms(400);
 	lamp_rgb(C_GREEN);
+	spin_ms(700);
+	lamp_rgb(C_OFF);
+	spin_ms(400);
+	lamp_rgb(C_BLUE);
 	spin_ms(700);
 	lamp_rgb(C_OFF);
 	spin_ms(700);

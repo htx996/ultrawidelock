@@ -143,3 +143,44 @@ uint8_t ultrawidelock_witness_core_summarize(struct ultrawidelock_witness_core *
 	msg->n_tuples = out;
 	return out;
 }
+
+bool ultrawidelock_witness_core_include(struct ultrawidelock_witness_core *c,
+					struct ultrawidelock_witness_msg *msg, uint32_t hash24)
+{
+	struct ultrawidelock_witness_core_slot *found = NULL;
+	struct ultrawidelock_witness_tuple *t;
+	uint32_t h;
+
+	if (c == NULL || msg == NULL) {
+		return false;
+	}
+	h = hash24 & 0x00FFFFFFu;
+	if (h == 0u) {
+		return false;
+	}
+	if (ultrawidelock_witness_msg_find(msg, h) != NULL) {
+		return true; /* made the cut on its own */
+	}
+	/* summarize() marks the tuples it consumed unused, so anything still
+	 * used here is exactly what missed the cut. */
+	for (size_t i = 0; i < ULTRAWIDELOCK_WITNESS_CORE_SLOTS; i++) {
+		if (c->slot[i].used && c->slot[i].hash24 == h) {
+			found = &c->slot[i];
+			break;
+		}
+	}
+	if (found == NULL || found->n == 0u) {
+		return false; /* not heard this window; nothing to include */
+	}
+	if (msg->n_tuples < ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES) {
+		t = &msg->tuples[msg->n_tuples];
+		msg->n_tuples++;
+	} else {
+		t = &msg->tuples[ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES - 1u];
+	}
+	t->hash24 = found->hash24;
+	t->mean_dbm = (int8_t)slot_mean(found);
+	t->n_pkts = (found->n > 255u) ? 255u : (uint8_t)found->n;
+	found->used = false;
+	return true;
+}
