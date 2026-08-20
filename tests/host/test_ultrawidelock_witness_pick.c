@@ -181,7 +181,7 @@ static void test_crowded_room_still_picks_the_mover(void)
 		m.tuples[0].mean_dbm = (int8_t)(-84 + i * 8);
 		m.tuples[0].n_pkts = 6u;
 		for (uint8_t j = 1; j < ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES; j++) {
-			uint32_t k = ((uint32_t)i * 7u + j) % 21u;
+			uint32_t k = ((uint32_t)i * 7u + j) % 41u;
 
 			m.tuples[j].hash24 = 0x00C00000u + k;
 			m.tuples[j].mean_dbm = (int8_t)(-70 - (int32_t)(k % 5u));
