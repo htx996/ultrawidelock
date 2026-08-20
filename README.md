@@ -173,6 +173,10 @@ esp-matter `93b1680`.
   a forced door from the impact latch, a door left ajar from the swing angle.
   Anchor builds only, and no controller has been seen rendering one yet.
   [Door Lock events](docs/matter-door-lock-events.md).
+- **A Matter client**, so a walk-up at this lock can open a *second* Matter
+  lock directly, with no hub automation in the path: CASE as initiator, the
+  Binding cluster, and a `chip-tool` helper that sets up both ends.
+  Off by default. [Unlocking another lock](docs/matter-binding.md).
 - **A capture path for the classifier**: one `[FEAT]` CSV row per ranging block
   over RTT, carrying the first-path index and peak the model cannot currently
   see. Data collection only, no decision reads it.
