@@ -17,9 +17,11 @@ WITNESS_PRISTINE := $(if $(PRISTINE),always,auto)
 
 ##@ BLE witness  ·  one image, role provisioned at install
 ## witness-build: build the witness  -> build/witness-<board>
+##   TRACE=1 adds the boot-milestone LEDs for a dongle that will not start
 witness-build:
 	@$(CDK_RUN) build -p $(WITNESS_PRISTINE) -b $(WITNESS_BOARD) \
-	  -d $(WITNESS_BUILD) $(WITNESS_APP)
+	  -d $(WITNESS_BUILD) $(WITNESS_APP) \
+	  $(if $(TRACE),-- -DCONFIG_WITNESS_BOOT_TRACE=y)
 
 # The dongle has no debug probe. Its image is linked at 0x1000 behind Nordic's
 # factory USB bootloader (CONFIG_FLASH_LOAD_OFFSET=0x1000, VERIFIED in the

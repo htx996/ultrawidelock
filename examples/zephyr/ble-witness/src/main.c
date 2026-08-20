@@ -52,6 +52,10 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/printk.h>
 
+#if IS_ENABLED(CONFIG_WITNESS_BOOT_TRACE)
+void witness_boot_trace_main(void); /* src/boot_trace.c, bench only */
+#endif
+
 #include <openthread/dataset.h>
 #include <openthread/instance.h>
 #include <openthread/link.h>
@@ -674,6 +678,12 @@ int main(void)
 	};
 	int64_t next_window;
 
+#if IS_ENABLED(CONFIG_WITNESS_BOOT_TRACE)
+	/* Before anything else in main, and before led_init() takes the same
+	 * pins: the question this answers is whether main was reached at all. */
+	witness_boot_trace_main();
+	k_sleep(K_SECONDS(3)); /* long enough to read the pattern by eye */
+#endif
 	k_mutex_init(&s_core_lock);
 	led_init();
 	console_init_uart(DEVICE_DT_GET(DT_CHOSEN(zephyr_console)));
