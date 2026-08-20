@@ -181,14 +181,25 @@ administrator, because Apple Home will not write a binding and no ecosystem
 lets a device bind itself. Adding one is the AdministratorCommissioning path:
 open a window from the first ecosystem, then commission from the second.
 
-**This is currently the weak link, and it is not a binding problem.** A user
-reported on 2026-08-21 that adding this lock to Home Assistant from an open
-Apple Home pairing window ends in "pairing failed", repeatably. The cause is
-not known and is not reproduced here. It is upstream of every command on this
-page: with no second administrator there is nobody to write a binding.
+**If that ends in "pairing failed", check the build date before anything
+else.** Adding a non-Apple administrator needs two things that this firmware
+did not always have, and without either one the attempt fails exactly that way:
 
-If you hit it, a capture of the RTT console (`make monitor`) across one failed
-attempt is the thing that identifies it, and it is worth filing.
+| Landed | What it added |
+|---|---|
+| 2026-08-06 | `_matterc._udp` published while a window is open, with the `_S`/`_L` discriminator subtypes. Every non-Apple controller browses DNS-SD and gives up when nothing answers. |
+| 2026-08-07 | PASE answered over IP as well as over BLE. Before this a controller could resolve the node, match the discriminator, open an exchange, and then time out waiting for a `PBKDFParamResponse` the node had decided not to send. |
+
+Apple Home needs neither, because it commissions over BLE, which this node has
+always advertised. So a build from before 2026-08-07 pairs perfectly with Apple
+Home and cannot be added to Home Assistant at all. That is the single most
+likely explanation for a "pairing failed" report, and it is a re-flash rather
+than a bug.
+
+If you are on a build newer than that and it still fails, that is worth filing,
+and the thing that identifies it is a capture of the RTT console
+(`make monitor`) across one failed attempt: where it stops (PASE, AddNOC, or
+operational discovery and CASE) picks out which third of the path is broken.
 
 ## When it does not work
 
