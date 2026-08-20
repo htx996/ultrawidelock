@@ -36,7 +36,9 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
   # byte the image that existed before it -- and a preprocessor guard inside a
   # compiled file cannot promise that as plainly as not compiling the file.
   if(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
-    zephyr_library_sources(${SRC}/matter_case_client.c)
+    zephyr_library_sources(
+      ${SRC}/matter_case_client.c
+      ${SRC}/matter_client_sm.c)
   endif()
 
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)

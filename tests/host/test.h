@@ -102,6 +102,7 @@ void test_matter_addnoc(void);
 void test_matter_network(void);
 void test_matter_case(void);
 void test_matter_case_client(void);
+void test_matter_client_sm(void);
 void test_matter_clusters(void);
 void test_ultrawidelock_ml(void);
 void test_ultrawidelock_port(void);
