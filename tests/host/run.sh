@@ -139,14 +139,19 @@ stage_nfc_ecp() {
 stage_cdk_port() {
 	# shellcheck disable=SC2086
 	"${CC:-cc}" -std=c11 -O1 -Wall -Wextra $gcc_parity $san_flags \
-		-DCONFIG_LOG_DEFAULT_LEVEL=3 \
+		-DCONFIG_LOG_DEFAULT_LEVEL=3 -DCONFIG_ULTRAWIDELOCK_PROV_CLEAR_ON_BOOT=0 \
 		-I"$HOSTD" -I"$HOSTD/settingsfake" -I"$HOSTD/logfake" \
-		-I"$ROOT/modules/ultrawidelock_matter/include" -I"$ROOT/ports/zephyr/store" \
+		-I"$ROOT/modules/ultrawidelock_matter/include" \
+		-I"$ROOT/modules/ultrawidelock_cred/include" -I"$ROOT/ports/zephyr/store" \
 		"$HOSTD/test.c" "$HOSTD/test_matter_fab_settings.c" \
 		"$HOSTD/settingsfake/settingsfake.c" \
 		"$ROOT/ports/zephyr/store/matter_fab_settings.c" \
+		"$ROOT/ports/zephyr/store/ultrawidelock_prov_settings.c" \
+		"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prov.c" \
 		-o "$ROOT/build/host_test_cdk"
 	"$ROOT/build/host_test_cdk"
+	"$ROOT/tests/ports/zephyr/matter_srp_lifecycle_check.sh"
+	"$ROOT/tests/ports/zephyr/ble_link_liveness_check.sh"
 }
 
 # 5) Delta update, both halves, over the ultrawidelock_flash host backend (RAM
@@ -156,10 +161,17 @@ stage_cdk_port() {
 #    zcbor/mcumgr doubles in smpfake/. CONFIG_MCUMGR_SMP_LEGACY_RC_BEHAVIOUR is
 #    on here so the explicit "rc" key a legacy client expects is compiled and
 #    checked.
+#    _DEFAULT_SOURCE because dfu_receiver.c includes ultrawidelock_port.h, whose
+#    ultrawidelock_uptime_us() names CLOCK_MONOTONIC. Under -std=c11 glibc hides
+#    that behind a feature-test macro, so the stage does not compile on Linux at
+#    all -- while Darwin exposes it unconditionally and every macOS run stays
+#    green. A feature macro cannot be set from the header, because it has to
+#    precede the first libc include; it belongs on the compile line, which is
+#    what stage_uwb_driver above already does for the same reason.
 stage_delta_update() {
 	# shellcheck disable=SC2086
 	"${CC:-cc}" -std=c11 -O1 -w $gcc_parity $san_flags \
-		-DULTRAWIDELOCK_PORT_HOST -DCONFIG_ULTRAWIDELOCK_DFU_SMP_IMG=1 -DCONFIG_ULTRAWIDELOCK_DFU_APPLIER_CHUNK=256 \
+		-DULTRAWIDELOCK_PORT_HOST -D_DEFAULT_SOURCE -DCONFIG_ULTRAWIDELOCK_DFU_SMP_IMG=1 -DCONFIG_ULTRAWIDELOCK_DFU_APPLIER_CHUNK=256 \
 		-DCONFIG_MCUMGR_GRP_OS_RESET_HOOK=1 -DCONFIG_MCUMGR_GRP_ENUM_DETAILS_NAME=1 \
 		-DCONFIG_MCUMGR_SMP_LEGACY_RC_BEHAVIOUR=1 \
 		-I"$HOSTD" -I"$HOSTD/dfufake" -I"$HOSTD/smpfake" -I"$HOSTD/logfake" \

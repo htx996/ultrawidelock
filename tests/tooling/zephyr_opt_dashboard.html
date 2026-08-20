@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>DWM3001CDK optimization dashboard</title>
+  <style>/*__DASHBOARD_CSS__*/</style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to dashboard</a>
+  <div class="page-shell">
+    <header class="masthead">
+      <div class="brand-lockup" aria-label="UltraWideLock optimization lab">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>ULTRAWIDELOCK <b>/ OPT LAB</b></span>
+      </div>
+      <nav aria-label="Dashboard sections">
+        <a href="#memory">Memory</a>
+        <a href="#latency">Latency</a>
+        <a href="#runtime">Runtime</a>
+        <a href="#evidence">Evidence</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <p class="eyebrow">DWM3001CDK · ZEPHYR PERFORMANCE READOUT</p>
+          <h1 id="page-title">Know what moved.<br><span>Know what is real.</span></h1>
+          <p class="lede" id="verdict-detail"></p>
+          <div class="run-meta" id="run-meta"></div>
+        </div>
+        <aside class="verdict-panel" aria-label="Collection verdict">
+          <span class="status-pill" id="verdict-pill"></span>
+          <p class="panel-kicker">NEXT EVIDENCE</p>
+          <p class="next-action" id="next-action"></p>
+        </aside>
+      </section>
+
+      <section class="metric-strip" id="metric-strip" aria-label="Headline metrics"></section>
+
+      <section class="section-block" id="memory" aria-labelledby="memory-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">01 / STATIC FOOTPRINT</p>
+            <h2 id="memory-title">Flash &amp; RAM</h2>
+          </div>
+          <p class="section-note" id="memory-note"></p>
+        </div>
+        <div id="memory-content"></div>
+      </section>
+
+      <section class="section-block" id="latency" aria-labelledby="latency-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">02 / WALK-UP PIPELINE</p>
+            <h2 id="latency-title">Latency anatomy</h2>
+          </div>
+          <div class="segmented" id="latency-mode" role="group" aria-label="Latency chart measure">
+            <button type="button" data-mode="duration" aria-pressed="true">Phase cost</button>
+            <button type="button" data-mode="offset" aria-pressed="false">Offset</button>
+          </div>
+        </div>
+        <div id="latency-content"></div>
+      </section>
+
+      <section class="section-block" id="runtime" aria-labelledby="runtime-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">03 / ON-TARGET SIGNALS</p>
+            <h2 id="runtime-title">Runtime pressure</h2>
+          </div>
+          <p class="section-note" id="runtime-note"></p>
+        </div>
+        <div id="runtime-content"></div>
+      </section>
+
+      <section class="section-block evidence-section" id="evidence" aria-labelledby="evidence-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">04 / PROVENANCE</p>
+            <h2 id="evidence-title">Evidence ledger</h2>
+          </div>
+          <p class="section-note">Missing is not zero. Failed is not unavailable.</p>
+        </div>
+        <div class="evidence-grid" id="evidence-grid"></div>
+        <div class="artifact-row" id="artifact-row"></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>DWM3001CDK · LOCAL ANALYSIS ARTIFACT</span>
+      <span id="footer-stamp"></span>
+    </footer>
+  </div>
+
+  <script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
+  <script>/*__DASHBOARD_JS__*/</script>
+</body>
+</html>

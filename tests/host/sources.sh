@@ -205,7 +205,13 @@ INCS=(
 # -std=c11 without it (feature_test_macros(7)); Darwin headers ignore it.
 # ULTRAWIDELOCK_PORT_HOST selects the libc backend in ultrawidelock_port.h / ultrawidelock_log.h; without it
 # those headers #error rather than guess a platform.
-DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST)
+# MATTER_FEATURE_DL_ALARMS: the DoorLockAlarm event, which the firmware compiles
+# in only for the anchor build (modules/ultrawidelock_matter/CMakeLists.txt). The
+# host suite always builds it, because the event's encoding is what these tests
+# exist to pin down and the alternative is a feature whose only proof is on a
+# board. The LockOperation path is compiled identically either way, so the
+# suites covering it still describe the default image.
+DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1)
 
 # PY — the interpreter the python-side suites run under: the repo-local .venv
 # when one exists, else the system python3.

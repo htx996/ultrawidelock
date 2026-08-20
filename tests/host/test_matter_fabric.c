@@ -464,6 +464,34 @@ void test_matter_addnoc(void)
 		memset(&dev.attempt, 0, sizeof(dev.attempt));
 		matter_clusters_failsafe_expire(&dev);
 		T_EQ("a completed fabric survives", dev.fabrics[0].index, 1);
+
+		/* A later administrator starts with fabric 1 committed, adds fabric
+		 * 2, then disappears. The transaction owns only the newcomer's slot,
+		 * so the committed slot survives the rollback. */
+		memset(&dev.attempt, 0, sizeof(dev.attempt));
+		dev.attempt.active = true;
+		dev.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		dev.have_op_key = true;
+		memcpy(dev.op_pub, k_node01_pubkey, sizeof(k_node01_pubkey));
+		dev.fabrics[1].have_root = true;
+		memcpy(dev.fabrics[1].root_public_key, dev.fabrics[0].root_public_key,
+		       sizeof(dev.fabrics[1].root_public_key));
+		/* The root reached slot 2 inside this transaction, which is what
+		 * makes it the pending slot AddNOC fills. */
+		dev.attempt.owned_slots = MATTER_FABRIC_SLOT_BIT(1u);
+		T_EQ("the later AddNOC runs", srv.command(srv.ctx, &inv, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("the later fabric is accepted", dev.last_noc_status, MATTER_NOC_STATUS_OK);
+		T_EQ("in slot 2", dev.fabrics[1].index, 2);
+		matter_clusters_failsafe_expire(&dev);
+		T_EQ("the completed fabric still survives", dev.fabrics[0].index, 1);
+		T_EQ("the provisional fabric is removed", dev.fabrics[1].index, 0);
+		T_OK("the later fail-safe is disarmed", !dev.attempt.active);
+		/* Keep this scenario independent of the wire-format fixtures below,
+		 * which exercise AddNOC with an armed fail-safe and a pending key. */
+		dev.attempt.active = true;
+		dev.have_op_key = true;
+		memcpy(dev.op_pub, k_node01_pubkey, sizeof(k_node01_pubkey));
 	}
 
 	saved_dev = dev;

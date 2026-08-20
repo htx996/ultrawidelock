@@ -831,6 +831,286 @@ void test_approach(void)
 		T_OK("vote.widened.unlock.still.fires", !ultrawidelock_approach_locked(&ap));
 	}
 
+	t_group("per-carry-mode widening (BodyCal)");
+	{
+		struct ultrawidelock_approach ap;
+		struct ultrawidelock_approach_cfg cfg;
+		const float conf = 9.0f; /* comfortably over nlos_conf_min */
+
+		/*
+		 * THE BACKWARD-COMPATIBILITY CONTRACT, first, because everything below
+		 * is only safe if this holds: an untouched table is all zeros, every
+		 * zero entry means "use nlos_widen_cm", and a binary feed_channel()
+		 * caller therefore behaves exactly as it did before the table existed.
+		 * The single-number group above is the rest of that assertion; this
+		 * pins the two feeds to the same answer on the same stream.
+		 */
+		ultrawidelock_approach_defaults(&cfg);
+		cfg.nlos_widen_cm = 80;
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_HAND,
+								conf);
+		}
+		T_OK("carry.hand.matches.binary.obstructed", !ultrawidelock_approach_locked(&ap));
+		/* Read the widening back off ap.cfg, not cfg: 100 + 80 lands exactly on
+		 * approach_cm, so init clamps it to 79 and an assertion written against
+		 * the requested 80 would be testing the clamp by accident. */
+		T_EQ("carry.empty.table.falls.through.to.single.number",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2400),
+		     (long)(ap.cfg.unlock_cm + ap.cfg.nlos_widen_cm));
+
+		/* CLEAR through the carry feed is the clear stream: no widening, and
+		 * the control that stops the assertion above passing for the wrong
+		 * reason. */
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_CLEAR,
+								conf);
+		}
+		T_OK("carry.clear.stays.locked.at.150", ultrawidelock_approach_locked(&ap));
+		T_EQ("carry.clear.selects.no.widening",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2400),
+		     (long)cfg.unlock_cm);
+
+		/*
+		 * THE POINT OF THE WHOLE TABLE. Same range, same confidence, same
+		 * majority -- only the carry class differs, and the threshold that
+		 * results differs with it. A bag is widened to 100 + 70 = 170 and
+		 * opens at 150; a pocket is widened to 100 + 20 = 120 and does not.
+		 * Neither number is measured; they are chosen here to be far apart
+		 * enough that a table that was silently ignored could not pass both.
+		 */
+		ultrawidelock_approach_defaults(&cfg);
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_POCKET] = 20;
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_BAG] = 70;
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+								conf);
+		}
+		T_EQ("carry.bag.selects.its.own.entry",
+		     (long)ultrawidelock_approach_nlos_carry(&ap, 2400),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_BAG);
+		T_EQ("carry.bag.widens.by.70",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2400),
+		     (long)(cfg.unlock_cm + 70));
+		T_OK("carry.bag.unlocks.at.150", !ultrawidelock_approach_locked(&ap));
+
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_POCKET,
+								conf);
+		}
+		T_EQ("carry.pocket.selects.its.own.entry",
+		     (long)ultrawidelock_approach_nlos_carry(&ap, 2400),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_POCKET);
+		T_EQ("carry.pocket.widens.by.20",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2400),
+		     (long)(cfg.unlock_cm + 20));
+		T_OK("carry.pocket.stays.locked.at.150", ultrawidelock_approach_locked(&ap));
+
+		/*
+		 * A class with no entry of its own and no nlos_widen_cm to fall back on
+		 * widens nothing. HAND is untouched in the config above, so an
+		 * in-hand-obstructed window gets 100 + 0 even while pocket and bag are
+		 * tuned -- the table is per class, not a blanket.
+		 */
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_HAND,
+								conf);
+		}
+		T_EQ("carry.untuned.class.widens.nothing",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2400),
+		     (long)cfg.unlock_cm);
+		T_OK("carry.untuned.class.stays.locked", ultrawidelock_approach_locked(&ap));
+
+		/*
+		 * THE SAME MAJORITY RULE, not a second one. Two bag samples out of five
+		 * is not NLOS_VOTES_N, so nothing widens even though the bag entry is
+		 * generous -- a per-class widening must not be reachable through a
+		 * minority the binary widening would have refused.
+		 */
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(
+				&ap, 1000 + i * 200, 150,
+				(i % 5) < 2 ? ULTRAWIDELOCK_APPROACH_CARRY_BAG
+					    : ULTRAWIDELOCK_APPROACH_CARRY_CLEAR,
+				conf);
+		}
+		T_OK("carry.minority.does.not.widen", ultrawidelock_approach_locked(&ap));
+		T_EQ("carry.minority.reports.clear", (long)ultrawidelock_approach_nlos_carry(&ap, 2400),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_CLEAR);
+
+		/*
+		 * THE SAME CONFIDENCE FLOOR, not a second one. A bag below
+		 * nlos_conf_min votes clear and its class goes with it: an unconfident
+		 * guess at WHICH geometry is worth less than the unconfident guess that
+		 * there was one, and that one is already refused.
+		 */
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+								cfg.nlos_conf_min - 0.01f);
+		}
+		T_EQ("carry.unconfident.bag.widens.nothing",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2400),
+		     (long)cfg.unlock_cm);
+		T_OK("carry.unconfident.bag.stays.locked", ultrawidelock_approach_locked(&ap));
+
+		/*
+		 * THE SAME STALENESS HORIZON, not a second one. Votes age with the
+		 * median entries they share timestamps with, so a bag majority earned
+		 * before a pocket trust hole must stop widening once it outlives
+		 * MEDIAN_STALE_MS -- the permission-adding-on-stale-evidence shape the
+		 * single widening was already fixed for.
+		 */
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 5; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+								conf);
+		}
+		T_EQ("carry.fresh.bag.majority.widens",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 1800),
+		     (long)(cfg.unlock_cm + 70));
+		T_EQ("carry.stale.bag.majority.does.not",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 4400),
+		     (long)cfg.unlock_cm);
+		T_EQ("carry.stale.bag.reports.clear",
+		     (long)ultrawidelock_approach_nlos_carry(&ap, 4400),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_CLEAR);
+
+		/*
+		 * DISENGAGE BY WASH, the other direction: five bag samples then five
+		 * pocket ones, all fresh. The window turns over and the threshold
+		 * follows the class rather than latching on the first one that won.
+		 */
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 5; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+								conf);
+		}
+		T_EQ("carry.wash.starts.at.bag", (long)ultrawidelock_approach_nlos_carry(&ap, 1800),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_BAG);
+		for (int i = 0; i < 5; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 2000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_POCKET,
+								conf);
+		}
+		T_EQ("carry.wash.ends.at.pocket", (long)ultrawidelock_approach_nlos_carry(&ap, 2800),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_POCKET);
+		T_EQ("carry.wash.moves.the.threshold.inward",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 2800),
+		     (long)(cfg.unlock_cm + 20));
+
+		/*
+		 * TIES BREAK TOWARD THE SMALLEST WIDENING. Two pocket, two bag and one
+		 * hand is five obstructed votes -- comfortably past NLOS_VOTES_N, so
+		 * the window IS blocked -- with pocket and bag level at two each and
+		 * hand a non-contender at one.
+		 *
+		 * THE ENTRIES ARE DELIBERATELY THE OTHER WAY ROUND HERE, generous
+		 * pocket and strict bag, and that is what makes this test discriminate.
+		 * The plurality scan keeps the first class it saw on a tie, so with the
+		 * strict class at the LOWER enum index a plain enum-order rule and the
+		 * smallest-widening rule agree and the test proves nothing. Putting the
+		 * strict entry on bag -- the HIGHER index -- separates them: enum order
+		 * gives pocket's 130 and opens at 150, the shipped rule gives bag's 120
+		 * and does not. Verified by mutation: replacing the tie-break with a
+		 * constant false fails the two assertions below.
+		 */
+		ultrawidelock_approach_defaults(&cfg);
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_POCKET] = 70;
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_BAG] = 20;
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		{
+			static const enum ultrawidelock_approach_carry split[5] = {
+				ULTRAWIDELOCK_APPROACH_CARRY_POCKET,
+				ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+				ULTRAWIDELOCK_APPROACH_CARRY_POCKET,
+				ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+				ULTRAWIDELOCK_APPROACH_CARRY_HAND,
+			};
+			for (int i = 0; i < 5; i++) {
+				(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+									split[i], conf);
+			}
+		}
+		T_OK("carry.split.window.is.still.blocked",
+		     ultrawidelock_approach_nlos_blocked(&ap, 1800));
+		T_EQ("carry.tie.picks.the.stricter.class",
+		     (long)ultrawidelock_approach_nlos_carry(&ap, 1800),
+		     (long)ULTRAWIDELOCK_APPROACH_CARRY_BAG);
+		T_EQ("carry.tie.breaks.to.the.smallest.widening",
+		     (long)ultrawidelock_approach_effective_unlock_cm(&ap, 1800),
+		     (long)(cfg.unlock_cm + 20));
+		T_OK("carry.tie.stays.locked.at.150", ultrawidelock_approach_locked(&ap));
+
+		/*
+		 * PER-ENTRY CLAMPS, identical to nlos_widen_cm's. unlock_cm 100 and
+		 * approach_cm 180 leave 79 cm, so a 500 cm bag entry comes back as 79
+		 * -- otherwise the table would be a way to route around the clamp that
+		 * stops the trajectory gate arming and firing on the same sample.
+		 * Negatives clamp to 0 for the same reason they do on the single
+		 * number: stricter-only-while-obstructed is not a thing a caller wants.
+		 */
+		ultrawidelock_approach_defaults(&cfg);
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_BAG] = 500;
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_POCKET] = -50;
+		ultrawidelock_approach_init(&ap, &cfg);
+		T_EQ("carry.entry.clamped.under.approach_cm",
+		     (long)ap.cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_BAG], 79L);
+		T_EQ("carry.negative.entry.clamped.to.zero",
+		     (long)ap.cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_POCKET], 0L);
+
+		/* Every entry off by default, exactly as the single number is. */
+		ultrawidelock_approach_defaults(&cfg);
+		for (int c = 0; c < ULTRAWIDELOCK_APPROACH_CARRY_N; c++) {
+			T_EQ("carry.table.is.off.by.default", (long)cfg.nlos_widen_class_cm[c], 0L);
+		}
+
+		/*
+		 * The silence rule reads the SAME widened radius the fire decision did.
+		 * A bag-carried phone resting at the door reports 150; against the
+		 * unwidened 100 that is a departure, and relocking under the owner it
+		 * just opened for is the failure this shares with the single-number
+		 * case above.
+		 */
+		ultrawidelock_approach_defaults(&cfg);
+		cfg.nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_BAG] = 70;
+		ultrawidelock_approach_init(&ap, &cfg);
+		ultrawidelock_approach_session_up(&ap);
+		for (int i = 0; i < 8; i++) {
+			(void)ultrawidelock_approach_feed_carry(&ap, 1000 + i * 200, 150,
+								ULTRAWIDELOCK_APPROACH_CARRY_BAG,
+								conf);
+		}
+		T_OK("carry.open.before.the.silence", !ultrawidelock_approach_locked(&ap));
+		T_EQ("carry.silence.inside.the.widened.radius.does.not.relock",
+		     (long)ultrawidelock_approach_tick(&ap, 2600 + cfg.far_silence_ms + 1),
+		     (long)ULTRAWIDELOCK_APPROACH_HOLD);
+	}
+
 	t_group("prediction vs ranging holes (2026-08-07 walk)");
 	{
 		struct walk w;

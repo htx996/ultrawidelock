@@ -3193,8 +3193,8 @@ int matter_clusters_resume(struct matter_device_info *info)
 }
 
 /**
- * Clear all fabric state and credentials when the fail-safe window expires before commissioning
- * completes, wiping each fabric's private key and intermediate certificate.
+ * Roll back fabric state created after the fail-safe was armed, wiping every
+ * provisional fabric's private key and intermediate certificate.
  */
 void matter_clusters_failsafe_expire(struct matter_device_info *info)
 {
@@ -3205,12 +3205,10 @@ void matter_clusters_failsafe_expire(struct matter_device_info *info)
 	}
 
 	/*
-	 * Every fabric, and the keys their NOCs certify. Wiped rather than
-	 * cleared by index alone: each holds a private key that outlived the
-	 * only thing that was going to use it.
-	 *
-	 * All of them, because the fail-safe covers the whole window and a
-	 * commissioner that abandoned it mid-way may have created more than one.
+	 * Only fabric slots created inside this fail-safe. Slots captured when it
+	 * was armed belong to completed commissioning transactions and must
+	 * survive a later administrator abandoning its own AddNOC. Wipe each new
+	 * slot in full because it holds the private key its NOC certifies.
 	 */
 	for (slot = 0u; slot < MATTER_SUPPORTED_FABRICS; slot++) {
 		if ((info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u) {
@@ -3384,6 +3382,9 @@ void matter_clusters_record_lock_operation(struct matter_device_info *info, uint
 	 * "everything" without also meaning "one I have already seen". */
 	ev->number = ++info->next_event_number;
 	ev->timestamp_ms = info->uptime_ms_cb != NULL ? info->uptime_ms_cb() : 0u;
+#if MATTER_FEATURE_DL_ALARMS
+	ev->event_id = MATTER_EVENT_DL_LOCK_OPERATION;
+#endif
 	ev->operation = operation;
 	ev->source = source;
 	ev->fabric_index = fabric_index;
@@ -3392,6 +3393,43 @@ void matter_clusters_record_lock_operation(struct matter_device_info *info, uint
 	ev->source_node = fabric_index != 0u ? source_node : 0u;
 	info->event_count++;
 }
+
+#if MATTER_FEATURE_DL_ALARMS
+/*
+ * The eviction rule and the numbering appear a second time here rather than in
+ * a helper both recorders call. That is deliberate and it is a trade: factoring
+ * them out was measured to move 259 KB of the DEFAULT image -- every address
+ * downstream of matter_clusters.o shifts -- for a build that has no alarms in
+ * it at all. Keeping the operation recorder above textually what it was is what
+ * makes a non-anchor image byte-identical to the one before this event existed.
+ *
+ * The two copies MUST stay in step: same eviction (drop the oldest), same
+ * pre-increment (the first event is number 1), same clock. They are the only
+ * two places an event enters this ring, and a divergence between them shows up
+ * as a repeated EventNumber, which a subscriber's filter reads as "already
+ * seen" and silently drops.
+ */
+void matter_clusters_record_alarm(struct matter_device_info *info, uint8_t alarm_code)
+{
+	struct matter_lock_event *ev;
+
+	if (info == NULL) {
+		return;
+	}
+	if (info->event_count == MATTER_EVENTS_MAX) {
+		memmove(&info->events[0], &info->events[1],
+			sizeof(info->events[0]) * (MATTER_EVENTS_MAX - 1u));
+		info->event_count--;
+	}
+	ev = &info->events[info->event_count];
+	memset(ev, 0, sizeof(*ev));
+	ev->number = ++info->next_event_number;
+	ev->timestamp_ms = info->uptime_ms_cb != NULL ? info->uptime_ms_cb() : 0u;
+	ev->event_id = MATTER_EVENT_DL_ALARM;
+	ev->alarm_code = alarm_code;
+	info->event_count++;
+}
+#endif
 
 size_t matter_clusters_event_count(const struct matter_device_info *info)
 {
@@ -3412,7 +3450,11 @@ static bool event_at(void *ctx, size_t index, struct matter_im_event *out)
 	}
 	out->endpoint = MATTER_ENDPOINT_LOCK;
 	out->cluster = MATTER_CLUSTER_DOOR_LOCK;
+#if MATTER_FEATURE_DL_ALARMS
+	out->event = info->events[index].event_id;
+#else
 	out->event = MATTER_EVENT_DL_LOCK_OPERATION;
+#endif
 	out->number = info->events[index].number;
 	out->timestamp_ms = info->events[index].timestamp_ms;
 	out->priority = MATTER_EVENT_PRIORITY_CRITICAL;
@@ -3420,7 +3462,8 @@ static bool event_at(void *ctx, size_t index, struct matter_im_event *out)
 }
 
 /**
- * The LockOperation fields.
+ * The event's fields: a DoorLockAlarm's single AlarmCode, or the LockOperation
+ * fields below.
  *
  * UserIndex is always null: this node's users are a table a controller writes,
  * and nothing correlates an unlock back to one of them. A null nullable says
@@ -3436,6 +3479,20 @@ static void event_data(void *ctx, size_t index, struct matter_tlv_writer *w, mat
 		return;
 	}
 	ev = &info->events[index];
+
+#if MATTER_FEATURE_DL_ALARMS
+	/*
+	 * A DoorLockAlarm is one field and stops there. Padding it out with the
+	 * LockOperation fields would describe an operation that never happened.
+	 */
+	if (ev->event_id == MATTER_EVENT_DL_ALARM) {
+		(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(MATTER_DL_ALARM_FIELD_CODE),
+					 ev->alarm_code);
+		(void)matter_tlv_end_container(w);
+		return;
+	}
+#endif
 
 	(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(MATTER_DL_LOCK_OP_FIELD_TYPE), ev->operation);

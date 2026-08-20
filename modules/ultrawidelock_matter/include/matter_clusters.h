@@ -346,10 +346,11 @@ struct matter_user {
  * The LockOperation event (door-lock-cluster.xml:723-733).
  *
  * Emitted whenever the bolt's reported state is CHANGED by something -- a
- * controller command or a credential walk-up. It is the only event this node
- * has, and it exists because the CHIP-based lock builds serve it and this one
- * served no events at all: Apple Home's "Manage Access" pane is the working
- * hypothesis for what that absence gates.
+ * controller command or a credential walk-up. It is the only event a DEFAULT
+ * image has -- the anchor build adds DoorLockAlarm below -- and it exists
+ * because the CHIP-based lock builds serve it and this one served no events at
+ * all: Apple Home's "Manage Access" pane is the working hypothesis for what
+ * that absence gates.
  *
  * Priority is CRITICAL, not Info. That is what the cluster XML says
  * (priority="critical" on the event element), and it is the field a subscriber
@@ -384,6 +385,55 @@ struct matter_user {
 #define MATTER_DL_LOCK_OP_FIELD_FABRIC_INDEX 3u
 #define MATTER_DL_LOCK_OP_FIELD_SOURCE_NODE  4u
 
+/*
+ * The DoorLockAlarm event, off unless the build asks for it.
+ *
+ * A plain portable macro rather than a Kconfig symbol: this module is C11 with
+ * no Zephyr dependency -- tests/host compiles these same sources directly --
+ * and the flag has to mean the same thing to the host suite and to the
+ * firmware. The Zephyr side defines it in this module's CMakeLists when
+ * CONFIG_ULTRAWIDELOCK_ANCHOR is set, because the anchor build is the only one
+ * carrying a sensor that can witness an alarm. Left off, every source file here
+ * preprocesses to what it was before alarms existed, which is what keeps the
+ * default image byte-identical.
+ */
+#ifndef MATTER_FEATURE_DL_ALARMS
+#define MATTER_FEATURE_DL_ALARMS 0
+#endif
+
+#if MATTER_FEATURE_DL_ALARMS
+/*
+ * The DoorLockAlarm event (door-lock-cluster.xml:709-713).
+ *
+ * Event 0 on the same cluster, and priority CRITICAL for the same reason
+ * LockOperation is: `priority="critical"` on the event element, which is the
+ * field a subscriber uses to decide what it may drop. A forced door is not
+ * droppable.
+ *
+ * It carries exactly one field, AlarmCode, so there is no optional this node
+ * has to decide about -- unlike LockOperation's credential list.
+ */
+#define MATTER_EVENT_DL_ALARM 0x0000u
+
+/**
+ * AlarmCodeEnum (door-lock-cluster.xml:763-773).
+ *
+ * Only the two this node can honestly witness: DoorForcedOpen is the
+ * accelerometer's tamper latch firing while the bolt still says locked, and
+ * DoorAjar is the frame-to-leaf swing angle standing open with the bolt still
+ * thrown. The other six -- LockJammed (0), LockFactoryReset (1),
+ * LockRadioPowerCycled (3), WrongCodeEntryLimit (4), FrontEsceutcheonRemoved
+ * (5) and ForcedUser (8) -- describe a motor, a keypad or an enclosure switch
+ * this board does not have, and an alarm raised from nothing observed is worse
+ * than an alarm never raised.
+ */
+#define MATTER_DL_ALARM_DOOR_FORCED_OPEN 6u
+#define MATTER_DL_ALARM_DOOR_AJAR        7u
+
+/** DoorLockAlarm event field (door-lock-cluster.xml:711). */
+#define MATTER_DL_ALARM_FIELD_CODE 0u
+#endif /* MATTER_FEATURE_DL_ALARMS */
+
 /**
  * Events held for a subscriber that has not collected them yet.
  *
@@ -395,11 +445,17 @@ struct matter_user {
 #define MATTER_EVENTS_MAX 4u
 
 /**
- * One recorded LockOperation, as a report needs it.
+ * One recorded event, as a report needs it.
  *
- * The credential list (field 5) is deliberately absent: it is optional, it
- * would carry a credential index this node does not track per operation, and a
- * list invented to fill a field is worse than an absent optional.
+ * A LockOperation, or -- where MATTER_FEATURE_DL_ALARMS is on -- a
+ * DoorLockAlarm, held in the SAME ring: EventNumbers are a single ascending
+ * sequence for the whole node, and two rings would have to invent an ordering
+ * between them that the numbers already answer.
+ *
+ * LockOperation's credential list (field 5) is deliberately absent: it is
+ * optional, it would carry a credential index this node does not track per
+ * operation, and a list invented to fill a field is worse than an absent
+ * optional.
  */
 struct matter_lock_event {
 	uint64_t number;
@@ -407,6 +463,13 @@ struct matter_lock_event {
 	uint8_t operation;    /**< MATTER_DL_LOCK_OP_*. */
 	uint8_t source;       /**< MATTER_DL_OP_SOURCE_*. */
 	uint8_t fabric_index; /**< 0 when no fabric owns it; reported as null. */
+#if MATTER_FEATURE_DL_ALARMS
+	/** Which event this entry IS: MATTER_EVENT_DL_LOCK_OPERATION or _ALARM.
+	 *  Without alarms there is only one answer, so the field does not exist
+	 *  and the reporter names the constant instead. */
+	uint16_t event_id;
+	uint8_t alarm_code; /**< MATTER_DL_ALARM_*; only read for _ALARM. */
+#endif
 	uint64_t source_node; /**< Meaningful only with a fabric index. */
 };
 
@@ -1058,6 +1121,23 @@ void matter_clusters_record_lock_operation(struct matter_device_info *info, uint
 					   uint8_t source, uint8_t fabric_index,
 					   uint64_t source_node);
 
+#if MATTER_FEATURE_DL_ALARMS
+/**
+ * Record a DoorLockAlarm event, to be carried by the next report.
+ *
+ * Same ring, same numbering and same "call it after the fact" rule as
+ * @ref matter_clusters_record_lock_operation. Nothing here judges whether the
+ * alarm is warranted: the caller owns the bolt state and the sensor, and this
+ * module has never seen either.
+ *
+ * @param alarm_code MATTER_DL_ALARM_*. A code this node cannot witness is
+ *        still encoded as given -- the caller is the only one who knows what it
+ *        observed, and silently dropping an alarm is the failure this event
+ *        exists to prevent.
+ */
+void matter_clusters_record_alarm(struct matter_device_info *info, uint8_t alarm_code);
+#endif
+
 /** How many events are waiting. Zero after @ref matter_clusters_init. */
 size_t matter_clusters_event_count(const struct matter_device_info *info);
 
@@ -1068,8 +1148,8 @@ size_t matter_clusters_event_count(const struct matter_device_info *info);
  * to undo -- so the flag recorded the state without enforcing it. Now a
  * commissioner that gives up half way leaves a fabric behind, and the next
  * attempt is answered TableFull for a reason that has nothing to do with what
- * went wrong. The caller decides when: on this port, when the commissioning
- * link drops.
+ * went wrong. The caller decides when: this port rolls the transaction back at
+ * the beginning of the next commissioning session.
  *
  * Only slots and network changes owned by the current attempt are undone.
  * Earlier committed fabrics and their Thread network are restored unchanged.

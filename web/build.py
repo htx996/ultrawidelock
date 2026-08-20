@@ -505,7 +505,8 @@ DOC_GROUPS = (
                 "nrf5340-wiring", "dwm3001cdk-surgery", "hardware-validation")),
     ("Porting", ("porting", "porting-esp32", "chipset-memory")),
     ("Protocol", ("protocol-notes", "protocol-research", "range-integrity",
-                  "approach-direction", "uwb-mac-login")),
+                  "approach-direction", "uwb-mac-login",
+                  "matter-door-lock-events", "bodycal-falsification")),
     ("Reference", ("reference",)),
 )
 

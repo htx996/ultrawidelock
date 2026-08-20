@@ -19,6 +19,12 @@ void fira_session_set_provisioned_ursk(const uint8_t *ursk);
 /** @brief The stashed credential URSK (32 bytes), or NULL if none — for the Pre-POLL decode. */
 const uint8_t *fira_session_get_ursk(void);
 
+/** Bind authenticated on-air messages to the credential-negotiated session. */
+void fira_session_set_id(uint32_t session_id);
+
+/** Return the active credential session id, or zero when no session is bound. */
+uint32_t fira_session_id(void);
+
 /** @brief Latch a CCC DS-TWR range so it flows up the credential mRangingData seam. */
 void fira_session_set_ccc_range_cm(int32_t cm, uint32_t block);
 
@@ -97,7 +103,11 @@ bool fira_session_range_plausible(int32_t cm);
  * <0 for bad, and its signed index is "good" at >= ~60% of the STS length. A
  * spoofed early path cannot reproduce the scrambled sequence, so its STS
  * quality collapses. Raise MIN toward the 60%-of-length index to tighten. */
+#if defined(CONFIG_ULTRAWIDELOCK_STS_QUALITY_MIN)
+#define FIRA_STS_QUALITY_MIN CONFIG_ULTRAWIDELOCK_STS_QUALITY_MIN
+#else
 #define FIRA_STS_QUALITY_MIN 0 /* index floor; 0 = defer to driver verdict */
+#endif
 
 /** @brief Layer 2: true if the STS correlated well enough to trust its timestamp.
  *  @param driver_verdict  dwt_readstsquality() return (>=0 good, <0 bad).
@@ -110,7 +120,11 @@ bool fira_session_sts_quality_ok(int32_t driver_verdict, int16_t quality_index);
  * shell/telemetry still track live values); it is the trust bit now wired into
  * the unlock path via ultrawidelock_uwb_trusted_range_cm(), which surfaces a distance only
  * once trust is built. */
-#define FIRA_RANGE_TRUST_K   3  /* consecutive agreeing blocks to trust */
+#if defined(CONFIG_ULTRAWIDELOCK_RANGE_TRUST_K)
+#define FIRA_RANGE_TRUST_K CONFIG_ULTRAWIDELOCK_RANGE_TRUST_K
+#else
+#define FIRA_RANGE_TRUST_K 3
+#endif
 #define FIRA_RANGE_SPREAD_CM 50 /* max block-to-block delta to stay agreed */
 
 /** @brief Layer 4: true once >= K consecutive plausible, mutually consistent

@@ -59,7 +59,7 @@ if ! grep -q "{ \"$path\", ULTRAWIDELOCK_KV_KEY_MATTER_SRP_HOST_ID" "$SETTINGS";
 fi
 
 # --- 2. the openthread_*() helpers the shim declares ------------------------
-KNOWN='openthread_get_default_instance openthread_mutex_lock openthread_mutex_unlock openthread_run'
+KNOWN='openthread_get_default_instance openthread_mutex_lock openthread_mutex_unlock openthread_run openthread_state_changed_callback_register'
 
 # Only the lines that are actually compiled: CONFIG_ULTRAWIDELOCK_SRP_DIAG is off in
 # this image, and the one helper this port has no equivalent for lives inside
@@ -85,6 +85,18 @@ for u in $used; do
             ;;
     esac
 done
+
+# The unsolicited sender runs outside OpenThread's own callback thread. Both
+# Zephyr and the FreeRTOS shim require the shared OT mutex there, including the
+# socket-open publication read. Keep this narrow tripwire because lock helpers
+# used elsewhere would otherwise let a regression in this function pass.
+send_to=$(sed -n '/^int matter_thread_send_to(/,/^}/p' "$SRC")
+if ! printf '%s\n' "$send_to" | grep -q 'openthread_mutex_lock()' ||
+   ! printf '%s\n' "$send_to" | grep -q 'openthread_mutex_unlock()' ||
+   ! printf '%s\n' "$send_to" | grep -q 'if (!s_udp_open)'; then
+    printf '  FAIL matter_thread_send_to() does not lock OT around s_udp_open and UDP send.\n' >&2
+    fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
     printf '  matter: shared transport fits the shim (path "%s", %s helpers)\n' \

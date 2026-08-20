@@ -3,10 +3,11 @@
 # Two jobs on stock ubuntu-latest runners, no toolchain: python3, cmake and a C
 # compiler are all this needs, which is what makes it cheap enough to run on
 # every pull request. Nothing here builds firmware -- the Zephyr and ESP32
-# images need NCS, ESP-IDF and esp-matter and take hours, and `make fw-check`
-# and `make esp-release` cover them on a bench where the hardware also is. A
-# green run does not mean the firmware builds; it means nothing broke that a
-# host can see.
+# images need NCS, ESP-IDF and esp-matter and take hours. `make regress` covers
+# every DWM3001CDK configuration and the size gate on a bench where the hardware
+# also is, and `make regress-hil` goes on to prove it on air; `make esp-release`
+# covers the ESP32. A green run here does not mean the firmware builds; it means
+# nothing broke that a host can see.
 #
 # `gates` is a serial list of steps rather than parallel jobs: each job pays a
 # checkout to save less time than it spends, and one list reads better in a pull
@@ -27,7 +28,7 @@
 #            by a reader hitting a 404.
 #   check    every host-side suite: the C tests for firmware logic and the shared
 #            core, the CMake SDK package, the UWB seam and engine scope, port
-#            purity, progress display.
+#            purity, cppcheck over the portable tree, progress display.
 #   secrets  gitleaks over the whole history, not just the diff. A pull request
 #            can add a commit that introduces a key and a later commit that
 #            removes it; the diff is clean and the object is still there
@@ -110,6 +111,27 @@ jobs:
       # waits on should not fail on one dropped connection to unpkg.
       - name: 3D graph renderer
         run: make docs-graph3d
+
+      # cppcheck backs the `lint` suite inside `make check`. Its gate skips
+      # loudly rather than failing when the binary is absent, so without this
+      # step every run would print the skip and stay green -- the static
+      # analysis would be in the repository and never once executed.
+      #
+      # apt's cppcheck is older than the one brew gives a mac, and the two do not
+      # agree about where a finding lives: the same false positive in the hashing
+      # code is attributed to one function under 2.21 and to a different one
+      # under the 2.13 this runner installs. The gate's exemptions are scoped by
+      # check id and path rather than by line for exactly that reason, and the
+      # tree is verified clean under both versions -- but a newer analyser can
+      # still gain a check neither has run yet, so a finding a contributor's
+      # local `make lint` did not produce is possible. The version is printed
+      # here so that diagnosis is one glance at the log. Pin a version if the
+      # drift ever costs more than it catches.
+      - name: cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cppcheck
+          cppcheck --version
 
       - name: gates
         run: make ci

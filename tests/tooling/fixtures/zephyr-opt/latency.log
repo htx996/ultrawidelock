@@ -1,0 +1,8 @@
+noise outside the allowlisted record
+ultrawidelock-lat: connect+12 spsm+25 ver+38 l2cap+74 op05+93 auth0+122 a0rsp+151 auth1+178 exch+204 apc+239 irs+276 m1+314 m2+352 m3+391 m4rx+425 m4+452 range+712 trusted+736 near+759 bolt+784 ms
+ultrawidelock-lat: connect+11 spsm+24 ver+36 l2cap+70 op05+90 auth0+118 a0rsp+146 auth1+173 exch+198 apc+232 irs+268 m1+305 m2+344 m3+380 m4rx+414 m4+440 range+693 trusted+719 near+743 bolt+767 ms
+ultrawidelock-lat: connect+13 spsm+27 ver+40 l2cap+77 op05+98 auth0+128 a0rsp+157 auth1+185 exch+213 apc+248 irs+286 m1+324 m2+363 m3+401 m4rx+438 m4+466 range+735 trusted+761 near+787 bolt+813 ms
+ultrawidelock-lat: connect+10 spsm+23 ver+35 l2cap+69 op05+88 auth0+115 a0rsp+143 auth1+170 exch+195 apc+229 irs+264 m1+301 m2+339 m3+375 m4rx+410 m4+436 range+686 trusted+712 near+735 bolt+759 ms
+ultrawidelock-lat: connect+12 spsm+25 ver+38 l2cap+74 op05+93 auth0+122 a0rsp+151 auth1+178 exch+204 apc+239 irs+276 m1+314 m2+352 m3+391 m4rx+425 m4+452 range+712 trusted- near- bolt- ms
+ultrawidelock-lat: connect+12 spsm+25 ver+38 l2cap+74 op05+93 auth0+122 a0rsp+151 auth1+178 exch+204 apc+239 irs+276 m1+314 m2+352 m3+391 m4rx+425 m4+452 range+430 trusted+736 near+759 bolt+784 ms
+ultrawidelock-lat: malformed

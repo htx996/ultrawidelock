@@ -235,16 +235,30 @@ int matter_thread_send_to(const struct matter_thread_peer *peer, const uint8_t *
 void matter_thread_advertise_reset(void);
 
 /**
+ * Accept one reply while the inbound OpenThread callback is still current.
+ * MATTER_OK means the transport accepted ownership; any error means no byte
+ * was accepted and the exact owned reply may be retried.
+ */
+typedef int (*matter_thread_reply_send_fn)(void *ctx, const uint8_t *msg, size_t len);
+
+/**
  * Handle one datagram that arrived on the operational port.
  *
  * Supplied by the application rather than called by it: the datagram arrives on
  * OpenThread's own thread, and the port has no business knowing what a Sigma1
  * is. The reply goes back through @p reply rather than being sent from inside,
  * for the same reason -- sending is the port's job and parsing is not.
+ * @p msg is a private copy of the datagram and may be decrypted in place.
  *
- * @return how many bytes of @p reply to send, or 0 for nothing to say.
+ * @p send is invoked synchronously, under the OpenThread-then-Matter lock
+ * order, for a non-empty reply. Application effects are committed only when
+ * it returns MATTER_OK. A failed reliable reply remains owned and the exact
+ * packet is offered again when MRP retransmits the request.
+ *
+ * @return how many reply bytes @p send accepted, or 0 for no reply/failure.
  */
-size_t matter_thread_on_datagram(const uint8_t *msg, size_t len, uint8_t *reply, size_t cap);
+size_t matter_thread_on_datagram(uint8_t *msg, size_t len, uint8_t *reply, size_t cap,
+				 matter_thread_reply_send_fn send, void *send_ctx);
 
 #ifdef __cplusplus
 }

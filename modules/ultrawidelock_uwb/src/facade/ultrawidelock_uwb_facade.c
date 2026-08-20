@@ -36,10 +36,17 @@ static void ultrawidelock_hfclk_ensure_128mhz(void)
  */
 int ultrawidelock_uwb_bind_ursk(const uint8_t *ursk, size_t ursk_len)
 {
+	int rc;
+
 	ultrawidelock_hfclk_ensure_128mhz();
 	fira_session_set_provisioned_ursk(ursk);
+	fira_session_set_id(0u);
 	/* Placeholder ranging_config / sts_index0 / n_slot until credential M1-M4 negotiation. */
-	return ccc_shim_bind_from_ursk(ursk, ursk, ursk_len, 0u, 8u);
+	rc = ccc_shim_bind_from_ursk(ursk, ursk, ursk_len, 0u, 8u);
+	if (rc != 0) {
+		fira_session_set_provisioned_ursk(NULL);
+	}
+	return rc;
 }
 
 /**
@@ -51,6 +58,8 @@ int ultrawidelock_uwb_bind_ursk(const uint8_t *ursk, size_t ursk_len)
  */
 int ultrawidelock_uwb_start_cred(const struct ultrawidelock_uwb_cred_cfg *c)
 {
+	int rc;
+
 	if (c == NULL || c->ursk == NULL) {
 		return -EINVAL;
 	}
@@ -69,21 +78,35 @@ int ultrawidelock_uwb_start_cred(const struct ultrawidelock_uwb_cred_cfg *c)
 
 	/* Stash the URSK so the Pre-POLL decode can derive the CCC STS the Wallet expects. */
 	fira_session_set_provisioned_ursk(c->ursk);
+	fira_session_set_id(c->session_id);
 	/* Bind the shim's SaltedHash to the RangingConfiguration when supplied; else fall back to
 	 * the URSK. */
 	if (c->ranging_config != NULL && c->rc_len > 0u) {
-		ccc_shim_bind_from_ursk(c->ursk, c->ranging_config, c->rc_len, c->sts_index0,
-					c->slot_per_round ? c->slot_per_round : 1u);
+		rc = ccc_shim_bind_from_ursk(c->ursk, c->ranging_config, c->rc_len,
+					 c->sts_index0,
+					 c->slot_per_round ? c->slot_per_round : 1u);
 	} else {
-		ccc_shim_bind_from_ursk(c->ursk, c->ursk, ULTRAWIDELOCK_URSK_LEN, c->sts_index0,
-					c->slot_per_round ? c->slot_per_round : 1u);
+		rc = ccc_shim_bind_from_ursk(c->ursk, c->ursk, ULTRAWIDELOCK_URSK_LEN,
+					 c->sts_index0,
+					 c->slot_per_round ? c->slot_per_round : 1u);
+	}
+	if (rc != 0) {
+		fira_session_set_provisioned_ursk(NULL);
+		fira_session_set_id(0u);
+		return rc;
 	}
 	/* Fresh per-session log budget so a live Wallet session re-logs its own RX-arms. */
 	ccc_shim_rx_log_reset();
 
 	/* Stand up the permanent SP0 receiver on modules/ultrawidelock_dw3000, driving the DS-TWR
 	 * exchange. */
-	return ccc_prepoll_listen(c->channel, c->sync_code_index);
+	rc = ccc_prepoll_listen(c->channel, c->sync_code_index);
+	if (rc != 0) {
+		ccc_shim_unbind();
+		fira_session_set_provisioned_ursk(NULL);
+		fira_session_set_id(0u);
+	}
+	return rc;
 }
 
 /**
@@ -105,6 +128,8 @@ void ultrawidelock_uwb_stop(void)
 {
 	/* Unbind the CCC STS so the permanent Pre-POLL receiver ignores frames. */
 	ccc_shim_unbind();
+	fira_session_set_provisioned_ursk(NULL);
+	fira_session_set_id(0u);
 	/* Close the listen-gate and force the DW3000 out of RX so the SP0
 	 * Pre-POLL listener stops self-rearming (RX LED dark until restart). */
 	ccc_prepoll_stop();

@@ -108,7 +108,8 @@ static void coc_pump(struct ble_l2cap_chan *chan, const uint8_t *frame, uint16_t
 	size_t rsp_len = 0;
 	struct os_mbuf *sdu;
 
-	(void)ultrawidelock_dfu_rx_frame(frame, len, rsp, &rsp_len);
+	(void)ultrawidelock_dfu_rx_frame(ULTRAWIDELOCK_DFU_OWNER_L2CAP, frame, len, rsp,
+					 &rsp_len);
 	if (rsp_len == 0u) {
 		return;
 	}
@@ -157,7 +158,7 @@ static int l2cap_event_cb(struct ble_l2cap_event *event, void *arg)
 		 * header in front of them, which the bootloader ignores. Reset
 		 * anyway so the next attempt starts clean rather than resuming
 		 * someone else's. */
-		ultrawidelock_dfu_rx_reset();
+		ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_L2CAP);
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_INFO, TAG, "update channel closed");
 		return 0;
 
@@ -190,9 +191,9 @@ static int l2cap_event_cb(struct ble_l2cap_event *event, void *arg)
  * only cross-platform option -- wraps neither. So a bench tool on a Mac cannot
  * drive the CoC at all, and an update path nobody can invoke is not one.
  *
- * This costs almost nothing because the receiver was written transport-blind:
- * both paths hand the same bytes to ultrawidelock_dfu_rx_frame() and neither knows the
- * other exists.
+ * This costs almost nothing because both paths use the same parser. They pass
+ * distinct owner IDs so one endpoint cannot reset or overwrite the other's
+ * in-progress transfer.
  *
  * ONE HONEST DIFFERENCE, unchanged from the Zephyr port. The CoC refuses the
  * connection outright when no window is open, so none of the receiver's state
@@ -214,6 +215,16 @@ static const ble_uuid128_t k_dfu_chr_uuid = BLE_UUID128_INIT(
 	0x3a, 0x4b, 0x23, 0x9e, 0x41, 0xa1, 0xb5, 0xd3);
 
 static uint16_t s_dfu_val_handle;
+static struct ble_gap_event_listener s_gap_listener;
+
+static int dfu_gap_event(struct ble_gap_event *event, void *arg)
+{
+	(void)arg;
+	if (event->type == BLE_GAP_EVENT_DISCONNECT) {
+		ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_GATT);
+	}
+	return 0;
+}
 
 static int dfu_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
 			   struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -235,7 +246,8 @@ static int dfu_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
 		return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
 	}
 
-	(void)ultrawidelock_dfu_rx_frame(frame, len, rsp, &rsp_len);
+	(void)ultrawidelock_dfu_rx_frame(ULTRAWIDELOCK_DFU_OWNER_GATT, frame, len, rsp,
+					 &rsp_len);
 	if (rsp_len > 0u) {
 		struct os_mbuf *om = ble_hs_mbuf_from_flat(rsp, (uint16_t)rsp_len);
 
@@ -402,6 +414,12 @@ static int dfu_register_services(void)
 	rc = ble_gatts_add_svcs(k_gatt_svcs);
 	if (rc != 0) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_ERROR, TAG, "gatts_add_svcs rc=%d", rc);
+		return -1;
+	}
+	rc = ble_gap_event_listener_register(&s_gap_listener, dfu_gap_event, NULL);
+	if (rc != 0) {
+		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_ERROR, TAG,
+					 "gap listener rc=%d", rc);
 		return -1;
 	}
 	return 0;

@@ -112,12 +112,23 @@ RBIN="$(mktemp -t ultrawidelock_reader.XXXXXX)"
 cc -std=c11 -O1 -Wall -Wextra \
    -Wno-unused-variable -Wno-unused-function \
    -D_POSIX_C_SOURCE=200809L -DULTRAWIDELOCK_PORT_HOST \
+   -DCONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST=1 \
    -I "$CRED/include" -I "$CRED/src" -I "$ULTRAWIDELOCK_PORT_INC" \
    "$HERE/test_ultrawidelock_reader.c" \
    "$CRED/src/ultrawidelock_reader.c" "$CRED/src/ultrawidelock_apdu.c" \
    "$CRED/src/ultrawidelock_crypto.c" "$CRED/src/ultrawidelock_hash.c" \
    "$CRED/src/ultrawidelock_prov.c" \
-   "$HERE/ultrawidelock_prim_host.c" -o "$RBIN"
+   "$HERE/ultrawidelock_prim_host.c" "$ROOT/tests/host/port/osal_host.c" -o "$RBIN"
+"$RBIN"
+cc -std=c11 -O1 -Wall -Wextra \
+   -Wno-unused-variable -Wno-unused-function \
+   -D_POSIX_C_SOURCE=200809L -DULTRAWIDELOCK_PORT_HOST \
+   -I "$CRED/include" -I "$CRED/src" -I "$ULTRAWIDELOCK_PORT_INC" \
+   "$HERE/test_ultrawidelock_reader.c" \
+   "$CRED/src/ultrawidelock_reader.c" "$CRED/src/ultrawidelock_apdu.c" \
+   "$CRED/src/ultrawidelock_crypto.c" "$CRED/src/ultrawidelock_hash.c" \
+   "$CRED/src/ultrawidelock_prov.c" \
+   "$HERE/ultrawidelock_prim_host.c" "$ROOT/tests/host/port/osal_host.c" -o "$RBIN"
 "$RBIN"
 rm -f "$RBIN"
 

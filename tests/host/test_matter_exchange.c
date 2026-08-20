@@ -67,6 +67,7 @@ static size_t inbound_ok(uint8_t *buf, size_t cap, uint8_t opcode, uint32_t coun
 }
 
 static void t_matter_exchange_ack_for_self_initiated(void);
+static void t_matter_tx_pool(void);
 
 void test_matter_exchange(void)
 {
@@ -486,6 +487,7 @@ void test_matter_exchange(void)
 		size_t sealed = 0u;
 		size_t opened = 0u;
 		size_t off = 0u;
+		size_t wire_header_len = 0u;
 
 		for (size_t i = 0; i < MATTER_KEY_LEN; i++) {
 			keys.i2r[i] = (uint8_t)(0x10u + i);
@@ -518,8 +520,31 @@ void test_matter_exchange(void)
 		     matter_crypto_seal(&mh, keys.i2r, MATTER_PASE_NODE_ID, plain, plain_len, msg,
 					sizeof(msg), &sealed),
 		     MATTER_OK);
-		T_EQ("peer request accepted",
-		     matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)), MATTER_OK);
+		T_EQ("wire header locates the ciphertext",
+		     matter_msg_header_decode(msg, sealed, &mh, &wire_header_len), MATTER_OK);
+		T_EQ("peer request decrypts in its private receive buffer",
+		     matter_exchange_recv_in_place(&x, msg, sealed, &in), MATTER_OK);
+		T_OK("in-place plaintext replaced exactly the ciphertext",
+		     memcmp(msg + wire_header_len, plain, plain_len) == 0);
+		T_OK("decoded payload borrows the mutable receive buffer",
+		     in.payload >= msg && in.payload <= msg + sealed);
+
+		/* The exact-alias path decrypts before checking CCM's tag. Prove that
+		 * a failed check cannot leave attacker-controlled plaintext behind in
+		 * the receive buffer for a later handler to consume by accident. */
+		mh.message_counter = 901u;
+		T_EQ("tamper candidate seals",
+		     matter_crypto_seal(&mh, keys.i2r, MATTER_PASE_NODE_ID, plain, plain_len, msg,
+					sizeof(msg), &sealed),
+		     MATTER_OK);
+		msg[sealed - 1u] ^= 0x80u;
+		T_EQ("tampered header still decodes",
+		     matter_msg_header_decode(msg, sealed, &mh, &wire_header_len), MATTER_OK);
+		T_EQ("tampered in-place request is refused",
+		     matter_exchange_recv_in_place(&x, msg, sealed, &in), MATTER_E_TYPE);
+		for (size_t i = 0u; i < plain_len; i++) {
+			T_EQ("failed authentication zeroes plaintext", msg[wire_header_len + i], 0L);
+		}
 
 		/* Now answer it. */
 		T_EQ("ReportData sends",
@@ -915,6 +940,7 @@ void test_matter_exchange(void)
 	}
 
 	t_matter_exchange_ack_for_self_initiated();
+	t_matter_tx_pool();
 }
 
 /*
@@ -1029,4 +1055,109 @@ static void t_matter_exchange_ack_for_self_initiated(void)
 	     MATTER_OK);
 	T_EQ("an ack for an exchange nobody opened is still refused",
 	     matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)), MATTER_E_STATE);
+}
+
+static void t_matter_tx_pool(void)
+{
+	struct matter_tx_pool pool;
+	struct matter_tx_slot slots[2];
+	uint8_t backing[2][96];
+	struct matter_tx_slot *a;
+	struct matter_tx_slot *b;
+	uint32_t a_token;
+	uint32_t b_token;
+
+	t_group("owned outbound packet slots");
+	T_EQ("pool initializes",
+	     matter_tx_pool_init(&pool, slots, &backing[0][0], 2u, sizeof(backing[0])), MATTER_OK);
+	a = matter_tx_pool_acquire(&pool, 1u);
+	b = matter_tx_pool_acquire(&pool, 1u);
+	T_OK("two slots acquired", a != NULL && b != NULL && a != b);
+	T_OK("bounded exhaustion is explicit", matter_tx_pool_acquire(&pool, 1u) == NULL);
+	a_token = a->token;
+	b_token = b->token;
+	memcpy(a->data, "first", 5u);
+	memcpy(b->data, "second", 6u);
+	T_EQ("first committed", matter_tx_slot_commit(a, 5u), MATTER_OK);
+	T_EQ("second committed", matter_tx_slot_commit(b, 6u), MATTER_OK);
+	T_OK("FIFO returns first", matter_tx_pool_ready(&pool, 1u) == a);
+	T_EQ("completion cannot release a merely queued slot",
+	     matter_tx_pool_complete(&pool, a_token), MATTER_E_STATE);
+	T_EQ("first accepted", matter_tx_slot_in_flight(a), MATTER_OK);
+	T_OK("in-flight bytes remain owned", memcmp(a->data, "first", 5u) == 0);
+	T_EQ("rejected attempt returns exact packet to ready",
+	     matter_tx_pool_retry(&pool, a_token, 100u, 1000u), MATTER_OK);
+	T_OK("retry preserves token, length, and bytes",
+	     a->state == MATTER_TX_SLOT_READY && a->token == a_token && a->len == 5u &&
+		     memcmp(a->data, "first", 5u) == 0);
+	T_OK("retry remains owned before expiry",
+	     matter_tx_pool_expired(&pool, 1u, 1099u) == NULL);
+	T_EQ("retry packet can be accepted again", matter_tx_slot_in_flight(a), MATTER_OK);
+	T_OK("next ready skips in-flight", matter_tx_pool_ready(&pool, 1u) == b);
+	T_EQ("wrong completion rejected", matter_tx_pool_complete(&pool, 0xDEADBEEFu),
+	     MATTER_E_STATE);
+	T_EQ("transport completion frees first", matter_tx_pool_complete(&pool, a_token), MATTER_OK);
+	T_EQ("duplicate completion rejected", matter_tx_pool_complete(&pool, a_token),
+	     MATTER_E_STATE);
+	a = matter_tx_pool_acquire(&pool, 2u);
+	T_OK("wrap-timeout slot acquired", a != NULL);
+	a_token = a->token;
+	memcpy(a->data, "retry", 5u);
+	T_EQ("wrap-timeout slot committed", matter_tx_slot_commit(a, 5u), MATTER_OK);
+	T_EQ("wrap-timeout slot accepted", matter_tx_slot_in_flight(a), MATTER_OK);
+	T_EQ("deadline can cross uint32 wrap",
+	     matter_tx_pool_retry(&pool, a_token, 0xFFFFFF00u, 1000u), MATTER_OK);
+	T_OK("not expired one ms before wrapped deadline",
+	     matter_tx_pool_expired(&pool, 2u, 743u) == NULL);
+	T_EQ("retry accepted before deadline", matter_tx_slot_in_flight(a), MATTER_OK);
+	T_EQ("second failure does not extend deadline",
+	     matter_tx_pool_retry(&pool, a_token, 500u, 1000u), MATTER_OK);
+	T_OK("expired at original wrapped deadline",
+	     matter_tx_pool_expired(&pool, 2u, 744u) == a);
+	T_EQ("expired retry can be released", matter_tx_pool_reject(&pool, a_token), MATTER_OK);
+	a = matter_tx_pool_acquire(&pool, 2u);
+	T_OK("freed slot is reusable", a != NULL);
+	T_EQ("building slot can be cancelled", matter_tx_pool_cancel(&pool, a->token), MATTER_OK);
+	T_EQ("cancel is exact-once", matter_tx_pool_cancel(&pool, a->token), MATTER_E_STATE);
+	a = matter_tx_pool_acquire(&pool, 2u);
+	T_OK("cancelled slot can be reused", a != NULL);
+	T_EQ("zero length cannot publish", matter_tx_slot_commit(a, 0u), MATTER_E_INVAL);
+	T_EQ("oversize cannot publish", matter_tx_slot_commit(a, a->capacity + 1u),
+	     MATTER_E_INVAL);
+	T_EQ("queued transport rejection frees second", matter_tx_pool_reject(&pool, b_token),
+	     MATTER_OK);
+
+	t_group("framing inside owned packet headroom");
+	{
+		struct matter_exchange x;
+		struct matter_exchange_in in;
+		struct matter_msg_header mh;
+		struct matter_proto_header ph;
+		uint8_t inbound_msg[96];
+		uint8_t pt[96];
+		uint8_t owned[96];
+		uint8_t payload[] = {0x15u, 0x24u, 0x00u, 0x2Au, 0x18u};
+		size_t n;
+		size_t framed = 0u;
+		size_t mh_len = 0u;
+		size_t ph_len = 0u;
+
+		matter_exchange_init(&x, SEED, true);
+		n = inbound_ok(inbound_msg, sizeof(inbound_msg), 0x20u, 100u, NULL, 0u);
+		T_EQ("exchange opens",
+		     matter_exchange_recv(&x, inbound_msg, n, &in, pt, sizeof(pt)), MATTER_OK);
+		memcpy(owned + MATTER_EXCHANGE_HEADER_MAX, payload, sizeof(payload));
+		T_EQ("overlapping payload frames",
+		     matter_exchange_send(&x, MATTER_PROTOCOL_INTERACTION_MODEL, 0x05u,
+				  owned + MATTER_EXCHANGE_HEADER_MAX, sizeof(payload), owned,
+				  sizeof(owned), &framed),
+		     MATTER_OK);
+		T_EQ("message header decodes", matter_msg_header_decode(owned, framed, &mh, &mh_len),
+		     MATTER_OK);
+		T_EQ("protocol header decodes",
+		     matter_proto_header_decode(owned + mh_len, framed - mh_len, &ph, &ph_len),
+		     MATTER_OK);
+		T_OK("payload survived overlap",
+		     memcmp(owned + mh_len + ph_len, payload, sizeof(payload)) == 0);
+	}
 }

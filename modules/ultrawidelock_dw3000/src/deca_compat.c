@@ -14,6 +14,7 @@
 #include "deca_interface.h"
 #include "deca_version.h"
 #include "deca_private.h"
+#include "dw3000_sts_fastpath.h"
 
 /*! The device ID regiser address, common to all QM33xxx/DW3xxx devices */
 #define DW3XXX_DEVICE_ID (0x0)
@@ -1332,6 +1333,20 @@ int32_t dwt_spicswakeup(uint8_t *buff, uint16_t length)
 void dwt_writetodevice(uint32_t regFileID, uint16_t index, uint16_t length, uint8_t *buffer)
 {
     dw->dwt_driver->dwt_mcps_ops->write_to_device(dw, regFileID, index, length, buffer);
+}
+
+/* STS_KEY0..3 and STS_IV0..3 are contiguous in the DW3000 register file. These
+ * narrowly scoped helpers let a bench image measure one 16-byte burst against
+ * the vendor API's four independent 32-bit writes without changing the
+ * vendored driver. They are selected only by DW3000_STS_BULK_WRITE_EXPERIMENT. */
+void ultrawidelock_dw3000_write_sts_key_bulk(const uint32_t words[4])
+{
+    dwt_writetodevice(0x2000CUL, 0U, 16U, (uint8_t *)(uintptr_t)words);
+}
+
+void ultrawidelock_dw3000_write_sts_iv_bulk(const uint32_t words[4])
+{
+    dwt_writetodevice(0x2001CUL, 0U, 16U, (uint8_t *)(uintptr_t)words);
 }
 
 void dwt_readfromdevice(uint32_t regFileID, uint16_t index, uint16_t length, uint8_t *buffer)

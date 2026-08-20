@@ -19,6 +19,13 @@
 extern "C" {
 #endif
 
+/* Maximum wait for each credential handshake phase that is awaiting a peer
+ * response. The periodic status tick expires at the exact boundary. */
+#define ULTRAWIDELOCK_READER_PHASE_TIMEOUT_MS 5000u
+/* Hard cap for a connected credential link, including ESTABLISHED/ranging.
+ * Prevents a peer from monopolizing a single-connection controller forever. */
+#define ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS 30000u
+
 /** Bring up the credential reader (starts the BLE transport + session layer).
  *  Returns 0 on success, negative on failure. */
 int ultrawidelock_reader_start(void);
@@ -74,12 +81,12 @@ void ultrawidelock_reader_rssi_sample(uint16_t conn_handle, int8_t rssi_dbm);
  * session is established. */
 void ultrawidelock_reader_notify_unlock(bool unsecured);
 
-/* Drives the one deferred piece of the above: a Secured that could not be delivered
+/* Drives credential phase deadlines and the deferred piece of the above: a Secured that could not be delivered
  * because the peer had already gone is held for a few seconds after the next session
  * establishes, so that a phone which merely woke on the doorstep is not shown a lock
  * its own grant undoes a second later. Call from any periodic loop with a monotonic
  * millisecond clock; cheap enough to call unconditionally, and a no-op unless a
- * replay is pending. Nothing else needs it -- an ordinary walk-up never arms one. */
+ * replay or a credential handshake is pending. */
 void ultrawidelock_reader_status_tick(int64_t now_ms);
 
 /* True while some peer holds an established credential session (auth done, ranging

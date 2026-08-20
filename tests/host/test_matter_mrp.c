@@ -209,6 +209,8 @@ void test_matter_mrp(void)
 
 		T_EQ("give up is stable", matter_mrp_poll(&m, 99999u, &c), MATTER_MRP_GIVE_UP);
 		T_EQ("total transmissions", m.send_count, (long)MATTER_MRP_MAX_TRANSMISSIONS);
+		T_EQ("maximum-jitter default retry horizon",
+		     (long)matter_mrp_retry_horizon_ms(MATTER_MRP_IDLE_INTERVAL_MS), 18356L);
 	}
 
 	t_group("retransmit: an ack ends it");

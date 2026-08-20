@@ -14,6 +14,7 @@
  * particular, the TORN WRITE, which is otherwise only reachable by cutting power
  * to a real board between two of seven settings_save_one() calls.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,6 +23,7 @@
 #include "matter_fab_settings.h"
 #include "settingsfake.h"
 #include "test.h"
+#include "ultrawidelock_prov.h"
 
 #define K_META "mf2/meta"
 #define K_FAB0 "mf2/f0"
@@ -311,15 +313,109 @@ void test_matter_fab_settings(void)
 	T_EQ("both of them", loaded.approach_direction, 0x02u);
 }
 
+static void fill_provisioning(struct ultrawidelock_reader_identity *id,
+			      struct ultrawidelock_trust_store *ts)
+{
+	memset(id, 0, sizeof(*id));
+	memset(ts, 0, sizeof(*ts));
+	for (size_t i = 0; i < sizeof(id->reader_id); i++) {
+		id->reader_id[i] = (uint8_t)(0x10u + i);
+		id->sign_priv[i] = (uint8_t)(0x80u + i);
+	}
+	memset(id->grk, 0x5a, sizeof(id->grk));
+	id->is_dev = false;
+	ts->count = 1u;
+	ts->cred_pub[0][0] = 0x04u;
+	memset(&ts->cred_pub[0][1], 0xa5, ULTRAWIDELOCK_CRED_PUB_LEN - 1u);
+	ts->kp_valid = 1u;
+	memset(ts->kpersistent[0], 0x3c, ULTRAWIDELOCK_KPERSISTENT_LEN);
+	ts->cred_type[0] = 5u;
+	ts->cred_index[0] = 0x1234u;
+	ts->user_index[0] = 0x5678u;
+}
+
+static void test_ultrawidelock_prov_settings(void)
+{
+	struct ultrawidelock_reader_identity stored_id;
+	struct ultrawidelock_reader_identity loaded_id;
+	struct ultrawidelock_trust_store stored_ts;
+	struct ultrawidelock_trust_store loaded_ts;
+	uint8_t malformed[] = {'b', 'a', 'd'};
+	uint8_t oversized[ULTRAWIDELOCK_PROV_BLOB_MAX + 1u] = {0};
+
+	t_group("ultrawidelock_prov_settings: empty and sibling records");
+	settingsfake_reset();
+	memset(&loaded_id, 0, sizeof(loaded_id));
+	memset(&loaded_ts, 0xff, sizeof(loaded_ts));
+	T_EQ("empty store is distinct from storage failure",
+	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), ULTRAWIDELOCK_PROV_LOAD_EMPTY);
+	T_OK("empty store exposes only marked recovery identity", loaded_id.is_dev);
+	T_EQ("empty store exposes no trust anchors", loaded_ts.count, 0);
+	T_EQ("unrelated sibling can be stored",
+	     settings_save_one("ultrawidelock/other", malformed, sizeof(malformed)), 0);
+	T_EQ("unrelated sibling is not treated as provisioning",
+	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), ULTRAWIDELOCK_PROV_LOAD_EMPTY);
+
+	t_group("ultrawidelock_prov_settings: valid round trip");
+	settingsfake_reset();
+	fill_provisioning(&stored_id, &stored_ts);
+	T_EQ("provisioning store succeeds", ultrawidelock_prov_store(&stored_id, &stored_ts), 0);
+	memset(&loaded_id, 0, sizeof(loaded_id));
+	memset(&loaded_ts, 0, sizeof(loaded_ts));
+	T_EQ("stored provisioning loads", ultrawidelock_prov_load(&loaded_id, &loaded_ts), 0);
+	T_OK("reader identity survives",
+	     memcmp(loaded_id.reader_id, stored_id.reader_id, sizeof(stored_id.reader_id)) == 0 &&
+		     memcmp(loaded_id.sign_priv, stored_id.sign_priv,
+			    sizeof(stored_id.sign_priv)) == 0 &&
+		     memcmp(loaded_id.grk, stored_id.grk, sizeof(stored_id.grk)) == 0 &&
+		     !loaded_id.is_dev);
+	T_OK("anchor and expedited key survive",
+	     loaded_ts.count == 1u && loaded_ts.kp_valid == 1u &&
+		     memcmp(loaded_ts.cred_pub[0], stored_ts.cred_pub[0],
+			    ULTRAWIDELOCK_CRED_PUB_LEN) == 0 &&
+		     memcmp(loaded_ts.kpersistent[0], stored_ts.kpersistent[0],
+			    ULTRAWIDELOCK_KPERSISTENT_LEN) == 0);
+	T_OK("Matter indices survive", loaded_ts.cred_type[0] == 5u &&
+					 loaded_ts.cred_index[0] == 0x1234u &&
+					 loaded_ts.user_index[0] == 0x5678u);
+
+	t_group("ultrawidelock_prov_settings: corrupt storage fails closed");
+	settingsfake_reset();
+	T_EQ("malformed record can be injected",
+	     settings_save_one("ultrawidelock/prov", malformed, sizeof(malformed)), 0);
+	memset(&loaded_id, 0, sizeof(loaded_id));
+	memset(&loaded_ts, 0xff, sizeof(loaded_ts));
+	T_EQ("malformed record is an explicit error",
+	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), -EBADMSG);
+	T_OK("malformed record cannot expose production identity", loaded_id.is_dev);
+	T_EQ("malformed record cannot expose trust anchors", loaded_ts.count, 0);
+	settingsfake_reset();
+	T_EQ("oversized record can be injected",
+	     settings_save_one("ultrawidelock/prov", oversized, sizeof(oversized)), 0);
+	T_EQ("oversized record preserves handler errno",
+	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), -EINVAL);
+	T_OK("oversized record remains fail-closed", loaded_id.is_dev && loaded_ts.count == 0u);
+
+	t_group("ultrawidelock_prov_settings: write and erase failures surface");
+	settingsfake_reset();
+	settingsfake_fail_saves_after(0);
+	T_EQ("full settings store is reported", ultrawidelock_prov_store(&stored_id, &stored_ts),
+	     -ENOSPC);
+	settingsfake_fail_saves_after(-1);
+	T_EQ("erase succeeds", ultrawidelock_prov_erase(), 0);
+	T_EQ("erase removes exact provisioning key", settingsfake_key_count(), 0);
+}
+
 int main(void)
 {
 	test_matter_fab_settings();
+	test_ultrawidelock_prov_settings();
 
 	if (t_fail > 0) {
 		printf("  cdk-fab-settings: FAIL (%d of %d)\n", t_fail, t_fail + t_pass);
 		return 1;
 	}
-	printf("  cdk-fab-settings: PASS (%d checks — fake settings store, no NVS durability)\n",
+	printf("  cdk-settings: PASS (%d checks — fake settings store, no NVS durability)\n",
 	       t_pass);
 	return 0;
 }

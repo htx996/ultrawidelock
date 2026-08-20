@@ -324,7 +324,6 @@ static int upload_write(struct smp_streamer *ctxt)
  */
 static int erase_write(struct smp_streamer *ctxt)
 {
-	const struct ultrawidelock_flash_area *fa;
 	int rc;
 
 	ARG_UNUSED(ctxt);
@@ -332,15 +331,10 @@ static int erase_write(struct smp_streamer *ctxt)
 	if (!ultrawidelock_dfu_window_is_open()) {
 		return MGMT_ERR_EACCESSDENIED;
 	}
-	if (ultrawidelock_flash_open(ULTRAWIDELOCK_FLASH_AREA_STAGING, &fa) != 0) {
-		return MGMT_ERR_EUNKNOWN;
-	}
-	rc = ultrawidelock_flash_erase(fa, 0, ultrawidelock_flash_size(fa));
-	ultrawidelock_flash_close(fa);
+	rc = ultrawidelock_dfu_rx_erase(ULTRAWIDELOCK_DFU_OWNER_SMP);
 
-	ultrawidelock_dfu_rx_reset();
-
-	return (rc == 0) ? MGMT_ERR_EOK : MGMT_ERR_EUNKNOWN;
+	return (rc == 0) ? MGMT_ERR_EOK :
+		(rc == -EBUSY ? MGMT_ERR_EBADSTATE : MGMT_ERR_EUNKNOWN);
 }
 
 /* ---- reset, gated ---------------------------------------------------------- */

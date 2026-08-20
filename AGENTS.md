@@ -77,6 +77,9 @@ make check
 
 Target builds are `make build`, `make nrf-build`, `make anchor-pair`,
 `make nrf-init-build`, and `make esp-build`. ESP port integration also has
-`bash tests/ports/esp32/verify_port.sh`. `make hitl` runs the attached-reader
+`bash tests/ports/esp32/verify_port.sh`. The two Zephyr port checks,
+`tests/ports/zephyr/matter_srp_lifecycle_check.sh` and
+`tests/ports/zephyr/ble_link_liveness_check.sh`, are run by `make check` itself.
+`make hitl` runs the attached-reader
 and nRF5340 DK end-to-end flow. Hardware tests remain separate from host and
 compile checks.

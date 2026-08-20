@@ -16,3 +16,13 @@ fragments in `mk/`, which group recipes by board or workflow:
 Invoke targets from the repository root, for example `make build` or
 `make check`. The fragments are implementation details and are not intended to
 be invoked as standalone Makefiles.
+
+The regression tiers cross those files, so they are worth naming together. Each
+is a superset of the one above it; `tests/README.md` says what each covers.
+
+| Target | In | Needs |
+|---|---|---|
+| `make ci` | `host.mk` | a C compiler and python3 — what a pull request is judged by |
+| `make regress` | `host.mk` | the NCS toolchain, `./workspace`, a signing key |
+| `make fw-regress` | `extras.mk` | the same, and nothing else — every DWM3001CDK image plus the size gate |
+| `make regress-hil` | `nrf5340dk.mk` | a reader on its probe and the DK as the phone |

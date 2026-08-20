@@ -29,6 +29,17 @@ list(APPEND ZEPHYR_EXTRA_MODULES
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(ultrawidelock_reader_dwm3001cdk)
 
+# Faster UWB evidence settings are measurements, not release policy. Refuse a
+# configuration that could lower either floor without both explicit bench
+# acknowledgement and strict STS enforcement.
+if((CONFIG_ULTRAWIDELOCK_RANGE_TRUST_K LESS 3 OR
+    CONFIG_ULTRAWIDELOCK_APPROACH_NEAR_DWELL LESS 2) AND
+   (NOT CONFIG_ULTRAWIDELOCK_BENCH OR NOT CONFIG_ULTRAWIDELOCK_RANGE_GATE_STRICT))
+	message(FATAL_ERROR
+		"Reduced UWB consensus/dwell requires CONFIG_ULTRAWIDELOCK_BENCH=y "
+		"and CONFIG_ULTRAWIDELOCK_RANGE_GATE_STRICT=y")
+endif()
+
 # APPROTECT must never be locked on this board. SystemInit() re-asserts the lock
 # on every boot and the only way out is `nrfjprog --recover`, which mass-erases
 # flash AND UICR -- taking settings_storage at 0x7c000 with it, and with that the
@@ -83,11 +94,26 @@ target_sources(app PRIVATE
 	${ULTRAWIDELOCK_HASH_SRCS}
 	${ULTRAWIDELOCK_DYNTAG_SRCS}
 )
+if(CONFIG_ULTRAWIDELOCK_BENCH_CRED_O2)
+	set_source_files_properties(
+		"${CRED}/src/ultrawidelock_reader.c"
+		"${CRED}/src/ultrawidelock_crypto.c"
+		"${CRED}/src/ultrawidelock_hash.c"
+		"${CRED}/src/ultrawidelock_prim_psa.c"
+		PROPERTIES COMPILE_OPTIONS "-O2")
+endif()
 # Provisioning console (USB CDC-ACM, provisioning mode only).
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_SIDE_GATE app PRIVATE src/side_feed.c)
 # Measurement only; CONFIG_ULTRAWIDELOCK_THREAD_GATE defaults n so this is absent from
 # every shipping image.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_THREAD_GATE app PRIVATE src/thread_gate.c)
+# The two DoorLockAlarms, and the door-angle state they need. ANCHOR is default
+# n, so the shipping image never compiles this. Both symbols, not just ANCHOR:
+# the alarm is a Matter event, and `make reader ANCHOR=1` is an anchor build
+# with no Matter node to carry one.
+if(CONFIG_ULTRAWIDELOCK_ANCHOR AND CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	target_sources(app PRIVATE src/door_alarm.c)
+endif()
 # The DFU receiver's BLE transport (ports/zephyr/dfu/dfu_ble_zephyr.c) and the
 # rest of the gated Zephyr glue compile via the ultrawidelock_zephyr_port module under
 # the same CONFIG symbols.

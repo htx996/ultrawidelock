@@ -63,6 +63,9 @@ static struct ultrawidelock_uwb_adapter *s_adapter;
 static struct ultrawidelock_uwb_session *s_sess;
 static uint16_t s_sess_conn;
 static bool s_sess_active;
+/* Set after any ambiguous transport result. The owning reader connection is
+ * disconnected and no further counters/messages may be consumed meanwhile. */
+static bool s_transport_failed;
 
 /* The connection's BleSK ranging channel (owned by the reader session), used to
  * seal the engine's outbound SDUs. Borrowed for the session's lifetime. */
@@ -127,19 +130,31 @@ static void uwb_tx_cb(struct ultrawidelock_uwb_message *message,
 
 		/* The engine hands us a plaintext [proto][id][len][payload]; BleSK-seal it
 		 * (§11.8.2, the 4-byte header as AAD) before it goes on the wire. */
-		if (s_sc_ble != NULL && ultrawidelock_msg_seal(s_sc_ble, message->data, message->len, wire,
-						       sizeof(wire), &wl) == 0) {
+		if (!s_transport_failed && s_sc_ble != NULL &&
+		    ultrawidelock_msg_seal(s_sc_ble, message->data, message->len, wire,
+					       sizeof(wire), &wl) == 0) {
 			int rc = ultrawidelock_ble_send(conn, wire, wl);
-
-			lat_mark_sdu(message->data[0], message->data[1]);
 
 			LOG_DBG("[conn %u] ranging TX proto=0x%02x id=0x%02x (%u B, rc=%d)", conn,
 				message->data[0], message->data[1], (unsigned)wl, rc);
-			ultrawidelock_lab_evi2("rtx", "proto", message->data[0], "id", message->data[1]);
-			(void)rc;
+			if (rc == 0) {
+				lat_mark_sdu(message->data[0], message->data[1]);
+				ultrawidelock_lab_evi2("rtx", "proto", message->data[0], "id",
+						 message->data[1]);
+			} else {
+				/* seal already consumed the counter. Transport acceptance is
+				 * ambiguous, so this channel is terminal rather than rewound. */
+				s_transport_failed = true;
+				LOG_ERR("[conn %u] ranging transport result ambiguous; disconnecting", conn);
+				(void)ultrawidelock_ble_disconnect(conn);
+			}
 		} else {
-			LOG_ERR("[conn %u] ranging TX seal failed (%u B)", conn,
-				(unsigned)message->len);
+			if (!s_transport_failed) {
+				LOG_ERR("[conn %u] ranging TX seal failed (%u B)", conn,
+					(unsigned)message->len);
+				s_transport_failed = true;
+				(void)ultrawidelock_ble_disconnect(conn);
+			}
 		}
 	}
 	ultrawidelock_uwb_session_message_free(message);
@@ -299,6 +314,7 @@ int ultrawidelock_ranging_start(uint16_t conn_handle, uint32_t session_id, const
 	s_sess = sess;
 	s_sess_conn = conn_handle;
 	s_sess_active = true;
+	s_transport_failed = false;
 
 	/* No eager M1: the engine emits it (via uwb_tx_cb, BleSK-sealed) when the
 	 * device sends its Initiate-Ranging-Session (proto-2 id-1). */
@@ -310,7 +326,7 @@ int ultrawidelock_ranging_start(uint16_t conn_handle, uint32_t session_id, const
 
 int ultrawidelock_ranging_feed(uint16_t conn_handle, const uint8_t *data, size_t len)
 {
-	if (!s_sess_active || s_sess == NULL || s_sess_conn != conn_handle) {
+	if (!s_sess_active || s_transport_failed || s_sess == NULL || s_sess_conn != conn_handle) {
 		return -1;
 	}
 	if (len < 4u || len > ULTRAWIDELOCK_RANGING_MSG_MAX) {
@@ -354,6 +370,7 @@ void ultrawidelock_ranging_stop(uint16_t conn_handle)
 	 * direct free (no CCC session yet) leaves no dangling pointer. */
 	s_sess = NULL;
 	s_sess_active = false;
+	s_transport_failed = false;
 	s_sc_ble = NULL; /* borrowed from the reader session; drop before it is freed */
 	LOG_INF("[conn %u] tearing down UWB ranging session", conn_handle);
 	ultrawidelock_uwb_session_destroy(sess);

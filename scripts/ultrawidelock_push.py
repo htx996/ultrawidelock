@@ -25,6 +25,7 @@ use the CoC and get better throughput.
 
 import argparse
 import asyncio
+import secrets
 import struct
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ from pathlib import Path
 DFU_SVC_UUID = "d3b5a140-9e23-4b3a-8be4-6b1ee5f980a3"
 DFU_CHR_UUID = "d3b5a141-9e23-4b3a-8be4-6b1ee5f980a3"
 
-OP_BEGIN, OP_DATA, OP_COMMIT, OP_ABORT = 0x01, 0x02, 0x03, 0x04
+OP_BEGIN, OP_DATA, OP_COMMIT, OP_ABORT = 0x11, 0x12, 0x13, 0x14
 RSP_OK, RSP_ERR = 0x81, 0x82
 
 ERRORS = {
@@ -43,6 +44,7 @@ ERRORS = {
     5: "length or CRC disagreed at commit",
     6: "a flash write or erase failed",
     7: "malformed frame",
+    8: "another update transport owns the receiver",
 }
 
 
@@ -58,23 +60,47 @@ class Session:
         """Store the BLE client and replies queue for a GATT notification session."""
         self.client = client
         self.replies = asyncio.Queue()
+        self.transfer_id = secrets.randbits(32) or 1
 
     def on_notify(self, _sender, data):
         """Queue a received GATT notification payload for retrieval by wait_for_window."""
         self.replies.put_nowait(bytes(data))
 
-    async def call(self, frame, timeout=20.0, tolerate=()):
+    async def call(self, frame, timeout=20.0, tolerate=(), retries=3, expected_offset=None):
         """Send a frame, return the board's byte count.
 
         Errors listed in `tolerate` come back as a negative code instead of
         ending the run; everything else is fatal, because there is nothing
         useful to do with a board that has refused the transfer.
         """
-        await self.client.write_gatt_char(DFU_CHR_UUID, frame, response=True)
-        try:
-            rsp = await asyncio.wait_for(self.replies.get(), timeout)
-        except asyncio.TimeoutError:
-            die("the board stopped answering")
+        rsp = None
+        for attempt in range(retries):
+            await self.client.write_gatt_char(DFU_CHR_UUID, frame, response=True)
+            deadline = asyncio.get_event_loop().time() + timeout
+            while True:
+                try:
+                    candidate = await asyncio.wait_for(
+                        self.replies.get(), deadline - asyncio.get_event_loop().time()
+                    )
+                except asyncio.TimeoutError:
+                    if attempt + 1 == retries:
+                        die("the board stopped answering after idempotent retries")
+                    break
+
+                # A notification whose first delivery timed out can arrive
+                # behind its retry and poison the following DATA call. The
+                # transfer id rejects another uploader; the expected cursor
+                # rejects this transfer's late reply without retransmitting.
+                if candidate and candidate[0] == RSP_OK and len(candidate) == 9:
+                    transfer_id, next_offset = struct.unpack("<II", candidate[1:9])
+                    if transfer_id != self.transfer_id:
+                        continue
+                    if expected_offset is not None and next_offset != expected_offset:
+                        continue
+                rsp = candidate
+                break
+            if rsp is not None:
+                break
 
         if not rsp:
             die("empty reply")
@@ -85,7 +111,12 @@ class Session:
             die(f"refused: {ERRORS.get(code, f'unknown error {code}')}")
         if rsp[0] != RSP_OK:
             die(f"unexpected reply {rsp[0]:#04x}")
-        return struct.unpack("<I", rsp[1:5])[0] if len(rsp) >= 5 else 0
+        if len(rsp) != 9:
+            die(f"malformed OK reply ({len(rsp)} bytes)")
+        transfer_id, next_offset = struct.unpack("<II", rsp[1:9])
+        if transfer_id != self.transfer_id:
+            die(f"reply belongs to transfer {transfer_id:#010x}, expected {self.transfer_id:#010x}")
+        return next_offset
 
     async def wait_for_window(self, total, deadline):
         """Retry BEGIN until someone opens the update window.
@@ -94,12 +125,12 @@ class Session:
         started first would otherwise just fail. Asking repeatedly costs the
         board a comparison and a two-byte notification: no flash, no state.
         """
-        begin = struct.pack("<BI", OP_BEGIN, total)
+        begin = struct.pack("<BII", OP_BEGIN, self.transfer_id, total)
         loop = asyncio.get_event_loop()
         prompted = False
 
         while True:
-            if await self.call(begin, tolerate=(1,)) >= 0:
+            if await self.call(begin, tolerate=(1,), expected_offset=0) >= 0:
                 return
             if not prompted:
                 print("\n  >>> PRESS SW2 ON THE BOARD to open the update window <<<\n")
@@ -163,7 +194,7 @@ async def run(args):
 
         # One opcode byte plus ATT's three, out of whatever MTU was negotiated.
         mtu = getattr(client, "mtu_size", 23) or 23
-        chunk = max(16, min(args.chunk, mtu - 4))
+        chunk = max(1, min(args.chunk, mtu - 12))
         print(f"  connected, MTU {mtu}, sending {len(blob):,} B in {chunk} B chunks")
 
         deadline = asyncio.get_event_loop().time() + args.window_timeout
@@ -172,15 +203,21 @@ async def run(args):
         sent = 0
         while sent < len(blob):
             piece = blob[sent:sent + chunk]
-            got = await session.call(bytes([OP_DATA]) + piece)
-            sent += len(piece)
-            if got != sent:
-                die(f"board counted {got} B after {sent} B were sent")
+            expected = sent + len(piece)
+            got = await session.call(
+                struct.pack("<BII", OP_DATA, session.transfer_id, sent) + piece,
+                expected_offset=expected,
+            )
+            if got != expected:
+                die(f"board requested offset {got} after {expected} B were sent")
+            sent = got
             pct = 100.0 * sent / len(blob)
             print(f"\r  {sent:>7,} / {len(blob):,} B  {pct:5.1f}%", end="", flush=True)
         print()
 
-        await session.call(bytes([OP_COMMIT]))
+        await session.call(
+            struct.pack("<BI", OP_COMMIT, session.transfer_id), expected_offset=len(blob)
+        )
         print("  committed. The board is rebooting to apply it (~30 s).")
 
 

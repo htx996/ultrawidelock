@@ -1,22 +1,16 @@
 #!/usr/bin/env bash
-# cdk-dfu.sh — push a signed image to the DWM3001CDK over MCUboot serial recovery.
+# cdk-dfu.sh: push a signed image to the DWM3001CDK over MCUboot serial recovery.
 #
-# WHY THIS IS A SCRIPT AND NOT A MAKE RECIPE. The ordering below is the whole
-# job and a recipe got it wrong twice. MCUboot listens for an mcumgr command for
-# a fixed window after reset and then boots the application; miss the window and
-# the port answers nothing, which looks exactly like broken wiring. So the probe
-# loop has to already be RUNNING when the reset lands. Backgrounding the reset
-# instead does not work: nrfjprog spends seconds connecting to the probe before
-# it pulls the line, by which time the window has opened and shut.
+# WHY THIS IS A SCRIPT AND NOT A MAKE RECIPE. A normal boot no longer waits for
+# a host. The operator explicitly holds SW2 while the application is running;
+# after five seconds it writes Zephyr's retained boot mode and warm-resets into
+# MCUboot. This script probes while that gesture is made, then performs the
+# single-slot upload only after MCUboot has answered.
 #
-# NO BUTTON IS NEEDED, but not for the reason an earlier version of this comment
-# gave. SW1 DOES reset this board: UICR.PSELRESET reads 0x00000012 (pin 18,
-# CONNECT clear), and a tap produces a full fresh boot on RTT. Check it with
-#   nrfjprog --memrd 0x10001200 --n 8
-# CONFIG_GPIO_AS_PINRESET only WRITES that field, so grepping an app's .config
-# for that symbol says nothing about whether the pin currently resets.
-#
-# This resets over SWD anyway, because that needs no operator and no timing.
+# A short runtime SW2 press still opens the signed application DFU window. The
+# hold is deliberately longer and enters the cable-only recovery floor. SW2 at
+# boot retains its factory-reset/provisioning meaning; MCUboot never claims the
+# GPIO directly.
 #
 # WHAT DOES NOT WORK, AND IS NOT UNDERSTOOD. Serial recovery completed exactly
 # one real upload (2026-08-02 ~22:00) and has not been reproducible since, on
@@ -27,7 +21,8 @@
 # the reset mechanism. Also verified WORKING: UART TX (3,392 bytes out of the
 # app), UART RX electrically (EVENTS_RXDRDY=1 and ERRORSRC=0x1 after 200 bytes
 # in), the pinctrl in both images, and MCUboot reaching its wait window at all
-# (the application appears ~5 s after reset, which is the window elapsing).
+# (the application used to appear ~5 s after reset, which was the old window
+# elapsing).
 #
 # So MCUboot sits in its window on a working UART and does not answer. The next
 # measurement worth taking is instrumenting MCUboot itself rather than inferring
@@ -46,7 +41,9 @@ set -uo pipefail
 PORT="${1:?usage: cdk-dfu.sh <port> <baud> <signed-image> [chip]}"
 BAUD="${2:?}"
 IMAGE="${3:?}"
-CHIP="${4:-nRF52833_xxAA}"
+# Fourth argument is retained for makefile compatibility; recovery entry no
+# longer uses SWD or needs a chip name.
+: "${4:-nRF52833_xxAA}"
 CONN="dev=${PORT},baud=${BAUD}"
 PROBES="${DFU_PROBES:-120}"
 
@@ -60,33 +57,23 @@ probe() { mcumgr --conntype serial --connstring "$CONN" -t 0.4 image list >/dev/
 
 printf '  upload %s\n      to %s @ %s\n' "$IMAGE" "$PORT" "$BAUD"
 
-# Already sitting in recovery from an earlier run? Serial recovery is sticky
-# once it has taken a command, so skip the reset rather than kick it out.
+# Already sitting in recovery from an earlier run? Skip the gesture.
 if probe; then
 	printf '  MCUboot is already in recovery\n'
 else
-	printf '  resetting over SWD (no button to press), probing while it comes up\n'
-	HIT="$(mktemp)"; rm -f "$HIT"
-	(
-		i=0
-		while [ "$i" -lt "$PROBES" ]; do
-			i=$((i + 1))
-			if probe; then printf '%s' "$i" >"$HIT"; exit 0; fi
-		done
-	) &
-	loop=$!
-	sleep 1                       # let the loop get ahead of the reset
-	nrfjprog --reset >/dev/null 2>&1 || probe-rs reset --chip "$CHIP" >/dev/null 2>&1 || {
-		echo "  could not reset over SWD  ·  is the probe attached (J9)?" >&2; kill $loop 2>/dev/null; exit 1; }
-	wait $loop
-	if [ ! -s "$HIT" ]; then
-		rm -f "$HIT"
-		echo "  MCUboot never answered across $PROBES probes spanning an SWD reset." >&2
-		echo "  Widen CONFIG_BOOT_SERIAL_WAIT_FOR_DFU_TIMEOUT in apps/dwm3001cdk-lock/sysbuild/mcuboot.conf," >&2
-		echo "  then \`make build && make flash\`." >&2
+	printf '  hold SW2 continuously for 5 seconds while the application is running\n'
+	i=0
+	hit=''
+	while [ "$i" -lt "$PROBES" ]; do
+		i=$((i + 1))
+		if probe; then hit="$i"; break; fi
+	done
+	if [ -z "$hit" ]; then
+		echo "  MCUboot never answered across $PROBES probes." >&2
+		echo "  Confirm the app logged the SW2 recovery hold, then instrument MCUboot serial recovery." >&2
 		exit 1
 	fi
-	printf '  MCUboot answered on probe %s\n' "$(cat "$HIT")"; rm -f "$HIT"
+	printf '  MCUboot answered on probe %s\n' "$hit"
 fi
 
 printf '  uploading %s bytes  ·  DO NOT INTERRUPT (60-90 s at %s baud)\n' \

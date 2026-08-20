@@ -48,10 +48,10 @@ ERR_CLOSED = 1
 # Every opcode the receiver knows. All four must be refused identically: a gate
 # that only guards BEGIN leaves the rest of the state machine reachable.
 CASES = [
-    ("BEGIN", bytes([0x01]) + struct.pack("<I", 1024)),
-    ("DATA", bytes([0x02]) + bytes(8)),
-    ("COMMIT", bytes([0x03])),
-    ("ABORT", bytes([0x04])),
+    ("BEGIN", bytes([0x11]) + struct.pack("<II", 1, 1024)),
+    ("DATA", bytes([0x12]) + struct.pack("<II", 1, 0)),
+    ("COMMIT", bytes([0x13]) + struct.pack("<I", 1)),
+    ("ABORT", bytes([0x14]) + struct.pack("<I", 1)),
 ]
 
 

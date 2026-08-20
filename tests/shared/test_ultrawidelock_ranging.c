@@ -281,6 +281,8 @@ static struct {
 } s_tx[TX_MAX];
 static int s_txn;
 static int s_ble_send_rc; /* one-shot: nonzero fails (and drops) the next send */
+static int s_disconnects;
+static uint16_t s_last_disconnected;
 
 int ultrawidelock_ble_send(uint16_t conn_handle, const uint8_t *data, size_t len)
 {
@@ -296,6 +298,13 @@ int ultrawidelock_ble_send(uint16_t conn_handle, const uint8_t *data, size_t len
 		s_tx[s_txn].conn = conn_handle;
 		s_txn++;
 	}
+	return 0;
+}
+
+int ultrawidelock_ble_disconnect(uint16_t conn_handle)
+{
+	s_disconnects++;
+	s_last_disconnected = conn_handle;
 	return 0;
 }
 
@@ -537,12 +546,22 @@ int main(void)
 	before = s_txn;
 	ultrawidelock_prim_host_fail_encrypt_after = 0; /* next GCM encrypt fails */
 	tx_push(irs, sizeof(irs), 7);
-	okc("t.seal_fail", s_txn == before && s_msg_frees == 3);
+	okc("t.seal_fail.terminates", s_txn == before && s_msg_frees == 3 &&
+					 s_disconnects == 1);
+	ultrawidelock_ranging_stop(7);
+	ultrawidelock_secchan_init(&sc, k_blesk_r, k_blesk_d);
+	okc("t.restart_after_seal_fail", ultrawidelock_ranging_start(7, 0x11223344u, ursk, &sc) == 0);
 
-	s_ble_send_rc = -1; /* sealed fine, send fails; the unit frees and moves on */
+	s_ble_send_rc = -1; /* sealed fine, send fails: channel becomes terminal */
 	tx_push(irs, sizeof(irs), 7);
-	okc("t.send_fail", s_txn == before && s_msg_frees == 4);
-	s_open_ctr++; /* that seal consumed reader counter 3; resync the mirror */
+	okc("t.send_fail.terminates", s_txn == before && s_msg_frees == 4 &&
+				       s_disconnects == 2 && s_last_disconnected == 7);
+	/* A later callback must neither send nor silently consume another counter.
+	 * Continuing would hide counter loss until the peer rejected an unrelated
+	 * frame. */
+	tx_push(irs, sizeof(irs), 7);
+	okc("t.send_fail.no_continuation", s_txn == before && s_msg_frees == 5 &&
+					      s_disconnects == 2);
 
 	printf("E: events\n");
 	before = s_ev_frees;
@@ -554,7 +573,8 @@ int main(void)
 	ev_typed(ULTRAWIDELOCK_UWB_SESSION_EVENT_TYPE_SESSION_CONTROLLER_REPORT, 7);
 	okc("e.freed", s_ev_frees == before + 6);
 	ev_status(CHERRY_CCC_SESSION_STATE_DEINIT, 8); /* wrong conn: session kept */
-	okc("e.deinit_wrong_conn", ultrawidelock_ranging_feed(7, irs, sizeof(irs)) == 0);
+	okc("e.deinit_wrong_conn_still_terminal",
+	     ultrawidelock_ranging_feed(7, irs, sizeof(irs)) == -1);
 	ev_status(CHERRY_CCC_SESSION_STATE_DEINIT, 7); /* engine freed the session */
 	okc("e.deinit", ultrawidelock_ranging_feed(7, irs, sizeof(irs)) == -1);
 
@@ -578,7 +598,7 @@ int main(void)
 	 * (and still freed), and the destroy-emitted DEINIT echo is a no-op. */
 	before = s_txn;
 	tx_push(irs, sizeof(irs), 9);
-	okc("x.tx_after_stop", s_txn == before && s_msg_frees == 5);
+	okc("x.tx_after_stop", s_txn == before && s_msg_frees == 6);
 	ev_status(CHERRY_CCC_SESSION_STATE_DEINIT, 9);
 	okc("x.deinit_echo", ultrawidelock_ranging_feed(9, irs, 8) == -1);
 

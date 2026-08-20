@@ -20,6 +20,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/atomic.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -102,6 +103,26 @@ static struct matter_device_info s_info = {
 	 * zero is a writable value so it cannot mean "never set". */
 	.approach_direction = MATTER_APPROACH_DIRECTION_ALL,
 };
+
+/* Advertising and the main loop read these outside the Matter owner. Publish
+ * only the two scalar predicates they need instead of exposing s_info or the
+ * administrative state to a second lock owner. Static zero is the correct
+ * pre-init state: no restored fabric yet and no open window. */
+static atomic_t s_has_fabric_snapshot;
+static atomic_t s_window_open_snapshot;
+
+static void fabric_snapshot_refresh_owned(void)
+{
+	bool present = false;
+
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (s_info.fabrics[i].index != 0u) {
+			present = true;
+			break;
+		}
+	}
+	atomic_set(&s_has_fabric_snapshot, present ? 1 : 0);
+}
 static struct matter_im_server s_im;
 
 /**
@@ -112,34 +133,6 @@ static struct matter_im_server s_im;
  * certification declaration plus a signature, where the largest PASE message is
  * 128 bytes. Encryption adds MATTER_TAG_LEN on top of the cleartext.
  */
-/*
- * Sized by the whole data model in one message, not by any single attribute: a
- * controller reads and subscribes to everything the moment it owns the node.
- * A report that does not fit is not truncated, it is refused -- so undersizing
- * this produces a subscription that establishes and then never reports, and a
- * read that is answered with nothing at all.
- *
- * Raised 1536 -> 2048 when endpoint 1 landed. The host assertion that used to
- * guard this named ENDPOINT 0, so it measured part of the answer and passed
- * while the real full-wildcard report -- every endpoint, which is what a
- * controller actually asks for -- had already outgrown the buffer.
- * tests/host/test_matter_im.c now asserts the wildcard with no endpoint too.
- *
- * The subscription path chunks and so survives any size; the READ path
- * (on_read_request) does not, and this buffer is the whole of its ceiling.
- * Chunking reads is the real fix and is still owed.
- *
- * Raised 2048 -> 3072 when the Door Lock globals and the Approach Direction
- * cluster landed: the uncommissioned full-wildcard report measured 2069 B on
- * the host, and a commissioned node's fabric data has previously added ~420 B
- * on top of the fixture's number.
- */
-#define MATTER_REPORT_MAX 3072u
-static uint8_t s_out[MATTER_EXCHANGE_HEADER_MAX + MATTER_REPORT_MAX + MATTER_TAG_LEN];
-
-/** The Interaction Model payload, before framing. */
-static uint8_t s_report[MATTER_REPORT_MAX];
-
 /*
  * The largest IM payload that still fits one Thread datagram.
  *
@@ -157,6 +150,58 @@ static uint8_t s_report[MATTER_REPORT_MAX];
 #define MATTER_IM_PAYLOAD_MAX                                                                      \
 	(MATTER_MAX_MESSAGE_LEN - MATTER_EXCHANGE_HEADER_MAX - MATTER_TAG_LEN)
 
+/* Two packets, not a scratch output plus a scratch payload. Encoding starts at
+ * MATTER_EXCHANGE_HEADER_MAX inside a reserved slot, then framing memmoves the
+ * payload behind the actual headers and seals it in place. One BLE packet may
+ * be in flight while one response is queued; a third is refused explicitly. */
+#define MATTER_TX_SLOTS 2u
+static uint8_t s_tx_backing[MATTER_TX_SLOTS][MATTER_MAX_MESSAGE_LEN];
+static struct matter_tx_slot s_tx_slots[MATTER_TX_SLOTS];
+static struct matter_tx_pool s_tx_pool;
+
+enum tx_transport {
+	TX_TRANSPORT_BLE = 1,
+	TX_TRANSPORT_THREAD = 2,
+};
+
+enum tx_effect_kind {
+	TX_EFFECT_NONE = 0,
+	TX_EFFECT_READ,
+	TX_EFFECT_SUB_PRIME,
+	TX_EFFECT_SUB_RESPONSE,
+};
+
+struct tx_effect {
+	enum tx_effect_kind kind;
+	uint16_t session_id;
+	uint16_t exchange_id;
+	uint16_t emitted;
+	uint32_t subscription_id;
+	bool more;
+	bool over_thread;
+};
+
+struct tx_thread_owner {
+	uint16_t session_id;
+	uint16_t exchange_id;
+	uint32_t request_counter;
+	bool retryable;
+};
+
+static struct tx_effect s_tx_effects[MATTER_TX_SLOTS];
+static struct tx_thread_owner s_tx_thread_owner[MATTER_TX_SLOTS];
+static uint32_t s_ble_tx_token;
+static uint32_t s_thread_tx_token;
+static ultrawidelock_mutex_t s_owner_lock;
+
+static void tx_effect_finish(struct matter_tx_slot *slot, int status);
+static int tx_ble_pump(void);
+static uint16_t current_session_id(void);
+static void tx_thread_reap_expired(uint32_t now_ms);
+static void tx_thread_reap_schedule_owned(uint32_t now_ms);
+static void tx_thread_reap_work_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(s_thread_reap_work, tx_thread_reap_work_fn);
+
 /*
  * The Thread transport's reply buffer is exactly this ceiling, and it is sized
  * in a header that cannot see the three terms above. Assert the identity here,
@@ -167,15 +212,6 @@ static uint8_t s_report[MATTER_REPORT_MAX];
 BUILD_ASSERT(MATTER_THREAD_REPLY_MAX ==
 		     MATTER_EXCHANGE_HEADER_MAX + MATTER_IM_PAYLOAD_MAX + MATTER_TAG_LEN,
 	     "the Thread reply buffer must hold exactly one full-size Matter message");
-
-/**
- * Plaintext of an encrypted message.
- *
- * Separate from the BTP reassembly area rather than decrypted in place: the
- * ciphertext has to stay intact while its tag is checked, and aliasing the two
- * would make that depend on the cipher's write order.
- */
-static uint8_t s_pt[CONFIG_ULTRAWIDELOCK_MATTER_BLE_RX_BUF];
 
 /*
  * The two seams matter_attest.h declares. Kept here rather than in the module
@@ -541,6 +577,7 @@ static void admin_close(void)
 	}
 	s_verifier = s_factory_verifier;
 	s_admin_window = MATTER_ADMIN_WINDOW_NOT_OPEN;
+	atomic_set(&s_window_open_snapshot, 0);
 	s_admin_fabric = 0u;
 	s_admin_vendor = 0u;
 	matter_ble_set_discriminator(0u);
@@ -557,7 +594,9 @@ static void admin_close(void)
 static void admin_expire(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	ultrawidelock_mutex_lock(&s_owner_lock);
 	admin_close();
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 }
 static K_WORK_DELAYABLE_DEFINE(s_admin_timer, admin_expire);
 
@@ -570,6 +609,7 @@ static K_WORK_DELAYABLE_DEFINE(s_admin_timer, admin_expire);
 static void admin_arm(uint16_t timeout_s, uint8_t kind)
 {
 	s_admin_window = kind;
+	atomic_set(&s_window_open_snapshot, 1);
 	(void)k_work_reschedule(&s_admin_timer, K_SECONDS(timeout_s));
 	ultrawidelock_ble_readvertise();
 	/*
@@ -580,8 +620,9 @@ static void admin_arm(uint16_t timeout_s, uint8_t kind)
 	 * until this line existed. Same discriminator as the BLE advert, because
 	 * a controller that finds one and falls back to the other matches on it.
 	 */
-	(void)matter_thread_advertise_commissionable(matter_ble_discriminator(),
-						     MATTER_OPERATIONAL_PORT);
+	uint16_t discriminator = matter_ble_discriminator();
+
+	(void)matter_thread_advertise_commissionable(discriminator, MATTER_OPERATIONAL_PORT);
 	/* Bench builds only, and deliberately here: the dataset is wanted exactly
 	 * when a window is open, and tying the disclosure to that keeps it to a
 	 * gesture the owner just made rather than every boot. */
@@ -673,7 +714,7 @@ static uint8_t admin_status(void)
 
 bool matter_commission_window_open(void)
 {
-	return s_admin_window != MATTER_ADMIN_WINDOW_NOT_OPEN;
+	return atomic_get(&s_window_open_snapshot) != 0;
 }
 
 /**
@@ -725,15 +766,19 @@ static int begin_session(void)
 	int rc;
 
 	/*
-	 * A new commissioner is starting, so whatever the last one left behind
-	 * is now stale. Doing it here rather than on link loss is what lets a
-	 * commissioner close BLE and carry on over Thread with its fabric
-	 * intact, while a genuine retry still gets a clean table.
+	 * A new commissioner supersedes an unfinished fail-safe transaction.
+	 * Withdraw only the SRP names created by that transaction, then let the
+	 * cluster layer wipe only those fabric slots. Existing completed fabrics
+	 * remain registered and usable while a newcomer retries.
+	 *
+	 * Removal is asynchronous. matter_thread_unadvertise() keeps each service
+	 * object retired until OpenThread returns it through the callback, and a
+	 * replacement name uses another free slot or waits in the desired table.
 	 */
 	if (s_info.attempt.active) {
 		LOG_INF("new commissioner; rolling back the abandoned attempt");
 	}
-	matter_clusters_failsafe_expire(&s_info);
+	fabric_snapshot_refresh_owned();
 
 	if (ultrawidelock_random(responder_random, sizeof(responder_random)) != 0 ||
 	    ultrawidelock_random(y_entropy, sizeof(y_entropy)) != 0 ||
@@ -826,6 +871,7 @@ static uint8_t s_case_next_victim;
  * table below; declared here because eviction is what makes it necessary.
  */
 static void sub_drop_session(uint16_t session_id);
+static void read_drop_session(uint16_t session_id, bool over_thread);
 
 /** The slot holding @p session_id, or MATTER_CASE_SESSIONS if none does. */
 static uint8_t case_slot_of(uint16_t session_id)
@@ -865,6 +911,7 @@ static uint8_t case_alloc_slot(void)
 	 * subscription behind would hold a slot for a peer that can no longer be
 	 * reached, and answer its StatusResponses to a session that is gone. */
 	sub_drop_session(s_case_x[i].local_session_id);
+	read_drop_session(s_case_x[i].local_session_id, true);
 	return i;
 }
 
@@ -891,9 +938,170 @@ static size_t s_thread_reply_len;
  * staged datagram it cannot parse.
  */
 
-/* Defined below; the Thread datagram path hands PASE to the same handler BLE
- * uses, rather than growing a second copy of the state machine. */
-static void on_message(const uint8_t *msg, size_t len);
+/* Defined below; the Thread datagram path hands PASE to the same owned handler
+ * BLE uses, rather than growing a second copy of the state machine. */
+static void on_message_owned(uint8_t *msg, size_t len);
+static void on_message(uint8_t *msg, size_t len);
+
+static size_t tx_slot_index(const struct matter_tx_slot *slot)
+{
+	return (size_t)(slot - s_tx_slots);
+}
+
+static uint32_t tx_now_ms(void)
+{
+	int64_t now = ultrawidelock_uptime_ms();
+
+	return now > 0 ? (uint32_t)now : 0u;
+}
+
+static struct matter_tx_slot *tx_acquire(void)
+{
+	uint8_t transport = s_thread_reply != NULL ? TX_TRANSPORT_THREAD : TX_TRANSPORT_BLE;
+	struct matter_tx_slot *slot;
+
+	/* Reaping is demand-driven: expired slots consume no resource until the
+	 * next packet needs one, and this makes that acquisition recover them
+	 * without another timer or work item. */
+	tx_thread_reap_expired(tx_now_ms());
+	slot = matter_tx_pool_acquire(&s_tx_pool, transport);
+
+	if (slot != NULL) {
+		memset(&s_tx_effects[tx_slot_index(slot)], 0, sizeof(s_tx_effects[0]));
+		memset(&s_tx_thread_owner[tx_slot_index(slot)], 0,
+		       sizeof(s_tx_thread_owner[0]));
+	}
+	return slot;
+}
+
+static uint8_t *tx_payload(struct matter_tx_slot *slot, size_t *cap)
+{
+	if (slot == NULL || slot->capacity < MATTER_EXCHANGE_HEADER_MAX + MATTER_TAG_LEN) {
+		return NULL;
+	}
+	if (cap != NULL) {
+		*cap = slot->capacity - MATTER_EXCHANGE_HEADER_MAX - MATTER_TAG_LEN;
+	}
+	return slot->data + MATTER_EXCHANGE_HEADER_MAX;
+}
+
+static void tx_abort_build(struct matter_tx_slot *slot)
+{
+	if (slot == NULL) {
+		return;
+	}
+	if (slot->state == MATTER_TX_SLOT_BUILDING) {
+		(void)matter_tx_pool_cancel(&s_tx_pool, slot->token);
+		return;
+	}
+	(void)matter_tx_pool_reject(&s_tx_pool, slot->token);
+}
+
+static int tx_publish(struct matter_tx_slot *slot, size_t framed)
+{
+	int rc;
+
+	if (matter_tx_slot_commit(slot, framed) != MATTER_OK) {
+		tx_abort_build(slot);
+		return MATTER_E_INVAL;
+	}
+	if (slot->transport == TX_TRANSPORT_THREAD) {
+		if (s_thread_reply == NULL || framed > s_thread_reply_cap ||
+		    s_thread_tx_token != 0u) {
+			tx_effect_finish(slot, MATTER_E_NOSPACE);
+			(void)matter_tx_pool_reject(&s_tx_pool, slot->token);
+			return MATTER_E_NOSPACE;
+		}
+		memcpy(s_thread_reply, slot->data, framed);
+		s_thread_reply_len = framed;
+		/* Copying into port scratch is not transport completion. Keep the
+		 * owned slot and its deferred effect until otUdpSend accepts it. */
+		if (matter_tx_slot_in_flight(slot) != MATTER_OK) {
+			tx_effect_finish(slot, MATTER_E_STATE);
+			(void)matter_tx_pool_reject(&s_tx_pool, slot->token);
+			return MATTER_E_STATE;
+		}
+		s_thread_tx_token = slot->token;
+		return MATTER_OK;
+	}
+	if (s_ble_tx_token != 0u) {
+		/* Kept READY until the accepted indication completes. */
+		return MATTER_OK;
+	}
+	rc = tx_ble_pump();
+	return rc;
+}
+
+static int tx_frame(struct matter_tx_slot *slot, struct matter_exchange *x, uint16_t protocol,
+		    uint8_t opcode, const uint8_t *payload, size_t payload_len, bool initiator,
+		    uint16_t exchange_id)
+{
+	uint8_t *owned_payload;
+	size_t payload_cap;
+	size_t framed = 0u;
+	int rc;
+
+	owned_payload = tx_payload(slot, &payload_cap);
+	if (owned_payload == NULL || payload_len > payload_cap) {
+		tx_abort_build(slot);
+		return MATTER_E_NOSPACE;
+	}
+	if (payload != owned_payload && payload_len > 0u) {
+		memmove(owned_payload, payload, payload_len);
+	}
+	if (slot->transport == TX_TRANSPORT_THREAD) {
+		struct tx_thread_owner *owner = &s_tx_thread_owner[tx_slot_index(slot)];
+
+		owner->session_id = x->secure ? x->local_session_id : 0u;
+		owner->exchange_id = x->exchange_id;
+		owner->request_counter = x->ack_counter;
+		owner->retryable = x->mrp && x->ack_pending;
+	}
+	if (initiator) {
+		rc = matter_exchange_send_initiator(x, exchange_id, protocol, opcode, owned_payload,
+						    payload_len, slot->data, slot->capacity, &framed);
+	} else if (protocol == MATTER_PROTOCOL_SECURE_CHANNEL) {
+		rc = matter_exchange_reply(x, opcode, owned_payload, payload_len, slot->data,
+					   slot->capacity, &framed);
+	} else {
+		rc = matter_exchange_send(x, protocol, opcode, owned_payload, payload_len, slot->data,
+					  slot->capacity, &framed);
+	}
+	if (rc != MATTER_OK) {
+		tx_abort_build(slot);
+		return rc;
+	}
+	return tx_publish(slot, framed);
+}
+
+static int tx_ble_pump(void)
+{
+	struct matter_tx_slot *slot;
+	int rc;
+
+	if (s_ble_tx_token != 0u) {
+		return MATTER_OK;
+	}
+	slot = matter_tx_pool_ready(&s_tx_pool, TX_TRANSPORT_BLE);
+	if (slot == NULL) {
+		return MATTER_OK;
+	}
+	/* Publish the loan token before entering the transport. Both current
+	 * backends complete asynchronously, but ordering the state this way also
+	 * makes a future synchronous backend unable to complete an unowned token. */
+	if (matter_tx_slot_in_flight(slot) != MATTER_OK) {
+		return MATTER_E_STATE;
+	}
+	s_ble_tx_token = slot->token;
+	rc = matter_ble_send(slot->data, slot->len);
+	if (rc == 0) {
+		return MATTER_OK;
+	}
+	s_ble_tx_token = 0u;
+	tx_effect_finish(slot, rc);
+	(void)matter_tx_pool_reject(&s_tx_pool, slot->token);
+	return rc;
+}
 
 /**
  * Frame and send a Matter message with the specified opcode and payload. Over BLE, send via
@@ -904,30 +1112,15 @@ static void send_framed(uint8_t opcode, const uint8_t *payload, size_t len)
 {
 	struct matter_exchange *x =
 		(s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange;
-	size_t framed = 0u;
+	struct matter_tx_slot *slot = tx_acquire();
 	int rc;
 
-	rc = matter_exchange_reply(x, opcode, payload, len, s_out, sizeof(s_out), &framed);
-	if (rc != MATTER_OK) {
-		LOG_ERR("framing opcode 0x%02x rc=%d", opcode, rc);
+	if (slot == NULL) {
+		LOG_ERR("no owned packet slot for opcode 0x%02x", opcode);
 		return;
 	}
-	LOG_HEXDUMP_DBG(s_out, framed > 40u ? 40u : framed, "reply (first bytes)");
-
-	if (s_thread_reply != NULL) {
-		if (framed > s_thread_reply_cap) {
-			LOG_ERR("opcode 0x%02x needs %u B, have %u", opcode, (unsigned int)framed,
-				(unsigned int)s_thread_reply_cap);
-			return;
-		}
-		memcpy(s_thread_reply, s_out, framed);
-		s_thread_reply_len = framed;
-		LOG_DBG("staged opcode 0x%02x, %u B for Thread", opcode, (unsigned int)framed);
-		return;
-	}
-
-	rc = matter_ble_send(s_out, framed);
-	LOG_DBG("sent opcode 0x%02x, %u B framed, rc=%d", opcode, (unsigned int)framed, rc);
+	rc = tx_frame(slot, x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, payload, len, false, 0u);
+	LOG_DBG("sent opcode 0x%02x, %u B payload, rc=%d", opcode, (unsigned int)len, rc);
 }
 
 /**
@@ -966,6 +1159,7 @@ static ultrawidelock_sem_t s_fab_done;
 static void fab_store_work_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
+	ultrawidelock_mutex_lock(&s_owner_lock);
 	s_fab_request.result = -EIO;
 	for (uint8_t attempt = 0u; attempt < FAB_STORE_ATTEMPTS; attempt++) {
 		if (s_fab_request.clear_reader) {
@@ -983,6 +1177,7 @@ static void fab_store_work_fn(struct k_work *w)
 			break;
 		}
 	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 	ultrawidelock_sem_give(&s_fab_done);
 }
 static K_WORK_DEFINE(s_fab_store_work, fab_store_work_fn);
@@ -1055,52 +1250,109 @@ static const struct matter_commissioning_hooks k_commissioning_hooks = {
 /* Defined with the CASE and subscription tables it invalidates. */
 static void case_drop_fabric(uint8_t fabric_index);
 
-/**
- * Frame and send a Matter Interaction Model message with the specified opcode and payload. Over
- * BLE, send via matter_ble_send; over Thread, stage the framed bytes in s_thread_reply. Log errors
- * if framing fails or the buffer is too small.
- */
-static void send_im(uint8_t opcode, const uint8_t *payload, size_t len)
+static int send_standalone_ack(struct matter_exchange *x)
 {
-	struct matter_exchange *x =
-		(s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange;
+	struct matter_tx_slot *slot = tx_acquire();
 	size_t framed = 0u;
 	int rc;
 
-	rc = matter_exchange_send(x, MATTER_PROTOCOL_INTERACTION_MODEL, opcode, payload, len, s_out,
-				  sizeof(s_out), &framed);
+	if (slot == NULL) {
+		return MATTER_E_NOSPACE;
+	}
+	if (slot->transport == TX_TRANSPORT_THREAD) {
+		struct tx_thread_owner *owner = &s_tx_thread_owner[tx_slot_index(slot)];
+
+		owner->session_id = x->secure ? x->local_session_id : 0u;
+		owner->exchange_id = x->exchange_id;
+		owner->request_counter = x->ack_counter;
+		owner->retryable = x->mrp && x->ack_pending;
+	}
+	rc = matter_exchange_standalone_ack(x, slot->data, slot->capacity, &framed);
 	if (rc != MATTER_OK) {
-		LOG_ERR("framing IM opcode 0x%02x rc=%d (%u B)", opcode, rc, (unsigned int)len);
-		return;
+		tx_abort_build(slot);
+		return rc;
 	}
-
-	if (s_thread_reply != NULL) {
-		if (framed > s_thread_reply_cap) {
-			LOG_ERR("IM opcode 0x%02x needs %u B, have %u", opcode, (unsigned int)framed,
-				(unsigned int)s_thread_reply_cap);
-			return;
-		}
-		memcpy(s_thread_reply, s_out, framed);
-		s_thread_reply_len = framed;
-		LOG_DBG("  IM opcode 0x%02x staged over CASE, %u B", opcode, (unsigned int)framed);
-		return;
-	}
-
-	rc = matter_ble_send(s_out, framed);
-	LOG_DBG("IM opcode 0x%02x: %u B payload, %u B sealed, rc=%d", opcode, (unsigned int)len,
-		(unsigned int)framed, rc);
+	return tx_publish(slot, framed);
 }
 
 /**
- * Answer a ReadRequest.
+ * A plain Read that spans multiple ReportData messages.
  *
- * Kept static rather than on the stack: the request holds up to
- * MATTER_IM_MAX_PATHS paths and the report another half kilobyte, and this runs
- * on the Matter work queue, whose size is still an argument rather than a
- * measurement (see CONFIG_ULTRAWIDELOCK_MATTER_BLE_WQ_STACK). Only one commissioner is
- * ever served at a time, so one of each is enough.
+ * Slots are keyed by secure session and exchange. Two simultaneous chunked
+ * reads are bounded explicitly; a third receives RESOURCE_EXHAUSTED instead
+ * of choosing the amount of static RAM this lock spends.
  */
-static struct matter_im_read s_read;
+#define MATTER_READ_SLOTS 2u
+static struct matter_im_read_state s_reads[MATTER_READ_SLOTS];
+static struct matter_im_read_pool s_read_pool;
+
+static struct matter_im_read_state *read_state_find(uint16_t session_id, uint16_t exchange_id,
+						     bool over_thread)
+{
+	return matter_im_read_pool_find(&s_read_pool, session_id, exchange_id, over_thread);
+}
+
+static void read_drop_session(uint16_t session_id, bool over_thread)
+{
+	matter_im_read_pool_drop_session(&s_read_pool, session_id, over_thread);
+}
+
+/** Send the next bounded ReportData message for a plain Read. */
+static void send_read_chunk(struct matter_im_read_state *s)
+{
+	struct matter_im_report_stats stats;
+	struct matter_tx_slot *slot = tx_acquire();
+	uint8_t *payload;
+	size_t payload_cap;
+	size_t report_len = 0u;
+	uint16_t emitted = 0u;
+	bool more = false;
+	int rc;
+
+	if (slot == NULL) {
+		LOG_ERR("no owned packet slot for Read ReportData");
+		s->in_use = false;
+		return;
+	}
+	payload = tx_payload(slot, &payload_cap);
+	rc = matter_im_report_data_chunk(&s_im, &s->read, s->sent, payload,
+					 payload_cap, &report_len, &more, &emitted,
+					 &stats);
+	if (rc != MATTER_OK) {
+		LOG_ERR("cannot build Read ReportData chunk (%d)", rc);
+		tx_abort_build(slot);
+		s->in_use = false;
+		return;
+	}
+	if (emitted == 0u && more) {
+		LOG_ERR("a single Read attribute does not fit one Matter message");
+		tx_abort_build(slot);
+		s->in_use = false;
+		return;
+	}
+	if (stats.unexpanded_wildcard > 0u) {
+		LOG_WRN("%u wildcard path(s) not expanded; Read report is incomplete",
+			stats.unexpanded_wildcard);
+	}
+	LOG_INF("  Read chunk %u B, %u report(s), %u total, %s",
+		(unsigned int)report_len, emitted, (unsigned int)(s->sent + emitted),
+		more ? "MORE" : "last");
+	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
+		.kind = TX_EFFECT_READ,
+		.session_id = s->session_id,
+		.exchange_id = s->exchange_id,
+		.emitted = emitted,
+		.more = more,
+		.over_thread = s->over_thread,
+	};
+	if (tx_frame(slot,
+		     (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
+		     MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_REPORT_DATA, payload, report_len,
+		     false, 0u) != MATTER_OK) {
+		LOG_ERR("Read ReportData was not accepted by its transport");
+		s->in_use = false;
+	}
+}
 
 /**
  * Handle an incoming Matter ReadRequest. Decodes the paths being read, logs them per session type
@@ -1109,21 +1361,53 @@ static struct matter_im_read s_read;
  */
 static void on_read_request(const struct matter_exchange_in *in)
 {
-	struct matter_im_report_stats stats;
-	size_t report_len = 0u;
+	struct matter_im_read_state *s;
+	uint16_t session_id;
+	bool over_thread = s_thread_reply != NULL;
+	size_t status_len = 0u;
 	int rc;
 
-	rc = matter_im_read_request_decode(in->payload, in->payload_len, &s_read);
+	session_id = current_session_id();
+	rc = matter_im_read_pool_acquire(&s_read_pool, session_id, in->exchange_id, over_thread, &s);
+	if (rc == MATTER_E_DUP) {
+		/* Exchange replay filtering normally consumes this earlier. Keep the
+		 * cursor intact if a duplicate ever reaches this boundary. */
+		LOG_WRN("duplicate ReadRequest reached the cursor owner");
+		return;
+	}
+	if (rc != MATTER_OK) {
+		struct matter_tx_slot *slot = tx_acquire();
+		uint8_t *payload;
+		size_t payload_cap;
+
+		LOG_WRN("two chunked Reads are already live; refusing another");
+		payload = tx_payload(slot, &payload_cap);
+		if (slot != NULL &&
+		    matter_im_status_response_encode(MATTER_IM_STATUS_RESOURCE_EXHAUSTED,
+						     payload, payload_cap, &status_len) ==
+		    MATTER_OK) {
+			(void)tx_frame(slot,
+				       (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur]
+										 : &s_exchange,
+				       MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_STATUS_RESPONSE,
+				       payload, status_len, false, 0u);
+		} else if (slot != NULL) {
+			tx_abort_build(slot);
+		}
+		return;
+	}
+	rc = matter_im_read_request_decode(in->payload, in->payload_len, &s->read);
 	if (rc != MATTER_OK) {
 		LOG_WRN("unreadable ReadRequest (%d), %u B", rc, (unsigned int)in->payload_len);
+		s->in_use = false;
 		return;
 	}
 
 	/* What was asked, not just how much. Which paths a commissioner reads is
 	 * the specification for what to implement next, and reading it out of a
 	 * hexdump by hand has already cost more than this line does. */
-	for (uint8_t i = 0; i < s_read.n_paths; i++) {
-		const struct matter_im_path *p = &s_read.paths[i];
+	for (uint8_t i = 0; i < s->read.n_paths; i++) {
+		const struct matter_im_path *p = &s->read.paths[i];
 
 		/*
 		 * Loud only over CASE. The BLE phase is settled and its three
@@ -1143,22 +1427,7 @@ static void on_read_request(const struct matter_exchange_in *in)
 			p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
 	}
 
-	rc = matter_im_report_data_encode(&s_im, &s_read, s_report, sizeof(s_report), &report_len,
-					  &stats);
-	if (rc != MATTER_OK) {
-		LOG_ERR("cannot build ReportData for %u paths (%d)", s_read.n_paths, rc);
-		return;
-	}
-	if (stats.unexpanded_wildcard > 0u) {
-		/* Loud on purpose: the answer went out short, and to the
-		 * commissioner that is indistinguishable from an empty cluster. */
-		LOG_WRN("%u wildcard path(s) not expanded; report is incomplete",
-			stats.unexpanded_wildcard);
-	}
-
-	send_im(MATTER_IM_OP_REPORT_DATA, s_report, report_len);
-	LOG_DBG("ReportData: %u paths asked, %u B report", s_read.n_paths,
-		(unsigned int)report_len);
+	send_read_chunk(s);
 }
 
 /**
@@ -1171,6 +1440,9 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 {
 	static struct matter_im_invoke inv;
 	bool removed = false;
+	struct matter_tx_slot *slot;
+	uint8_t *payload;
+	size_t payload_cap;
 	size_t resp_len = 0u;
 	int rc;
 
@@ -1195,9 +1467,20 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 		s_info.last_noc_index = 0u;
 	}
 
-	rc = matter_im_invoke_response_encode(&s_im, &inv, s_report, sizeof(s_report), &resp_len);
+	slot = tx_acquire();
+	if (slot == NULL) {
+		LOG_ERR("no owned packet slot for InvokeResponse");
+		return;
+	}
+	payload = tx_payload(slot, &payload_cap);
+	rc = matter_im_invoke_response_encode(&s_im, &inv, payload, payload_cap, &resp_len);
+	/* AddNOC/RemoveFabric and fail-safe commands mutate the table while
+	 * encoding their response. Publish their result before any readvertise
+	 * request can rebuild the payload on another context. */
+	fabric_snapshot_refresh_owned();
 	if (rc != MATTER_OK) {
 		LOG_ERR("cannot build InvokeResponse (%d)", rc);
+		tx_abort_build(slot);
 		return;
 	}
 	/*
@@ -1205,8 +1488,8 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	 * the SUCCESS and then waits for the attribute to be reported on its
 	 * subscription before it moves -- so answering the command and stopping
 	 * there is a lock that opens and a UI that spins forever. Submitted
-	 * rather than sent: the response is still in s_report and has not left
-	 * yet, and this runs on OpenThread's thread.
+	 * rather than sent: the response's owned packet has not completed yet,
+	 * and this runs on OpenThread's thread.
 	 */
 	if (inv.cluster == MATTER_CLUSTER_DOOR_LOCK &&
 	    (inv.command == MATTER_CMD_DL_LOCK_DOOR || inv.command == MATTER_CMD_DL_UNLOCK_DOOR)) {
@@ -1277,13 +1560,17 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	if (resp_len == 0u) {
 		/* The command ran; the peer asked not to be told. */
 		LOG_INF("invoke done, response suppressed");
+		tx_abort_build(slot);
 		if (removed) {
 			case_drop_fabric(s_info.last_noc_index);
 		}
 		return;
 	}
 
-	send_im(MATTER_IM_OP_INVOKE_COMMAND_RESPONSE, s_report, resp_len);
+	(void)tx_frame(slot,
+		       (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
+		       MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_INVOKE_COMMAND_RESPONSE, payload,
+		       resp_len, false, 0u);
 	/* The response is framed before its own session can be destroyed. */
 	if (removed) {
 		case_drop_fabric(s_info.last_noc_index);
@@ -1302,6 +1589,9 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 static void on_write_request(const struct matter_exchange_in *in)
 {
 	static struct matter_im_write wr;
+	struct matter_tx_slot *slot;
+	uint8_t *payload;
+	size_t payload_cap;
 	uint32_t prev_relock_s;
 	uint8_t prev_approach;
 	size_t resp_len = 0u;
@@ -1325,18 +1615,29 @@ static void on_write_request(const struct matter_exchange_in *in)
 	 */
 	prev_relock_s = s_info.auto_relock_time_s;
 	prev_approach = s_info.approach_direction;
-	rc = matter_im_write_response_encode(&s_im, &wr, s_report, sizeof(s_report), &resp_len);
+	slot = tx_acquire();
+	if (slot == NULL) {
+		LOG_ERR("no owned packet slot for WriteResponse");
+		return;
+	}
+	payload = tx_payload(slot, &payload_cap);
+	rc = matter_im_write_response_encode(&s_im, &wr, payload, payload_cap, &resp_len);
 	if (rc != MATTER_OK) {
 		LOG_ERR("cannot build WriteResponse (%d)", rc);
+		tx_abort_build(slot);
 		return;
 	}
 	(void)matter_dl_attr_store(&s_info, prev_relock_s, prev_approach);
 	if (resp_len == 0u) {
 		/* The write ran; the peer asked not to be told. */
 		LOG_INF("  write done, response suppressed");
+		tx_abort_build(slot);
 		return;
 	}
-	send_im(MATTER_IM_OP_WRITE_RESPONSE, s_report, resp_len);
+	(void)tx_frame(slot,
+		       (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
+		       MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_WRITE_RESPONSE, payload, resp_len,
+		       false, 0u);
 }
 
 /**
@@ -1540,6 +1841,7 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 			   uint16_t session_id)
 {
 	uint64_t fabric_id = 0u;
+	struct matter_thread_peer peer;
 
 	ARG_UNUSED(case_slot);
 
@@ -1556,6 +1858,7 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 	if (fabric_id == 0u) {
 		return;
 	}
+	matter_thread_peer_current(&peer);
 	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
 		struct sub_state *s = &s_subs[i];
 
@@ -1577,7 +1880,7 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 		s->in_use = true;
 		s->active = true;
 		s->priming = false;
-		matter_thread_peer_current(&s->peer);
+		s->peer = peer;
 		s_dormant[i].used = 0u;
 
 		LOG_INF("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
@@ -1600,28 +1903,11 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
  *
  * DEFERRED, for two reasons that both cost a night already. It runs on the
  * system work queue rather than ot_work_q, whose stack the Interaction Model
- * has already overflowed once; and it runs AFTER the InvokeResponse has left,
- * because building a second message while the reply is still in s_out would
- * overwrite the reply with the report.
+ * has already overflowed once; and it runs AFTER the InvokeResponse has left.
  *
- * Own buffers, small ones: a single-attribute report is tens of bytes, not the
- * kilobyte-and-a-half a wildcard priming report needs, and this node has under
- * 5 KB of RAM left.
+ * It uses the same owned packet pool as direct responses. The synchronous
+ * Thread send copies into an otMessage before the slot is released.
  */
-/*
- * 256, not 128: the report now carries the LockState attribute AND any
- * LockOperation events the subscriber has not collected. A FULL ring of
- * MATTER_EVENTS_MAX events, each with a fabric index and an 8-byte source node,
- * measured 247 B beside the attribute -- measured in the host suite, not
- * estimated, and asserted there against this size so the next event field to be
- * added fails a test rather than a walk-up.
- *
- * The cost is 128 B here and 128 B in s_notify_out below. A report that did not
- * fit would not truncate -- it would fail to build, and every event in the ring
- * would go unreported until something else moved the lock.
- */
-static uint8_t s_notify_tlv[256];
-static uint8_t s_notify_out[MATTER_EXCHANGE_HEADER_MAX + sizeof(s_notify_tlv) + MATTER_TAG_LEN];
 /** Exchange ids this node originates. Any non-zero value the peer is not using. */
 static uint16_t s_next_init_exchange = 0xE000u;
 
@@ -1641,9 +1927,14 @@ static void notify_lock_state(struct sub_state *s)
 	 * over its 3,872 B peak, and this path is shallow.
 	 */
 	struct matter_im_read one;
+	struct matter_tx_slot *packet;
+	uint8_t *payload;
+	size_t payload_cap;
 	size_t tlv_len = 0u;
 	size_t framed = 0u;
 	uint8_t slot;
+	uint16_t session_id;
+	uint32_t subscription_id;
 	int rc;
 
 	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
@@ -1653,6 +1944,13 @@ static void notify_lock_state(struct sub_state *s)
 	if (slot >= MATTER_CASE_SESSIONS) {
 		return;
 	}
+	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
+	if (packet == NULL) {
+		LOG_ERR("  no owned packet slot for LockState report");
+		return;
+	}
+	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
+	payload = tx_payload(packet, &payload_cap);
 
 	memset(&one, 0, sizeof(one));
 	one.n_paths = 1u;
@@ -1679,30 +1977,51 @@ static void notify_lock_state(struct sub_state *s)
 		one.event_min = s->event_min;
 	}
 
-	rc = matter_im_report_data_encode(&s_im, &one, s_notify_tlv, sizeof(s_notify_tlv), &tlv_len,
+	rc = matter_im_report_data_encode(&s_im, &one, payload, payload_cap, &tlv_len,
 					  NULL);
 	if (rc != MATTER_OK) {
 		LOG_ERR("  cannot build the LockState report (%d)", rc);
+		tx_abort_build(packet);
 		return;
 	}
 
 	rc = matter_exchange_send_initiator(&s_case_x[slot], s_next_init_exchange++,
 					    MATTER_PROTOCOL_INTERACTION_MODEL,
-					    MATTER_IM_OP_REPORT_DATA, s_notify_tlv, tlv_len,
-					    s_notify_out, sizeof(s_notify_out), &framed);
+					    MATTER_IM_OP_REPORT_DATA, payload, tlv_len, packet->data,
+					    packet->capacity, &framed);
 	if (rc != MATTER_OK) {
 		LOG_ERR("  cannot frame the LockState report (%d)", rc);
+		tx_abort_build(packet);
 		return;
 	}
-	rc = matter_thread_send_to(&s->peer, s_notify_out, framed);
+	if (matter_tx_slot_commit(packet, framed) != MATTER_OK ||
+	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
+		tx_abort_build(packet);
+		return;
+	}
+	session_id = s->session_id;
+	subscription_id = s->id;
+	/* The IN_FLIGHT slot keeps packet and peer bytes stable through the
+	 * synchronous copy into an otMessage. UDP receive never waits on this owner
+	 * (matter_thread_on_datagram below), so this owner-to-OT call has no reverse
+	 * blocking edge. */
+	struct matter_thread_peer peer = s->peer;
+
+	rc = matter_thread_send_to(&peer, packet->data, framed);
 	LOG_INF("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
 		(unsigned int)framed, rc);
+	if (rc == MATTER_OK) {
+		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
+	} else {
+		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
+	}
 	/*
 	 * Advance the watermark only on a report that went out. Moving it before
 	 * the send would drop an unlock on a failed transmit, and the subscriber
 	 * has no way to ask for an event it was never told existed.
 	 */
-	if (rc == MATTER_OK && s->read.n_event_paths > 0u) {
+	if (rc == MATTER_OK && s->in_use && s->session_id == session_id &&
+	    s->id == subscription_id && s->read.n_event_paths > 0u) {
 		s->event_min = s_info.next_event_number + 1u;
 	}
 }
@@ -1713,10 +2032,12 @@ static void notify_lock_state(struct sub_state *s)
 static void notify_work_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
+	ultrawidelock_mutex_lock(&s_owner_lock);
 
 	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
 		notify_lock_state(&s_subs[i]);
 	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 }
 
 static K_WORK_DEFINE(s_notify_work, notify_work_fn);
@@ -1834,6 +2155,7 @@ static void heartbeat_work_fn(struct k_work *w)
 	bool any = false;
 
 	ARG_UNUSED(w);
+	ultrawidelock_mutex_lock(&s_owner_lock);
 
 	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
 		if (s_subs[i].in_use && s_subs[i].active) {
@@ -1847,6 +2169,7 @@ static void heartbeat_work_fn(struct k_work *w)
 		(void)k_work_schedule(&s_heartbeat_work,
 				      K_SECONDS(subscription_heartbeat_period_s()));
 	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 }
 
 /**
@@ -1877,12 +2200,37 @@ static uint64_t matter_event_uptime_ms(void)
 	return ms > 0 ? (uint64_t)ms : 0u;
 }
 
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
+void matter_commission_record_alarm(uint8_t alarm_code)
+{
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	/*
+	 * Locked or nothing. The sensors report about the DOOR; only this file
+	 * knows what the bolt is supposed to be doing, and an alarm about a door
+	 * the owner deliberately left open is the kind of event that teaches a
+	 * controller's owner to mute the accessory.
+	 */
+	if (s_info.lock_state == MATTER_DL_LOCK_STATE_LOCKED) {
+		matter_clusters_record_alarm(&s_info, alarm_code);
+		LOG_WRN("door alarm %u recorded", (unsigned int)alarm_code);
+		/*
+		 * Nothing about the bolt changed -- this only asks for the
+		 * report that will carry the event, and re-drives the lock LED
+		 * to the value it already has.
+		 */
+		notify_lock_state_changed();
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+#endif
+
 static void on_ultrawidelock_lock_state(bool unlocked)
 {
 	uint8_t want = unlocked ? MATTER_DL_LOCK_STATE_UNLOCKED : MATTER_DL_LOCK_STATE_LOCKED;
 
+	ultrawidelock_mutex_lock(&s_owner_lock);
 	if (s_info.lock_state == want) {
-		return;
+		goto out;
 	}
 	s_info.lock_state = want;
 	/*
@@ -1896,6 +2244,8 @@ static void on_ultrawidelock_lock_state(bool unlocked)
 					      MATTER_DL_OP_SOURCE_ALIRO, 0u, 0u);
 	LOG_INF("Credential %s the lock; telling Matter", unlocked ? "opened" : "relocked");
 	notify_lock_state_changed();
+out:
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 }
 
 /** The session serving the datagram in flight; 0 when it arrived over BLE. */
@@ -1917,6 +2267,203 @@ static struct sub_state *sub_of_session(uint16_t session_id)
 		}
 	}
 	return NULL;
+}
+
+static void tx_effect_finish(struct matter_tx_slot *slot, int status)
+{
+	struct tx_effect effect;
+
+	if (slot == NULL || tx_slot_index(slot) >= MATTER_TX_SLOTS) {
+		return;
+	}
+	effect = s_tx_effects[tx_slot_index(slot)];
+	memset(&s_tx_effects[tx_slot_index(slot)], 0, sizeof(s_tx_effects[0]));
+	if (effect.kind == TX_EFFECT_READ) {
+		(void)matter_im_read_pool_finish(&s_read_pool, effect.session_id,
+						 effect.exchange_id, effect.over_thread,
+						 effect.emitted, effect.more, status);
+		return;
+	}
+	if (effect.kind == TX_EFFECT_SUB_PRIME) {
+		struct sub_state *sub = sub_of_session(effect.session_id);
+
+		if (sub == NULL || sub->id != effect.subscription_id) {
+			return;
+		}
+		if (status != MATTER_OK) {
+			sub->in_use = false;
+			return;
+		}
+		sub->sent = (uint16_t)(sub->sent + effect.emitted);
+		sub->more = effect.more;
+		return;
+	}
+	if (effect.kind == TX_EFFECT_SUB_RESPONSE) {
+		struct sub_state *sub = sub_of_session(effect.session_id);
+		uint8_t cslot;
+
+		if (sub == NULL || sub->id != effect.subscription_id) {
+			return;
+		}
+		if (status != MATTER_OK) {
+			sub->in_use = false;
+			return;
+		}
+		sub->priming = false;
+		sub->active = true;
+		cslot = case_slot_of(sub->session_id);
+		if (cslot < MATTER_CASE_SESSIONS) {
+			sub_persist_save((uint8_t)(sub - s_subs), sub,
+					 s_case_x[cslot].peer_op_node_id, s_case_fabric[cslot]);
+		}
+		subscription_heartbeat_arm();
+	}
+}
+
+static void tx_thread_finish(int status)
+{
+	uint32_t token = s_thread_tx_token;
+	struct matter_tx_slot *slot;
+	struct tx_thread_owner *owner;
+
+	s_thread_tx_token = 0u;
+	slot = matter_tx_pool_find(&s_tx_pool, token);
+	if (slot == NULL || slot->transport != TX_TRANSPORT_THREAD ||
+	    slot->state != MATTER_TX_SLOT_IN_FLIGHT) {
+		return;
+	}
+	owner = &s_tx_thread_owner[tx_slot_index(slot)];
+	if (status == MATTER_OK) {
+		tx_effect_finish(slot, MATTER_OK);
+		memset(owner, 0, sizeof(*owner));
+		(void)matter_tx_pool_complete(&s_tx_pool, token);
+	} else if (owner->retryable) {
+		/* MRP will repeat the request. Keep the exact sealed packet and its
+		 * deferred cursor/subscription effect until that retry is accepted.
+		 * The longest current idle schedule, at maximum jitter, bounds the
+		 * retention; later failures cannot extend its first deadline. */
+		(void)matter_tx_pool_retry(
+			&s_tx_pool, token, tx_now_ms(),
+			matter_mrp_retry_horizon_ms(MATTER_MRP_IDLE_INTERVAL_MS));
+		/* One wake at the earliest absolute deadline makes the bound real
+		 * even when no later packet arrives to drive demand reaping. */
+		tx_thread_reap_schedule_owned(tx_now_ms());
+	} else {
+		tx_effect_finish(slot, MATTER_E_STATE);
+		memset(owner, 0, sizeof(*owner));
+		(void)matter_tx_pool_reject(&s_tx_pool, token);
+	}
+}
+
+static void tx_thread_reap_schedule_owned(uint32_t now_ms)
+{
+	uint32_t next_deadline = 0u;
+	bool have_next = false;
+
+	for (size_t i = 0u; i < MATTER_TX_SLOTS; i++) {
+		const struct matter_tx_slot *slot = &s_tx_slots[i];
+
+		if (slot->transport != TX_TRANSPORT_THREAD ||
+		    slot->state != MATTER_TX_SLOT_READY || !slot->retry_deadline_set) {
+			continue;
+		}
+		if (!have_next || (int32_t)(slot->retry_deadline_ms - next_deadline) < 0) {
+			next_deadline = slot->retry_deadline_ms;
+			have_next = true;
+		}
+	}
+	if (have_next) {
+		int32_t delay_ms = (int32_t)(next_deadline - now_ms);
+
+		(void)k_work_reschedule(&s_thread_reap_work,
+						delay_ms <= 0 ? K_NO_WAIT : K_MSEC(delay_ms));
+	}
+}
+
+static void tx_thread_reap_work_fn(struct k_work *work)
+{
+	uint32_t now_ms;
+
+	ARG_UNUSED(work);
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	now_ms = tx_now_ms();
+	tx_thread_reap_expired(now_ms);
+	tx_thread_reap_schedule_owned(now_ms);
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+
+static void tx_thread_reap_expired(uint32_t now_ms)
+{
+	struct matter_tx_slot *slot;
+
+	while ((slot = matter_tx_pool_expired(&s_tx_pool, TX_TRANSPORT_THREAD, now_ms)) != NULL) {
+		struct tx_thread_owner *owner = &s_tx_thread_owner[tx_slot_index(slot)];
+
+		LOG_WRN("reaping abandoned Thread reply token %u", (unsigned int)slot->token);
+		tx_effect_finish(slot, MATTER_E_STATE);
+		memset(owner, 0, sizeof(*owner));
+		(void)matter_tx_pool_reject(&s_tx_pool, slot->token);
+	}
+}
+
+static bool tx_thread_retry(struct matter_exchange *x)
+{
+	uint16_t session_id = x->secure ? x->local_session_id : 0u;
+
+	tx_thread_reap_expired(tx_now_ms());
+
+	for (size_t i = 0u; i < MATTER_TX_SLOTS; i++) {
+		struct matter_tx_slot *slot = &s_tx_slots[i];
+		const struct tx_thread_owner *owner = &s_tx_thread_owner[i];
+
+		if (slot->transport != TX_TRANSPORT_THREAD ||
+		    slot->state != MATTER_TX_SLOT_READY || !owner->retryable ||
+		    owner->session_id != session_id || owner->exchange_id != x->exchange_id ||
+		    owner->request_counter != x->ack_counter || slot->len > s_thread_reply_cap) {
+			continue;
+		}
+		memcpy(s_thread_reply, slot->data, slot->len);
+		s_thread_reply_len = slot->len;
+		if (matter_tx_slot_in_flight(slot) != MATTER_OK) {
+			s_thread_reply_len = 0u;
+			return false;
+		}
+		s_thread_tx_token = slot->token;
+		return true;
+	}
+	return false;
+}
+
+void matter_commission_ble_tx_complete(int status)
+{
+	struct matter_tx_slot *slot;
+	uint32_t token;
+
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	token = s_ble_tx_token;
+	s_ble_tx_token = 0u;
+	slot = matter_tx_pool_find(&s_tx_pool, token);
+	if (slot != NULL) {
+		tx_effect_finish(slot, status == 0 ? MATTER_OK : MATTER_E_STATE);
+		if (status == 0) {
+			(void)matter_tx_pool_complete(&s_tx_pool, token);
+			(void)tx_ble_pump();
+		} else {
+			(void)matter_tx_pool_reject(&s_tx_pool, token);
+			/* A failed indication/reset invalidates the link state. Reject
+			 * queued packets rather than leaking their slots or sending stale
+			 * exchange responses after a reconnect. */
+			for (;;) {
+				slot = matter_tx_pool_ready(&s_tx_pool, TX_TRANSPORT_BLE);
+				if (slot == NULL) {
+					break;
+				}
+				tx_effect_finish(slot, MATTER_E_STATE);
+				(void)matter_tx_pool_reject(&s_tx_pool, slot->token);
+			}
+		}
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 }
 
 /**
@@ -2018,33 +2565,56 @@ static struct sub_state *sub_alloc(uint16_t session_id)
 static void send_report_chunk(struct sub_state *s)
 {
 	struct matter_im_report_stats stats;
+	struct matter_tx_slot *slot = tx_acquire();
+	uint8_t *payload;
+	size_t payload_cap;
 	size_t report_len = 0u;
+	bool more = false;
 	uint16_t emitted = 0u;
 	int rc;
 
-	rc = matter_im_report_data_chunk(&s_im, &s->read, s->sent, s_report,
-					 MATTER_IM_PAYLOAD_MAX, &report_len, &s->more, &emitted,
+	if (slot == NULL) {
+		LOG_ERR("no owned packet slot for subscription ReportData");
+		s->in_use = false;
+		return;
+	}
+	payload = tx_payload(slot, &payload_cap);
+	rc = matter_im_report_data_chunk(&s_im, &s->read, s->sent, payload,
+					 payload_cap, &report_len, &more, &emitted,
 					 &stats);
 	if (rc != MATTER_OK) {
 		LOG_ERR("cannot build the report chunk (%d)", rc);
+		tx_abort_build(slot);
 		return;
 	}
-	if (emitted == 0u && s->more) {
+	if (emitted == 0u && more) {
 		/* Not a chunk boundary -- one report is larger than a whole
 		 * message, and no number of chunks will help. */
 		LOG_ERR("a single attribute does not fit a message; giving up");
+		tx_abort_build(slot);
 		s->more = false;
 		return;
 	}
-	s->sent += emitted;
 	/*
 	 * INF, not DBG: an undersized chunk count is the only visible symptom of
 	 * a report that frames cleanly and is then dropped by the network, and
 	 * debug level is off in every image that gets flashed.
 	 */
 	LOG_INF("  chunk %u B, %u report(s), %u total, %s", (unsigned int)report_len, emitted,
-		s->sent, s->more ? "MORE" : "last");
-	send_im(MATTER_IM_OP_REPORT_DATA, s_report, report_len);
+		(unsigned int)(s->sent + emitted), more ? "MORE" : "last");
+	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
+		.kind = TX_EFFECT_SUB_PRIME,
+		.session_id = s->session_id,
+		.emitted = emitted,
+		.subscription_id = s->id,
+		.more = more,
+	};
+	if (tx_frame(slot,
+		     (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
+		     MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_REPORT_DATA, payload, report_len,
+		     false, 0u) != MATTER_OK) {
+		s->in_use = false;
+	}
 }
 
 /**
@@ -2060,6 +2630,7 @@ static void send_report_chunk(struct sub_state *s)
 static void on_subscribe_request(const struct matter_exchange_in *in)
 {
 	static struct matter_im_subscribe sub;
+	struct matter_thread_peer peer;
 	int rc;
 
 	rc = matter_im_subscribe_request_decode(in->payload, in->payload_len, &sub);
@@ -2067,12 +2638,13 @@ static void on_subscribe_request(const struct matter_exchange_in *in)
 		LOG_WRN("unreadable SubscribeRequest (%d), %u B", rc, (unsigned int)in->payload_len);
 		return;
 	}
+	matter_thread_peer_current(&peer);
 
 	struct sub_state *s = sub_alloc(current_session_id());
 
 	s->session_id = current_session_id();
 	s->in_use = true;
-	matter_thread_peer_current(&s->peer);
+	s->peer = peer;
 	s->read = sub.read;
 	/*
 	 * Any non-zero id will do -- it is this node's handle and the subscriber
@@ -2323,6 +2895,9 @@ static int on_ultrawidelock_reader_config(const uint8_t signing_key[32],
  */
 static void on_timed_request(const struct matter_exchange_in *in)
 {
+	struct matter_tx_slot *slot;
+	uint8_t *payload;
+	size_t payload_cap;
 	uint16_t timeout_ms = 0u;
 	size_t resp_len = 0u;
 
@@ -2332,12 +2907,22 @@ static void on_timed_request(const struct matter_exchange_in *in)
 	}
 	LOG_INF("  timed request: %u ms, answering SUCCESS", (unsigned int)timeout_ms);
 
-	if (matter_im_status_response_encode(MATTER_IM_STATUS_SUCCESS, s_report, sizeof(s_report),
-					     &resp_len) != MATTER_OK) {
-		LOG_ERR("  cannot encode the StatusResponse");
+	slot = tx_acquire();
+	if (slot == NULL) {
+		LOG_ERR("  no owned packet slot for StatusResponse");
 		return;
 	}
-	send_im(MATTER_IM_OP_STATUS_RESPONSE, s_report, resp_len);
+	payload = tx_payload(slot, &payload_cap);
+	if (matter_im_status_response_encode(MATTER_IM_STATUS_SUCCESS, payload, payload_cap,
+					     &resp_len) != MATTER_OK) {
+		LOG_ERR("  cannot encode the StatusResponse");
+		tx_abort_build(slot);
+		return;
+	}
+	(void)tx_frame(slot,
+		       (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
+		       MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_STATUS_RESPONSE, payload, resp_len,
+		       false, 0u);
 }
 
 /**
@@ -2348,15 +2933,34 @@ static void on_timed_request(const struct matter_exchange_in *in)
 static void on_status_response(const struct matter_exchange_in *in)
 {
 	size_t resp_len = 0u;
+	uint8_t status = MATTER_IM_STATUS_FAILURE;
+	uint16_t session_id = current_session_id();
+	struct matter_im_read_state *read =
+		read_state_find(session_id, in->exchange_id, s_thread_reply != NULL);
 	/*
 	 * WHOSE StatusResponse. With one subscription this was implicit, and it
 	 * was wrong the moment a second controller arrived: the acknowledgement
 	 * belongs to the session it came in on, and answering it out of another
 	 * subscriber's state chunks the wrong report to the wrong peer.
 	 */
-	struct sub_state *s = sub_of_session(current_session_id());
+	struct sub_state *s = sub_of_session(session_id);
 
-	ARG_UNUSED(in);
+	if (matter_im_status_response_decode(in->payload, in->payload_len, &status) != MATTER_OK ||
+	    status != MATTER_IM_STATUS_SUCCESS) {
+		LOG_WRN("invalid or unsuccessful StatusResponse");
+		if (read != NULL) {
+			read->in_use = false;
+		}
+		return;
+	}
+
+	/* Intermediate plain-Read chunks ask for a StatusResponse. Match both
+	 * session and exchange before advancing, so an unrelated interaction
+	 * cannot consume this cursor. */
+	if (read != NULL && read->more) {
+		send_read_chunk(read);
+		return;
+	}
 
 	if (s == NULL) {
 		return;
@@ -2373,43 +2977,36 @@ static void on_status_response(const struct matter_exchange_in *in)
 	if (!s->priming) {
 		return;
 	}
-	s->priming = false;
-	s->active = true;
+	struct matter_tx_slot *slot = tx_acquire();
+	uint8_t *payload;
+	size_t payload_cap;
 
-	if (matter_im_subscribe_response_encode(s->id, s->max_interval_s, s_report,
-						sizeof(s_report), &resp_len) != MATTER_OK) {
+	if (slot == NULL) {
+		LOG_ERR("no owned packet slot for SubscribeResponse");
+		s->in_use = false;
+		return;
+	}
+	payload = tx_payload(slot, &payload_cap);
+	if (matter_im_subscribe_response_encode(s->id, s->max_interval_s, payload,
+						payload_cap, &resp_len) != MATTER_OK) {
 		LOG_ERR("cannot build the SubscribeResponse");
+		tx_abort_build(slot);
+		s->in_use = false;
 		return;
 	}
 	LOG_INF("  subscription 0x%08x ESTABLISHED on session 0x%04x, max interval %u s",
 		(unsigned int)s->id, (unsigned int)s->session_id, s->max_interval_s);
-	send_im(MATTER_IM_OP_SUBSCRIBE_RESPONSE, s_report, resp_len);
-
-	/*
-	 * Written down now, while the session that owns it is still here to say
-	 * WHO subscribed. See struct sub_persist: after a reboot the controller
-	 * comes back but does not re-subscribe, and this record is what lets the
-	 * new session be recognised as the old subscriber's.
-	 */
-	{
-		uint8_t cslot = case_slot_of(s->session_id);
-
-		if (cslot < MATTER_CASE_SESSIONS) {
-			sub_persist_save((uint8_t)(s - s_subs), s,
-					 s_case_x[cslot].peer_op_node_id, s_case_fabric[cslot]);
-		}
+	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
+		.kind = TX_EFFECT_SUB_RESPONSE,
+		.session_id = s->session_id,
+		.subscription_id = s->id,
+	};
+	if (tx_frame(slot,
+		     (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
+		     MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_SUBSCRIBE_RESPONSE, payload, resp_len,
+		     false, 0u) != MATTER_OK) {
+		s->in_use = false;
 	}
-	/*
-	 * And now it is periodic. Matter's contract is that the server reports
-	 * at least every max_interval even when nothing changed -- a
-	 * subscription that goes quiet is a node the subscriber is entitled to
-	 * call unresponsive, and that is exactly what "Matter Accessory / No
-	 * Response" was.
-	 *
-	 * Reporting on CHANGE alone (a407dfa) is not enough for the same reason:
-	 * a lock nobody touches for ten minutes stops existing.
-	 */
-	subscription_heartbeat_arm();
 }
 
 static void on_secure(const struct matter_exchange_in *in)
@@ -3039,7 +3636,8 @@ static size_t case_status_report(const struct matter_proto_header *req,
  * the root key, the fabric and node ids out of the NOC -- all agree with what a
  * real commissioner computed independently.
  */
-size_t matter_thread_on_datagram(const uint8_t *msg, size_t len, uint8_t *reply, size_t cap)
+static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t *reply,
+					       size_t cap)
 {
 	struct matter_msg_header mh;
 	struct matter_proto_header ph;
@@ -3090,7 +3688,7 @@ size_t matter_thread_on_datagram(const uint8_t *msg, size_t len, uint8_t *reply,
 				s_thread_reply_len = 0u;
 				s_thread_pase = true;
 
-				on_message(msg, len);
+				on_message_owned(msg, len);
 
 				s_thread_pase = false;
 				s_thread_reply = NULL;
@@ -3108,17 +3706,10 @@ size_t matter_thread_on_datagram(const uint8_t *msg, size_t len, uint8_t *reply,
 		s_thread_reply_cap = cap;
 		s_thread_reply_len = 0u;
 
-		rc = matter_exchange_recv(&s_case_x[slot], msg, len, &in, s_pt, sizeof(s_pt));
+		rc = matter_exchange_recv_in_place(&s_case_x[slot], msg, len, &in);
 		if (rc == MATTER_E_DUP) {
-			if (matter_exchange_replay(&s_case_x[slot], s_out, sizeof(s_out),
-						   &s_thread_reply_len) != MATTER_OK) {
-				(void)matter_exchange_standalone_ack(&s_case_x[slot], s_out,
-							     sizeof(s_out), &s_thread_reply_len);
-			}
-			if (s_thread_reply_len > cap) {
-				s_thread_reply_len = 0u;
-			} else {
-				memcpy(reply, s_out, s_thread_reply_len);
+			if (!tx_thread_retry(&s_case_x[slot])) {
+				(void)send_standalone_ack(&s_case_x[slot]);
 			}
 		} else if (rc != MATTER_OK) {
 			LOG_WRN("  CASE message refused (%d)", rc);
@@ -3190,7 +3781,7 @@ size_t matter_thread_on_datagram(const uint8_t *msg, size_t len, uint8_t *reply,
 		s_thread_reply_len = 0u;
 		s_thread_pase = true;
 
-		on_message(msg, len);
+		on_message_owned(msg, len);
 
 		s_thread_pase = false;
 		s_thread_reply = NULL;
@@ -3313,7 +3904,41 @@ size_t matter_thread_on_datagram(const uint8_t *msg, size_t len, uint8_t *reply,
 			   cap);
 }
 
-static void on_message(const uint8_t *msg, size_t len)
+size_t matter_thread_on_datagram(uint8_t *msg, size_t len, uint8_t *reply, size_t cap,
+				 matter_thread_reply_send_fn send, void *send_ctx)
+{
+	size_t reply_len;
+	int send_status;
+
+	/* OpenThread invokes this callback with its API mutex held. Never wait for
+	 * the Matter owner from that state: owner work legitimately calls back
+	 * into OpenThread, and blocking here would make OT -> owner / owner -> OT
+	 * a deadlock. Reliable Matter messages are retransmitted, so a busy owner
+	 * is safely represented by no reply to this attempt. The try-lock precedes
+	 * matter_thread_on_datagram_owned(), so this loss path has not parsed or
+	 * mutated an exchange, cursor, session, subscription, or fabric. */
+	if (k_mutex_lock(&s_owner_lock, K_NO_WAIT) != 0) {
+		LOG_DBG("  Matter owner busy; leaving UDP datagram for MRP retry");
+		return 0u;
+	}
+	s_thread_tx_token = 0u;
+	reply_len = matter_thread_on_datagram_owned(msg, len, reply, cap);
+	if (reply_len > 0u) {
+		send_status = send != NULL ? send(send_ctx, reply, reply_len) : MATTER_E_STATE;
+		tx_thread_finish(send_status);
+		if (send_status != MATTER_OK) {
+			reply_len = 0u;
+		}
+	} else if (s_thread_tx_token != 0u) {
+		/* A handler must not strand a loan if a later error suppressed the
+		 * staged length. This packet was never presented to the transport. */
+		tx_thread_finish(MATTER_E_STATE);
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+	return reply_len;
+}
+
+static void on_message_owned(uint8_t *msg, size_t len)
 {
 	struct matter_exchange_in in;
 	uint8_t pase_out[MATTER_PASE_REPLY_MAX];
@@ -3335,35 +3960,14 @@ static void on_message(const uint8_t *msg, size_t len)
 	}
 
 	LOG_DBG("on_message: %u B", (unsigned int)len);
-	rc = matter_exchange_recv(&s_exchange, msg, len, &in, s_pt, sizeof(s_pt));
+	rc = matter_exchange_recv_in_place(&s_exchange, msg, len, &in);
 	LOG_DBG("exchange_recv rc=%d opcode=0x%02x payload=%u", rc, in.opcode,
 		(unsigned int)in.payload_len);
 	if (rc == MATTER_E_DUP) {
-		/* The peer thinks its last message was lost. Replay the exact
-		 * bounded response when available, otherwise acknowledge it. Never
-		 * run a state-changing payload through PASE or IM twice. */
-		size_t framed = 0u;
-
-		if (matter_exchange_replay(&s_exchange, s_out, sizeof(s_out), &framed) != MATTER_OK) {
-			(void)matter_exchange_standalone_ack(&s_exchange, s_out, sizeof(s_out),
-							     &framed);
-		}
-		if (framed != 0u) {
-			/* Same split send_framed() makes. A retransmitted PASE
-			 * message over IP has to be re-acknowledged over IP; a
-			 * bare matter_ble_send() here would answer a link that
-			 * is not the one the duplicate arrived on. */
-			if (s_thread_reply != NULL) {
-				if (framed <= s_thread_reply_cap) {
-					memcpy(s_thread_reply, s_out, framed);
-					s_thread_reply_len = framed;
-				} else {
-					LOG_ERR("duplicate reply needs %u B, have %u", (unsigned int)framed,
-						(unsigned int)s_thread_reply_cap);
-				}
-			} else {
-				(void)matter_ble_send(s_out, framed);
-			}
+		/* The peer thinks its last message was lost. Acknowledge it
+		 * again, but do NOT run the payload through PASE twice. */
+		if (s_thread_reply == NULL || !tx_thread_retry(&s_exchange)) {
+			(void)send_standalone_ack(&s_exchange);
 		}
 		return;
 	}
@@ -3435,10 +4039,18 @@ static void on_message(const uint8_t *msg, size_t len)
 	}
 }
 
+static void on_message(uint8_t *msg, size_t len)
+{
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	on_message_owned(msg, len);
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+
 /** The link dropped. Cheap here; begin_session() does the real work later. */
-static void on_link_reset(void)
+static void on_link_reset_owned(void)
 {
 	s_stale = true;
+	read_drop_session(0u, false);
 
 	/*
 	 * NOT the place to roll the fail-safe back, which is what this used to
@@ -3453,20 +4065,32 @@ static void on_link_reset(void)
 	 */
 }
 
+static void on_link_reset(void)
+{
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	on_link_reset_owned();
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+
 bool matter_commission_has_fabric(void)
 {
-	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (s_info.fabrics[i].index != 0u) {
-			return true;
-		}
-	}
-	return false;
+	return atomic_get(&s_has_fabric_snapshot) != 0;
 }
 
 int matter_commission_init(void)
 {
 	ultrawidelock_sem_init(&s_fab_done, 0u, 1u);
 	s_info.commissioning_hooks = &k_commissioning_hooks;
+	ultrawidelock_mutex_init(&s_owner_lock);
+	if (matter_tx_pool_init(&s_tx_pool, s_tx_slots, &s_tx_backing[0][0], MATTER_TX_SLOTS,
+				sizeof(s_tx_backing[0])) != MATTER_OK) {
+		LOG_ERR("cannot initialize owned Matter packet slots");
+		return -ENOMEM;
+	}
+	if (matter_im_read_pool_init(&s_read_pool, s_reads, MATTER_READ_SLOTS) != MATTER_OK) {
+		LOG_ERR("cannot initialize Matter Read cursors");
+		return -ENOMEM;
+	}
 	ecdh_known_answer_test();
 	srp_sign_self_test();
 
@@ -3554,6 +4178,7 @@ int matter_commission_init(void)
 	s_info.ultrawidelock_user_clear_cb = on_ultrawidelock_user_clear;
 
 	matter_clusters_init(&s_im, &s_info);
+	fabric_snapshot_refresh_owned();
 	/* Without this the cluster still APPEARS in ServerList -- which is the
 	 * point, a node that hides it can never be shared with a second
 	 * ecosystem -- but every command answers FAILURE. */
@@ -3568,6 +4193,7 @@ int matter_commission_init(void)
 	 */
 	(void)matter_dl_attr_load(&s_info);
 	matter_ble_set_link_handler(on_link_reset);
+	matter_ble_set_tx_handler(matter_commission_ble_tx_complete);
 	matter_ble_set_msg_handler(on_message);
 	ultrawidelock_reader_set_lock_state_listener(on_ultrawidelock_lock_state);
 
@@ -3589,6 +4215,7 @@ int matter_commission_init(void)
 		(void)matter_fab_erase();
 #endif
 		rc = matter_fab_load(&s_info);
+		fabric_snapshot_refresh_owned();
 
 		if (rc == 0) {
 			/* Only with a fabric: a record whose fabric did not

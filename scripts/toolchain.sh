@@ -13,8 +13,10 @@ cd "$ROOT" || exit 1
 . "$ROOT/tests/host/sources.sh"
 
 # Gate tools: a missing one fails this script. Bench tools: flashing/serial,
-# reported only.
+# reported only. Optional tools: their gate skips loudly rather than failing, so
+# a machine without one still runs a green `make check` -- reported, never fatal.
 TOOLS=(cc python3 llvm-cov cbmc)
+OPT_TOOLS=(cppcheck gitleaks CodeChecker)
 FW_TOOLS=(tio nrfutil probe-rs mcumgr)
 
 # Which suite (or bench job) stops working without it.
@@ -24,6 +26,9 @@ tool_gate() {
 	python3) echo "test, drift, coverage" ;;
 	llvm-cov) echo "coverage" ;;
 	cbmc) echo "cbmc" ;;
+	cppcheck) echo "lint (inside check)" ;;
+	gitleaks) echo "the secret scan in ci" ;;
+	CodeChecker) echo "sca" ;;
 	tio) echo "make term (live serial)" ;;
 	nrfutil) echo "make bootstrap / build / flash" ;;
 	probe-rs) echo "make cdk-rtt (CDK console)" ;;
@@ -36,6 +41,9 @@ tool_note() {
 	case "$1" in
 	cc | llvm-cov) echo "xcode-select --install / your distro's clang+llvm" ;;
 	cbmc) echo "brew install cbmc / apt install cbmc" ;;
+	cppcheck) echo "brew install cppcheck / apt install cppcheck" ;;
+	gitleaks) echo "brew install gitleaks" ;;
+	CodeChecker) echo "python3 -m venv .venv-sca && .venv-sca/bin/pip install codechecker" ;;
 	tio) echo "brew install tio / apt install tio" ;;
 	nrfutil) echo "https://www.nordicsemi.com/Products/Development-tools/nrf-util" ;;
 	probe-rs) echo "https://probe.rs/docs/getting-started/installation/" ;;
@@ -72,19 +80,24 @@ tool_probe() {
 
 printf '\n  host tools  ·  %s %s\n\n' "$(uname -s)" "$(uname -m)"
 nmiss=0
-for t in "${TOOLS[@]}" __hr__ "${FW_TOOLS[@]}"; do
+for t in "${TOOLS[@]}" __hr__ "${OPT_TOOLS[@]}" __hr__ "${FW_TOOLS[@]}"; do
 	if [ "$t" = __hr__ ]; then
 		printf '  %s\n' "----------------------------------------------------------------"
 		continue
 	fi
 	if got="$(tool_probe "$t")"; then
-		printf '  +  %-10s %-32s %s\n' "$t" "$(tool_gate "$t")" "$got"
+		printf '  +  %-12s %-32s %s\n' "$t" "$(tool_gate "$t")" "$got"
 	else
-		case " ${FW_TOOLS[*]} " in
-		*" $t "*) printf '  ~  %-10s %-32s not installed · bench only\n' "$t" "$(tool_gate "$t")" ;;
+		case " ${FW_TOOLS[*]} ${OPT_TOOLS[*]} " in
+		*" $t "*)
+			case " ${FW_TOOLS[*]} " in
+			*" $t "*) printf '  ~  %-12s %-32s not installed · bench only\n' "$t" "$(tool_gate "$t")" ;;
+			*) printf '  ~  %-12s %-32s not installed · that gate skips\n' "$t" "$(tool_gate "$t")" ;;
+			esac
+			;;
 		*)
 			nmiss=$((nmiss + 1))
-			printf '  x  %-10s %-32s MISSING · %s\n' "$t" "$(tool_gate "$t")" "$(tool_note "$t")"
+			printf '  x  %-12s %-32s MISSING · %s\n' "$t" "$(tool_gate "$t")" "$(tool_note "$t")"
 			;;
 		esac
 	fi

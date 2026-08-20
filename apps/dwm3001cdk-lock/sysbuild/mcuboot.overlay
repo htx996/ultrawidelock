@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: ISC */
+
+/* The application and MCUboot must name the same retained GPREGRET2 byte. */
+/ {
+	chosen {
+		zephyr,boot-mode = &mcuboot_recovery_mode;
+	};
+};
+
+&gpregret2 {
+	mcuboot_recovery_mode: retention@0 {
+		compatible = "zephyr,retention";
+		status = "okay";
+		reg = <0x0 0x1>;
+	};
+};

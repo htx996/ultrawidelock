@@ -25,6 +25,18 @@ int32_t dw3000_spi_write_crc(uint16_t headerLength, const uint8_t* headerBuffer,
 							 uint16_t bodyLength, const uint8_t* bodyBuffer,
 							 uint8_t crc8);
 
+struct dw3000_spi_metrics {
+	uint32_t transactions;
+	uint32_t reads;
+	uint32_t writes;
+	uint32_t wire_bytes;
+	uint32_t errors;
+	uint32_t timeouts;
+};
+
+void dw3000_spi_metrics_get(struct dw3000_spi_metrics *out);
+void dw3000_spi_metrics_reset(void);
+
 void dw3000_spi_trace_output(void);
 
 #ifdef __cplusplus

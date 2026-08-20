@@ -159,6 +159,29 @@ LTO_SET  := $(filter-out undefined,$(origin LTO))
 CDK_LTO  := $(filter-out 0 n no off N NO OFF,$(if $(LTO_SET),$(LTO),1))
 CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)
 
+# One-command real-board optimization lane. The Python driver owns the
+# interactive lifecycle so Enter can end RTT capture and the local HTTP server
+# without leaving a probe or background server behind. Its build is deliberately
+# separate from the shipping image and always includes the bench-only latency,
+# UWB, and SPI overlay.
+INSTRUMENT_BUILD       ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-instrument
+INSTRUMENT_OUTPUT      ?= $(REPO_ROOT)/internal/zephyr-opt/dashboard
+INSTRUMENT_CAPTURE_DIR ?= $(REPO_ROOT)/internal/zephyr-opt/captures
+INSTRUMENT_CONF        ?= overlay-thread.conf;overlay-lto.conf;$(REPO_ROOT)/tests/tooling/zephyr-opt-overlays/latency-uwb-spi.conf
+INSTRUMENT_PROFILE     ?= thread+lto
+INSTRUMENT_EXPERIMENT  ?= real-board
+INSTRUMENT_RUN_ID      ?=
+INSTRUMENT_ATTEMPTS    ?=
+INSTRUMENT_WARMUP      ?= 0
+INSTRUMENT_REJECTED    ?= 0
+INSTRUMENT_TIMED_OUT   ?= 0
+INSTRUMENT_PORT        ?= 8765
+# Do not spell GNU Make's special recursive $(MAKE) variable in the instrument
+# recipe. A line containing it executes even under `make -n`, which would turn a
+# dry run into a real workflow. Override this only when the executable is not
+# available as `make` on PATH.
+INSTRUMENT_MAKE        ?= make
+
 # ---- image signing -----------------------------------------------------------
 # Which private key signs the image is the whole answer to "what will this lock
 # boot", so it is never left to MCUboot's default -- that default is a key
@@ -299,7 +322,7 @@ CDK_SIZE_REPORTS  ?= 1
 CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_SIZE_JSON)' \
                      $(if $(filter-out 0 n no off N NO OFF,$(CDK_SIZE_REPORTS)),--reports --run-prefix '$(CDK_WEST)')
 
-.PHONY: build rebuild reader selftest cirdiag flash flash-erase monitor dfu release \
+.PHONY: build rebuild instrument reader selftest cirdiag flash flash-erase monitor dfu release \
         cdk-size cdk-size-check cdk-size-baseline \
         dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
@@ -313,6 +336,27 @@ build:
 	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
 	  --from-config $(CDK_BUILD)/$(CDK_IMAGE)/zephyr/.config
+
+## instrument: build, flash, capture, render, serve, and open the DWM3001CDK dashboard
+#   Interactive bench workflow. Press Enter once to finish RTT capture and once
+#   more to stop the localhost server. It never erases board state.
+instrument:
+	@python3 '$(REPO_ROOT)/tests/tooling/zephyr_opt_instrument.py' \
+	  --repo-root '$(REPO_ROOT)' \
+	  --make '$(INSTRUMENT_MAKE)' \
+	  --build '$(INSTRUMENT_BUILD)' \
+	  --output '$(INSTRUMENT_OUTPUT)' \
+	  --capture-dir '$(INSTRUMENT_CAPTURE_DIR)' \
+	  --sign-key '$(SIGN_KEY)' \
+	  --conf '$(INSTRUMENT_CONF)' \
+	  --profile '$(INSTRUMENT_PROFILE)' \
+	  --experiment '$(INSTRUMENT_EXPERIMENT)' \
+	  --port '$(INSTRUMENT_PORT)' \
+	  $(if $(strip $(INSTRUMENT_RUN_ID)),--run-id '$(INSTRUMENT_RUN_ID)') \
+	  $(if $(strip $(INSTRUMENT_ATTEMPTS)),--attempts '$(INSTRUMENT_ATTEMPTS)') \
+	  --warmup '$(INSTRUMENT_WARMUP)' \
+	  --rejected '$(INSTRUMENT_REJECTED)' \
+	  --timed-out '$(INSTRUMENT_TIMED_OUT)'
 
 ## rebuild: force a clean pristine build of the Matter image
 rebuild:

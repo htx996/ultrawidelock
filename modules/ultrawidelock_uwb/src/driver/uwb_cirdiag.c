@@ -51,8 +51,10 @@
  * untouched. */
 #define CIRDIAG_CIR_EVERY 4u
 
-/** @brief ipatovFpIndex is Q10.6 (6 fractional bits); the integer sample index is the high bits. */
-#define CIRDIAG_FP_FRAC_BITS 6u
+/** @brief ipatovFpIndex is Q10.6 (6 fractional bits); the integer sample index is the high bits.
+ * Aliased to the header's macro rather than repeated: the same format is now part of this unit's
+ * published contract (struct uwb_cirdiag_ipatov::fp_index), and two copies of a shift can drift. */
+#define CIRDIAG_FP_FRAC_BITS UWB_CIRDIAG_FP_FRAC_BITS
 
 /** @brief CLK_CTRL_ID. dwt_readcir ORs the ACC_MCLK_EN|ACC_CLK_EN bits in here on every call and
  * never clears them; the probe reads it back so a failed force shows up as data, not inference. */
@@ -383,6 +385,12 @@ bool uwb_cirdiag_last_ipatov(struct uwb_cirdiag_ipatov *out)
 		out->f3 = g_diag.ipatovF3;
 		out->power = g_diag.ipatovPower;
 		out->accum_count = g_diag.ipatovAccumCount;
+		/* Inside the seqlock with the rest, not read afterwards: these come
+		 * from the same dwt_readdiagnostics() burst as F1..F3, and a peak
+		 * paired with another reception's first path is a ratio of two
+		 * different channels that no consumer could detect. */
+		out->fp_index = g_diag.ipatovFpIndex;
+		out->peak = g_diag.ipatovPeak;
 		out->n = g_n;
 		if (g_seq != s0) {
 			continue; /* a capture landed mid-copy — retry */

@@ -36,6 +36,95 @@ enum ultrawidelock_ml_los_class {
 };
 
 /**
+ * HOW THE PHONE IS BEING CARRIED, which is the same channel question asked with
+ * more resolution. CLEAR is exactly ULTRAWIDELOCK_ML_LOS_CLEAR; the other three are
+ * exactly ULTRAWIDELOCK_ML_LOS_OBSTRUCTED, split by what is doing the obstructing.
+ *
+ * WHY SPLIT AT ALL. The binary class carries the SIGN of the obstruction effect,
+ * which is all Result 21 left standing, and a widening spends only the sign. But
+ * the magnitude that failed to replicate failed across BODIES, not across the
+ * split below: a phone in a bag and a phone behind a hip are different amounts of
+ * water and different antenna orientations, and nothing here has ever measured
+ * whether they are different amounts of centimetre. docs/bodycal-falsification.md
+ * is the protocol that would find out, and its pass condition is per-class
+ * residual std <= ~15 cm. Until that capture exists these classes carry a
+ * per-class POLICY number, never a measured constant.
+ *
+ * ORDER IS PART OF THE MODEL once a four-class tree is generated, exactly as the
+ * feature order already is: the generator emits leaf indices, not names.
+ */
+enum ultrawidelock_ml_carry_class {
+	/** Nothing in the way. Folds to ULTRAWIDELOCK_ML_LOS_CLEAR. */
+	ULTRAWIDELOCK_ML_CARRY_CLEAR = 0,
+	/** In the hand, body between hand and reader. Folds to OBSTRUCTED. */
+	ULTRAWIDELOCK_ML_CARRY_HAND = 1,
+	/** Trouser or jacket pocket. Folds to OBSTRUCTED. */
+	ULTRAWIDELOCK_ML_CARRY_POCKET = 2,
+	/** Bag, backpack or purse. Folds to OBSTRUCTED. */
+	ULTRAWIDELOCK_ML_CARRY_BAG = 3,
+};
+
+/** How many there are. A table indexed by carry class is this long. */
+#define ULTRAWIDELOCK_ML_CARRY_N_CLASSES 4
+
+/**
+ * Collapse a carry class onto the binary one every existing caller speaks.
+ *
+ * Total and exhaustive by construction: CLEAR is clear, everything else is
+ * obstructed. This is the compatibility contract -- a caller that upgrades to
+ * ultrawidelock_ml_los_carry_classify() and folds gets bit-identical behaviour to the
+ * caller it replaced, which is what makes the upgrade reviewable.
+ */
+enum ultrawidelock_ml_los_class
+ultrawidelock_ml_carry_to_los(enum ultrawidelock_ml_carry_class c);
+
+/**
+ * Classify the carry mode of one ranging exchange. The seam, and today a stub in
+ * the only sense that matters: IT CANNOT YET RETURN POCKET OR BAG.
+ *
+ * WHAT SHIPS RIGHT NOW. The generated model in this tree is the two-class tree
+ * documented at the top of this file, so this function classifies binary and
+ * reports ULTRAWIDELOCK_ML_CARRY_HAND for every obstructed reception -- the least
+ * specific obstructed class, chosen because a caller's per-class widening table
+ * then reads the entry that says "some body is in the way" rather than one that
+ * claims to know it is a rucksack. Callers MUST NOT read a HAND return as
+ * evidence the phone is in a hand; it means obstructed, resolution unavailable.
+ * ultrawidelock_ml_los_carry_trained() is how to ask which of the two you are getting,
+ * and it is a compile-time constant, so a caller that branches on it costs
+ * nothing in the build that does not have the model.
+ *
+ * THE SEAM ITSELF, and where the four-class model arrives from. gen_model.py in
+ * the tinyml repo emits ultrawidelock_ml_los_tree.h; a four-class run emits
+ * ultrawidelock_ml_carry_tree.h and ultrawidelock_ml_carry_scaler.h beside it, with
+ * ultrawidelock_ml_carry_tree_predict() and ultrawidelock_ml_carry_{lo,scale}[] under the same
+ * naming rule. ultrawidelock_ml_los.c picks that model up with __has_include and needs
+ * no edit here, in CMakeLists.txt or in Kconfig to do it -- dropping the two
+ * generated headers into src/ is the whole integration. That is deliberate: the
+ * generated files stay generated, and this file stays the contract they satisfy.
+ * Retraining needs captures this repo does not hold; see
+ * docs/bodycal-falsification.md.
+ *
+ * @param feat  as for ultrawidelock_ml_los_classify(), same features, same order, same
+ *              inability to detect a mis-ordered array.
+ * @return enum ultrawidelock_ml_carry_class. Fold it with ultrawidelock_ml_carry_to_los() to
+ *         get the binary answer; the fold is exact, not an approximation.
+ *
+ * Same cost class as ultrawidelock_ml_los_classify(): deterministic, reentrant,
+ * allocation-free, no libc. A four-class depth-2 tree is still two comparisons.
+ */
+enum ultrawidelock_ml_carry_class
+ultrawidelock_ml_los_carry_classify(const float feat[ULTRAWIDELOCK_ML_LOS_N_FEATURES]);
+
+/**
+ * True when a real four-class model is compiled in, false when the binary tree is
+ * standing in for one. Constant for a given build; see the seam paragraph above.
+ *
+ * Ask it before believing a POCKET or BAG return, and before letting an installer
+ * tune per-class widenings that a binary model can never distinguish.
+ */
+bool ultrawidelock_ml_los_carry_trained(void);
+
+/**
  * Classify one ranging exchange from its receive diagnostics.
  *
  * @param feat  ULTRAWIDELOCK_ML_LOS_N_FEATURES values in physical units, indexed by
@@ -213,6 +302,70 @@ struct ultrawidelock_ml_cia {
 	uint32_t f3;           /**< dwt_rxdiag_t::ipatovF3 */
 	uint16_t accum_count;  /**< dwt_rxdiag_t::ipatovAccumCount */
 	uint32_t channel_area; /**< dwt_rxdiag_t::ipatovPower, a 2^17-scaled area */
+	/**
+	 * Amplitude of the strongest CIR sample: dwt_rxdiag_t::ipatovPeak masked
+	 * to IP_DIAG_0_PEAKAMP, bits [20:0]. The AMPLITUDE ALONE, not the packed
+	 * register — the index half is a sample position and this module has no
+	 * use for one, so taking the register whole would only invite a caller to
+	 * pass it unmasked and get a ratio 2^21 too large that still looks like a
+	 * dB number.
+	 *
+	 * Read ONLY by ultrawidelock_ml_los_diag(). The shipped model does not use
+	 * it and ultrawidelock_ml_los_features() does not look at it, so leaving it
+	 * zero keeps the classifier's answers unchanged.
+	 */
+	uint32_t peak_amp;
+};
+
+/**
+ * Training columns that are NOT model inputs, from one reception's registers.
+ *
+ * SEPARATE FROM THE FEATURE VECTOR ON PURPOSE. enum ultrawidelock_ml_los_feature is
+ * generated by gen_model.py and its length is part of the fitted model; adding a
+ * column there would mean the C fills a vector the trained tree never saw.
+ * Everything here is a candidate for a FUTURE fit, computed on-device only so a
+ * capture run records it beside the reception it came from. Nothing in the
+ * unlock path reads any of it.
+ *
+ * NO NOISE FLOOR, and this is the field a reader will look for. The DW3000's
+ * dwt_rxdiag_t has no noise members at all: maxNoise and stdNoise are DW1000
+ * fields (RX_FQUAL), and the DW3000 CIA bank exposes IP_DIAG_0..12 of which only
+ * PEAKLOC/PEAKAMP, the channel area, F1..F3, FPLOC and NACC are named in the
+ * vendor register header this repo carries. IP_DIAG_5/6/7/9/10/11 exist with no
+ * documented subfields, so nothing here can say whether any of them is a noise
+ * estimate, and inventing one would produce a confident column of nonsense
+ * rather than an error. The capture emits the raw peak, F1..F3, channel area and
+ * accumulator count instead, so a noise column can be DERIVED offline once its
+ * source is established.
+ */
+struct ultrawidelock_ml_diag {
+	/** 10*log10(F1^2+F2^2+F3^2 / C^2) - A, in dB. The first path's own power. */
+	float fp_pwr_db;
+	/** 10*log10(area*2^17 / C^2) - A, in dB. The whole channel's power. */
+	float rx_pwr_db;
+	/**
+	 * rx_pwr - fp_pwr, in dB. Identical to the pwr_diff_db that
+	 * ultrawidelock_ml_los_features() hands out, and it is here so a capture can
+	 * record the column without also running the classifier.
+	 */
+	float delta_p_db;
+	/**
+	 * 10*log10((F1^2+F2^2+F3^2) / peak_amp^2), in dB. How far the first path
+	 * sits below the strongest arrival.
+	 *
+	 * A RATIO, NOT A POWER, which is why A does not appear in it: A is a
+	 * constant offset on both halves and cancels, and so does the accumulator
+	 * count. Both halves are CIR magnitudes off the same Ipatov accumulator in
+	 * the same units, so the quotient is dimensionless.
+	 *
+	 * SIGN IS THE POINT. The peak is by construction the largest sample, so
+	 * with the first path AT the peak this sits just above 0 dB (the numerator
+	 * sums three taps against the peak's one, so a clean channel can reach
+	 * about +4.8 dB), and it falls the further the first arrival is below the
+	 * strongest one -- which is what an obstruction does. UNFITTED: no
+	 * threshold on this has been trained or measured on this board.
+	 */
+	float fp_peak_db;
 };
 
 /**
@@ -235,6 +388,31 @@ struct ultrawidelock_ml_cia {
  */
 bool ultrawidelock_ml_los_features(const struct ultrawidelock_ml_cia *cia, uint16_t dist_cm,
 			 float feat[ULTRAWIDELOCK_ML_LOS_N_FEATURES], float *pwr_diff_db);
+
+/**
+ * Fill the training columns of struct ultrawidelock_ml_diag from the same registers.
+ *
+ * For a CAPTURE RUN, not for a decision. Nothing the shipped classifier does
+ * calls this, and adding a call to it cannot change what
+ * ultrawidelock_ml_los_classify() answers -- the two share the arithmetic that
+ * produces fp_pwr and rx_pwr but this one writes only to its own struct.
+ *
+ * @param cia  the Ipatov registers, as read. peak_amp must be the AMPLITUDE half
+ *             of ipatovPeak (bits [20:0]); see struct ultrawidelock_ml_cia.
+ * @param out  filled only on success.
+ * @return false on a failed CIA read, by exactly the rule
+ *         ultrawidelock_ml_los_features() uses -- a zero accumulator count, channel
+ *         area or first-path sum -- plus a zero peak amplitude, which is a
+ *         failed read for the same reason: the peak is by construction the
+ *         largest sample in the CIR, so a channel that produced any F1..F3 at
+ *         all cannot have a zero peak. Nothing is written when it returns false,
+ *         so a caller cannot mistake a stale struct for a fresh reading.
+ *
+ * Allocation-free, reentrant, no libc, task context: four logarithms, like the
+ * rest of this module.
+ */
+bool ultrawidelock_ml_los_diag(const struct ultrawidelock_ml_cia *cia,
+			       struct ultrawidelock_ml_diag *out);
 
 #ifdef __cplusplus
 }

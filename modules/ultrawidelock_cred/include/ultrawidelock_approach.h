@@ -35,6 +35,23 @@ extern "C" {
 /* Spike-rejecting median window over trusted ranges (odd; samples). */
 #define ULTRAWIDELOCK_APPROACH_MEDIAN_N 5
 
+#if defined(CONFIG_ULTRAWIDELOCK_ML_LOS)
+/*
+ * How the credential is being carried, mirroring enum ultrawidelock_ml_carry_class
+ * value for value. Mirrored rather than included because this file is pure logic
+ * with no module dependencies -- ultrawidelock_approach.c includes ultrawidelock_ml.h under the
+ * same guard and static-asserts the two agree, so a divergence is a build error
+ * and not a silently mis-indexed widening table.
+ */
+enum ultrawidelock_approach_carry {
+	ULTRAWIDELOCK_APPROACH_CARRY_CLEAR = 0,
+	ULTRAWIDELOCK_APPROACH_CARRY_HAND = 1,
+	ULTRAWIDELOCK_APPROACH_CARRY_POCKET = 2,
+	ULTRAWIDELOCK_APPROACH_CARRY_BAG = 3,
+};
+#define ULTRAWIDELOCK_APPROACH_CARRY_N 4
+#endif
+
 /* One decision per fed sample / tick; the caller mirrors these onto the bolt.
  * UNLOCK/RELOCK values fire once per transition (the controller tracks the
  * bolt state), so acting on every non-HOLD return is idempotent-safe. */
@@ -201,6 +218,47 @@ struct ultrawidelock_approach_cfg {
 	 * and stop gating anything. See ultrawidelock_approach_cfg_default().
 	 */
 	int32_t nlos_widen_cm;
+#if defined(CONFIG_ULTRAWIDELOCK_ML_LOS)
+	/*
+	 * PER-CARRY-MODE OVERRIDE of nlos_widen_cm, indexed by enum
+	 * ultrawidelock_approach_carry. Every entry defaults to 0 and 0 means "no policy
+	 * for this class, use nlos_widen_cm", so a controller that never fills this
+	 * in behaves exactly as it did before the table existed -- which is how the
+	 * binary ultrawidelock_approach_feed_channel() callers keep working unchanged.
+	 *
+	 * WHY A TABLE AND NOT ONE NUMBER. The complaint BodyCal exists for is that
+	 * the trigger distance depends on where the phone is: a hand at the hip, a
+	 * trouser pocket and a rucksack are different amounts of water between the
+	 * antenna and the reader, and one widening tuned for a pocket is wrong for
+	 * the other two in both directions. Splitting the number is the mechanism
+	 * for making them agree.
+	 *
+	 * NONE OF THESE NUMBERS IS MEASURED, AND THIS FILE WILL NEVER SUPPLY ONE.
+	 * Result 21 refuted the obstruction MAGNITUDE across two bodies while its
+	 * sign held; splitting obstructed into three carry modes does not repair
+	 * that, it multiplies it by three. These stay install policy for the same
+	 * reason nlos_widen_cm does, and docs/bodycal-falsification.md is the
+	 * protocol that says whether per-class numbers are even stable enough to
+	 * tune -- per-class residual std <= ~15 cm, or widening-only is all that is
+	 * supportable and this table stays at 0.
+	 *
+	 * IT CANNOT BE MORE PERMISSIVE THAN THE SINGLE NUMBER WAS DANGEROUS. Each
+	 * entry gets exactly the clamps nlos_widen_cm gets -- negatives to zero,
+	 * and unlock_cm + entry held strictly under approach_cm -- applied at init,
+	 * per entry. See ultrawidelock_approach_init().
+	 *
+	 * ENTRIES THE MODEL CANNOT REACH ARE DEAD, and they are not inert. The
+	 * shipped tree is two-class, so ultrawidelock_ml_los_carry_classify() only ever
+	 * returns CLEAR or HAND; POCKET and BAG entries are then unreachable and an
+	 * installer tuning them is tuning nothing. Ask
+	 * ultrawidelock_ml_los_carry_trained() before offering them.
+	 *
+	 * The CLEAR entry exists so the table is indexable by the class directly and
+	 * has no other purpose: the vote below never selects a widening while the
+	 * window says clear, so index 0 is never read.
+	 */
+	int32_t nlos_widen_class_cm[ULTRAWIDELOCK_APPROACH_CARRY_N];
+#endif
 	bool predict_en; /* arm the prediction path at all; false leaves the
 			  * presence path exactly as it shipped. Off whenever
 			  * the RSSI power gate is on: the gate withholds
@@ -232,6 +290,15 @@ struct ultrawidelock_approach {
 	 * call? The vote is taken over the same window the median is, so the
 	 * correction costs no latency the median was not already spending. */
 	bool ch_win[ULTRAWIDELOCK_APPROACH_MEDIAN_N];
+#if defined(CONFIG_ULTRAWIDELOCK_ML_LOS)
+	/* Parallel to ch_win[]: WHICH obstructed class this sample was, so the
+	 * widening can be looked up per carry mode. Meaningful only where
+	 * ch_win[] is true; entries under a false ch_win are not read, because a
+	 * sample that failed the confidence floor votes clear and a clear vote
+	 * selects no widening. uint8_t rather than the enum so the array stays
+	 * five bytes: this sits in per-credential state. */
+	uint8_t carry_win[ULTRAWIDELOCK_APPROACH_MEDIAN_N];
+#endif
 	int wlen, wpos;
 	int near_dwell, far_dwell;
 
@@ -328,6 +395,44 @@ enum ultrawidelock_approach_action
 ultrawidelock_approach_feed_channel(struct ultrawidelock_approach *ap, int64_t now_ms, int32_t cm,
 				    bool obstructed, float confidence);
 
+#if defined(CONFIG_ULTRAWIDELOCK_ML_LOS)
+/**
+ * The same again, carrying WHICH obstruction rather than merely that there was
+ * one, so cfg.nlos_widen_class_cm[] can be indexed by it.
+ *
+ * ultrawidelock_approach_feed_channel(obstructed, conf) is exactly this with
+ * carry = obstructed ? HAND : CLEAR, and that identity is the compatibility
+ * contract: HAND is the least specific obstructed class, so a binary caller
+ * lands in the table entry that says "some body is in the way" and, with the
+ * table left at its 0 default, gets cfg.nlos_widen_cm exactly as before. Nothing
+ * about the vote, the confidence floor, the majority-of-five or the staleness
+ * horizon changes -- this only labels the vote it was already casting.
+ *
+ * The class is recorded, not trusted per sample. It is read only through the
+ * same majority the widening has always needed, so one misclassified reception
+ * cannot select a carry mode any more than it can select obstructed.
+ *
+ * @param cm          the range as the reader produced it, uncorrected.
+ * @param carry       ultrawidelock_ml_los_carry_classify() for this reception, folded
+ *                    into enum ultrawidelock_approach_carry (the two enums are
+ *                    static-asserted equal). Out-of-range values are read as
+ *                    HAND, for the reason ultrawidelock_ml_los_carry_classify() gives.
+ * @param confidence  ultrawidelock_ml_los_confidence() for the same reception, compared
+ *                    against cfg.nlos_conf_min exactly as in feed_channel(). A
+ *                    sample below the floor votes CLEAR and its carry class is
+ *                    discarded with it -- an unconfident guess at WHICH body
+ *                    geometry is worth less than the unconfident guess that
+ *                    there was one, and that one is already refused.
+ *
+ * REMEMBER WHAT THE SHIPPED MODEL CAN ACTUALLY RETURN. It is a two-class tree,
+ * so POCKET and BAG never arrive and their table entries are dead. See
+ * ultrawidelock_ml_los_carry_trained() and docs/bodycal-falsification.md.
+ */
+enum ultrawidelock_approach_action
+ultrawidelock_approach_feed_carry(struct ultrawidelock_approach *ap, int64_t now_ms, int32_t cm,
+				  enum ultrawidelock_approach_carry carry, float confidence);
+#endif
+
 /**
  * Record a range for the DEPARTURE decision alone, trust gate or no trust gate.
  *
@@ -410,6 +515,42 @@ int32_t ultrawidelock_approach_eta_ms(const struct ultrawidelock_approach *ap); 
  *                verdict is a function of the window AND of when it is asked.
  */
 bool ultrawidelock_approach_nlos_blocked(const struct ultrawidelock_approach *ap, int64_t now_ms);
+
+#if defined(CONFIG_ULTRAWIDELOCK_ML_LOS)
+/**
+ * WHICH carry mode the window voted for, given that it voted obstructed at all.
+ *
+ * Plurality over exactly the votes ultrawidelock_approach_nlos_blocked() counts: fresh,
+ * confident, obstructed. Meaningless -- and returns CLEAR -- whenever that
+ * function returns false, which is the same "a partly-filled or stale window
+ * widens nothing" rule stated once.
+ *
+ * TIES BREAK TOWARD THE SMALLEST CONFIGURED WIDENING, not toward the lowest
+ * class index, and that is a security choice rather than a tidiness one. Two
+ * classes at two votes each is the window not knowing which body geometry it is
+ * looking at, and the answer to not knowing is the less permissive threshold.
+ * With an unfilled table every entry is equal and the tie is decided by index,
+ * which costs nothing because every candidate then yields the same widening.
+ *
+ * Telemetry, exactly like ultrawidelock_approach_nlos_blocked(): the decision path reads
+ * the same state internally.
+ */
+enum ultrawidelock_approach_carry
+ultrawidelock_approach_nlos_carry(const struct ultrawidelock_approach *ap, int64_t now_ms);
+
+/**
+ * The unlock radius in force right now, in centimetres: cfg.unlock_cm plus
+ * whatever widening the window's carry vote currently selects, or exactly
+ * cfg.unlock_cm when it selects none.
+ *
+ * Every unlock_cm comparison inside the controller goes through the same
+ * computation -- the fire decision, the ETA target and the silence rule alike --
+ * so this is the number to log beside a walk, and the number a test should assert
+ * on rather than re-deriving the table lookup for itself.
+ */
+int32_t ultrawidelock_approach_effective_unlock_cm(const struct ultrawidelock_approach *ap,
+						   int64_t now_ms);
+#endif
 
 #ifdef __cplusplus
 }

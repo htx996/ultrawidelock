@@ -1,12 +1,75 @@
 # mk/extras.mk — housekeeping. Included last, so `make help` ends here.
 
-.PHONY: clean ws-clean help fw-check
+.PHONY: clean ws-clean help fw-check fw-regress cdk-size-age
+
+# How many firmware-touching commits a baseline may fall behind before the age
+# check says so. 25 is about a fortnight of this repo's rate, and well under the
+# 93 that went unnoticed.
+CDK_SIZE_AGE_WARN ?= 25
 
 ##@ Housekeeping
 ## fw-check: compile-gate the Zephyr images  ·  CDK lock + all three witness roles
 fw-check:
 	@$(MAKE) --no-print-directory build
 	@$(MAKE) --no-print-directory witness-trio
+
+## fw-regress: every DWM3001CDK configuration, then the size gate  ·  needs the NCS toolchain
+##   fw-check builds one image. This builds all of them, because the ways this
+##   firmware breaks without the host suites noticing are Kconfig and devicetree
+##   ways: a symbol the Matter image defines and the reader image does not, an
+##   overlay that stopped applying, a driver only the self-test pulls in. Each
+##   configuration gets its own build directory, so they stay incremental and a
+##   failure names which one.
+##
+##   CI does not run this (ci.yml's header says why -- the NCS toolchain and its
+##   multi-GB workspace). `make regress` runs it here, before a push.
+fw-regress:
+	@$(MAKE) --no-print-directory build
+	@$(MAKE) --no-print-directory build SMP=1 RELEASE=1 \
+	         CDK_BUILD='$(ULTRAWIDELOCK_BUILD_ROOT)/cdk-shipping'
+	@$(MAKE) --no-print-directory reader
+	@$(MAKE) --no-print-directory selftest
+	@$(MAKE) --no-print-directory cirdiag
+	@$(MAKE) --no-print-directory mlgate
+	@$(MAKE) --no-print-directory witness-trio
+	@# A west build can exit 0 with no image when the app it was pointed at
+	@# produced nothing linkable, so the artifacts are checked rather than the
+	@# exit codes alone.
+	@root='$(ULTRAWIDELOCK_BUILD_ROOT)'; miss=0; \
+	for d in cdk-matter cdk-shipping cdk-reader cdk-selftest cdk-cirdiag cdk-mlgate; do \
+	  if [ ! -f "$$root/$$d/merged.hex" ] && [ ! -f "$$root/$$d/dwm3001cdk-lock/zephyr/zephyr.hex" ]; then \
+	    printf '  FAIL  %s built no image\n' "$$d"; miss=1; \
+	  else printf '  ok    %s\n' "$$d"; fi; \
+	done; \
+	[ "$$miss" = 0 ] || { printf '\n  fw-regress: a configuration produced no image\n' >&2; exit 1; }
+	@$(MAKE) --no-print-directory cdk-size-check
+	@$(MAKE) --no-print-directory cdk-size-age
+	@printf '\n  fw-regress: every DWM3001CDK configuration builds and fits\n\n'
+
+## cdk-size-age: how far the recorded baseline has fallen behind the firmware
+##   A baseline is only a gate while it still describes a recent image. This one
+##   went "not comparable" at the Kconfig prefix rename and stayed that way for 93
+##   firmware commits, absorbing ~17 KB of flash growth that nothing reported --
+##   the gate was green-adjacent and judging nothing. cdk-size-check catches a
+##   changed configuration; this catches the slower failure, a baseline that
+##   still compares but describes firmware nobody ships any more.
+##
+##   Warns rather than fails: a feature branch is legitimately ahead of the
+##   baseline, and a gate that cries on every branch is a gate people learn to
+##   ignore. Refresh on main after a merge, with `make cdk-size-baseline`.
+cdk-size-age:
+	@base="$$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["baselines"][d["primary"]]["commit"])' \
+	          '$(CDK_SIZE_BASELINE)' 2>/dev/null)"; \
+	[ -n "$$base" ] || exit 0; \
+	git -C '$(REPO_ROOT)' cat-file -e "$$base^{commit}" 2>/dev/null || { \
+	  printf '  size baseline recorded at %s, which is not in this history\n' "$$base"; exit 0; }; \
+	n="$$(git -C '$(REPO_ROOT)' rev-list --count "$$base"..HEAD -- modules apps src boards 2>/dev/null)"; \
+	if [ "$${n:-0}" -ge $(CDK_SIZE_AGE_WARN) ]; then \
+	  printf '\n  ! the size baseline is %s firmware commits behind HEAD\n' "$$n"; \
+	  printf '    Refresh it on main: make cdk-size-baseline\n'; \
+	else \
+	  printf '  baseline %s firmware commits behind HEAD\n' "$${n:-0}"; \
+	fi
 ## clean: remove every build artifact in the tree  ->  ./build and the app-local ones
 clean:
 	@# ULTRAWIDELOCK_BUILD_ROOT is `?=` and exported (Makefile:38-39), so whatever is in
@@ -50,6 +113,7 @@ help:
 	printf '    %sPRISTINE=1  ·  from-scratch build (every port)%s\n' "$$d" "$$r"; \
 	printf '    %sLTO=0  RELEASE=1  SMP=1  DFU_LOG=1  ·  DWM3001CDK%s\n' "$$d" "$$r"; \
 	printf '    %sCDK_BUILD=<dir>  CDK_RTT_BUILD=<dir>  CDK_KEY=<path>  ·  DWM3001CDK%s\n' "$$d" "$$r"; \
+	printf '    %sINSTRUMENT_ATTEMPTS=<n>  INSTRUMENT_WARMUP=<n>  INSTRUMENT_PORT=8765%s\n' "$$d" "$$r"; \
 	printf '    %sAPP=matter-lock|reader|initiator  TARGET=esp32s3|esp32c5|esp32c6  VARIANT=presence|hamqtt|piv%s\n' "$$d" "$$r"; \
 	printf '    %sCHIP=dw3720  PRETTY=1  SELFTEST=1  STRICT=1  ·  nRF5340 DK%s\n' "$$d" "$$r"; \
 	printf '    %sHA=1  ·  nRF5340 data-model variant; not needed for DWM multi-admin%s\n' "$$d" "$$r"; \

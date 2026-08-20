@@ -1,0 +1,4 @@
+/* Experimental DW3110 SPI variant. Pair with overlays/bench.conf. */
+&dw3000 {
+	spi-max-frequency = <16000000>;
+};

@@ -190,4 +190,55 @@ config ULTRAWIDELOCK_ANCHOR_SLAM_LOG_LEVEL
 	  the callback runs in interrupt context beside a ranging arm deadline of
 	  roughly 1836 us.
 
+config ULTRAWIDELOCK_ANCHOR_DOOR_HINGE_FRAME_MM
+	int "Hinge axis to the frame anchor, millimetres"
+	default 800
+	range 1 5000
+	help
+	  Side a of the triangle ultrawidelock_door.h solves. A PLACEHOLDER, like
+	  the baseline beside it in overlay-anchor.conf: the number that matters
+	  is where the two boards actually ended up on this door, which is a
+	  tape-measure fact and not a default anyone can ship.
+
+	  Wrong here, every reported angle is biased and the ajar alarm fires at
+	  the wrong opening. The board says so once at startup only when the
+	  geometry is impossible, not when it is merely wrong.
+
+config ULTRAWIDELOCK_ANCHOR_DOOR_HINGE_LEAF_MM
+	int "Hinge axis to the leaf anchor, millimetres"
+	default 800
+	range 1 5000
+	help
+	  Side b of the same triangle, and the same PLACEHOLDER status as the
+	  frame distance above.
+
+config ULTRAWIDELOCK_ANCHOR_DOOR_OFFSET_MDDEG
+	int "Angle the geometry reports with the door SHUT, millidegrees"
+	default 0
+	range 0 179999
+	help
+	  theta0: subtracted from every reading so a shut door reports 0.
+
+	  A PLACEHOLDER at 0, which is what a perfectly aligned pair of anchors
+	  would give and no real pair does. ultrawidelock_door.h says how to get
+	  the real one: solve it from three measured points (shut, ~45, ~90
+	  degrees) rather than measuring to the hinge pin, because the hinge axis
+	  is not where it looks like it is.
+
+config ULTRAWIDELOCK_ANCHOR_AJAR_DWELL_S
+	int "How long the door may stand open, bolt thrown, before the ajar alarm"
+	default 60
+	range 1 3600
+	help
+	  A DoorAjar alarm (door-lock-cluster.xml AlarmCodeEnum, value 7) once
+	  the leaf has been away from CLOSED for this long while the Matter node
+	  still reports the bolt LOCKED.
+
+	  60 is a PLACEHOLDER chosen the same way the impact threshold's 2000 mg
+	  is not: nothing has measured how long this door is normally held open
+	  during a walk-through. Long, deliberately -- the cost of guessing high
+	  is a late alarm, and the cost of guessing low is an owner who learns to
+	  ignore this event. Size it from the same bench session that sizes the
+	  impact threshold.
+
 endif # ULTRAWIDELOCK_ANCHOR

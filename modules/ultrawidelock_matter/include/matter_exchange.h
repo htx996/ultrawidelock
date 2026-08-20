@@ -220,6 +220,82 @@ struct matter_exchange_in {
 	uint32_t acked_counter;
 };
 
+/** Lifecycle of one caller-owned outbound packet slot. */
+enum matter_tx_slot_state {
+	MATTER_TX_SLOT_FREE = 0,
+	MATTER_TX_SLOT_BUILDING,
+	MATTER_TX_SLOT_READY,
+	MATTER_TX_SLOT_IN_FLIGHT,
+};
+
+/**
+ * Metadata for one bounded outbound packet.
+ *
+ * The bytes remain caller-owned. The pool owns only their lifecycle, which is
+ * the important distinction from a transport borrowing an unrelated scratch
+ * buffer: a READY or IN_FLIGHT slot cannot be acquired or overwritten until
+ * the transport explicitly completes or rejects its token.
+ */
+struct matter_tx_slot {
+	uint8_t *data;
+	size_t capacity;
+	size_t len;
+	uint32_t token;
+	uint32_t order;
+	/** Absolute modular-ms deadline for a retained transport retry. */
+	uint32_t retry_deadline_ms;
+	uint8_t transport;
+	bool retry_deadline_set;
+	enum matter_tx_slot_state state;
+};
+
+/** A fixed caller-supplied set of outbound packet slots. */
+struct matter_tx_pool {
+	struct matter_tx_slot *slots;
+	size_t n_slots;
+	uint32_t next_token;
+	uint32_t next_order;
+};
+
+/** Attach @p n_slots equally sized buffers to a fresh outbound pool. */
+int matter_tx_pool_init(struct matter_tx_pool *pool, struct matter_tx_slot *slots,
+			uint8_t *backing, size_t n_slots, size_t slot_capacity);
+
+/** Reserve a free slot for one transport. NULL means the bounded pool is full. */
+struct matter_tx_slot *matter_tx_pool_acquire(struct matter_tx_pool *pool, uint8_t transport);
+
+/** Publish the bytes built in a BUILDING slot. */
+int matter_tx_slot_commit(struct matter_tx_slot *slot, size_t len);
+
+/** Oldest READY slot for @p transport, or NULL. */
+struct matter_tx_slot *matter_tx_pool_ready(struct matter_tx_pool *pool, uint8_t transport);
+
+/** The transport accepted the slot and now borrows its bytes asynchronously. */
+int matter_tx_slot_in_flight(struct matter_tx_slot *slot);
+
+/** Find a live slot by the opaque token assigned at acquire time. */
+struct matter_tx_slot *matter_tx_pool_find(struct matter_tx_pool *pool, uint32_t token);
+
+/**
+ * Return an accepted packet to READY after this send attempt was rejected.
+ * Its bytes and token remain owned for an exact reliable-transport retry.
+ */
+int matter_tx_pool_retry(struct matter_tx_pool *pool, uint32_t token, uint32_t now_ms,
+			 uint32_t retain_ms);
+
+/** First READY retry whose modular deadline has passed, or NULL. */
+struct matter_tx_slot *matter_tx_pool_expired(struct matter_tx_pool *pool, uint8_t transport,
+					      uint32_t now_ms);
+
+/** Release a BUILDING token when encoding or framing failed before publication. */
+int matter_tx_pool_cancel(struct matter_tx_pool *pool, uint32_t token);
+
+/** Release an IN_FLIGHT token after successful transport completion. */
+int matter_tx_pool_complete(struct matter_tx_pool *pool, uint32_t token);
+
+/** Release a READY/IN_FLIGHT token after transport rejection or failure. */
+int matter_tx_pool_reject(struct matter_tx_pool *pool, uint32_t token);
+
 /**
  * @param entropy a random word seeding the outbound counter; see
  *        matter_counter_init(). Unsecured counters wrap, so this is about not
@@ -249,6 +325,17 @@ void matter_exchange_init(struct matter_exchange *x, uint32_t entropy, bool mrp)
  */
 int matter_exchange_recv(struct matter_exchange *x, const uint8_t *msg, size_t len,
 			 struct matter_exchange_in *in, uint8_t *pt, size_t pt_cap);
+
+/**
+ * Decode a private mutable receive buffer without a second plaintext scratch.
+ *
+ * Secure ciphertext after the message header is replaced by plaintext only
+ * after AEAD processing. @p in points into @p msg until the caller reuses it.
+ * Authentication failure zeroes the unauthenticated body. Unsecured messages
+ * are parsed in place without modification.
+ */
+int matter_exchange_recv_in_place(struct matter_exchange *x, uint8_t *msg, size_t len,
+				  struct matter_exchange_in *in);
 
 /**
  * Adopt the secure session PASE just established.

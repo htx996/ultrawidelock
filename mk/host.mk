@@ -1,7 +1,7 @@
 # mk/host.mk — everything that runs on this machine: the host suites. No NCS
 # toolchain, no ESP-IDF, no hardware. Output lands under build/host.
 
-.PHONY: test sdk-check sdk-export test-san coverage cbmc check drift seam scope purity ci
+.PHONY: test sdk-check sdk-export test-san coverage cbmc check drift seam scope purity lint sca ci regress
 
 ##@ Test
 ## test: run the host test suite for our logic  (no NCS toolchain / hardware)
@@ -57,6 +57,22 @@ ci:
 	fi
 	@$(MAKE) --no-print-directory check
 
+## regress: everything a machine can check without hardware  ·  run before a push
+##   `make ci` is what a pull request is judged by, and it deliberately builds no
+##   firmware. This is the superset a bench can run: the CI gates, then the one
+##   suite CI cannot host (the integration patches, which need the network), then
+##   every DWM3001CDK configuration and the size gate.
+##
+##   Needs the NCS toolchain, a bootstrapped ./workspace and the checkout's dev
+##   signing key (`make bootstrap` and `make dfu-key`, once per clone).
+##
+##   The other two boards stay manual: `make nrf-build` and `make esp-build`.
+##   With hardware on the bench, `make regress-hil` goes one tier further.
+regress:
+	@$(MAKE) --no-print-directory ci
+	@SUITES="patchdrift" $(REPO_ROOT)/scripts/test-runner.sh
+	@$(MAKE) --no-print-directory fw-regress
+
 ## seam: no call reaches the radio past the CCC STS seam
 seam:
 	@$(REPO_ROOT)/tests/tooling/uwb_seam_check.sh
@@ -68,3 +84,20 @@ scope:
 ## purity: modules/ names no OS, each port tree names only its own
 purity:
 	@$(REPO_ROOT)/tests/tooling/port_purity_check.sh
+
+## lint: cppcheck over the portable tree  ·  defects on paths no suite reaches
+##   Skipped loudly, not failed, when cppcheck is missing: CI installs it.
+##   modules/ and include/ only. ports/ and apps/ cannot be parsed without
+##   Zephyr and ESP-IDF expanding their macros, so neither this nor `make sca`
+##   reads them: that needs a compile database from a real target build.
+lint:
+	@$(REPO_ROOT)/tests/tooling/cppcheck_gate.sh
+
+## sca: Clang Static Analyzer over the portable tree  ·  path-sensitive defects
+##   The deeper pass `make lint` is not: it follows values across functions and
+##   branches, so it reaches NULL-on-one-arm and use-after-free-on-the-error-path
+##   bugs. Needs CodeChecker installed, so it is out of `make check` and CI:
+##     python3 -m venv .venv-sca && .venv-sca/bin/pip install codechecker
+##     CODECHECKER=.venv-sca/bin/CodeChecker make sca
+sca:
+	@$(REPO_ROOT)/tests/tooling/codechecker_sca.sh

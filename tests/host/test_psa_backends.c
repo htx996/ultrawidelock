@@ -101,6 +101,7 @@ void test_ccc_crypto_backends(void)
 void test_ultrawidelock_prim_psa(void)
 {
 	uint8_t ct[64], tag[16], pt[64], out16[16];
+	uint8_t large[1025] = {0}, large_out[1025];
 	uint8_t priv[ULTRAWIDELOCK_P256_SCALAR], pub[ULTRAWIDELOCK_P256_POINT];
 	uint8_t shared[ULTRAWIDELOCK_P256_SCALAR], sig[ULTRAWIDELOCK_P256_SIG];
 	static const uint8_t NONCE[12] = {0};
@@ -131,10 +132,14 @@ void test_ultrawidelock_prim_psa(void)
 	     (long)PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, 16));
 	T_EQ("nonce len", (long)psafake.last_nonce_len, 12L);
 	T_EQ("aad len", (long)psafake.last_aad_len, 5L);
+	T_EQ("multipart setup", (long)psafake.aead_enc_calls, 1L);
+	T_EQ("multipart lengths", (long)psafake.aead_lengths_calls, 1L);
+	T_EQ("multipart update", (long)psafake.aead_update_calls, 1L);
+	T_EQ("multipart finish", (long)psafake.aead_finish_calls, 1L);
+	T_EQ("multipart abort", (long)psafake.aead_abort_calls, 1L);
 	T_OK("ct split out", memcmp(ct, BLK, 16) == 0);
 	T_OK("tag split out", tag[0] == 0xc0 && tag[15] == 0xcf);
 	T_EQ("key destroyed", (long)psafake.destroy_calls, 1L);
-	psafake.aead_enc_olen = 16 + 8; /* fake writes pt+16; olen knob models tag8 */
 	T_EQ("encrypt ok (tag8)",
 	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, sizeof(NONCE), NULL, 0, BLK, 16, ct, tag, 8),
 	     0);
@@ -142,20 +147,49 @@ void test_ultrawidelock_prim_psa(void)
 	     (long)PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, 8));
 	T_EQ("tag too long -> -1",
 	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 17), -1);
-	T_EQ("pt too long -> -1",
-	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 2000, ct, tag, 16), -1);
+	T_EQ("payload beyond old 1024-byte scratch succeeds",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, large, sizeof(large),
+				       large_out, tag, 16),
+	     0);
 	psafake_reset();
 	psafake.import_ret = PSA_ERROR_GENERIC;
 	T_EQ("import fail -> -1",
 	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
 	psafake_reset();
-	psafake.aead_enc_ret = PSA_ERROR_GENERIC;
-	T_EQ("aead fail -> -1",
+	psafake.aead_setup_ret = PSA_ERROR_GENERIC;
+	T_EQ("setup fail -> -1",
 	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
-	T_EQ("destroy after aead fail", (long)psafake.destroy_calls, 1L);
+	T_EQ("abort after setup fail", (long)psafake.aead_abort_calls, 1L);
+	T_EQ("destroy after setup fail", (long)psafake.destroy_calls, 1L);
 	psafake_reset();
-	psafake.aead_enc_olen = 5; /* wrong total length */
+	psafake.aead_lengths_ret = PSA_ERROR_GENERIC;
+	T_EQ("set-lengths fail -> -1",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
+	psafake_reset();
+	psafake.aead_nonce_ret = PSA_ERROR_GENERIC;
+	T_EQ("set-nonce fail -> -1",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
+	psafake_reset();
+	psafake.aead_ad_ret = PSA_ERROR_GENERIC;
+	T_EQ("AAD fail -> -1",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, AAD, sizeof(AAD), BLK, 16, ct, tag, 16),
+	     -1);
+	psafake_reset();
+	psafake.aead_update_ret = PSA_ERROR_GENERIC;
+	T_EQ("update fail -> -1",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
+	psafake_reset();
+	psafake.aead_enc_ret = PSA_ERROR_GENERIC;
+	T_EQ("finish fail -> -1",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
+	T_EQ("destroy after finish fail", (long)psafake.destroy_calls, 1L);
+	psafake_reset();
+	psafake.aead_finish_olen = 1;
 	T_EQ("olen mismatch -> -1",
+	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
+	psafake_reset();
+	psafake.aead_tag_olen = 15;
+	T_EQ("tag olen mismatch -> -1",
 	     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, NULL, 0, BLK, 16, ct, tag, 16), -1);
 
 	t_group("aes256-gcm decrypt");
@@ -163,22 +197,29 @@ void test_ultrawidelock_prim_psa(void)
 	T_EQ("decrypt ok",
 	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, AAD, 5, ct, 16, tag, 16, pt), 0);
 	T_EQ("usage DECRYPT", (long)psafake.attr_usage, (long)PSA_KEY_USAGE_DECRYPT);
-	T_EQ("ct||tag length in", (long)psafake.last_in_len, 32L);
+	T_EQ("ciphertext length in", (long)psafake.last_in_len, 16L);
+	T_EQ("multipart verify", (long)psafake.aead_verify_calls, 1L);
 	T_OK("pt out", memcmp(pt, ct, 16) == 0);
 	T_EQ("tag too long -> -1",
 	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, NULL, 0, ct, 16, tag, 17, pt), -1);
-	T_EQ("ct too long -> -1",
-	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, NULL, 0, ct, 2000, tag, 16, pt), -1);
+	T_EQ("ciphertext beyond old 1024-byte scratch succeeds",
+	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, NULL, 0, large, sizeof(large), tag, 16,
+				       large_out),
+	     0);
 	psafake_reset();
 	psafake.import_ret = PSA_ERROR_GENERIC;
 	T_EQ("import fail -> -1",
 	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, NULL, 0, ct, 16, tag, 16, pt), -1);
 	psafake_reset();
 	psafake.aead_dec_ret = PSA_ERROR_GENERIC;
+	memset(pt, 0xa5, sizeof(pt));
 	T_EQ("tag-mismatch fail -> -1",
 	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, NULL, 0, ct, 16, tag, 16, pt), -1);
+	T_EQ("destroy after verify failure", (long)psafake.destroy_calls, 1L);
+	T_EQ("abort after verify failure", (long)psafake.aead_abort_calls, 1L);
+	T_OK("tentative plaintext wiped after verify failure", memcmp(pt, (uint8_t[16]){0}, 16) == 0);
 	psafake_reset();
-	psafake.aead_dec_olen = 3;
+	psafake.aead_verify_olen = 3;
 	T_EQ("olen mismatch -> -1",
 	     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, NULL, 0, ct, 16, tag, 16, pt), -1);
 
@@ -287,6 +328,35 @@ void test_ultrawidelock_prim_psa(void)
 	psafake.verify_ret = PSA_ERROR_GENERIC;
 	T_EQ("bad signature -> -1", ultrawidelock_ecdsa_p256_verify(pub, MSG, 20, sig), -1);
 	T_EQ("destroy after verify fail", (long)psafake.destroy_calls, 1L);
+
+	/* Against a backend that holds a block back, every psa_aead_update() must
+	 * be offered input_length + one block. Sizing the bulk output to the input
+	 * -- the obvious way to write this -- fails here at every length past one
+	 * block, which is why the direct prefix stops a block short of the end.
+	 * Lengths straddle each block boundary in both directions. */
+	{
+		static const size_t LENS[] = { 0u,	1u,   15u,  16u,   17u,	  31u,
+					       32u,	33u,  47u,  48u,   63u,	  64u,
+					       255u,	256u, 257u, 1023u, 1024u, 1025u };
+		uint8_t big[1025 + 16], big_ct[1025 + 16], big_pt[1025 + 16];
+
+		memset(big, 0xa5, sizeof(big));
+		for (size_t i = 0; i < sizeof(LENS) / sizeof(LENS[0]); i++) {
+			psafake_reset();
+			psafake.block_hold = 16u;
+			T_EQ("block-holding backend: encrypt",
+			     ultrawidelock_aes256_gcm_encrypt(K32, NONCE, 12, AAD, sizeof(AAD), big,
+						      LENS[i], big_ct, tag, 16),
+			     0);
+			psafake_reset();
+			psafake.block_hold = 16u;
+			T_EQ("block-holding backend: decrypt",
+			     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, AAD, sizeof(AAD),
+						      big_ct, LENS[i], tag, 16, big_pt),
+			     0);
+		}
+		psafake_reset();
+	}
 }
 
 int main(void)

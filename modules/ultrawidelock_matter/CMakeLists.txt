@@ -31,6 +31,24 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
 
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+  # The DoorLockAlarm event, and nothing else, rides with the anchor build.
+  #
+  # A compile definition rather than a Kconfig symbol because the sources it
+  # reaches are platform-agnostic C11 that tests/host builds directly, with no
+  # Kconfig anywhere near it -- see matter_clusters.h, which defaults the macro
+  # to 0. Global rather than library-scoped: the app includes matter_clusters.h
+  # to call the recorder, and a header that means one thing to the module and
+  # another to its caller is a struct layout mismatch waiting to happen.
+  #
+  # CONFIG_ULTRAWIDELOCK_ANCHOR is the condition because the alarms this node
+  # can raise are the impact latch (ULTRAWIDELOCK_ANCHOR_SLAM, itself inside
+  # ANCHOR) and the door swing angle, and neither exists without it. Off, every
+  # file here preprocesses to what it was before alarms existed, so the default
+  # image stays byte-identical.
+  if(CONFIG_ULTRAWIDELOCK_ANCHOR)
+    zephyr_compile_definitions(MATTER_FEATURE_DL_ALARMS=1)
+  endif()
+
   # matter_crypto.c uses ultrawidelock_hash.h for SHA-256/HKDF, and the
   # crypto_aes_ecb_encrypt seam it declares itself. Both already ship in any
   # image that has the reader -- ultrawidelock_hash.c is compiled by the port, and the

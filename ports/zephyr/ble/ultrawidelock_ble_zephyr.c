@@ -8,13 +8,12 @@
  * READ payload, the device-version WRITE, and the credential transaction on an
  * L2CAP CoC at the published SPSM.
  *
- * Deliberately not here yet (stage 4 finishes them; none affects code size
- * materially, all are small additions on top of this skeleton):
- *   - the periodic dynamic-tag refresh (the ESP side re-derives on a callout),
+ * Deliberately not here yet:
  *   - the connection-RSSI poll that feeds the reader's ranging power gate,
  *   - attach mode, which only exists so the ESP32 reader can share a host with
  *     esp-matter. Nothing shares this host, so it stays -ENOTSUP.
  */
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 
@@ -32,6 +31,7 @@
 
 #include "ultrawidelock_advtag.h"
 #include "ultrawidelock_ble.h"
+#include "ultrawidelock_lat.h"
 #include "ultrawidelock_prov.h" /* ULTRAWIDELOCK_GRK_LEN */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 #include "matter_ble_zephyr.h"
@@ -67,18 +67,40 @@ static uint16_t s_read_payload_len;
 
 /* Resolvable advertising params, set once the reader is provisioned. */
 static bool s_adv_ultrawidelock;
-/** Whether the one connection slot is occupied; see ultrawidelock_advertise(). */
-static bool s_conn_up;
 static uint8_t s_adv_group_id[8];
 static uint8_t s_adv_sub_id[2];
 static uint8_t s_adv_grk[ULTRAWIDELOCK_GRK_LEN];
 static int8_t s_adv_tx_power;
+static struct k_spinlock s_adv_params_lock;
+
+/* These flags cross the Bluetooth callback, application, and system-workqueue
+ * contexts. Keep the credential material under the short spinlock above, and
+ * use atomics for the state that only needs one-word snapshots. */
+static atomic_t s_conn_up;
+static atomic_t s_adv_running;
+static atomic_t s_adv_dirty;
 
 /* A dynamic tag whose expiry is in the phone's past is silently ignored, so a
  * clock we cannot trust must advertise the "unavailable" form instead. Mirrors
  * the ESP backend's ULTRAWIDELOCK_ADV_TIME_FLOOR / ULTRAWIDELOCK_ADV_TAG_VALID_S. */
 #define ULTRAWIDELOCK_ADV_TIME_FLOOR   1700000000
 #define ULTRAWIDELOCK_ADV_TAG_VALID_S  600
+
+/* Refresh with a full minute left. A once-per-minute clock check also catches
+ * a wall-clock step even when a time source forgot to call the explicit hook;
+ * the dynamic tag is only derived when it is actually due. */
+#define ULTRAWIDELOCK_ADV_REFRESH_MARGIN_S       60
+#define ULTRAWIDELOCK_ADV_CLOCK_POLL_S           60
+#define ULTRAWIDELOCK_ADV_CLOCK_STEP_TOLERANCE_S 5
+
+/* One bounded controller-apply attempt per workqueue pass, forever if
+ * necessary. The capped backoff avoids both a busy loop and permanent
+ * invisibility after the old five-attempt limit was exhausted. */
+#define ULTRAWIDELOCK_ADV_RETRY_MIN_MS 100u
+#define ULTRAWIDELOCK_ADV_RETRY_MAX_MS 30000u
+
+BUILD_ASSERT(ULTRAWIDELOCK_ADV_REFRESH_MARGIN_S < ULTRAWIDELOCK_ADV_TAG_VALID_S,
+	     "advertising refresh margin must be shorter than tag validity");
 
 /* ---- L2CAP CoC: the credential transaction channel ---------------------------- */
 
@@ -191,6 +213,7 @@ static void side_emit_clear(void)
 static void coc_connected(struct bt_l2cap_chan *chan)
 {
 	LOG_INF("L2CAP CoC open (SPSM 0x%04x)", (unsigned)ULTRAWIDELOCK_L2CAP_SPSM);
+	(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_L2CAP_OPEN);
 	side_emit_peer(chan->conn);
 	if (s_cb.on_connected != NULL) {
 		s_cb.on_connected(conn_to_handle(chan->conn));
@@ -301,6 +324,7 @@ static ssize_t reader_spsm_read(struct bt_conn *conn, const struct bt_gatt_attr 
 				uint16_t len, uint16_t offset)
 {
 	ARG_UNUSED(conn);
+	(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_GATT_SPSM_READ);
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, s_read_payload, s_read_payload_len);
 }
 
@@ -318,6 +342,7 @@ static ssize_t device_ver_write(struct bt_conn *conn, const struct bt_gatt_attr 
 	if (offset != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
+	(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_GATT_VER_WRITE);
 	return len;
 }
 
@@ -346,10 +371,16 @@ BT_GATT_SERVICE_DEFINE(ultrawidelock_svc,
  * The derivation wants the identity address MSB-first; bt_id_get hands it out
  * LSB-first, same as NimBLE.
  */
-static bool build_ultrawidelock_svc_data(uint8_t out[24])
+static bool build_ultrawidelock_svc_data(uint8_t out[24], uint32_t *expiry_out,
+					 time_t *wall_time_out)
 {
 	bt_addr_le_t addrs[CONFIG_BT_ID_MAX];
 	size_t count = ARRAY_SIZE(addrs);
+	uint8_t group_id[sizeof(s_adv_group_id)];
+	uint8_t sub_id[sizeof(s_adv_sub_id)];
+	uint8_t grk[sizeof(s_adv_grk)];
+	int8_t tx_power;
+	k_spinlock_key_t key;
 
 	bt_id_get(addrs, &count);
 	if (count == 0) {
@@ -366,12 +397,20 @@ static bool build_ultrawidelock_svc_data(uint8_t out[24])
 	uint32_t expiry = ULTRAWIDELOCK_ADVTAG_EXPIRY_UNAVAILABLE;
 	time_t now = time(NULL);
 
-	if (now >= ULTRAWIDELOCK_ADV_TIME_FLOOR) {
+	if (now >= ULTRAWIDELOCK_ADV_TIME_FLOOR &&
+	    (uint64_t)now <= UINT32_MAX - ULTRAWIDELOCK_ADV_TAG_VALID_S) {
 		expiry = (uint32_t)now + ULTRAWIDELOCK_ADV_TAG_VALID_S;
 	}
 
+	key = k_spin_lock(&s_adv_params_lock);
+	memcpy(group_id, s_adv_group_id, sizeof(group_id));
+	memcpy(sub_id, s_adv_sub_id, sizeof(sub_id));
+	memcpy(grk, s_adv_grk, sizeof(grk));
+	tx_power = s_adv_tx_power;
+	k_spin_unlock(&s_adv_params_lock, key);
+
 	uint8_t dyn_tag[ULTRAWIDELOCK_ADVTAG_LEN];
-	int rc = ultrawidelock_advtag_derive(s_adv_grk, adva_msb, expiry, dyn_tag);
+	int rc = ultrawidelock_advtag_derive(grk, adva_msb, expiry, dyn_tag);
 
 	if (rc != 0) {
 		LOG_ERR("adv: dynamic-tag derive rc=%d", rc);
@@ -381,17 +420,19 @@ static bool build_ultrawidelock_svc_data(uint8_t out[24])
 	uint8_t *p = out;
 
 	*p++ = 0x80u; /* flags: BLE+UWB supported, version 0 */
-	*p++ = (uint8_t)s_adv_tx_power;
-	memcpy(p, s_adv_group_id, sizeof(s_adv_group_id));
-	p += sizeof(s_adv_group_id);
-	memcpy(p, s_adv_sub_id, sizeof(s_adv_sub_id));
-	p += sizeof(s_adv_sub_id);
+	*p++ = (uint8_t)tx_power;
+	memcpy(p, group_id, sizeof(group_id));
+	p += sizeof(group_id);
+	memcpy(p, sub_id, sizeof(sub_id));
+	p += sizeof(sub_id);
 	*p++ = (uint8_t)(expiry >> 24);
 	*p++ = (uint8_t)(expiry >> 16);
 	*p++ = (uint8_t)(expiry >> 8);
 	*p++ = (uint8_t)expiry;
 	*p++ = 0x00u; /* reserved */
 	memcpy(p, dyn_tag, ULTRAWIDELOCK_ADVTAG_LEN);
+	*expiry_out = expiry;
+	*wall_time_out = now;
 	return true;
 }
 
@@ -426,158 +467,256 @@ static const struct bt_data smp_sd[] = {
 #define SMP_SD_LEN 0
 #endif
 
-/**
- * Advertise the credential reader service or Matter commissioning availability over BLE, with
- * payload priority given to findability: reader service when commissioned, commissioning
- * advertisement when unprovisioned or a window is open, or bare service UUID as fallback. Stops
- * advertising if a connection is active and schedules re-advertisement on disconnect.
- */
-static int ultrawidelock_advertise(void)
-{
-	static uint8_t svc_data[2 + 24]; /* BT_DATA_SVC_DATA16 carries the UUID inline */
+struct advertising_result {
+	bool as_reader;
+	bool reader_expected;
+	bool time_valid;
+	uint32_t expiry;
+	time_t wall_time;
+};
+
+struct advertising_payload {
+	uint8_t svc_data[2 + 24]; /* BT_DATA_SVC_DATA16 carries the UUID inline */
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	uint8_t matter_svc_data[MATTER_BLE_SVC_DATA_LEN];
+#endif
 	struct bt_data ad[3];
 	size_t ad_len;
-	bool as_reader;
+	struct advertising_result result;
+};
 
-	svc_data[0] = 0xF2u; /* 0xFFF2, little-endian */
-	svc_data[1] = 0xFFu;
+static bool s_applied_as_reader;
+static bool s_applied_time_valid;
+static uint32_t s_applied_expiry;
+static time_t s_applied_wall_time;
+static int64_t s_applied_uptime_ms;
+static uint32_t s_adv_retry_ms = ULTRAWIDELOCK_ADV_RETRY_MIN_MS;
+static uint32_t s_adv_retry_attempts;
 
-	ad[0] = (struct bt_data)BT_DATA_BYTES(BT_DATA_FLAGS,
-					      BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR);
+static void advertising_work_fn(struct k_work *w);
+static K_WORK_DELAYABLE_DEFINE(s_advertising_work, advertising_work_fn);
 
-	/*
-	 * Being FINDABLE outranks being approach-resolvable. Only one of the
-	 * two payloads fits a legacy advert, and a node with no fabric that
-	 * advertises as a reader cannot be commissioned at all -- which is
-	 * what happened to a board the moment SetAliroReaderConfig succeeded
-	 * and the pairing that delivered it then failed: provisioned, no
-	 * fabric, and gone from Add Accessory with no way back but an erase.
-	 */
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-	/*
-	 * A commissioning window makes this node commissionable AGAIN even
-	 * though it holds a fabric. Without this an OpenCommissioningWindow
-	 * kept advertising the credential reader tag, so the second ecosystem the
-	 * window was opened for could never find it -- observed on hardware,
-	 * 2026-08-03.
-	 */
-	bool commissioned = matter_commission_has_fabric() && !matter_commission_window_open();
-#else
-	bool commissioned = true;
-#endif
+static bool advertising_reader_configured(void)
+{
+	bool configured;
+	k_spinlock_key_t key = k_spin_lock(&s_adv_params_lock);
 
-	if (commissioned && s_adv_ultrawidelock && build_ultrawidelock_svc_data(&svc_data[2])) {
-		ad[1] = (struct bt_data)BT_DATA(BT_DATA_SVC_DATA16, svc_data, sizeof(svc_data));
-		ad_len = 2;
-		as_reader = true;
-	} else {
-		as_reader = false;
-		/* Unprovisioned / no GRK: the bare service UUID. A phone cannot
-		 * approach-resolve this, but a scanner can see the reader. */
-		static const uint8_t uuid16[2] = {0xF2u, 0xFFu};
-
-		ad[1] = (struct bt_data)BT_DATA(BT_DATA_UUID16_ALL, uuid16, sizeof(uuid16));
-		ad_len = 2;
-
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-		/* A reader with no identity cannot unlock anything, so the only
-		 * useful thing it can advertise is that it wants commissioning.
-		 * Both elements fit one legacy packet: flags 3 + Matter service
-		 * data 12 + the credential UUID 4 = 19 of the 31 bytes available, so
-		 * the scanner affordance above is kept rather than traded away.
-		 *
-		 * This is also why there is no second advertising set. See
-		 * matter_ble_commissionable_svc_data() for the 24.8 KB that
-		 * CONFIG_BT_EXT_ADV would have cost. */
-		static uint8_t matter_svc_data[MATTER_BLE_SVC_DATA_LEN];
-
-		if (matter_ble_commissionable_svc_data(matter_svc_data, sizeof(matter_svc_data)) ==
-		    0) {
-			ad[2] = (struct bt_data)BT_DATA(BT_DATA_SVC_DATA16, matter_svc_data,
-							sizeof(matter_svc_data));
-			ad_len = 3;
-		}
-#endif
-	}
-
-	/*
-	 * CONNECTABLE advertising needs a free connection object, and this board
-	 * is built with exactly one (CONFIG_BT_MAX_CONN=1). While a commissioner
-	 * holds it, bt_le_adv_start() can only return -ENOMEM -- which it did, on
-	 * hardware, when SetAliroReaderConfig refreshed the payload mid-CASE, and
-	 * the honest-looking "the reader is now invisible" below was wrong: the
-	 * board was connected, not invisible.
-	 *
-	 * Nothing is lost by waiting. on_disconnected() schedules a readvertise,
-	 * which rebuilds the payload from whatever the identity is by then.
-	 */
-	if (s_conn_up) {
-		LOG_INF("advertising deferred: connected; the payload lands on disconnect");
-		return 0;
-	}
-
-	int rc = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ad_len, SMP_SD, SMP_SD_LEN);
-
-	if (rc == -EALREADY) {
-		bt_le_adv_stop();
-		rc = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ad_len, SMP_SD, SMP_SD_LEN);
-	}
-
-	/* Which of the two the board is offering is the first thing to check on
-	 * a bench, and it is not otherwise visible without a sniffer. */
-	if (rc == 0) {
-		LOG_INF("advertising: %s (%u AD elements)",
-			as_reader ? "credential reader 0xFFF2" : "unprovisioned, commissionable",
-			(unsigned int)ad_len);
-	} else {
-		/*
-		 * LOUD. This used to log only on success, so a failed restart
-		 * left the reader invisible with nothing in the log but the
-		 * "re-advertising" line that preceded it -- a board that had
-		 * unlocked once and then ignored every approach, while Matter
-		 * kept answering over Thread because that is not BLE. Do not
-		 * make an advertising failure quiet again.
-		 */
-		LOG_ERR("advertising FAILED to start (%d); the reader is now invisible", rc);
-	}
-	return rc;
+	configured = s_adv_ultrawidelock;
+	k_spin_unlock(&s_adv_params_lock, key);
+	return configured;
 }
 
-/*
- * Restarting CONNECTABLE advertising from inside the disconnected callback
- * fails: Zephyr has not released the connection object yet at that point and
- * bt_le_adv_start() has no slot to give. The retry is what actually gets the
- * reader back, so it runs off the callback rather than in it.
- */
-static void readvertise_work_fn(struct k_work *w);
-static K_WORK_DELAYABLE_DEFINE(s_readvertise_work, readvertise_work_fn);
-
-/**
- * Attempt to resume BLE advertising with exponential backoff (100 ms, max 5 attempts) when a
- * disconnect requires re-advertisement; runs on the system work queue to avoid blocking the
- * credential access protocol.
- */
-static void readvertise_work_fn(struct k_work *w)
+/** Build one self-contained payload. Its buffers only need to live until the
+ * synchronous Zephyr advertising call copies them into the host advertising
+ * set. */
+static void advertising_payload_build(struct advertising_payload *payload)
 {
-	/*
-	 * Rescheduled rather than retried in a loop: this runs on the system
-	 * work queue, which is also where the credential access protocol runs, so
-	 * sleeping here would stall an unlock to fix advertising.
-	 */
-	static uint8_t attempts;
+	static const uint8_t uuid16[2] = {0xF2u, 0xFFu};
+	bool commissioned;
+
+	memset(payload, 0, sizeof(*payload));
+	payload->svc_data[0] = 0xF2u; /* 0xFFF2, little-endian */
+	payload->svc_data[1] = 0xFFu;
+	payload->ad[0] = (struct bt_data)BT_DATA_BYTES(BT_DATA_FLAGS,
+						       BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR);
+
+	/* Being FINDABLE outranks being approach-resolvable. Only one of the two
+	 * payloads fits a legacy advert. */
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	commissioned = matter_commission_has_fabric() && !matter_commission_window_open();
+#else
+	commissioned = true;
+#endif
+	payload->result.reader_expected = commissioned && advertising_reader_configured();
+
+	if (payload->result.reader_expected &&
+	    build_ultrawidelock_svc_data(&payload->svc_data[2], &payload->result.expiry,
+					      &payload->result.wall_time)) {
+		payload->ad[1] = (struct bt_data)BT_DATA(BT_DATA_SVC_DATA16, payload->svc_data,
+							 sizeof(payload->svc_data));
+		payload->ad_len = 2;
+		payload->result.as_reader = true;
+		payload->result.time_valid =
+			payload->result.expiry != ULTRAWIDELOCK_ADVTAG_EXPIRY_UNAVAILABLE;
+		return;
+	}
+
+	/* Unprovisioned / no GRK, or a transient tag-build failure: keep the node
+	 * findable while the worker retries the desired reader payload. */
+	payload->ad[1] =
+		(struct bt_data)BT_DATA(BT_DATA_UUID16_ALL, uuid16, sizeof(uuid16));
+	payload->ad_len = 2;
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	if (matter_ble_commissionable_svc_data(payload->matter_svc_data,
+					       sizeof(payload->matter_svc_data)) == 0) {
+		payload->ad[2] = (struct bt_data)BT_DATA(BT_DATA_SVC_DATA16,
+							 payload->matter_svc_data,
+							 sizeof(payload->matter_svc_data));
+		payload->ad_len = 3;
+	}
+#endif
+}
+
+/** Apply a payload to the legacy advertising set. When the set is active,
+ * update it in place so a tag rotation never creates a stop/start discovery
+ * gap. If our state is stale, Zephyr's -EINVAL/-EAGAIN and -EALREADY results
+ * let us converge without stopping a valid set. */
+static int advertising_apply(struct advertising_result *result)
+{
+	struct advertising_payload payload;
+	bool updated = false;
+	int rc;
+
+	if (atomic_get(&s_conn_up) != 0) {
+		return -EAGAIN;
+	}
+
+	advertising_payload_build(&payload);
+
+	if (atomic_get(&s_adv_running) != 0) {
+		rc = bt_le_adv_update_data(payload.ad, payload.ad_len, SMP_SD, SMP_SD_LEN);
+		if (rc == 0) {
+			updated = true;
+		} else if (rc == -EINVAL || rc == -EAGAIN) {
+			atomic_set(&s_adv_running, 0);
+		} else {
+			return rc;
+		}
+	}
+
+	if (atomic_get(&s_adv_running) == 0) {
+		rc = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, payload.ad, payload.ad_len, SMP_SD,
+				     SMP_SD_LEN);
+		if (rc == -EALREADY) {
+			/* The set is active even though the connection callback made our
+			 * hint stale. Update it in place; never stop it just to refresh. */
+			rc = bt_le_adv_update_data(payload.ad, payload.ad_len, SMP_SD, SMP_SD_LEN);
+			updated = rc == 0;
+		}
+		if (rc != 0) {
+			return rc;
+		}
+		atomic_set(&s_adv_running, 1);
+	}
+
+	*result = payload.result;
+	LOG_INF("advertising %s: %s (%u AD elements)", updated ? "updated" : "started",
+		 result->as_reader ? "credential reader 0xFFF2" : "commissioning/findability",
+		 (unsigned int)payload.ad_len);
+	return 0;
+}
+
+static bool advertising_refresh_due(void)
+{
+	time_t now;
+	bool time_valid;
+	int64_t elapsed_s;
+	int64_t expected_wall;
+	int64_t clock_delta;
+
+	if (!s_applied_as_reader) {
+		return false;
+	}
+
+	now = time(NULL);
+	time_valid = now >= ULTRAWIDELOCK_ADV_TIME_FLOOR &&
+		     (uint64_t)now <= UINT32_MAX - ULTRAWIDELOCK_ADV_TAG_VALID_S;
+	if (time_valid != s_applied_time_valid) {
+		return true;
+	}
+	if (!time_valid) {
+		return false;
+	}
+	if ((uint64_t)now + ULTRAWIDELOCK_ADV_REFRESH_MARGIN_S >= s_applied_expiry) {
+		return true;
+	}
+
+	/* An ordinary clock advances with uptime. A larger difference means it
+	 * stepped and the tag should be rebuilt from the new wall time. */
+	elapsed_s = (k_uptime_get() - s_applied_uptime_ms) / MSEC_PER_SEC;
+	expected_wall = (int64_t)s_applied_wall_time + elapsed_s;
+	clock_delta = (int64_t)now - expected_wall;
+	return clock_delta > ULTRAWIDELOCK_ADV_CLOCK_STEP_TOLERANCE_S ||
+	       clock_delta < -ULTRAWIDELOCK_ADV_CLOCK_STEP_TOLERANCE_S;
+}
+
+static void advertising_retry_schedule(int rc)
+{
+	uint32_t delay_ms = s_adv_retry_ms;
+	uint32_t attempt = ++s_adv_retry_attempts;
+
+	if (s_adv_retry_ms < ULTRAWIDELOCK_ADV_RETRY_MAX_MS) {
+		s_adv_retry_ms = MIN(s_adv_retry_ms * 2u, ULTRAWIDELOCK_ADV_RETRY_MAX_MS);
+	}
+
+	/* Log the first and power-of-two attempts, not every capped retry forever. */
+	if (attempt == 1u || (attempt & (attempt - 1u)) == 0u) {
+		LOG_ERR("advertising retry %u in %u ms (rc=%d)", (unsigned int)attempt,
+			(unsigned int)delay_ms, rc);
+	}
+	(void)k_work_reschedule(&s_advertising_work, K_MSEC(delay_ms));
+}
+
+static void advertising_success_record(const struct advertising_result *result)
+{
+	s_applied_as_reader = result->as_reader;
+	s_applied_time_valid = result->time_valid;
+	s_applied_expiry = result->expiry;
+	s_applied_wall_time = result->wall_time;
+	s_applied_uptime_ms = k_uptime_get();
+
+	if (result->reader_expected && !result->as_reader) {
+		/* Findability succeeded, but the requested dynamic tag did not. */
+		atomic_set(&s_adv_dirty, 1);
+		advertising_retry_schedule(-EIO);
+		return;
+	}
+	s_adv_retry_ms = ULTRAWIDELOCK_ADV_RETRY_MIN_MS;
+	s_adv_retry_attempts = 0u;
+	if (atomic_get(&s_adv_dirty) != 0) {
+		(void)k_work_reschedule(&s_advertising_work, K_NO_WAIT);
+	} else if (result->as_reader) {
+		(void)k_work_reschedule(&s_advertising_work,
+					K_SECONDS(ULTRAWIDELOCK_ADV_CLOCK_POLL_S));
+	}
+}
+
+/** Refresh or resume advertising with one bounded, non-blocking apply attempt
+ * per pass. A connection defers the dirty payload until disconnect; an error
+ * retries forever with a bounded delay. */
+static void advertising_work_fn(struct k_work *w)
+{
+	struct advertising_result result;
+	int rc;
 
 	ARG_UNUSED(w);
 
-	if (ultrawidelock_advertise() == 0) {
-		attempts = 0u;
+	if (atomic_get(&s_conn_up) != 0) {
+		atomic_set(&s_adv_dirty, 1);
+		LOG_INF("advertising refresh deferred until disconnect");
 		return;
 	}
-	if (++attempts < 5u) {
-		(void)k_work_schedule(&s_readvertise_work, K_MSEC(100));
+	if (atomic_get(&s_adv_dirty) == 0 && !advertising_refresh_due()) {
+		if (s_applied_as_reader) {
+			(void)k_work_reschedule(&s_advertising_work,
+						K_SECONDS(ULTRAWIDELOCK_ADV_CLOCK_POLL_S));
+		}
 		return;
 	}
-	attempts = 0u;
-	LOG_ERR("cannot resume advertising after a disconnect; a reset is needed");
+
+	/* Clear before applying. A request arriving during the synchronous call
+	 * sets it again and is therefore not lost. */
+	atomic_set(&s_adv_dirty, 0);
+	rc = advertising_apply(&result);
+	if (rc != 0) {
+		atomic_set(&s_adv_dirty, 1);
+		if (atomic_get(&s_conn_up) == 0) {
+			advertising_retry_schedule(rc);
+		}
+		return;
+	}
+	advertising_success_record(&result);
 }
 
 /*
@@ -635,7 +774,13 @@ static void on_connected(struct bt_conn *conn, uint8_t err)
 	 * the run here turned eight consecutive failures into eight runs of one.
 	 */
 	if (err == 0u) {
-		s_conn_up = true;
+		atomic_set(&s_conn_up, 1);
+		/* Legacy connectable advertising stops when the slot is taken. A
+		 * potentially long connection also makes the current tag stale, so
+		 * force a fresh payload when the slot becomes free. */
+		atomic_set(&s_adv_running, 0);
+		atomic_set(&s_adv_dirty, 1);
+		ultrawidelock_lat_begin();
 	}
 }
 
@@ -646,7 +791,9 @@ static void on_connected(struct bt_conn *conn, uint8_t err)
 static void on_disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	ARG_UNUSED(conn);
-	s_conn_up = false;
+	atomic_set(&s_conn_up, 0);
+	atomic_set(&s_adv_running, 0);
+	atomic_set(&s_adv_dirty, 1);
 	if (reason == BT_HCI_ERR_CONN_FAIL_TO_ESTAB) {
 		if (s_estab_fails == 0u) {
 			s_estab_first_ms = k_uptime_get_32();
@@ -664,10 +811,10 @@ static void on_disconnected(struct bt_conn *conn, uint8_t reason)
 		s_estab_fails = 0u;
 	}
 	LOG_INF("BLE disconnected (0x%02x); re-advertising", reason);
-	(void)k_work_schedule(&s_readvertise_work,
-			      reason == BT_HCI_ERR_CONN_FAIL_TO_ESTAB
-				      ? K_MSEC(READVERTISE_AFTER_ESTAB_FAIL_MS)
-				      : K_MSEC(50));
+	(void)k_work_reschedule(&s_advertising_work,
+				reason == BT_HCI_ERR_CONN_FAIL_TO_ESTAB
+					? K_MSEC(READVERTISE_AFTER_ESTAB_FAIL_MS)
+					: K_MSEC(50));
 }
 
 /**
@@ -686,10 +833,52 @@ static void on_le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_
 		(unsigned int)latency, (unsigned int)timeout * 10u);
 }
 
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+/** Record the negotiated Link Layer payload geometry. The controller maximum
+ * is only a capability; this callback is the evidence that the peer accepted
+ * it. */
+static void on_le_data_len_updated(struct bt_conn *conn, struct bt_conn_le_data_len_info *info)
+{
+	ARG_UNUSED(conn);
+	LOG_INF("BLE data length: tx %u B/%u us, rx %u B/%u us", (unsigned int)info->tx_max_len,
+		(unsigned int)info->tx_max_time, (unsigned int)info->rx_max_len,
+		(unsigned int)info->rx_max_time);
+}
+#endif
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static const char *phy_name(uint8_t phy)
+{
+	switch (phy) {
+	case BT_GAP_LE_PHY_1M:
+		return "1M";
+	case BT_GAP_LE_PHY_2M:
+		return "2M";
+	case BT_GAP_LE_PHY_CODED:
+		return "coded";
+	default:
+		return "unknown";
+	}
+}
+
+/** Record the PHY actually granted in each direction for the 2M A/B. */
+static void on_le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *info)
+{
+	ARG_UNUSED(conn);
+	LOG_INF("BLE PHY: tx %s, rx %s", phy_name(info->tx_phy), phy_name(info->rx_phy));
+}
+#endif
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = on_connected,
 	.disconnected = on_disconnected,
 	.le_param_updated = on_le_param_updated,
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+	.le_data_len_updated = on_le_data_len_updated,
+#endif
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated = on_le_phy_updated,
+#endif
 };
 
 /* ---- the ultrawidelock_ble.h seam ------------------------------------------------ */
@@ -714,6 +903,7 @@ int ultrawidelock_ble_prepare(const struct ultrawidelock_ble_config *cfg)
 
 int ultrawidelock_ble_start(const struct ultrawidelock_ble_config *cfg)
 {
+	struct advertising_result advertising;
 	int rc = ultrawidelock_ble_prepare(cfg);
 
 	if (rc != 0) {
@@ -737,11 +927,12 @@ int ultrawidelock_ble_start(const struct ultrawidelock_ble_config *cfg)
 		return rc;
 	}
 
-	rc = ultrawidelock_advertise();
+	rc = advertising_apply(&advertising);
 	if (rc != 0) {
 		LOG_ERR("adv start rc=%d", rc);
 		return rc;
 	}
+	advertising_success_record(&advertising);
 	LOG_INF("credential reader up; advertising (SPSM 0x%04x)", (unsigned)ULTRAWIDELOCK_L2CAP_SPSM);
 	return 0;
 }
@@ -819,11 +1010,14 @@ int ultrawidelock_ble_disconnect(uint16_t conn_handle)
 void ultrawidelock_ble_set_adv_params(const uint8_t group_id8[8], const uint8_t sub_id2[2],
 			      const uint8_t grk[16], int8_t tx_power)
 {
+	k_spinlock_key_t key = k_spin_lock(&s_adv_params_lock);
+
 	memcpy(s_adv_group_id, group_id8, sizeof(s_adv_group_id));
 	memcpy(s_adv_sub_id, sub_id2, sizeof(s_adv_sub_id));
 	memcpy(s_adv_grk, grk, sizeof(s_adv_grk));
 	s_adv_tx_power = tx_power;
 	s_adv_ultrawidelock = true;
+	k_spin_unlock(&s_adv_params_lock, key);
 }
 
 /**
@@ -832,7 +1026,8 @@ void ultrawidelock_ble_set_adv_params(const uint8_t group_id8[8], const uint8_t 
  */
 void ultrawidelock_ble_readvertise(void)
 {
-	(void)ultrawidelock_advertise();
+	atomic_set(&s_adv_dirty, 1);
+	(void)k_work_reschedule(&s_advertising_work, K_NO_WAIT);
 }
 
 /**
@@ -841,7 +1036,8 @@ void ultrawidelock_ble_readvertise(void)
  */
 void ultrawidelock_ble_time_updated(void)
 {
-	(void)ultrawidelock_advertise();
+	atomic_set(&s_adv_dirty, 1);
+	(void)k_work_reschedule(&s_advertising_work, K_NO_WAIT);
 }
 
 /* The reader engine marshals these onto the transport's own task so a caller
@@ -862,6 +1058,16 @@ static void status_work_fn(struct k_work *w)
 	}
 }
 static K_WORK_DEFINE(s_status_work, status_work_fn);
+
+static void (*s_reader_tick_cb)(void);
+static void reader_tick_work_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	if (s_reader_tick_cb != NULL) {
+		s_reader_tick_cb();
+	}
+}
+static K_WORK_DEFINE(s_reader_tick_work, reader_tick_work_fn);
 
 /**
  * Deferred work callback that invokes the presence reset callback if set.
@@ -897,6 +1103,19 @@ void ultrawidelock_ble_post_reader_status(void (*cb)(bool unsecured), bool unsec
 	s_status_cb = cb;
 	s_status_unsecured = unsecured;
 	k_work_submit(&s_status_work);
+}
+
+void ultrawidelock_ble_post_reader_tick(void (*cb)(void))
+{
+	/* The reader installs one immutable callback. Assigning it only before the
+	 * first submit avoids racing a later workqueue read on every app-loop tick. */
+	if (s_reader_tick_cb == NULL) {
+		s_reader_tick_cb = cb;
+	} else if (cb != s_reader_tick_cb) {
+		LOG_ERR("reader tick callback changed after initialization");
+		return;
+	}
+	k_work_submit(&s_reader_tick_work);
 }
 
 /**

@@ -21,10 +21,11 @@ extern "C" {
  * A fully reassembled Matter message.
  *
  * Called on this transport's own task, never in the BLE RX callback, so a
- * handler may take its time. @p msg points into the reassembly area and is only
- * valid until the handler returns.
+ * handler may take its time. @p msg points into the handler's private
+ * reassembly area, may be decrypted in place, and is only valid until the
+ * handler returns.
  */
-typedef void (*matter_ble_msg_cb)(const uint8_t *msg, size_t len);
+typedef void (*matter_ble_msg_cb)(uint8_t *msg, size_t len);
 
 void matter_ble_set_msg_handler(matter_ble_msg_cb cb);
 
@@ -44,6 +45,18 @@ typedef void (*matter_ble_link_cb)(void);
 void matter_ble_set_link_handler(matter_ble_link_cb cb);
 
 /**
+ * Completion of a message accepted by matter_ble_send().
+ *
+ * Exactly one callback follows every send that returned zero: zero after the
+ * final indication was confirmed, or a negative status if fragmentation,
+ * indication, reset, or disconnect terminated it. Immediate send rejection is
+ * returned directly and does not also call this hook.
+ */
+typedef void (*matter_ble_tx_cb)(int status);
+
+void matter_ble_set_tx_handler(matter_ble_tx_cb cb);
+
+/**
  * Register the 0xFFF6 service and start the transport's task.
  *
  * Call before ultrawidelock_freertos_nimble_host_start(): this adds a host hook, and the
@@ -54,6 +67,8 @@ int matter_ble_start(void);
 
 /**
  * Fragment and indicate a Matter message.
+ * @p msg is borrowed, not copied, and must remain unchanged until the TX
+ * callback fires after a zero return. It may be reused immediately on error.
  * @return 0, or negative before the BTP handshake, when the peer has not
  *         subscribed to C2, or while another message is still going out.
  */

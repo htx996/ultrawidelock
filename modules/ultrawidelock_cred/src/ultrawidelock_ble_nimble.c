@@ -1072,6 +1072,34 @@ void ultrawidelock_ble_post_reader_status(void (*cb)(bool unsecured), bool unsec
 	ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_reader_status_ev);
 }
 
+static struct ble_npl_event s_reader_tick_ev;
+static void (*s_reader_tick_cb)(void);
+
+static void reader_tick_ev_cb(struct ble_npl_event *ev)
+{
+	(void)ev;
+	if (s_reader_tick_cb != NULL) {
+		s_reader_tick_cb();
+	}
+}
+
+void ultrawidelock_ble_post_reader_tick(void (*cb)(void))
+{
+	static bool init;
+
+	if (!init) {
+		s_reader_tick_cb = cb;
+		ble_npl_event_init(&s_reader_tick_ev, reader_tick_ev_cb, NULL);
+		init = true;
+	} else if (cb != s_reader_tick_cb) {
+		LOG_ERR("reader tick callback changed after initialization");
+		return;
+	}
+	/* Re-posting a queued static event coalesces; reader.c atomically retains
+	 * the newest monotonic timestamp. */
+	ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_reader_tick_ev);
+}
+
 static struct ble_npl_event s_presence_reset_ev;
 static void (*s_presence_reset_cb)(void);
 

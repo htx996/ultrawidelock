@@ -1219,10 +1219,16 @@ ultrawidelock_uwb_msg_process_supplementary(struct ultrawidelock_uwb_session *se
 		ultrawidelock_uwb_msg_payload_length(message->data));
 
 	/* Body is log-only; the host shim compiles LOG_* away, leaving the cursor
-	 * unread there. NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores) */
+	 * unread there. Two analysers have to be told, and CodeChecker's marker only
+	 * counts on the line directly above the report -- so clang-tidy gets the
+	 * BEGIN/END pair rather than a NOLINTNEXTLINE that would land on the
+	 * codechecker comment instead of the loop. */
+	/* NOLINTBEGIN(clang-analyzer-deadcode.DeadStores) */
+	// codechecker_suppress [deadcode.DeadStores] log-only body, see above
 	while ((attr = ultrawidelock_uwb_msg_next_attribute(&parser))) {
 		LOG_INF("supplementary: attr 0x%02x (%u B)", attr->id, attr->length);
 		LOG_HEXDUMP_INF(attr->value, attr->length, "supplementary attr");
 	}
+	/* NOLINTEND(clang-analyzer-deadcode.DeadStores) */
 	return ULTRAWIDELOCK_UWB_ERR_NONE;
 }

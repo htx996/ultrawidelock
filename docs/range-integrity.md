@@ -17,7 +17,7 @@ measurement still missing.
 | 1 | Plausibility band: below `-30 cm` is physically impossible, above 30 m is outside any proximity envelope | Always enforced |
 | 2 | STS quality: the scrambled timestamp sequence correlated well enough to trust the timestamp | Recorded always; enforced for presence, optional for the lock |
 | 3 | Ipatov first-path check | **Removed** — untunable on this hardware |
-| 4 | Cross-block consensus: K=3 consecutive blocks agreeing within 50 cm | Always enforced |
+| 4 | Cross-block consensus: K consecutive blocks agreeing within 50 cm | Enforced; K=3 shipping, K=2 only under `ULTRAWIDELOCK_BENCH` |
 
 Layer 2 is the one that matters against a distance-reduction attack. A spoofed
 early first path cannot reproduce the scrambled sequence, so its STS quality
@@ -52,6 +52,14 @@ integrity check at all, and the frame had no field in which to say so.
    costs one retry. Presence therefore requires a good STS regardless of the
    build flag; the door keeps shadow behaviour unless
    `CONFIG_ULTRAWIDELOCK_RANGE_GATE_STRICT` is set, which is now selectable on ESP32 too.
+
+   **The DWM3001CDK now ships with that flag set** (`apps/dwm3001cdk-lock/prj.conf`),
+   so on that board a block failing layer 2 is dropped rather than latched. It is
+   the only board that does. The threshold it enforces is still the untuned
+   default below, so today it rejects only what the driver itself calls bad; a
+   real floor is still the release gate. First hardware evidence that the gate
+   passes a normal walk-up: `sts_ok=1` at STS index 62, verdict 24, d=107 mm.
+   That is one walk-up in line of sight, not a calibration.
 4. **The evidence is signed.** Wire version 3 carries `range_flags`,
    `sts_quality` and `trust_level` inside the signed prefix. A verifier checks
    the claim instead of assuming the producer ran the check, and a frame that
@@ -63,12 +71,17 @@ integrity check at all, and the frame had no field in which to say so.
 
 ## Still outstanding
 
-**`FIRA_STS_QUALITY_MIN` is 0**, which means "defer to the driver verdict". It
-has never been sized from real captures, and the Kconfig help has said to do
-that since before this change. The flight recorder already logs `stsq_val` and
-`stsq_ret` (`flight_recorder.h`), so the capture path exists: record a walk-up,
-histogram the quality index, pick a floor above the noise. Until that happens,
-layer 2 rejects only what the DW3000 driver itself calls bad.
+**The STS-quality floor is 0**, which means "defer to the driver verdict". It is
+now a build option, `CONFIG_ULTRAWIDELOCK_STS_QUALITY_MIN`, feeding
+`FIRA_STS_QUALITY_MIN` (`modules/ultrawidelock_uwb/include/fira_session.h`), so
+it can be raised without touching source -- but it has still never been sized
+from real captures, and the Kconfig help has said to do that since before this
+change. The flight recorder already logs `stsq_val` and `stsq_ret`
+(`flight_recorder.h`), so the capture path exists: record a walk-up, histogram
+the quality index, pick a floor above the noise. Until that happens, layer 2
+rejects only what the DW3000 driver itself calls bad. This matters more now that
+the DWM3001CDK enforces rather than shadows: an untuned floor that is enforced is
+a door that can refuse to open.
 
 **Relay resistance is still not measured.** Nothing here tests it. The
 time-of-flight argument is structural, and enforcing STS is what the structural

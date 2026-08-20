@@ -22,11 +22,13 @@
  */
 #include <errno.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "ultrawidelock_port.h"
+#include "ultrawidelock_osal.h"
 #include "ultrawidelock_log.h"
 
 #include "ultrawidelock_ble.h"
@@ -55,6 +57,17 @@ static const uint16_t k_proto_versions[] = {0x0100u};
 static struct ultrawidelock_reader_identity s_id;
 static struct ultrawidelock_trust_store s_trust;
 static bool s_loaded;
+
+enum provisioning_state {
+	PROVISIONING_UNAVAILABLE = 0,
+	PROVISIONING_EMPTY,
+	PROVISIONING_READY,
+};
+static enum provisioning_state s_provisioning_state;
+
+#ifndef CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST
+#define CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST 0
+#endif
 
 /* Most-recently-presented credential public key (the one the device signature
  * verified against). Captured for the `ultrawidelock-trust` bench command. */
@@ -118,6 +131,39 @@ static void compute_reader_group_x(void)
 	}
 }
 
+/* Serializes the persistent provisioning backend. This lock is always acquired
+ * before s_prov_lock: settings/NVS writes may run both from the low-priority
+ * housekeeping thread and from Matter/admin tasks, and the Zephyr backend uses
+ * one static serialization buffer. Holding it from candidate snapshot through
+ * store and commit also prevents an older housekeeping snapshot overwriting a
+ * newer admin mutation. */
+static ultrawidelock_mutex_t s_store_lock;
+
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+static unsigned int s_store_lock_depth;
+
+bool ultrawidelock_reader_store_locked_for_test(void)
+{
+	return s_store_lock_depth != 0u;
+}
+#endif
+
+static void store_lock(void)
+{
+	ultrawidelock_mutex_lock(&s_store_lock);
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+	s_store_lock_depth++;
+#endif
+}
+
+static void store_unlock(void)
+{
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+	s_store_lock_depth--;
+#endif
+	ultrawidelock_mutex_unlock(&s_store_lock);
+}
+
 /* Guards s_trust + s_last_cred_pub/s_have_last_cred + s_auth_cred_pub/
  * s_have_auth_cred, which the BLE-host task (on_auth1_response), the REPL task
  * (the ultrawidelock-prov/ultrawidelock-trust commands) and the reader task (the attribution
@@ -130,6 +176,24 @@ static bool s_prov_lock_ready;
  * only after every pre-challenge link has disconnected, then requires it to
  * advance before accepting any range. Guarded by s_prov_lock with the key. */
 static uint32_t s_auth_generation;
+/* RAM-only fast-path hint. It is deliberately not persisted: trust-store
+ * order remains the durable source of truth, and a stale hint cannot grant
+ * access. Guarded by s_prov_lock. */
+static int8_t s_fast_mru = -1;
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+static uint8_t s_fast_trial_order[ULTRAWIDELOCK_TRUST_MAX];
+static uint8_t s_fast_trial_count;
+
+uint8_t ultrawidelock_reader_fast_trial_order_for_test(uint8_t *out, uint8_t cap)
+{
+	uint8_t n = s_fast_trial_count < cap ? s_fast_trial_count : cap;
+
+	if (out != NULL && n != 0u) {
+		memcpy(out, s_fast_trial_order, n);
+	}
+	return s_fast_trial_count;
+}
+#endif
 
 /* Cross-task fresh-proof reset handshake. The console allocates a request,
  * the BLE host task terminates every old session, and only the final disconnect
@@ -264,8 +328,13 @@ static const char *phase_str(enum txn_phase p)
  * ULTRAWIDELOCK_MAX_SESSIONS of them are statically allocated. */
 static struct ultrawidelock_session {
 	bool active;
+	bool disconnect_requested;
 	uint16_t conn_handle;
 	enum txn_phase phase;
+	bool phase_deadline_armed;
+	uint32_t phase_deadline_ms;
+	bool overall_deadline_armed;
+	uint32_t overall_deadline_ms;
 	uint32_t msgs_rx;
 
 	uint8_t reader_eph_priv[ULTRAWIDELOCK_P256_SCALAR];
@@ -306,6 +375,75 @@ static struct ultrawidelock_session {
 #endif
 } s_sessions[ULTRAWIDELOCK_MAX_SESSIONS];
 
+/* The BLE host exclusively owns s_sessions. Other tasks only need the derived
+ * established/not-established signal, so publish that as an atomic snapshot
+ * instead of making them race a table scan against phase changes/teardown. */
+static _Atomic unsigned int s_established_sessions;
+
+/* Link-overridable monotonic clock seam. Target builds use the port clock;
+ * host tests provide exact boundary and uint32 wrap values. */
+__attribute__((weak)) int64_t ultrawidelock_reader_monotonic_ms(void)
+{
+	return ultrawidelock_uptime_ms();
+}
+
+static bool phase_awaits_peer(enum txn_phase phase)
+{
+	switch (phase) {
+	case PH_IDLE:
+	case PH_SENT_AUTH0:
+	case PH_SENT_AUTH1:
+	case PH_SENT_EXCHANGE:
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+	case PH_SENT_STEPUP:
+#endif
+#if defined(CONFIG_ULTRAWIDELOCK_RSSI_GATE)
+	case PH_GATE_HOLD:
+#endif
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void session_enter_phase(struct ultrawidelock_session *s, enum txn_phase phase)
+{
+	if (s->phase != phase) {
+		if (s->phase == PH_ESTABLISHED) {
+			(void)atomic_fetch_sub_explicit(&s_established_sessions, 1u,
+						memory_order_relaxed);
+		} else if (phase == PH_ESTABLISHED) {
+			(void)atomic_fetch_add_explicit(&s_established_sessions, 1u,
+						memory_order_relaxed);
+		}
+	}
+	s->phase = phase;
+	s->phase_deadline_armed = phase_awaits_peer(phase);
+	if (s->phase_deadline_armed) {
+		s->phase_deadline_ms = (uint32_t)ultrawidelock_reader_monotonic_ms() +
+				       ULTRAWIDELOCK_READER_PHASE_TIMEOUT_MS;
+	}
+}
+
+/* A nonzero send result is ambiguous: the peer may already have accepted the
+ * frame while our local completion failed. Never roll a secure counter back and
+ * never continue the same session. */
+static void session_terminate(struct ultrawidelock_session *s, const char *reason)
+{
+	(void)reason; /* host log stub compiles the formatted argument away */
+	if (s == NULL || !s->active || s->disconnect_requested) {
+		return;
+	}
+	uint16_t conn = s->conn_handle;
+
+	session_enter_phase(s, PH_FAILED);
+	s->phase_deadline_armed = false;
+	s->overall_deadline_armed = false;
+	s->disconnect_requested = true;
+	LOG_WRN("[conn %u] terminating credential session: %s", conn, reason);
+	(void)ultrawidelock_ble_disconnect(conn);
+}
+
 /* Defined with the other Reader-Status-Changed plumbing; declared here so the
  * stale-Wallet resync in complete_ap_and_range can reach it. */
 static void reader_status_send(struct ultrawidelock_session *s, bool unsecured);
@@ -332,7 +470,11 @@ static struct ultrawidelock_session *session_alloc(uint16_t conn_handle)
 			memset(&s_sessions[i], 0, sizeof(s_sessions[i]));
 			s_sessions[i].active = true;
 			s_sessions[i].conn_handle = conn_handle;
-			s_sessions[i].phase = PH_IDLE;
+			s_sessions[i].overall_deadline_armed = true;
+			s_sessions[i].overall_deadline_ms =
+				(uint32_t)ultrawidelock_reader_monotonic_ms() +
+				ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS;
+			session_enter_phase(&s_sessions[i], PH_IDLE);
 			return &s_sessions[i];
 		}
 	}
@@ -343,16 +485,31 @@ static struct ultrawidelock_session *session_alloc(uint16_t conn_handle)
 // s_id/s_trust, lazily creating the provisioning mutex on first call. Idempotent: does nothing on
 // subsequent calls once s_loaded is set. Logs whether a dev-default or real identity was loaded and
 // its source (NVS vs. dev default), then recomputes the reader group X coordinate.
-static void load_provisioning(void)
+static int load_provisioning(void)
 {
 	if (!s_prov_lock_ready) {
+		ultrawidelock_mutex_init(&s_store_lock);
 		ultrawidelock_mutex_init(&s_prov_lock);
 		s_prov_lock_ready = true;
 	}
-	if (s_loaded) {
-		return;
+	if (s_loaded && s_provisioning_state != PROVISIONING_UNAVAILABLE) {
+		return s_provisioning_state == PROVISIONING_READY ? 0 :
+		       (s_provisioning_state == PROVISIONING_EMPTY ? ULTRAWIDELOCK_PROV_LOAD_EMPTY :
+							      -EIO);
 	}
 	int rc = ultrawidelock_prov_load(&s_id, &s_trust);
+
+	if (rc == 0) {
+		/* A persisted factory-clear/dev blob is still an empty development
+		 * reader. It does not become production-safe merely because it came
+		 * from NVS rather than the absence path. */
+		s_provisioning_state = (s_id.is_dev && s_trust.count == 0u) ?
+					       PROVISIONING_EMPTY : PROVISIONING_READY;
+	} else if (rc == ULTRAWIDELOCK_PROV_LOAD_EMPTY) {
+		s_provisioning_state = PROVISIONING_EMPTY;
+	} else {
+		s_provisioning_state = PROVISIONING_UNAVAILABLE;
+	}
 
 	if (s_id.is_dev) {
 		LOG_WRN("using DEV reader identity (Phase 4 supplies the real "
@@ -361,9 +518,11 @@ static void load_provisioning(void)
 	} else {
 		LOG_INF("provisioned reader identity loaded; %u trust anchor(s)", s_trust.count);
 	}
-	LOG_INF("prov source: %s", rc == 0 ? "NVS" : "dev default");
+	LOG_INF("prov source: %s", rc == 0 ? "NVS" :
+		(rc == ULTRAWIDELOCK_PROV_LOAD_EMPTY ? "empty" : "UNAVAILABLE"));
 	compute_reader_group_x();
 	s_loaded = true;
+	return rc;
 }
 
 /* Frame + send an Access-Protocol command: wrap the command TLV in an ISO7816
@@ -420,29 +579,56 @@ static int send_ap_raw(uint16_t conn, const uint8_t *apdu, size_t len)
  * They depend on nothing from the peer, yet the software P-256 keygen used to
  * run inside the first-message callback; consuming a precomputed pair there
  * removes about a quarter of the per-session scalar mults. Refilled at reader
- * start and on disconnect; every touch point runs on the BLE-host task except
- * the boot-time init (which precedes the transport), so no lock is needed. */
-static struct {
+ * start and by low-priority housekeeping after disconnect. The provisioning
+ * mutex protects producer/consumer handoff across that worker and BLE host. */
+struct spare_ephemeral {
 	bool valid;
 	uint8_t priv[ULTRAWIDELOCK_P256_SCALAR];
 	uint8_t pub[ULTRAWIDELOCK_P256_POINT];
 	uint8_t txid[ULTRAWIDELOCK_TXID_LEN];
-} s_spare_eph;
+};
+static struct spare_ephemeral s_spare_eph;
 
 /**
  * Generate and cache a fresh ephemeral P-256 keypair and random transaction ID in the global spare
  * (for immediate reuse on the next connection). Sets spare_eph.valid to 0 if either generation
  * fails.
  */
-static void spare_eph_refill(void)
+static bool spare_eph_refill(void)
 {
-	s_spare_eph.valid = ultrawidelock_ec_p256_keygen(s_spare_eph.priv, s_spare_eph.pub) == 0 &&
-			    ultrawidelock_random(s_spare_eph.txid, sizeof(s_spare_eph.txid)) == 0;
+	struct spare_ephemeral next = {0};
+
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	if (s_spare_eph.valid) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		return true;
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	next.valid = ultrawidelock_ec_p256_keygen(next.priv, next.pub) == 0 &&
+		     ultrawidelock_random(next.txid, sizeof(next.txid)) == 0;
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	if (!s_spare_eph.valid && next.valid) {
+		s_spare_eph = next;
+	}
+	bool valid = s_spare_eph.valid;
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	memset(&next, 0, sizeof(next));
+	return valid;
 }
 
 /* Kick the reader-driven access protocol: ephemeral keys + txid -> AUTH0. */
 static void start_auth(struct ultrawidelock_session *s)
 {
+	if (s_provisioning_state != PROVISIONING_READY &&
+	    !(CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST &&
+	      s_provisioning_state == PROVISIONING_EMPTY)) {
+		LOG_ERR("[conn %u] credential authentication unavailable: provisioning is not usable",
+			s->conn_handle);
+		session_terminate(s, "provisioning unavailable");
+		return;
+	}
+
+	ultrawidelock_mutex_lock(&s_prov_lock);
 	if (s_spare_eph.valid) {
 		memcpy(s->reader_eph_priv, s_spare_eph.priv, sizeof(s->reader_eph_priv));
 		memcpy(s->reader_eph_pub, s_spare_eph.pub, sizeof(s->reader_eph_pub));
@@ -450,11 +636,15 @@ static void start_auth(struct ultrawidelock_session *s)
 		s_spare_eph.valid = false;
 		memset(s_spare_eph.priv, 0, sizeof(s_spare_eph.priv));
 		memset(s_spare_eph.txid, 0, sizeof(s_spare_eph.txid));
-	} else if (ultrawidelock_ec_p256_keygen(s->reader_eph_priv, s->reader_eph_pub) != 0 ||
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+	} else {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		if (ultrawidelock_ec_p256_keygen(s->reader_eph_priv, s->reader_eph_pub) != 0 ||
 		   ultrawidelock_random(s->txid, sizeof(s->txid)) != 0) {
-		LOG_ERR("[conn %u] ephemeral keygen/txid failed", s->conn_handle);
-		s->phase = PH_FAILED;
-		return;
+			LOG_ERR("[conn %u] ephemeral keygen/txid failed", s->conn_handle);
+			session_terminate(s, "ephemeral generation failed");
+			return;
+		}
 	}
 
 	uint8_t apdu[160];
@@ -482,12 +672,15 @@ static void start_auth(struct ultrawidelock_session *s)
 					   s->reader_eph_pub, s->txid, s_id.reader_id, apdu,
 					   sizeof(apdu), &n) != 0) {
 		LOG_ERR("[conn %u] AUTH0 build failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "AUTH0 build failed");
 		return;
 	}
-	send_ap_command(s->conn_handle, ULTRAWIDELOCK_INS_AUTH0, apdu, n);
+	if (send_ap_command(s->conn_handle, ULTRAWIDELOCK_INS_AUTH0, apdu, n) != 0) {
+		session_terminate(s, "AUTH0 transport result ambiguous");
+		return;
+	}
 	ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_AUTH0_TX);
-	s->phase = PH_SENT_AUTH0;
+	session_enter_phase(s, PH_SENT_AUTH0);
 }
 
 /* Derive + init the BleSK ranging channel (§11.8.1) off a 160-byte key block;
@@ -521,7 +714,7 @@ static int init_ble_channel(struct ultrawidelock_session *s,
  * response: §11.1.1 requires Reader-Status-AP-Completed (BleSK-sealed) after
  * EXCHANGE succeeds, otherwise the device stalls and drops (URSK_Unavailable);
  * on_exchange_response drives that + ranging. */
-static void send_exchange(struct ultrawidelock_session *s)
+static bool send_exchange(struct ultrawidelock_session *s)
 {
 	uint8_t ex[16], ct[16], tag[ULTRAWIDELOCK_GCM_TAG_LEN], payload[32];
 	size_t exn;
@@ -529,19 +722,23 @@ static void send_exchange(struct ultrawidelock_session *s)
 	if (ultrawidelock_apdu_build_exchange(0, 0, 1, ex, sizeof(ex), &exn) != 0 ||
 	    ultrawidelock_secchan_seal(&s->sc, NULL, 0, ex, exn, ct, tag) != 0) {
 		LOG_ERR("[conn %u] EXCHANGE seal failed", s->conn_handle);
-		s->phase = PH_FAILED;
-		return;
+		session_terminate(s, "EXCHANGE seal failed");
+		return false;
 	}
 	memcpy(payload, ct, exn);
 	memcpy(payload + exn, tag, ULTRAWIDELOCK_GCM_TAG_LEN);
-	send_ap_command(s->conn_handle, ULTRAWIDELOCK_INS_EXCHANGE, payload,
-			exn + ULTRAWIDELOCK_GCM_TAG_LEN);
+	if (send_ap_command(s->conn_handle, ULTRAWIDELOCK_INS_EXCHANGE, payload,
+			    exn + ULTRAWIDELOCK_GCM_TAG_LEN) != 0) {
+		session_terminate(s, "EXCHANGE transport result ambiguous");
+		return false;
+	}
 
-	s->phase = PH_SENT_EXCHANGE;
+	session_enter_phase(s, PH_SENT_EXCHANGE);
 	/* end of the auth segment on both paths (the fast path has no AUTH1) */
 	ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_AUTH1_DONE);
 	LOG_INF("[conn %u] URSK derived; EXCHANGE sent, awaiting response", s->conn_handle);
 	LOG_HEXDUMP_DBG(s->ursk, ULTRAWIDELOCK_URSK_LEN, "");
+	return true;
 }
 
 /* Expedited-fast trial (§8.3.1.10-.12): the cryptogram proves the phone holds a
@@ -557,19 +754,40 @@ static int try_fast_auth(struct ultrawidelock_session *s,
 {
 	uint8_t salt[ULTRAWIDELOCK_SALT_MAX], block[ULTRAWIDELOCK_KEY_BLOCK_LEN];
 	uint8_t plain[ULTRAWIDELOCK_CRYPTOGRAM_LEN];
+	uint8_t matched_pub[ULTRAWIDELOCK_CRED_PUB_LEN];
 	size_t slen;
 	const uint8_t *a5 = s->a5_len ? s->a5_tlv : k_a5_csa_v1;
 	size_t a5n = s->a5_len ? s->a5_len : sizeof(k_a5_csa_v1);
 	int match = -1;
 
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+	s_fast_trial_count = 0;
+#endif
+
 	if (!s_have_group_x) {
 		return -1;
 	}
 	ultrawidelock_mutex_lock(&s_prov_lock);
+	uint8_t order[ULTRAWIDELOCK_TRUST_MAX];
+	uint8_t order_count = 0;
+	if (s_fast_mru >= 0 && s_fast_mru < s_trust.count) {
+		order[order_count++] = (uint8_t)s_fast_mru;
+	}
 	for (uint8_t i = 0; i < s_trust.count && i < ULTRAWIDELOCK_TRUST_MAX; i++) {
+		if (i != (uint8_t)s_fast_mru) {
+			order[order_count++] = i;
+		}
+	}
+	for (uint8_t oi = 0; oi < order_count; oi++) {
+		uint8_t i = order[oi];
 		if ((s_trust.kp_valid & (1u << i)) == 0u) {
 			continue;
 		}
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+		if (s_fast_trial_count < ULTRAWIDELOCK_TRUST_MAX) {
+			s_fast_trial_order[s_fast_trial_count++] = i;
+		}
+#endif
 		if (ultrawidelock_salt_build(ULTRAWIDELOCK_SALT_CRYPTOGRAM, s->txid, s_reader_group_x,
 				     s->reader_eph_pub + 1, s_id.reader_id, ULTRAWIDELOCK_IFACE_BLE,
 				     ULTRAWIDELOCK_VERSION, s->exp_phase_sent, 0x01u,
@@ -590,9 +808,7 @@ static int try_fast_auth(struct ultrawidelock_session *s,
 		 * command and the Matter LockOperation attribution */
 		memcpy(s_last_cred_pub, s_trust.cred_pub[match], ULTRAWIDELOCK_CRED_PUB_LEN);
 		s_have_last_cred = true;
-		memcpy(s_auth_cred_pub, s_trust.cred_pub[match], ULTRAWIDELOCK_CRED_PUB_LEN);
-		s_have_auth_cred = true;
-		s_auth_generation++;
+		memcpy(matched_pub, s_trust.cred_pub[match], sizeof(matched_pub));
 	}
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 	if (match < 0) {
@@ -606,7 +822,7 @@ static int try_fast_auth(struct ultrawidelock_session *s,
 	ultrawidelock_crypto_split(block, 0, enc, dec, s->ursk);
 	ultrawidelock_secchan_init(&s->sc, enc, dec);
 	if (init_ble_channel(s, block) != 0) {
-		s->phase = PH_FAILED;
+		session_terminate(s, "fast-path BLE channel initialization failed");
 		return 0;
 	}
 	LOG_INF("[conn %u] expedited-FAST cryptogram match (cred %d): AUTH1 skipped",
@@ -614,8 +830,15 @@ static int try_fast_auth(struct ultrawidelock_session *s,
 	ultrawidelock_lab_evi("flow.fast", "cred", match);
 	/* The cryptogram only opens under a Kpersistent minted for a trusted
 	 * credential, so a match is the trust gate for this path. */
-	notify_access(true);
-	send_exchange(s);
+	if (send_exchange(s)) {
+		ultrawidelock_mutex_lock(&s_prov_lock);
+		memcpy(s_auth_cred_pub, matched_pub, ULTRAWIDELOCK_CRED_PUB_LEN);
+		s_have_auth_cred = true;
+		s_auth_generation++;
+		s_fast_mru = (int8_t)ultrawidelock_prov_trust_find(&s_trust, matched_pub);
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		notify_access(true);
+	}
 	return 0;
 }
 
@@ -637,15 +860,17 @@ static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl
 	/* APDU response = <response TLV> SW1 SW2; drop the status word before parsing. */
 	if (ultrawidelock_apdu_strip_sw(pl, &len, &sw) != 0) {
 		LOG_ERR("[conn %u] AUTH0Response too short (%u B)", s->conn_handle, (unsigned)len);
-		s->phase = PH_FAILED;
+		session_terminate(s, "short AUTH0 response");
 		return;
 	}
 	if (sw != 0x9000u) {
 		LOG_WRN("[conn %u] AUTH0Response SW=0x%04x (expected 0x9000)", s->conn_handle, sw);
+		session_terminate(s, "AUTH0 status rejected");
+		return;
 	}
 	if (ultrawidelock_apdu_parse_auth0_response(pl, len, &r) != 0) {
 		LOG_ERR("[conn %u] AUTH0Response parse failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "malformed AUTH0 response");
 		return;
 	}
 	memcpy(s->device_eph_pub, r.device_eph_pub, ULTRAWIDELOCK_P256_POINT);
@@ -666,7 +891,7 @@ static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl
 
 	if (ultrawidelock_ecdh_p256(s->reader_eph_priv, s->device_eph_pub, shared) != 0) {
 		LOG_ERR("[conn %u] ECDH failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "AUTH0 ECDH failed");
 		return;
 	}
 	ultrawidelock_crypto_derive_z(shared, s->txid, s->z);
@@ -680,16 +905,19 @@ static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl
 					      td, sizeof(td), &tn) != 0 ||
 	    ultrawidelock_ecdsa_p256_sign(s_id.sign_priv, td, tn, sig) != 0) {
 		LOG_ERR("[conn %u] reader signature failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "reader signature failed");
 		return;
 	}
 	if (ultrawidelock_apdu_build_auth1(0x01u, sig, apdu, sizeof(apdu), &n) != 0) {
-		s->phase = PH_FAILED;
+		session_terminate(s, "AUTH1 build failed");
 		return;
 	}
-	send_ap_command(s->conn_handle, ULTRAWIDELOCK_INS_AUTH1, apdu, n);
+	if (send_ap_command(s->conn_handle, ULTRAWIDELOCK_INS_AUTH1, apdu, n) != 0) {
+		session_terminate(s, "AUTH1 transport result ambiguous");
+		return;
+	}
 	ultrawidelock_lab_ev("flow.standard");
-	s->phase = PH_SENT_AUTH1;
+	session_enter_phase(s, PH_SENT_AUTH1);
 }
 
 // Handles an inbound AUTH1Response: derives the AP and BLE-ranging secure channel keys and URSK
@@ -717,11 +945,13 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 	/* APDU response = <response TLV> SW1 SW2; drop the status word before parsing. */
 	if (ultrawidelock_apdu_strip_sw(pl, &len, &sw) != 0) {
 		LOG_ERR("[conn %u] AUTH1Response too short (%u B)", s->conn_handle, (unsigned)len);
-		s->phase = PH_FAILED;
+		session_terminate(s, "short AUTH1 response");
 		return;
 	}
 	if (sw != 0x9000u) {
 		LOG_WRN("[conn %u] AUTH1Response SW=0x%04x (expected 0x9000)", s->conn_handle, sw);
+		session_terminate(s, "AUTH1 status rejected");
+		return;
 	}
 	/* Establish the secure channel BEFORE reading the body: the AUTH1Response is
 	 * AES-256-GCM-encrypted under it (Aliro §8.3.1.6/.7). salt_volatile (§8.3.1.13)
@@ -737,7 +967,7 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 
 	if (!s_have_group_x) {
 		LOG_ERR("[conn %u] no reader group key; cannot build session salt", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "reader group key unavailable");
 		return;
 	}
 	if (ultrawidelock_salt_build(ULTRAWIDELOCK_SALT_SESSION, s->txid, s_reader_group_x,
@@ -747,7 +977,7 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 	    ultrawidelock_crypto_derive_block(s->z, salt, slen, s->device_eph_pub + 1, block) !=
 		    0) {
 		LOG_ERR("[conn %u] key-block derivation failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "session key derivation failed");
 		return;
 	}
 	ultrawidelock_crypto_split(block, 1, enc, dec, s->ursk);
@@ -765,7 +995,7 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 
 	/* Ranging channel keys (§11.8.1) off the block's BleSK segment. */
 	if (init_ble_channel(s, block) != 0) {
-		s->phase = PH_FAILED;
+		session_terminate(s, "BLE channel initialization failed");
 		return;
 	}
 
@@ -775,7 +1005,7 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 	if (len < ULTRAWIDELOCK_GCM_TAG_LEN) {
 		LOG_ERR("[conn %u] AUTH1Response too short for a GCM tag (%u B)", s->conn_handle,
 			(unsigned)len);
-		s->phase = PH_FAILED;
+		session_terminate(s, "short encrypted AUTH1 response");
 		return;
 	}
 	size_t ctlen = len - ULTRAWIDELOCK_GCM_TAG_LEN;
@@ -784,14 +1014,14 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 	if (ctlen > sizeof(ptbuf)) {
 		LOG_ERR("[conn %u] AUTH1Response too large (%u B)", s->conn_handle,
 			(unsigned)ctlen);
-		s->phase = PH_FAILED;
+		session_terminate(s, "oversized AUTH1 response");
 		return;
 	}
 	if (ultrawidelock_secchan_open(&s->sc, NULL, 0, pl, ctlen, pl + ctlen, ptbuf) != 0) {
 		LOG_ERR("[conn %u] AUTH1Response GCM auth FAILED (%u ct B): session key / "
 			"counter / ct-tag framing mismatch",
 			s->conn_handle, (unsigned)ctlen);
-		s->phase = PH_FAILED;
+		session_terminate(s, "AUTH1 authentication failed");
 		return;
 	}
 	LOG_DBG("[conn %u] AUTH1Response DECRYPTED (%u B plaintext):", s->conn_handle,
@@ -800,7 +1030,7 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 
 	if (ultrawidelock_apdu_parse_auth1_response(ptbuf, ctlen, &r) != 0) {
 		LOG_ERR("[conn %u] AUTH1Response (decrypted) parse failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "malformed AUTH1 response");
 		return;
 	}
 
@@ -814,14 +1044,14 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 	if (ultrawidelock_apdu_build_authdata(ULTRAWIDELOCK_AUTH_DEVICE, s_id.reader_id,
 					      s->device_eph_pub + 1, s->reader_eph_pub + 1, s->txid,
 					      td, sizeof(td), &tn) != 0) {
-		s->phase = PH_FAILED;
+		session_terminate(s, "device transcript build failed");
 		return;
 	}
 	if (ultrawidelock_ecdsa_p256_verify(cred_pub, td, tn, r.device_sig) != 0) {
 		LOG_WRN("[conn %u] device signature INVALID (may need key lookup by "
 			"identifier; the decrypt itself succeeded)",
 			s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "device signature invalid");
 		return;
 	}
 	LOG_INF("[conn %u] device signature OK", s->conn_handle);
@@ -838,7 +1068,8 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 
 	if (tv == 0) {
 		LOG_INF("[conn %u] credential key TRUSTED", s->conn_handle);
-	} else if (tv == 1 && s_id.is_dev) {
+	} else if (tv == 1 && s_id.is_dev && CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST &&
+		   s_provisioning_state == PROVISIONING_EMPTY) {
 		LOG_WRN("[conn %u] no trust anchors (DEV identity): accepting the "
 			"presented credential; run `ultrawidelock-trust` to enforce",
 			s->conn_handle);
@@ -866,55 +1097,73 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 				(s_trust.kp_valid & (1u << ti)) ? " (has Kpersistent)" : "");
 		}
 		notify_access(false);
-		s->phase = PH_FAILED;
+		session_terminate(s, "credential is not trusted");
 		return;
 	}
-	/* Granted covers the dev-identity accept too: the bolt opens either way, so
-	 * reporting only the enforced case would under-report real unlocks. */
-	notify_access(true);
-
-	/* Accepted: remember which key it was, so the unlock this session goes on to
-	 * grant can be attributed to the Matter user that owns it. */
-	ultrawidelock_mutex_lock(&s_prov_lock);
-	memcpy(s_auth_cred_pub, cred_pub, ULTRAWIDELOCK_CRED_PUB_LEN);
-	s_have_auth_cred = true;
-	s_auth_generation++;
-	ultrawidelock_mutex_unlock(&s_prov_lock);
-
-	/* Mint/refresh this credential's Kpersistent (§8.3.1.13): keyed off this
+	/* Stage this credential's Kpersistent (§8.3.1.13): keyed off this
 	 * session's Kdh, so every standard phase re-agrees it with the phone and the
-	 * next walk-up can take the expedited-fast path. RAM only here — the NVS
-	 * write happens on disconnect, off the walk-up critical path. Dev-accepted
-	 * (untrusted) credentials have no store slot to bind to. */
+	 * next walk-up can take the expedited-fast path. It is not committed to RAM
+	 * until EXCHANGE transport acceptance below: an ambiguous send may have left
+	 * the peer on either side of that boundary, so persisting its speculative key
+	 * would make the next fast cryptogram fail. Dev-accepted credentials have no
+	 * store slot to bind to. */
+	uint8_t pending_kp[ULTRAWIDELOCK_KPERSISTENT_LEN] = {0};
+	int pending_ki = -1;
 	if (tv == 0) {
-		uint8_t kp[ULTRAWIDELOCK_KPERSISTENT_LEN];
-		int ki = -1;
-
 		if (ultrawidelock_salt_build(ULTRAWIDELOCK_SALT_KPERSISTENT, s->txid, s_reader_group_x,
 				     s->reader_eph_pub + 1, s_id.reader_id, ULTRAWIDELOCK_IFACE_BLE,
 				     ULTRAWIDELOCK_VERSION, s->exp_phase_sent, 0x01u, cred_pub + 1, a5, a5n,
 				     salt, &slen) == 0 &&
-		    ultrawidelock_crypto_derive_key32(s->z, salt, slen, s->device_eph_pub + 1, kp) == 0) {
+		    ultrawidelock_crypto_derive_key32(s->z, salt, slen, s->device_eph_pub + 1,
+					       pending_kp) == 0) {
 			ultrawidelock_mutex_lock(&s_prov_lock);
-			ki = ultrawidelock_prov_trust_find(&s_trust, cred_pub);
-			if (ki >= 0 && ultrawidelock_prov_kpersistent_set(&s_trust, ki, kp) != 0) {
-				ki = -1;
-			}
-			if (ki >= 0) {
-				s_kp_dirty = true;
-			}
+			pending_ki = ultrawidelock_prov_trust_find(&s_trust, cred_pub);
 			ultrawidelock_mutex_unlock(&s_prov_lock);
-		}
-		if (ki >= 0) {
-			LOG_INF("[conn %u] Kpersistent agreed (cred %d): next unlock can go fast",
-				s->conn_handle, ki);
-			ultrawidelock_lab_evi("kp.minted", "cred", ki);
 		}
 	}
 
 	/* EXCHANGE: seal + send the URSK-ready trigger (send_exchange also drives
 	 * the §11.1.1 AP-Completed sequencing via on_exchange_response). */
-	send_exchange(s);
+	if (!send_exchange(s)) {
+		memset(pending_kp, 0, sizeof(pending_kp));
+		return;
+	}
+	if (pending_ki >= 0) {
+		bool kp_committed = false;
+
+		ultrawidelock_mutex_lock(&s_prov_lock);
+		/* An admin may have reordered the trust store while EXCHANGE was in
+		 * flight. Re-find rather than ever writing the staged key to a new
+		 * credential that inherited the old slot. */
+		if (pending_ki >= s_trust.count ||
+		    memcmp(s_trust.cred_pub[pending_ki], cred_pub, ULTRAWIDELOCK_CRED_PUB_LEN) != 0) {
+			pending_ki = ultrawidelock_prov_trust_find(&s_trust, cred_pub);
+		}
+		if (pending_ki >= 0 &&
+		    ultrawidelock_prov_kpersistent_set(&s_trust, pending_ki, pending_kp) == 0) {
+			s_kp_dirty = true;
+			kp_committed = true;
+		}
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		if (kp_committed) {
+			LOG_INF("[conn %u] Kpersistent agreed (cred %d): next unlock can go fast",
+				s->conn_handle, pending_ki);
+			ultrawidelock_lab_evi("kp.minted", "cred", pending_ki);
+		}
+	}
+	memset(pending_kp, 0, sizeof(pending_kp));
+	/* Commit the externally visible authentication only after the outbound
+	 * transition was accepted. A failed/ambiguous send terminates without
+	 * publishing a fresh presence proof or MRU success. */
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	memcpy(s_auth_cred_pub, cred_pub, ULTRAWIDELOCK_CRED_PUB_LEN);
+	s_have_auth_cred = true;
+	s_auth_generation++;
+	if (tv == 0) {
+		s_fast_mru = (int8_t)ultrawidelock_prov_trust_find(&s_trust, cred_pub);
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	notify_access(true);
 }
 
 /* Reader-Status-Access-Protocol-Completed (§11.1.1 / §11.7.3.4.1): a proto-2
@@ -937,14 +1186,18 @@ static void complete_ap_and_range(struct ultrawidelock_session *s)
 	if (ultrawidelock_msg_seal(&s->sc_ble, k_ap_completed_plain, sizeof(k_ap_completed_plain), wire,
 			   sizeof(wire), &wl) != 0) {
 		LOG_ERR("[conn %u] AP-Completed seal failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "AP-Completed seal failed");
 		return;
 	}
 	int rc = ultrawidelock_ble_send(s->conn_handle, wire, wl);
 
-	ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_AP_COMPLETED);
 	LOG_INF("[conn %u] Reader-Status-AP-Completed sent (%u B, rc=%d)", s->conn_handle,
 		(unsigned)wl, rc);
+	if (rc != 0) {
+		session_terminate(s, "AP-Completed transport result ambiguous");
+		return;
+	}
+	ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_AP_COMPLETED);
 
 	/* Arm the ranging engine with the URSK + the BleSK channel; M1 is emitted by the
 	 * engine when the device sends its Initiate-Ranging-Session (proto-2 id-1). The
@@ -956,10 +1209,12 @@ static void complete_ap_and_range(struct ultrawidelock_session *s)
 	uint32_t ranging_sid = ((uint32_t)s->txid[12] << 24) | ((uint32_t)s->txid[13] << 16) |
 			       ((uint32_t)s->txid[14] << 8) | (uint32_t)s->txid[15];
 
-	s->phase = PH_ESTABLISHED;
 	if (ultrawidelock_ranging_start(s->conn_handle, ranging_sid, s->ursk, &s->sc_ble) != 0) {
 		LOG_WRN("[conn %u] ranging setup did not arm", s->conn_handle);
+		session_terminate(s, "ranging setup unavailable");
+		return;
 	}
+	session_enter_phase(s, PH_ESTABLISHED);
 
 	/* Stale-Wallet resync. If a relock notification was lost because the peer had
 	 * already dropped BLE, the phone is still showing this door unlocked; a channel
@@ -975,7 +1230,8 @@ static void complete_ap_and_range(struct ultrawidelock_session *s)
 	if (s_secured_undelivered) {
 		LOG_INF("[conn %u] stale Wallet state: Secured replay armed (%d ms)",
 			s->conn_handle, ULTRAWIDELOCK_SECURED_REPLAY_HOLD_MS);
-		uint32_t at = (uint32_t)ultrawidelock_uptime_ms() + ULTRAWIDELOCK_SECURED_REPLAY_HOLD_MS;
+		uint32_t at = (uint32_t)ultrawidelock_reader_monotonic_ms() +
+			      ULTRAWIDELOCK_SECURED_REPLAY_HOLD_MS;
 
 		s_secured_replay_at = (at == 0) ? 1u : at;
 		s_peer_state_unknown = true;
@@ -1004,7 +1260,7 @@ static void gated_complete_ap(struct ultrawidelock_session *s)
 		LOG_WRN("[conn %u] RSSI gate has no samples; failing open (no power gating)",
 			s->conn_handle);
 	} else if (!ultrawidelock_rssi_gate_is_open(&s->rgate)) {
-		s->phase = PH_GATE_HOLD;
+		session_enter_phase(s, PH_GATE_HOLD);
 		ultrawidelock_rssi_gate_hold_begin(&s->rgate, (uint32_t)(ultrawidelock_uptime_us() / 1000));
 		LOG_INF("[conn %u] RSSI gate closed (%d dBm): AP-Completed held, UWB stays dark",
 			s->conn_handle, (int)ultrawidelock_rssi_gate_level_dbm(&s->rgate));
@@ -1034,8 +1290,11 @@ static void stepup_send_request(struct ultrawidelock_session *s)
 		return;
 	}
 	s->stepup_sd_len = 0;
-	send_ap_raw(s->conn_handle, apdu, an);
-	s->phase = PH_SENT_STEPUP;
+	if (send_ap_raw(s->conn_handle, apdu, an) != 0) {
+		session_terminate(s, "step-up request transport result ambiguous");
+		return;
+	}
+	session_enter_phase(s, PH_SENT_STEPUP);
 	LOG_INF("[conn %u] step-up: ENVELOPE(DeviceRequest) sent (%u APDU B)", s->conn_handle,
 		(unsigned)an);
 }
@@ -1096,7 +1355,9 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 
 		if (ultrawidelock_stepup_build_get_response((uint8_t)(sw & 0xffu), apdu, sizeof(apdu),
 						    &an) == 0) {
-			send_ap_raw(s->conn_handle, apdu, an);
+				if (send_ap_raw(s->conn_handle, apdu, an) != 0) {
+					session_terminate(s, "step-up continuation transport result ambiguous");
+				}
 		}
 		return; /* stay in PH_SENT_STEPUP */
 	}
@@ -1127,7 +1388,11 @@ static void on_exchange_response(struct ultrawidelock_session *s, const uint8_t 
 
 	if (ultrawidelock_apdu_strip_sw(pl, &len, &sw) != 0) {
 		LOG_ERR("[conn %u] EXCHANGE response too short", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "short EXCHANGE response");
+		return;
+	}
+	if (sw != 0x9000u) {
+		session_terminate(s, "EXCHANGE status rejected");
 		return;
 	}
 	uint8_t body[16];
@@ -1136,7 +1401,7 @@ static void on_exchange_response(struct ultrawidelock_session *s, const uint8_t 
 	if (bodylen == 0 || bodylen > sizeof(body) ||
 	    ultrawidelock_secchan_open(&s->sc, NULL, 0, pl, bodylen, pl + bodylen, body) != 0) {
 		LOG_ERR("[conn %u] EXCHANGE response decrypt failed", s->conn_handle);
-		s->phase = PH_FAILED;
+		session_terminate(s, "EXCHANGE authentication failed");
 		return;
 	}
 	/* Success body = 00 02 00 00 (len 0x0002, error 0x0000). Non-zero error bytes
@@ -1147,7 +1412,7 @@ static void on_exchange_response(struct ultrawidelock_session *s, const uint8_t 
 		ok ? "success (URSK armed)" : "ERROR");
 	LOG_HEXDUMP_DBG(body, bodylen, "");
 	if (!ok) {
-		s->phase = PH_FAILED;
+		session_terminate(s, "EXCHANGE rejected");
 		return;
 	}
 	ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_EXCHANGE_DONE);
@@ -1195,12 +1460,20 @@ static void reader_status_send(struct ultrawidelock_session *s, bool unsecured)
 
 	if (ultrawidelock_msg_seal(&s->sc_ble, plain, sizeof(plain), wire, sizeof(wire), &wl) != 0) {
 		LOG_ERR("[conn %u] reader-status-changed seal failed", s->conn_handle);
+		session_terminate(s, "Reader-Status seal failed");
 		return;
 	}
 	int rc = ultrawidelock_ble_send(s->conn_handle, wire, wl);
 
 	LOG_INF("[conn %u] Reader-Status-Changed %s sent (%u B, rc=%d)", s->conn_handle,
 		unsecured ? "Unsecured/grant" : "Secured/relock", (unsigned)wl, rc);
+	if (rc != 0) {
+		if (!unsecured) {
+			s_secured_undelivered = true;
+		}
+		session_terminate(s, "Reader-Status transport result ambiguous");
+		return;
+	}
 	/*
 	 * The lock-state listener used to fire here, gated on rc == 0 --
 	 * "only once it is actually on the wire". That gate conflated two
@@ -1286,13 +1559,31 @@ void ultrawidelock_reader_notify_unlock(bool unsecured)
 // Releases a held stale-Wallet Secured once its window expires with no grant to supersede it.
 // now_ms is the caller's monotonic clock (the same one ultrawidelock_uptime_ms reads); taking it as
 // an argument keeps the deadline testable without a fake clock. No-op unless a replay is armed.
-void ultrawidelock_reader_status_tick(int64_t now_ms)
+static _Atomic uint32_t s_reader_tick_now;
+
+static void reader_tick_on_host(void)
 {
+	uint32_t now_ms = atomic_load_explicit(&s_reader_tick_now, memory_order_relaxed);
+
+	/* Credential handshake deadlines share this already-periodic monotonic tick.
+	 * Exact equality expires; signed subtraction makes uint32 wrap safe. */
+	for (int i = 0; i < ULTRAWIDELOCK_MAX_SESSIONS; i++) {
+		struct ultrawidelock_session *s = &s_sessions[i];
+
+		if (s->active &&
+		    ((s->phase_deadline_armed &&
+		      (int32_t)(now_ms - s->phase_deadline_ms) >= 0) ||
+		     (s->overall_deadline_armed &&
+		      (int32_t)(now_ms - s->overall_deadline_ms) >= 0))) {
+			session_terminate(s, "credential phase deadline expired");
+		}
+	}
+
 	uint32_t at = s_secured_replay_at;
 
 	/* Wrap-safe "now is at or past the deadline": the signed difference stays
 	 * correct across the 49-day rollover, where a plain `now < at` would not. */
-	if (at == 0 || (int32_t)((uint32_t)now_ms - at) < 0) {
+	if (at == 0 || (int32_t)(now_ms - at) < 0) {
 		return;
 	}
 	s_secured_replay_at = 0;
@@ -1306,16 +1597,20 @@ void ultrawidelock_reader_status_tick(int64_t now_ms)
 	ultrawidelock_ble_post_reader_status(reader_status_send_on_host, false);
 }
 
+void ultrawidelock_reader_status_tick(int64_t now_ms)
+{
+	/* The caller is not the BLE-host owner. Retain only the newest time and
+	 * coalesce a dedicated host event; the callback alone reads/mutates the
+	 * session table. */
+	atomic_store_explicit(&s_reader_tick_now, (uint32_t)now_ms, memory_order_relaxed);
+	ultrawidelock_ble_post_reader_tick(reader_tick_on_host);
+}
+
 // Reports whether any peer currently holds an established credential session.
 // Returns true if at least one session slot is active and in the established phase.
 bool ultrawidelock_reader_session_active(void)
 {
-	for (int i = 0; i < ULTRAWIDELOCK_MAX_SESSIONS; i++) {
-		if (s_sessions[i].active && s_sessions[i].phase == PH_ESTABLISHED) {
-			return true;
-		}
-	}
-	return false;
+	return atomic_load_explicit(&s_established_sessions, memory_order_relaxed) != 0u;
 }
 
 #if defined(CONFIG_ULTRAWIDELOCK_CRED_ACCESS_LISTENER)
@@ -1540,7 +1835,7 @@ static void transaction_feed(struct ultrawidelock_session *s, const uint8_t *dat
 		if (pl_len >= 3u && pl[0] == 0x01u && pl[1] == 0x01u) {
 			LOG_WRN("[conn %u] device GeneralError 0x%02x in phase %s", s->conn_handle,
 				pl[2], phase_str(s->phase));
-			s->phase = PH_FAILED;
+				session_terminate(s, "peer reported GeneralError");
 			return;
 		}
 		LOG_WRN("[conn %u] unrecognised pre-ranging event, %u B, phase %s; not fatal",
@@ -1589,17 +1884,20 @@ static void transaction_feed(struct ultrawidelock_session *s, const uint8_t *dat
 		uint8_t plain[256];
 		size_t plen;
 
-		if (ultrawidelock_msg_open(&s->sc_ble, data, len, plain, sizeof(plain), &plen) != 0) {
+			if (ultrawidelock_msg_open(&s->sc_ble, data, len, plain, sizeof(plain), &plen) != 0) {
 			LOG_WRN("[conn %u] ranging SDU open FAILED (proto=0x%02x id=0x%02x, %u B); "
 				"raw:",
 				s->conn_handle, type, opcode, (unsigned)pl_len);
 			LOG_HEXDUMP_DBG(pl, pl_len, "");
-			break;
+				session_terminate(s, "ranging SDU authentication failed");
+				break;
 		}
 		LOG_DBG("[conn %u] ranging SDU (proto=0x%02x id=0x%02x, %u B plaintext):",
 			s->conn_handle, plain[0], plain[1], (unsigned)plen);
 		LOG_HEXDUMP_DBG(plain, plen, "");
-		ultrawidelock_ranging_feed(s->conn_handle, plain, plen);
+			if (ultrawidelock_ranging_feed(s->conn_handle, plain, plen) != 0) {
+				session_terminate(s, "ranging engine rejected SDU");
+			}
 		break;
 	}
 	default:
@@ -1669,11 +1967,12 @@ void ultrawidelock_reader_rssi_sample(uint16_t conn_handle, int8_t rssi_dbm)
  * landed, and the store's negative errno when a pending write failed again.
  *
  * The dirty flag is cleared BEFORE the write and re-set on failure, not cleared after a success:
- * this runs on the BLE-host task and on whatever task a Matter command arrives on, and a
- * Kpersistent minted between the snapshot and the clear would otherwise be dropped by the success
- * that did not include it.
+ * a Kpersistent minted between the housekeeping snapshot and reconciliation then leaves the flag
+ * armed for the next write. s_store_lock serializes the entire operation against Matter/admin
+ * stores, so none can land a newer image that this snapshot later overwrites.
  */
-static int flush_pending_store(void)
+/* s_store_lock must be held. */
+static int flush_pending_store_locked(void)
 {
 	struct ultrawidelock_reader_identity id;
 	struct ultrawidelock_trust_store ts;
@@ -1704,6 +2003,110 @@ static int flush_pending_store(void)
 	return 0;
 }
 
+static int flush_pending_store(void)
+{
+	store_lock();
+	int rc = flush_pending_store_locked();
+	store_unlock();
+	return rc;
+}
+
+/* Disconnect callbacks must stay bounded: P-256 key generation and settings
+ * writes run on this dedicated low-priority thread. A binary semaphore
+ * coalesces bursts; each wake makes at most three attempts and then leaves the
+ * reason pending for the next external wake instead of spinning forever. */
+#define HOUSEKEEPING_REFILL 0x01u
+#define HOUSEKEEPING_STORE  0x02u
+#define HOUSEKEEPING_MAX_ATTEMPTS 3u
+#define HOUSEKEEPING_RETRY_MS 100u
+#ifndef CONFIG_ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE
+#define CONFIG_ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE 3072
+#endif
+
+static ultrawidelock_sem_t s_housekeeping_sem;
+static ultrawidelock_thread_t s_housekeeping_thread;
+ULTRAWIDELOCK_THREAD_STACK_DEFINE(s_housekeeping_stack,
+				  CONFIG_ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE);
+static bool s_housekeeping_ready;
+static uint8_t s_housekeeping_reasons;
+
+static void housekeeping_schedule(uint8_t reasons)
+{
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	s_housekeeping_reasons |= reasons;
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	if (s_housekeeping_ready) {
+		ultrawidelock_sem_give(&s_housekeeping_sem);
+	}
+}
+
+/* One bounded batch. Failed operations are put back without signaling; the
+ * owning thread performs its bounded retries, and a later disconnect wakes any
+ * residual work. */
+static uint8_t housekeeping_run_once(void)
+{
+	uint8_t reasons;
+	uint8_t retry = 0;
+
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	reasons = s_housekeeping_reasons;
+	s_housekeeping_reasons = 0;
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	if ((reasons & HOUSEKEEPING_REFILL) != 0u && !spare_eph_refill()) {
+		retry |= HOUSEKEEPING_REFILL;
+	}
+	if ((reasons & HOUSEKEEPING_STORE) != 0u && flush_pending_store() != 0) {
+		retry |= HOUSEKEEPING_STORE;
+	}
+	if (retry != 0u) {
+		ultrawidelock_mutex_lock(&s_prov_lock);
+		s_housekeeping_reasons |= retry;
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+	}
+	return retry;
+}
+
+static void housekeeping_thread_entry(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		(void)ultrawidelock_sem_take(&s_housekeeping_sem, ULTRAWIDELOCK_WAIT_FOREVER);
+		for (unsigned attempt = 0; attempt < HOUSEKEEPING_MAX_ATTEMPTS; attempt++) {
+			if (housekeeping_run_once() == 0u) {
+				break;
+			}
+			if (attempt + 1u < HOUSEKEEPING_MAX_ATTEMPTS) {
+				ultrawidelock_sleep_ms(HOUSEKEEPING_RETRY_MS);
+			}
+		}
+	}
+}
+
+static int housekeeping_init(void)
+{
+	if (s_housekeeping_ready) {
+		return 0;
+	}
+	ultrawidelock_sem_init(&s_housekeeping_sem, 0u, 1u);
+	if (ultrawidelock_thread_create(&s_housekeeping_thread, s_housekeeping_stack,
+					ULTRAWIDELOCK_THREAD_STACK_SIZEOF(s_housekeeping_stack),
+					housekeeping_thread_entry, NULL,
+					ULTRAWIDELOCK_THREAD_PRIO_LOW, "cred_housekeeping") != 0) {
+		return -1;
+	}
+	s_housekeeping_ready = true;
+	return 0;
+}
+
+#if defined(ULTRAWIDELOCK_PORT_HOST)
+/* Host threads are recording fakes. Tests drive exactly one batch to prove
+ * callback deferral, coalescing, and retry without an unbounded thread loop. */
+uint8_t ultrawidelock_reader_housekeeping_run_once_for_test(void)
+{
+	return housekeeping_run_once();
+}
+#endif
+
 /* ---- ultrawidelock_ble transport callbacks ---- */
 
 // BLE connection-established callback: allocates a session slot for the new connection.
@@ -1730,6 +2133,9 @@ static void on_disconnected(uint16_t conn_handle)
 	if (s != NULL) {
 		LOG_INF("[conn %u] credential session destroyed (%u msgs, phase=%s)", conn_handle,
 			(unsigned)s->msgs_rx, phase_str(s->phase));
+		/* Centralize the ESTABLISHED exit before clearing the host-owned slot,
+		 * so the cross-task atomic snapshot cannot remain stale. */
+		session_enter_phase(s, PH_FAILED);
 		s->active = false;
 		/* Aborted walk-ups never reach the bolt-time report: flush the stamped
 		 * phases here (no-op if the bolt path already dumped them). */
@@ -1737,22 +2143,20 @@ static void on_disconnected(uint16_t conn_handle)
 		ultrawidelock_lab_ev("session.end");
 	}
 	ultrawidelock_ranging_stop(conn_handle);
+	if (s != NULL) {
+		/* Drop every volatile session key/counter immediately after the ranging
+		 * owner releases its borrowed channel pointer. */
+		memset(s, 0, sizeof(*s));
+	}
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	bool presence_wait = s_presence_wait_disconnect;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 	if (presence_wait && !any_session_active_on_host()) {
 		presence_checkpoint_ready_on_host();
 	}
-	/* The peer is gone: cheapest moment to regenerate the spare ephemeral pair
-	 * the next walk-up's start_auth will consume. */
-	if (!s_spare_eph.valid) {
-		spare_eph_refill();
-	}
-	/* A standard phase may have minted a Kpersistent (RAM only until here), or
-	 * a revocation may have failed its write. Persist here, where the flash
-	 * write can't cost the walk-up anything; left dirty on failure so the next
-	 * disconnect -- or the next revocation -- retries. */
-	(void)flush_pending_store();
+	/* Defer both expensive operations. The semaphore is binary, so simultaneous
+	 * disconnects coalesce into one bounded low-priority batch. */
+	housekeeping_schedule(HOUSEKEEPING_REFILL | HOUSEKEEPING_STORE);
 }
 
 // BLE data-received callback: looks up the session for conn_handle and feeds each credential
@@ -1765,6 +2169,12 @@ static void on_data(uint16_t conn_handle, const uint8_t *data, uint16_t len)
 	if (s == NULL) {
 		LOG_WRN("[conn %u] data for unknown session (%u bytes)", conn_handle,
 			(unsigned)len);
+		return;
+	}
+	uint32_t now_ms = (uint32_t)ultrawidelock_reader_monotonic_ms();
+	if ((s->phase_deadline_armed && (int32_t)(now_ms - s->phase_deadline_ms) >= 0) ||
+	    (s->overall_deadline_armed && (int32_t)(now_ms - s->overall_deadline_ms) >= 0)) {
+		session_terminate(s, "credential phase deadline expired before receive");
 		return;
 	}
 	/* One transport receive can carry more than one envelope back to back: the phone packs
@@ -1786,6 +2196,9 @@ static void on_data(uint16_t conn_handle, const uint8_t *data, uint16_t len)
 			sdu = (uint16_t)(ULTRAWIDELOCK_ENVELOPE_HDR + pl_len);
 		}
 		transaction_feed(s, data + off, sdu);
+		if (!s->active || s->disconnect_requested) {
+			return;
+		}
 		off = (uint16_t)(off + sdu);
 	}
 }
@@ -1824,12 +2237,20 @@ static int reader_engine_init(void)
 		LOG_ERR("crypto init failed");
 		return -1;
 	}
-	load_provisioning();
+	int prov_rc = load_provisioning();
+	if (prov_rc < 0) {
+		LOG_ERR("provisioning storage unavailable (%d); reader remains offline", prov_rc);
+		return prov_rc;
+	}
+	if (housekeeping_init() != 0) {
+		LOG_ERR("credential housekeeping thread unavailable");
+		return -1;
+	}
 	if (ultrawidelock_ranging_init() != 0) {
 		LOG_WRN("UWB ranging adapter unavailable; auth will run but "
 			"ranging setup won't start");
 	}
-	spare_eph_refill(); /* first walk-up's ephemeral pair, off the callback path */
+	(void)spare_eph_refill(); /* first walk-up's ephemeral pair, off the callback path */
 	return 0;
 }
 
@@ -1859,8 +2280,9 @@ static bool apply_provisioned_adv_params(void)
 // ultrawidelock_ble_start result otherwise.
 int ultrawidelock_reader_start(void)
 {
-	if (reader_engine_init() != 0) {
-		return -1;
+	int init_rc = reader_engine_init();
+	if (init_rc != 0) {
+		return init_rc;
 	}
 	/* A standalone reader loads its provisioned identity from storage during
 	 * reader_engine_init, so the GRK is already in s_id by here. Without this the
@@ -1901,8 +2323,9 @@ const void *ultrawidelock_reader_ble_prepare(void)
 // result otherwise.
 int ultrawidelock_reader_start_attached(void)
 {
-	if (reader_engine_init() != 0) {
-		return -1;
+	int init_rc = reader_engine_init();
+	if (init_rc != 0) {
+		return init_rc;
 	}
 
 	/* Provisioned credential advertising params (BLE-UWB approach discovery): only
@@ -2060,17 +2483,16 @@ static void revoke_aftermath(const uint8_t *removed_pub)
  * but unpersisted -- never 0 for an unpersisted removal, because a Matter admin is told what this
  * returns.
  */
-static int persist_removal(const struct ultrawidelock_reader_identity *id,
-			   const struct ultrawidelock_trust_store *ts)
+/* Both s_store_lock and s_prov_lock must be held, in that order. */
+static int persist_removal_locked(const struct ultrawidelock_reader_identity *id,
+				  const struct ultrawidelock_trust_store *ts)
 {
 	int rc = ultrawidelock_prov_store(id, ts);
 
 	if (rc == 0) {
 		return 0;
 	}
-	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_kp_dirty = true;
-	ultrawidelock_mutex_unlock(&s_prov_lock);
 	LOG_ERR("revocation applied in RAM but NOT persisted (%d); retrying on the next "
 		"disconnect or revocation",
 		rc);
@@ -2086,40 +2508,49 @@ int ultrawidelock_reader_trust_last(void)
 {
 	load_provisioning();
 
-	/* Build the candidate store off a snapshot, persist it, then commit — so the
-	 * NVS write happens outside the lock and a failed write changes nothing. */
+	/* Serialize snapshot, write, and commit against both housekeeping and other
+	 * admin tasks. A failed write still changes nothing. */
 	struct ultrawidelock_trust_store cand;
 	uint8_t last[ULTRAWIDELOCK_CRED_PUB_LEN];
 	bool have;
 
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	cand = s_trust;
 	have = s_have_last_cred;
 	memcpy(last, s_last_cred_pub, ULTRAWIDELOCK_CRED_PUB_LEN);
-	ultrawidelock_mutex_unlock(&s_prov_lock);
 
 	if (!have) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return 1; /* nothing presented yet */
 	}
 	int add = ultrawidelock_prov_trust_add(&cand, last);
 
 	if (add == 1) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return 1; /* already trusted; nothing to persist */
 	}
 	if (add < 0) {
 		/* Not a P-256 point. A FULL store is no longer a refusal -- it
 		 * evicts and returns 2 -- so this branch no longer means what
 		 * its old comment said it did. */
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return -1;
 	}
 	int store_rc = ultrawidelock_prov_store(&s_id, &cand);
 
 	if (store_rc != 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return store_rc; /* not committed; s_trust unchanged */
 	}
-	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_trust = cand;
+	s_fast_mru = -1;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 	return 0;
 }
 
@@ -2142,17 +2573,20 @@ int ultrawidelock_reader_trust_clear(void)
 	/* Emptied under the lock rather than off a snapshot: a snapshot-then-
 	 * commit would silently undo a SetCredential that landed in between, and
 	 * on this path that would put a just-revoked anchor back. */
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	if (s_trust.count == 0u) {
 		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return 1;
 	}
 	memset(&s_trust, 0, sizeof(s_trust));
+	s_fast_mru = -1;
 	id = s_id;
 	cand = s_trust;
+	int rc = persist_removal_locked(&id, &cand);
 	ultrawidelock_mutex_unlock(&s_prov_lock);
-
-	int rc = persist_removal(&id, &cand);
+	store_unlock();
 
 	revoke_aftermath(NULL);
 	return rc;
@@ -2230,18 +2664,21 @@ int ultrawidelock_reader_provision_identity(const uint8_t reader_id[ULTRAWIDELOC
 	memcpy(id.grk, grk, ULTRAWIDELOCK_GRK_LEN);
 	id.is_dev = false;
 
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	ts = s_trust; /* keep any anchors already added */
-	ultrawidelock_mutex_unlock(&s_prov_lock);
 
 	int store_rc = ultrawidelock_prov_store(&id, &ts);
 
 	if (store_rc != 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return store_rc; /* not committed; s_id unchanged */
 	}
-	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_id = id;
+	s_provisioning_state = PROVISIONING_READY;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 	compute_reader_group_x(); /* signingKey changed -> refresh salt field 1 */
 	/*
 	 * And the ADVERTISEMENT, which this path used to leave stale.
@@ -2309,14 +2746,16 @@ int ultrawidelock_reader_provision_add_trust(const uint8_t cred_pub[ULTRAWIDELOC
 	struct ultrawidelock_reader_identity id;
 	struct ultrawidelock_trust_store cand;
 
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	id = s_id;
 	cand = s_trust;
-	ultrawidelock_mutex_unlock(&s_prov_lock);
 
 	int add = ultrawidelock_prov_trust_add(&cand, cred_pub);
 
 	if (add < 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return -1; /* not an uncompressed point, or a corrupt count */
 	}
 
@@ -2327,6 +2766,8 @@ int ultrawidelock_reader_provision_add_trust(const uint8_t cred_pub[ULTRAWIDELOC
 
 	(void)ultrawidelock_prov_cred_bind_set(&cand, slot, cred_type, cred_index, user_index);
 	if (add == 1 && !rebind) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return 1; /* already trusted under this index; nothing to persist */
 	}
 	if (add == 1) {
@@ -2337,21 +2778,27 @@ int ultrawidelock_reader_provision_add_trust(const uint8_t cred_pub[ULTRAWIDELOC
 		int rebind_rc = ultrawidelock_prov_store(&id, &cand);
 
 		if (rebind_rc != 0) {
+			ultrawidelock_mutex_unlock(&s_prov_lock);
+			store_unlock();
 			return rebind_rc;
 		}
-		ultrawidelock_mutex_lock(&s_prov_lock);
 		s_trust = cand;
+		s_fast_mru = -1;
 		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return 1;
 	}
 	int store_rc = ultrawidelock_prov_store(&id, &cand);
 
 	if (store_rc != 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return store_rc; /* not committed; s_trust unchanged */
 	}
-	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_trust = cand;
+	s_fast_mru = -1;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 	if (add == 2) {
 		LOG_WRN("trust store was FULL; dropped an anchor to make room. "
 			"ULTRAWIDELOCK_TRUST_MAX is %u -- raise it if this repeats",
@@ -2380,6 +2827,7 @@ int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred
 	/* Found, removed and snapshotted in one critical section. The add path
 	 * mutates a snapshot and commits it later, which on a removal would let
 	 * a SetCredential that landed in between put the revoked anchor back. */
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index);
 	if (idx >= 0) {
@@ -2387,20 +2835,23 @@ int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred
 		(void)ultrawidelock_prov_trust_remove_at(&s_trust, idx);
 		id = s_id;
 		cand = s_trust;
+		s_fast_mru = -1;
 	}
-	ultrawidelock_mutex_unlock(&s_prov_lock);
-
 	if (idx < 0) {
 		/* Nothing to take out now, but an earlier removal may still be
 		 * unwritten. This is the caller most likely to exist when there is
 		 * no session to end: an admin repeating a command that reported a
 		 * failure. Report the retry's failure rather than the emptiness. */
-		int pending = flush_pending_store();
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		int pending = flush_pending_store_locked();
+		store_unlock();
 
 		return pending != 0 ? pending : 1;
 	}
 
-	int rc = persist_removal(&id, &cand);
+	int rc = persist_removal_locked(&id, &cand);
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 
 	revoke_aftermath(removed);
 	LOG_INF("credential type %u index %u REVOKED (%u anchor(s) left)", (unsigned int)cred_type,
@@ -2423,6 +2874,7 @@ int ultrawidelock_reader_provision_remove_type(uint8_t cred_type)
 	struct ultrawidelock_trust_store cand;
 	int removed = 0;
 
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	/* Downwards, because removing slot i shifts every later slot into it. */
 	for (int i = (int)s_trust.count - 1; i >= 0; i--) {
@@ -2433,15 +2885,21 @@ int ultrawidelock_reader_provision_remove_type(uint8_t cred_type)
 	}
 	id = s_id;
 	cand = s_trust;
-	ultrawidelock_mutex_unlock(&s_prov_lock);
-
+	if (removed > 0) {
+		s_fast_mru = -1;
+	}
 	if (removed == 0) {
 		/* Same retry the single-anchor path takes: an admin repeating a
 		 * wildcard clear is a chance to land a write left pending. */
-		return flush_pending_store();
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		int pending = flush_pending_store_locked();
+		store_unlock();
+		return pending;
 	}
 
-	int rc = persist_removal(&id, &cand);
+	int rc = persist_removal_locked(&id, &cand);
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 
 	revoke_aftermath(NULL);
 	LOG_INF("credential type %u REVOKED %d anchor(s) (%u left)", (unsigned int)cred_type,
@@ -2462,6 +2920,7 @@ int ultrawidelock_reader_provision_remove_user(uint16_t user_index)
 	struct ultrawidelock_trust_store cand;
 	int removed = 0;
 
+	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	/* Downwards, because removing slot i shifts every later slot into it. */
 	for (int i = (int)s_trust.count - 1; i >= 0; i--) {
@@ -2472,15 +2931,21 @@ int ultrawidelock_reader_provision_remove_user(uint16_t user_index)
 	}
 	id = s_id;
 	cand = s_trust;
-	ultrawidelock_mutex_unlock(&s_prov_lock);
-
+	if (removed > 0) {
+		s_fast_mru = -1;
+	}
 	if (removed == 0) {
 		/* The user held no anchor, so there is nothing new to write -- but
 		 * an earlier removal may still owe one. */
-		return flush_pending_store();
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		int pending = flush_pending_store_locked();
+		store_unlock();
+		return pending;
 	}
 
-	int rc = persist_removal(&id, &cand);
+	int rc = persist_removal_locked(&id, &cand);
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 
 	/* NULL: more than one key may have gone, so both latches go regardless. */
 	revoke_aftermath(NULL);
@@ -2503,15 +2968,21 @@ int ultrawidelock_reader_provision_clear(void)
 
 	ultrawidelock_prov_dev_default(&id, &ts);
 
+	store_lock();
+	ultrawidelock_mutex_lock(&s_prov_lock);
 	int store_rc = ultrawidelock_prov_store(&id, &ts);
 
 	if (store_rc != 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return store_rc;
 	}
-	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_id = id;
 	s_trust = ts;
+	s_provisioning_state = PROVISIONING_EMPTY;
+	s_fast_mru = -1;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 	compute_reader_group_x(); /* signingKey changed -> refresh salt field 1 */
 	/* The store just lost every anchor, so the same latches and links a
 	 * per-credential revocation drops have to go here too. */
@@ -2565,13 +3036,19 @@ int ultrawidelock_reader_import_blob(const uint8_t *buf, size_t len)
 	if (ultrawidelock_prov_deserialize(buf, len, &id, &ts) != 0) {
 		return -1;
 	}
+	store_lock();
+	ultrawidelock_mutex_lock(&s_prov_lock);
 	if (ultrawidelock_prov_store(&id, &ts) != 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
 		return -2; /* not committed; s_id/s_trust unchanged */
 	}
-	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_id = id;
 	s_trust = ts;
+	s_provisioning_state = id.is_dev ? PROVISIONING_EMPTY : PROVISIONING_READY;
+	s_fast_mru = -1;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
 	compute_reader_group_x(); /* signingKey/grk changed -> refresh salt field 1 */
 	/* Same reason the Matter provisioning path calls this: a new GRK means the
 	 * advertised dynamic tag is stale, and the phone resolves the reader by that

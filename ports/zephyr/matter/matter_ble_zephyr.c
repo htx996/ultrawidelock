@@ -100,6 +100,9 @@ static uint8_t s_rx_unacked;
 
 static matter_ble_msg_cb s_msg_cb;
 static matter_ble_link_cb s_link_cb;
+static matter_ble_tx_cb s_tx_cb;
+/** True only after matter_ble_send() accepted a caller-owned message. */
+static bool s_tx_notifies;
 
 /*
  * The node's own work queue. Stage 0 measured k_sys_work_q at 3,568 of 4,096
@@ -141,6 +144,14 @@ static bool claim_conn(struct bt_conn *conn);
  */
 static void reset_link(void)
 {
+	/* The BTP fragmenter borrows the application's packet. Return that loan
+	 * before clearing its cursor, exactly once. */
+	if (s_tx_notifies) {
+		s_tx_notifies = false;
+		if (s_tx_cb != NULL) {
+			s_tx_cb(-ECONNRESET);
+		}
+	}
 	matter_btp_rx_init(&s_rx, s_rx_buf, sizeof(s_rx_buf), 0u);
 	memset(&s_tx, 0, sizeof(s_tx));
 	s_tx_active = false;
@@ -427,17 +438,23 @@ static int pump_tx(void)
 				&n);
 	if (rc == MATTER_END) {
 		s_tx_active = false;
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(0);
+			}
+		}
 		return 0;
 	}
-	/* The ack rode out on that fragment, so it is no longer owed. */
-	if (s_ack_pending) {
-		s_ack_pending = false;
-		s_rx_unacked = 0u;
-	}
-	s_tx_seq = s_tx.next_seq;
 	if (rc != MATTER_OK) {
 		LOG_ERR("BTP fragmentation failed (%d)", rc);
 		s_tx_active = false;
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(-EIO);
+			}
+		}
 		return -EIO;
 	}
 	/* s_frag is already the indication payload; indicate_raw would copy it
@@ -454,6 +471,21 @@ static int pump_tx(void)
 		s_indicate_busy = false;
 		s_tx_active = false;
 		LOG_ERR("bt_gatt_indicate failed (%d)", rc);
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(rc);
+			}
+		}
+	} else {
+		/* Commit transport sequence and piggybacked acknowledgement only
+		 * after the stack accepted this fragment. An immediate rejection put
+		 * neither on air, so advancing either would desynchronise the retry. */
+		s_tx_seq = s_tx.next_seq;
+		if (s_ack_pending) {
+			s_ack_pending = false;
+			s_rx_unacked = 0u;
+		}
 	}
 	return rc;
 }
@@ -473,6 +505,12 @@ static void indicate_done(struct bt_conn *conn, struct bt_gatt_indicate_params *
 	if (err != 0u) {
 		LOG_ERR("indication not confirmed (%u)", (unsigned int)err);
 		s_tx_active = false;
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(-EIO);
+			}
+		}
 		return;
 	}
 	/* One indication may be outstanding per connection, so the next fragment
@@ -505,7 +543,14 @@ int matter_ble_send(const uint8_t *msg, size_t len)
 		return -EINVAL;
 	}
 	s_tx_active = true;
-	return pump_tx();
+	rc = pump_tx();
+	if (rc == 0) {
+		/* bt_gatt_indicate() completes asynchronously; publish the loan only
+		 * after the initial submission succeeded, so an immediate rejection is
+		 * returned directly and never also completes through the callback. */
+		s_tx_notifies = true;
+	}
+	return rc;
 }
 
 /**
@@ -514,6 +559,11 @@ int matter_ble_send(const uint8_t *msg, size_t len)
 void matter_ble_set_link_handler(matter_ble_link_cb cb)
 {
 	s_link_cb = cb;
+}
+
+void matter_ble_set_tx_handler(matter_ble_tx_cb cb)
+{
+	s_tx_cb = cb;
 }
 
 void matter_ble_set_msg_handler(matter_ble_msg_cb cb)

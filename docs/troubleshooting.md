@@ -103,12 +103,33 @@ blinks at 2 Hz while the update window is open, and it follows the window rather
 than the button, so it also goes out when the five minutes expire on their own.
 A dark LED means no window, not a failed transfer.
 
-**The image does not fit.** The measured shipping image (`RELEASE=1 SMP=1`) uses
-397,360 of 433,664 B application flash (91.63%) and 120,740 of 131,072 B RAM
-(92.12%), leaving 36,304 B and 10,332 B respectively. The multi-admin change
-added 8,560 B of flash and 4,992 B of RAM against an identically configured
-clean `main` build. LTO remains on by default; `LTO=0` does not fit this flash
-map.
+**The board rebooted while I was holding SW2.** SW2 now has two meanings, and
+the difference is how long you hold it:
+
+| Gesture | Effect |
+|---|---|
+| Short press | Opens the application update window (the 2 Hz D10 blink above) |
+| Hold >= 5 s **while the application runs** | Requests MCUboot serial recovery and warm-reboots into the bootloader |
+
+The boot banner says so: `hold SW2 for 5000 ms to enter MCUboot recovery`. The
+hold duration is `CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_HOLD_MS`. This replaced
+the old behaviour where every boot waited 5 s for mcumgr — that wait is gone
+(`CONFIG_BOOT_SERIAL_WAIT_FOR_DFU=n`), so a normal boot is faster and there is no
+longer a window to catch with an SWD reset. `scripts/cdk-dfu.sh` depends on the
+hold and no longer resets over SWD.
+
+**The image does not fit.** The Matter image is at **96.3% of its flash partition**
+(417,684 B of 433,664 B, about 15.6 KB spare) and 90.3% of RAM (118,312 B, about
+12.8 KB spare). **Flash is the tighter of the two**, so a new code path is now a
+bigger decision than a new static allocation — the reverse of what this document
+used to say. LTO is on by default and worth 41,084 B; `LTO=0` no longer fits this
+flash map at all and the build says so.
+
+**Do not compare against a size baseline taken before the project rename.**
+`make cdk-size-check` will refuse, correctly: a number measured across a
+configuration change is worse than no number, and LTO alone moves this image by
+41,084 B. Refresh the baseline with `make cdk-size-baseline` rather than widening
+a cap.
 
 ## Build and flash (nRF5340 DK)
 

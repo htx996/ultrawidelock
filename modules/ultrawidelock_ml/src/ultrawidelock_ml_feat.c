@@ -16,6 +16,11 @@
  * changing it invalidates the model. Zero C or area is a failed CIA read, not a
  * weak signal (real CPER-set receptions report ipatovPower = 0; through the log
  * they become -120 dB outliers), so those receptions return false.
+ *
+ * ultrawidelock_ml_los_diag() at the bottom shares that arithmetic and adds
+ * fp_peak_db, but writes only to its own struct: it is a capture-run column, not
+ * a model input, and calling it cannot move a classification. See
+ * struct ultrawidelock_ml_diag for why there is no noise floor beside it.
  */
 
 #include <stddef.h>
@@ -40,17 +45,41 @@ rather than letting it fill a wrong-length vector."
 #define CHANNEL_AREA_SHIFT 17
 
 /*
- * 10*log10(numerator / count^2) - A, with the division done as a subtraction of
+ * 10*log10(numerator / denom^2), with the division done as a subtraction of
  * logarithms so no float division appears and the numerator never has to be
- * representable as a float in the first place. count is squared in the log
- * domain for the same reason: count^2 is fine in 32 bits, but keeping it here
- * means one code path and one rounding behaviour for both callers.
+ * representable as a float in the first place. denom is squared in the log
+ * domain for the same reason: denom^2 is fine in 32 bits, but keeping it here
+ * means one code path and one rounding behaviour for every caller.
+ *
+ * A does NOT appear here, and this is the split that makes fp_peak_db honest:
+ * eWINE's constant is an offset that turns a register ratio into a power, so it
+ * belongs to pwr_db()'s two callers and cancels out of a ratio of two
+ * quantities in the same units. Adding it to fp_peak_db would shift a
+ * dimensionless quotient by 121.74 dB and still look like a dB number.
  */
-static float pwr_db(uint64_t numerator, uint32_t count)
+static float ratio_db(uint64_t numerator, uint32_t denom)
 {
 	return K_DB_PER_LOG2_10 * (ultrawidelock_ml_log2_u64(numerator) -
-				   2.0f * ultrawidelock_ml_log2_u64(count)) -
-	       A_CONST_PRF64;
+				   2.0f * ultrawidelock_ml_log2_u64(denom));
+}
+
+/* 10*log10(numerator / count^2) - A. See the file header for why A is not a knob. */
+static float pwr_db(uint64_t numerator, uint32_t count)
+{
+	return ratio_db(numerator, count) - A_CONST_PRF64;
+}
+
+/* F1^2 + F2^2 + F3^2.
+ *
+ * 64-bit because the fields are 22-bit in the DW3000's CIA registers even though
+ * dwt_rxdiag_t declares them uint32_t, so three squares reach 2^44 and overflow
+ * 32 bits. Shared by both entry points so the two cannot compute the first
+ * path's energy differently.
+ */
+static uint64_t fp_energy(const struct ultrawidelock_ml_cia *cia)
+{
+	return (uint64_t)cia->f1 * cia->f1 + (uint64_t)cia->f2 * cia->f2 +
+	       (uint64_t)cia->f3 * cia->f3;
 }
 
 bool ultrawidelock_ml_los_features(const struct ultrawidelock_ml_cia *cia, uint16_t dist_cm,
@@ -59,11 +88,9 @@ bool ultrawidelock_ml_los_features(const struct ultrawidelock_ml_cia *cia, uint1
 	uint64_t num;
 	float fp_pwr, rx_pwr;
 
-	/* 64-bit because the fields are 22-bit in the DW3000's CIA registers even
-	 * though dwt_rxdiag_t declares them uint32_t, so three squares reach 2^44
-	 * and the shifted channel area reaches 2^34. Both overflow 32 bits. */
-	num = (uint64_t)cia->f1 * cia->f1 + (uint64_t)cia->f2 * cia->f2 +
-	      (uint64_t)cia->f3 * cia->f3;
+	/* 64-bit throughout: see fp_energy(), and the shifted channel area reaches
+	 * 2^34, which overflows 32 bits on its own. */
+	num = fp_energy(cia);
 
 	if (num == 0u || cia->accum_count == 0u || cia->channel_area == 0u) {
 		return false;
@@ -80,6 +107,42 @@ bool ultrawidelock_ml_los_features(const struct ultrawidelock_ml_cia *cia, uint1
 	if (pwr_diff_db != NULL) {
 		*pwr_diff_db = rx_pwr - fp_pwr;
 	}
+
+	return true;
+}
+
+bool ultrawidelock_ml_los_diag(const struct ultrawidelock_ml_cia *cia,
+			       struct ultrawidelock_ml_diag *out)
+{
+	uint64_t num;
+	float fp_pwr, rx_pwr;
+
+	if (out == NULL) {
+		return false;
+	}
+
+	num = fp_energy(cia);
+
+	/* The first three rejections are ultrawidelock_ml_los_features()'s, verbatim, so
+	 * a capture and a classification agree on which receptions exist at all --
+	 * a row that appears in the CSV and never in the classifier's input would
+	 * be fitted on a population the model can never see. peak_amp is the
+	 * fourth: the peak is the largest CIR sample by construction, so a
+	 * reception with any first-path energy at all cannot report zero for it,
+	 * and a caller that forgot to mask ipatovPeak lands here rather than in a
+	 * ratio 2^21 too large. */
+	if (num == 0u || cia->accum_count == 0u || cia->channel_area == 0u ||
+	    cia->peak_amp == 0u) {
+		return false;
+	}
+
+	fp_pwr = pwr_db(num, cia->accum_count);
+	rx_pwr = pwr_db((uint64_t)cia->channel_area << CHANNEL_AREA_SHIFT, cia->accum_count);
+
+	out->fp_pwr_db = fp_pwr;
+	out->rx_pwr_db = rx_pwr;
+	out->delta_p_db = rx_pwr - fp_pwr;
+	out->fp_peak_db = ratio_db(num, cia->peak_amp);
 
 	return true;
 }

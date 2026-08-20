@@ -88,6 +88,13 @@ extern "C" {
 uint32_t matter_mrp_backoff_ms(uint32_t base_ms, uint8_t send_count, uint8_t jitter);
 
 /**
+ * Longest time from an initial reliable transmission until MRP gives up,
+ * using the maximum permitted jitter and the Thread sender allowance for each
+ * deadline. The result is bounded below the modular-clock ambiguity point.
+ */
+uint32_t matter_mrp_retry_horizon_ms(uint32_t base_ms);
+
+/**
  * Replay window over a peer's message counters.
  *
  * `bitmap` bit i records that counter `max_counter - (i + 1)` has been seen, so

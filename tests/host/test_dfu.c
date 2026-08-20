@@ -23,6 +23,7 @@
 #include "test.h"
 
 #include "dfu_crc.h"
+#include "ultrawidelock_bytes.h"
 #include "ultrawidelock_dfu.h"
 #include "ultrawidelock_dfu_rx.h"
 #include "ultrawidelock_osal.h"
@@ -115,23 +116,32 @@ static void fill_pattern(uint8_t *dst, size_t len, uint8_t seed)
 }
 
 /** One framed request through the receiver; returns the reply length. */
-static size_t frame(const uint8_t *req, size_t len, uint8_t *rsp)
+static uint32_t s_test_transfer_id = 0x10203040u;
+static uint32_t s_test_offset;
+
+static size_t frame_as(enum ultrawidelock_dfu_owner owner, const uint8_t *req, size_t len,
+		       uint8_t *rsp)
 {
 	size_t rsp_len = 0;
 
-	T_EQ("rx_frame returns 0", ultrawidelock_dfu_rx_frame(req, len, rsp, &rsp_len), 0);
+	T_EQ("rx_frame returns 0",
+	     ultrawidelock_dfu_rx_frame(owner, req, len, rsp, &rsp_len), 0);
 	return rsp_len;
+}
+
+static size_t frame(const uint8_t *req, size_t len, uint8_t *rsp)
+{
+	return frame_as(ULTRAWIDELOCK_DFU_OWNER_TEST, req, len, rsp);
 }
 
 /** BEGIN with an explicit wire total. */
 static size_t send_begin(uint32_t total, uint8_t *rsp)
 {
-	uint8_t req[5] = {ULTRAWIDELOCK_DFU_OP_BEGIN};
+	uint8_t req[9] = {ULTRAWIDELOCK_DFU_OP_BEGIN};
 
-	req[1] = (uint8_t)total;
-	req[2] = (uint8_t)(total >> 8);
-	req[3] = (uint8_t)(total >> 16);
-	req[4] = (uint8_t)(total >> 24);
+	sys_put_le32(s_test_transfer_id, &req[1]);
+	sys_put_le32(total, &req[5]);
+	s_test_offset = 0U;
 	return frame(req, sizeof(req), rsp);
 }
 
@@ -140,9 +150,33 @@ static size_t send_data(const uint8_t *payload, size_t len, uint8_t *rsp)
 {
 	uint8_t req[512];
 
+	size_t rsp_len;
+
 	req[0] = ULTRAWIDELOCK_DFU_OP_DATA;
-	memcpy(req + 1, payload, len);
-	return frame(req, len + 1u, rsp);
+	sys_put_le32(s_test_transfer_id, &req[1]);
+	sys_put_le32(s_test_offset, &req[5]);
+	memcpy(req + 9, payload, len);
+	rsp_len = frame(req, len + 9u, rsp);
+	if (rsp_len == 9u && rsp[0] == ULTRAWIDELOCK_DFU_RSP_OK) {
+		s_test_offset = sys_get_le32(&rsp[5]);
+	}
+	return rsp_len;
+}
+
+static size_t send_commit(uint8_t *rsp)
+{
+	uint8_t req[5] = {ULTRAWIDELOCK_DFU_OP_COMMIT};
+
+	sys_put_le32(s_test_transfer_id, &req[1]);
+	return frame(req, sizeof(req), rsp);
+}
+
+static size_t send_abort(uint8_t *rsp)
+{
+	uint8_t req[5] = {ULTRAWIDELOCK_DFU_OP_ABORT};
+
+	sys_put_le32(s_test_transfer_id, &req[1]);
+	return frame(req, sizeof(req), rsp);
 }
 
 /** True when the reply is OK and reports @p got bytes received. */
@@ -150,11 +184,11 @@ static int is_ok(const uint8_t *rsp, size_t rsp_len, uint32_t got)
 {
 	uint32_t reported;
 
-	if (rsp_len != 5u || rsp[0] != ULTRAWIDELOCK_DFU_RSP_OK) {
+	if (rsp_len != 9u || rsp[0] != ULTRAWIDELOCK_DFU_RSP_OK ||
+	    sys_get_le32(&rsp[1]) != s_test_transfer_id) {
 		return 0;
 	}
-	reported = (uint32_t)rsp[1] | ((uint32_t)rsp[2] << 8) | ((uint32_t)rsp[3] << 16) |
-		   ((uint32_t)rsp[4] << 24);
+	reported = sys_get_le32(&rsp[5]);
 	return reported == got;
 }
 
@@ -169,7 +203,7 @@ static void receiver_ready(void)
 {
 	dfufake_reset();
 	psafake_reset();
-	ultrawidelock_dfu_rx_reset();
+	ultrawidelock_dfu_rx_reset_all();
 	ultrawidelock_dfu_window_open(1000);
 }
 
@@ -251,7 +285,7 @@ static void test_receiver_framing(void)
 	 * unreachable for the rest of the process. */
 	dfufake_reset();
 	psafake_reset();
-	ultrawidelock_dfu_rx_reset();
+	ultrawidelock_dfu_rx_reset_all();
 	ultrawidelock_dfu_window_open(1000);
 	dfufake_staging.fail_open = true;
 	T_OK("begin refused when staging will not open",
@@ -267,6 +301,15 @@ static void test_receiver_framing(void)
 
 		T_OK("unknown opcode is malformed",
 		     is_err(rsp, frame(unknown, sizeof(unknown), rsp), ULTRAWIDELOCK_DFU_ERR_MALFORMED));
+	}
+
+	receiver_ready();
+	{
+		const uint8_t legacy_begin[5] = {0x01, 0x80, 0x00, 0x00, 0x00};
+
+		T_OK("version-1 opcode fails loudly",
+		     is_err(rsp, frame(legacy_begin, sizeof(legacy_begin), rsp),
+			    ULTRAWIDELOCK_DFU_ERR_MALFORMED));
 	}
 
 	receiver_ready();
@@ -302,21 +345,19 @@ static void test_receiver_framing(void)
 	T_OK("preamble accepted", is_ok(rsp, send_data(head, HEAD_LEN, rsp), HEAD_LEN));
 	T_OK("overrun refused", is_err(rsp, send_data(patch, 9, rsp), ULTRAWIDELOCK_DFU_ERR_SIZE));
 
-	/* An erase failure at BEGIN is reported as flash, not as size. */
+	/* An erase failure is reported only after the signed preamble verifies. */
 	receiver_ready();
+	build_head(head, patch, 8, 0, 0);
+	T_OK("begin accepted before erase", is_ok(rsp, send_begin(HEAD_LEN + 8u, rsp), 0));
 	dfufake_staging.erase_fail_in = 0;
-	T_OK("begin refused when the erase fails",
-	     is_err(rsp, send_begin(HEAD_LEN + 8u, rsp), ULTRAWIDELOCK_DFU_ERR_FLASH));
+	T_OK("preamble refused when the erase fails",
+	     is_err(rsp, send_data(head, HEAD_LEN, rsp), ULTRAWIDELOCK_DFU_ERR_FLASH));
 
 	/* COMMIT before the promised bytes have arrived. */
 	receiver_ready();
 	T_OK("begin", is_ok(rsp, send_begin(HEAD_LEN + 8u, rsp), 0));
-	{
-		const uint8_t commit[] = {ULTRAWIDELOCK_DFU_OP_COMMIT};
-
-		T_OK("early commit is out of sequence",
-		     is_err(rsp, frame(commit, sizeof(commit), rsp), ULTRAWIDELOCK_DFU_ERR_SEQUENCE));
-	}
+	T_OK("early commit is out of sequence",
+	     is_err(rsp, send_commit(rsp), ULTRAWIDELOCK_DFU_ERR_SEQUENCE));
 }
 
 /* ---- receiver: authenticity ----------------------------------------------- */
@@ -361,6 +402,64 @@ static void test_receiver_auth(void)
 	T_EQ("verified once", (long)psafake.verify_calls, 1L);
 }
 
+static void test_receiver_ownership_and_retry(void)
+{
+	uint8_t rsp[ULTRAWIDELOCK_DFU_RSP_MAX];
+	uint8_t req[128];
+	uint8_t head[HEAD_LEN];
+	uint8_t patch[8];
+	uint32_t next = 0;
+	size_t rsp_len;
+
+	t_group("dfu receiver ownership and retry");
+	fill_pattern(patch, sizeof(patch), 0x31);
+	build_head(head, patch, sizeof(patch), 0, 0);
+	receiver_ready();
+
+	T_OK("begin claims test transport", is_ok(rsp, send_begin(HEAD_LEN + sizeof(patch), rsp), 0));
+	T_OK("same begin is idempotent", is_ok(rsp, send_begin(HEAD_LEN + sizeof(patch), rsp), 0));
+	T_EQ("idempotent begin performs no erase", (long)dfufake_staging.erase_calls, 0L);
+
+	req[0] = ULTRAWIDELOCK_DFU_OP_BEGIN;
+	sys_put_le32(0x55667788u, &req[1]);
+	sys_put_le32(HEAD_LEN + sizeof(patch), &req[5]);
+	rsp_len = frame_as(ULTRAWIDELOCK_DFU_OWNER_GATT, req, 9u, rsp);
+	T_OK("competing transport is busy",
+	     is_err(rsp, rsp_len, ULTRAWIDELOCK_DFU_ERR_BUSY));
+
+	T_OK("first fragment accepted", is_ok(rsp, send_data(head, 40u, rsp), 40u));
+	T_EQ("SMP cannot replace framed owner",
+	     ultrawidelock_dfu_rx_upload(0, HEAD_LEN + sizeof(patch), head, 16u, &next), -EBUSY);
+	T_OK("busy SMP attempt preserves framed transfer",
+	     is_ok(rsp, send_data(head + 40u, HEAD_LEN - 40u, rsp), HEAD_LEN));
+	T_EQ("erase occurs exactly once after authentication",
+	     (long)dfufake_staging.erase_calls, 1L);
+
+	/* Continue retry checks with a fresh transfer so offsets stay explicit. */
+	ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_TEST);
+	T_OK("retry transfer begins", is_ok(rsp, send_begin(HEAD_LEN + sizeof(patch), rsp), 0));
+	T_OK("retry first fragment accepted", is_ok(rsp, send_data(head, 40u, rsp), 40u));
+	req[0] = ULTRAWIDELOCK_DFU_OP_DATA;
+	sys_put_le32(s_test_transfer_id, &req[1]);
+	sys_put_le32(0U, &req[5]);
+	memcpy(&req[9], head, 40u);
+	T_OK("lost-ack duplicate reports current cursor",
+	     is_ok(rsp, frame(req, 49u, rsp), 40u));
+	sys_put_le32(99U, &req[5]);
+	T_OK("future chunk resynchronises without mutation",
+	     is_ok(rsp, frame(req, 49u, rsp), 40u));
+
+	ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_GATT);
+	T_OK("non-owner disconnect preserves transfer",
+	     is_ok(rsp, send_data(head + 40u, HEAD_LEN - 40u, rsp), HEAD_LEN));
+	T_EQ("erase occurs exactly once after authentication",
+	     (long)dfufake_staging.erase_calls, 2L);
+
+	ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_TEST);
+	T_OK("owner disconnect releases transfer",
+	     is_err(rsp, send_data(patch, sizeof(patch), rsp), ULTRAWIDELOCK_DFU_ERR_SEQUENCE));
+}
+
 /* ---- receiver: the happy path --------------------------------------------- */
 
 static void test_receiver_stage(void)
@@ -380,23 +479,19 @@ static void test_receiver_stage(void)
 
 	receiver_ready();
 	T_OK("begin", is_ok(rsp, send_begin(HEAD_LEN + sizeof(patch), rsp), 0));
-	T_EQ("staging erased whole at begin", (long)dfufake_staging.last_erase_len,
-	     (long)DFUFAKE_STAGING_SIZE);
-	T_EQ("erase started at zero", (long)dfufake_staging.last_erase_off, 0L);
+	T_EQ("begin performs no erase", (long)dfufake_staging.erase_calls, 0L);
 
 	T_OK("preamble", is_ok(rsp, send_data(head, HEAD_LEN, rsp), HEAD_LEN));
+	T_EQ("verified preamble erases staging", (long)dfufake_staging.last_erase_len,
+	     (long)DFUFAKE_STAGING_SIZE);
+	T_EQ("erase started at zero", (long)dfufake_staging.last_erase_off, 0L);
 	T_OK("patch", is_ok(rsp, send_data(patch, sizeof(patch), rsp), HEAD_LEN + sizeof(patch)));
 
 	/* Nothing is in the header page yet: an interrupted transfer must be
 	 * indistinguishable from no transfer. */
 	T_EQ("no magic before commit", (long)dfufake_peek(&dfufake_staging, 0), 0xffL);
 
-	{
-		const uint8_t commit[] = {ULTRAWIDELOCK_DFU_OP_COMMIT};
-
-		T_OK("commit", is_ok(rsp, frame(commit, sizeof(commit), rsp),
-				     HEAD_LEN + sizeof(patch)));
-	}
+	T_OK("commit", is_ok(rsp, send_commit(rsp), HEAD_LEN + sizeof(patch)));
 
 	/* The header landed, and it is the one that was verified. */
 	T_EQ("magic byte 0", (long)dfufake_peek(&dfufake_staging, 0),
@@ -428,13 +523,6 @@ static void stage_with_head(uint8_t *head, const uint8_t *patch, size_t patch_le
 	T_OK("begin", is_ok(rsp, send_begin(HEAD_LEN + patch_len, rsp), 0));
 	T_OK("preamble", is_ok(rsp, send_data(head, HEAD_LEN, rsp), HEAD_LEN));
 	T_OK("patch", is_ok(rsp, send_data(patch, patch_len, rsp), HEAD_LEN + patch_len));
-}
-
-static size_t send_commit(uint8_t *rsp)
-{
-	const uint8_t commit[] = {ULTRAWIDELOCK_DFU_OP_COMMIT};
-
-	return frame(commit, sizeof(commit), rsp);
 }
 
 static void test_receiver_integrity(void)
@@ -506,10 +594,9 @@ static void test_receiver_integrity(void)
 	build_head(head, patch, sizeof(patch), 0, 0);
 	stage_with_head(head, patch, sizeof(patch), rsp);
 	{
-		const uint8_t abort_req[] = {ULTRAWIDELOCK_DFU_OP_ABORT};
 		unsigned before = dfufake_staging.erase_calls;
 
-		T_OK("abort", is_ok(rsp, frame(abort_req, sizeof(abort_req), rsp), 0));
+		T_OK("abort", is_ok(rsp, send_abort(rsp), 0));
 		T_EQ("abort erased staging", (long)(dfufake_staging.erase_calls - before), 1L);
 		T_EQ("abort erased the whole partition", (long)dfufake_staging.last_erase_len,
 		     (long)DFUFAKE_STAGING_SIZE);
@@ -558,7 +645,7 @@ static void test_receiver_upload(void)
 	/* The window is the whole authorization model on this path too. */
 	dfufake_reset();
 	psafake_reset();
-	ultrawidelock_dfu_rx_reset();
+	ultrawidelock_dfu_rx_reset_all();
 	ultrawidelock_dfu_window_close();
 	T_EQ("upload refused while closed",
 	     ultrawidelock_dfu_rx_upload(0, (uint32_t)total, wire, total, &next), -EACCES);
@@ -1168,6 +1255,7 @@ int main(void)
 	test_window();
 	test_receiver_framing();
 	test_receiver_auth();
+	test_receiver_ownership_and_retry();
 	test_receiver_stage();
 	test_receiver_integrity();
 	test_receiver_upload();

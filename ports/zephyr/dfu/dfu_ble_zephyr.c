@@ -16,12 +16,17 @@
  */
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/l2cap.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_GESTURE)
+#include <zephyr/retention/bootmode.h>
+#include <zephyr/sys/reboot.h>
+#endif
 
 #include "ultrawidelock_dfu_rx.h"
 
@@ -73,7 +78,8 @@ static int dfu_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
 	size_t rsp_len = 0;
 	struct net_buf *out;
 
-	(void)ultrawidelock_dfu_rx_frame(buf->data, buf->len, rsp, &rsp_len);
+	(void)ultrawidelock_dfu_rx_frame(ULTRAWIDELOCK_DFU_OWNER_L2CAP, buf->data, buf->len,
+					 rsp, &rsp_len);
 	if (rsp_len == 0U) {
 		return 0;
 	}
@@ -113,7 +119,7 @@ static void dfu_disconnected(struct bt_l2cap_chan *chan)
 	/* A dropped connection mid-transfer leaves staged bytes with no header
 	 * in front of them, which the bootloader ignores. Reset anyway so the
 	 * next attempt starts clean rather than resuming someone else's. */
-	ultrawidelock_dfu_rx_reset();
+	ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_L2CAP);
 	LOG_INF("update channel closed");
 }
 
@@ -170,9 +176,9 @@ static struct bt_l2cap_server s_dfu_server = {
  * only cross-platform option -- wraps neither. So a bench tool on a Mac cannot
  * drive the CoC at all, and an update path nobody can invoke is not one.
  *
- * This costs almost nothing because the receiver was written transport-blind:
- * both paths hand the same bytes to ultrawidelock_dfu_rx_frame() and neither knows the
- * other exists.
+ * This costs almost nothing because both paths use the same parser. They pass
+ * distinct owner IDs so one endpoint cannot reset or overwrite the other's
+ * in-progress transfer.
  *
  * ONE HONEST DIFFERENCE. The CoC refuses the connection outright when no window
  * is open, so none of the receiver's state is reachable. A GATT write always
@@ -220,12 +226,23 @@ static ssize_t dfu_gatt_write(struct bt_conn *conn, const struct bt_gatt_attr *a
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
 
-	(void)ultrawidelock_dfu_rx_frame(buf, len, rsp, &rsp_len);
+	(void)ultrawidelock_dfu_rx_frame(ULTRAWIDELOCK_DFU_OWNER_GATT, buf, len, rsp, &rsp_len);
 	if (rsp_len > 0U) {
 		(void)bt_gatt_notify(conn, &s_dfu_gatt.attrs[1], rsp, rsp_len);
 	}
 	return (ssize_t)len;
 }
+
+static void dfu_gap_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(reason);
+	ultrawidelock_dfu_rx_reset(ULTRAWIDELOCK_DFU_OWNER_GATT);
+}
+
+BT_CONN_CB_DEFINE(dfu_conn_callbacks) = {
+	.disconnected = dfu_gap_disconnected,
+};
 
 /* ---- the trigger ---------------------------------------------------------- */
 /*
@@ -246,6 +263,33 @@ static ssize_t dfu_gatt_write(struct bt_conn *conn, const struct bt_gatt_attr *a
  */
 static const struct gpio_dt_spec s_button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 static struct gpio_callback s_button_cb;
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_GESTURE)
+/**
+ * Enter MCUboot only if SW2 stayed active for the complete hold. The delayed
+ * work never sleeps the system queue. A released short press simply leaves the
+ * application DFU window open.
+ */
+static void recovery_hold_work_fn(struct k_work *work)
+{
+	int rc;
+
+	ARG_UNUSED(work);
+	if (gpio_pin_get_dt(&s_button) != 1) {
+		return;
+	}
+
+	rc = bootmode_set(BOOT_MODE_TYPE_BOOTLOADER);
+	if (rc != 0) {
+		LOG_ERR("cannot request MCUboot recovery (%d)", rc);
+		return;
+	}
+
+	LOG_WRN("SW2 held: entering MCUboot serial recovery");
+	sys_reboot(SYS_REBOOT_WARM);
+}
+static K_WORK_DELAYABLE_DEFINE(s_recovery_hold_work, recovery_hold_work_fn);
+#endif
 
 /**
  * Work item handler for the DFU button press. Opens a DFU window for the duration specified by
@@ -270,6 +314,10 @@ static void button_pressed(const struct device *dev, struct gpio_callback *cb,
 	ARG_UNUSED(pins);
 	/* Off the ISR: opening the window logs and touches a work queue. */
 	(void)k_work_submit(&s_button_work);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_GESTURE)
+	(void)k_work_reschedule(&s_recovery_hold_work,
+				K_MSEC(CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_HOLD_MS));
+#endif
 }
 
 /**
@@ -306,5 +354,9 @@ int dfu_ble_start(void)
 
 	LOG_INF("update channel ready on PSM 0x%04x, press SW2 to open a window",
 		DFU_L2CAP_PSM);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_GESTURE)
+	LOG_INF("hold SW2 for %u ms to enter MCUboot recovery",
+		(unsigned int)CONFIG_ULTRAWIDELOCK_MCUBOOT_RECOVERY_HOLD_MS);
+#endif
 	return 0;
 }

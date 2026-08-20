@@ -43,6 +43,17 @@
 / {
 	chosen {
 		zephyr,shell-uart = &cdc_acm_uart0;
+		/* One-shot application request shared with MCUboot. GPREGRET2
+		 * survives a warm reset and avoids the Nordic-owned GPREGRET1. */
+		zephyr,boot-mode = &mcuboot_recovery_mode;
+	};
+};
+
+&gpregret2 {
+	mcuboot_recovery_mode: retention@0 {
+		compatible = "zephyr,retention";
+		status = "okay";
+		reg = <0x0 0x1>;
 	};
 };
 

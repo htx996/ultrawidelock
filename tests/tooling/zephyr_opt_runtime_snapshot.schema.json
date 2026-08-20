@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ultrawidelock.local/schemas/zephyr-opt-runtime-snapshot-v1.json",
+  "title": "DWM3001CDK sanitized runtime snapshot",
+  "description": "Explicit, secret-free inputs accepted by zephyr_opt_dashboard.py. This envelope never reads raw device logs.",
+  "type": "object",
+  "required": ["schema", "hardware"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": 1},
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["used", "authorized", "fixture", "workload", "sample_count"],
+      "properties": {
+        "used": {"type": "boolean"},
+        "authorized": {"type": "boolean"},
+        "fixture": {"$ref": "#/$defs/label"},
+        "workload": {"$ref": "#/$defs/label"},
+        "sample_count": {"$ref": "#/$defs/count"}
+      }
+    },
+    "stacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thread", "configured_bytes", "peak_bytes", "method", "samples"],
+        "properties": {
+          "thread": {"$ref": "#/$defs/label"},
+          "configured_bytes": {"type": "integer", "minimum": 1},
+          "peak_bytes": {"$ref": "#/$defs/count"},
+          "method": {"$ref": "#/$defs/label"},
+          "samples": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "cpu": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["busy_pct", "method", "threads"],
+      "properties": {
+        "busy_pct": {"$ref": "#/$defs/percent"},
+        "method": {"$ref": "#/$defs/label"},
+        "threads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["thread", "utilization_pct"],
+            "properties": {
+              "thread": {"$ref": "#/$defs/label"},
+              "utilization_pct": {"$ref": "#/$defs/percent"}
+            }
+          }
+        }
+      }
+    },
+    "uwb": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["ticks_per_us", "bucket_width_us", "deadline_us", "phases"],
+      "properties": {
+        "ticks_per_us": {"type": "number", "exclusiveMinimum": 0},
+        "bucket_width_us": {"type": "integer", "minimum": 1},
+        "deadline_us": {"type": "number", "exclusiveMinimum": 0},
+        "phases": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "prepoll": {"$ref": "#/$defs/uwbPhase"},
+            "response": {"$ref": "#/$defs/uwbPhase"},
+            "final": {"$ref": "#/$defs/uwbPhase"}
+          }
+        }
+      }
+    },
+    "spi": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["frequency_hz", "phases"],
+      "properties": {
+        "frequency_hz": {"type": "integer", "minimum": 1},
+        "phases": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "poll_arm": {"$ref": "#/$defs/spiPhase"},
+            "response_arm": {"$ref": "#/$defs/spiPhase"},
+            "final_arm": {"$ref": "#/$defs/spiPhase"}
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "detail"],
+        "properties": {
+          "name": {"$ref": "#/$defs/label"},
+          "status": {"enum": ["pass", "fail", "not-run"]},
+          "detail": {"$ref": "#/$defs/label"}
+        }
+      }
+    },
+    "notes": {"type": "array", "items": {"$ref": "#/$defs/label"}}
+  },
+  "$defs": {
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_.+ /:(),-]+$"
+    },
+    "count": {"type": "integer", "minimum": 0},
+    "percent": {"type": "number", "minimum": 0, "maximum": 100},
+    "uwbPhase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples", "min_ticks", "max_ticks", "histogram"],
+      "properties": {
+        "samples": {"$ref": "#/$defs/count"},
+        "min_ticks": {"$ref": "#/$defs/count"},
+        "max_ticks": {"$ref": "#/$defs/count"},
+        "histogram": {"type": "array", "items": {"$ref": "#/$defs/count"}},
+        "deadline_misses": {"$ref": "#/$defs/count"},
+        "arm_failures": {"$ref": "#/$defs/count"}
+      }
+    },
+    "spiPhase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples"],
+      "properties": {
+        "samples": {"$ref": "#/$defs/count"},
+        "transactions": {"$ref": "#/$defs/count"},
+        "reads": {"$ref": "#/$defs/count"},
+        "writes": {"$ref": "#/$defs/count"},
+        "wire_bytes": {"$ref": "#/$defs/count"},
+        "errors": {"$ref": "#/$defs/count"},
+        "timeouts": {"$ref": "#/$defs/count"},
+        "max_transactions": {"$ref": "#/$defs/count"},
+        "max_wire_bytes": {"$ref": "#/$defs/count"}
+      }
+    }
+  }
+}

@@ -22,15 +22,34 @@ extern "C" {
 #include "sdkconfig.h" /* CONFIG_ULTRAWIDELOCK_UWB_CIRDIAG (Zephyr injects autoconf.h itself) */
 #endif
 
+/** @brief Amplitude half of struct uwb_cirdiag_ipatov::peak (IP_DIAG_0_PEAKAMP, bits [20:0]). */
+#define UWB_CIRDIAG_PEAK_AMP(peak) ((uint32_t)(peak) & 0x1FFFFFu)
+
+/** @brief Index half of struct uwb_cirdiag_ipatov::peak (IP_DIAG_0_PEAKLOC, bits [30:21]).
+ * A whole sample index, unlike fp_index, which is Q10.6. */
+#define UWB_CIRDIAG_PEAK_IDX(peak) (((uint32_t)(peak) >> 21) & 0x3FFu)
+
+/** @brief Fractional bits in struct uwb_cirdiag_ipatov::fp_index, so a consumer can reach the
+ * whole sample index as (fp_index >> UWB_CIRDIAG_FP_FRAC_BITS) without re-deriving the format. */
+#define UWB_CIRDIAG_FP_FRAC_BITS 6u
+
 /**
  * @brief The Ipatov scalars of the latest latched reception, for a classifier.
  *
  * Field for field from dwt_rxdiag_t, and deliberately NOT struct ultrawidelock_ml_cia even
- * though the two are the same five numbers: ultrawidelock_uwb is the lower layer and must
+ * though the two are the same numbers: ultrawidelock_uwb is the lower layer and must
  * not acquire a dependency on ultrawidelock_ml to hand out registers it already holds. The
  * caller copies across by name, which is checkable by eye — see
- * apps/dwm3001cdk-lock/src/main.c, and see ultrawidelock_ml.h on why five same-typed integers are
+ * apps/dwm3001cdk-lock/src/main.c, and see ultrawidelock_ml.h on why same-typed integers are
  * passed as a struct rather than positionally.
+ *
+ * EVERY FIELD HERE IS FREE, and that is why fp_index and peak were added rather
+ * than left to a second read. dwt_readdiagnostics() fills the whole CIA bank in
+ * one burst, so these two were already in g_diag and already on the `ev=uwb.diag`
+ * line as ipfp/ippk — including under SUMMARY_LEAN, which drops the three
+ * SEPARATE reads (SYS_CFG, STS quality, STS status) and nothing out of the burst.
+ * Widening this struct therefore costs no SPI, no chip-side configuration and
+ * nothing on the ranging deadline; see the SUMMARY_LEAN Kconfig help.
  */
 struct uwb_cirdiag_ipatov {
 	uint32_t f1;          /**< dwt_rxdiag_t::ipatovF1 */
@@ -38,6 +57,23 @@ struct uwb_cirdiag_ipatov {
 	uint32_t f3;          /**< dwt_rxdiag_t::ipatovF3 */
 	uint32_t power;       /**< dwt_rxdiag_t::ipatovPower, a 2^17-scaled area */
 	uint16_t accum_count; /**< dwt_rxdiag_t::ipatovAccumCount */
+	/**
+	 * dwt_rxdiag_t::ipatovFpIndex — the first-path sample index, Q10.6 (six
+	 * fractional bits), as the register holds it. Handed over unconverted
+	 * because the integer part and the fractional part answer different
+	 * questions and this layer does not know which the caller wants:
+	 * uwb_cirdiag.c's own window centring takes >> 6, while a training set
+	 * wants the sub-sample position too.
+	 */
+	uint16_t fp_index;
+	/**
+	 * dwt_rxdiag_t::ipatovPeak — the packed peak sample, index in bits
+	 * [30:21] and amplitude in bits [20:0] (IP_DIAG_0_PEAKLOC/PEAKAMP).
+	 * PACKED, NOT SPLIT, for the same reason fp_index is not converted: the
+	 * split is a mask the consumer can apply and this layer would only be
+	 * guessing which half is wanted. UWB_CIRDIAG_PEAK_AMP/IDX below do it.
+	 */
+	uint32_t peak;
 	/**
 	 * Capture counter at the moment of the read. Monotonic, and the caller's
 	 * only way to tell a fresh reception from the same one read twice: the

@@ -20,6 +20,7 @@
 #include <ultrawidelock_freertos_openthread.h>
 
 #include <openthread/error.h>
+#include <openthread/instance.h>
 #include <openthread/ip6.h>
 #include <openthread/thread.h>
 
@@ -40,6 +41,29 @@ static inline void openthread_mutex_lock(void)
 static inline void openthread_mutex_unlock(void)
 {
 	ultrawidelock_freertos_openthread_unlock();
+}
+
+/* Zephyr multiplexes these records over OpenThread's native callback list.
+ * Upstream OpenThread already supports multiple registrations, so the shim can
+ * preserve the same lifetime and duplicate-registration semantics directly. */
+struct openthread_state_changed_callback {
+	otStateChangedCallback otCallback;
+	void *user_data;
+};
+
+static inline int openthread_state_changed_callback_register(
+	struct openthread_state_changed_callback *cb)
+{
+	otInstance *ot = ultrawidelock_freertos_openthread_instance();
+	otError err;
+
+	if (ot == NULL || cb == NULL || cb->otCallback == NULL) {
+		return -1;
+	}
+	ultrawidelock_freertos_openthread_lock();
+	err = otSetStateChangedCallback(ot, cb->otCallback, cb->user_data);
+	ultrawidelock_freertos_openthread_unlock();
+	return err == OT_ERROR_NONE ? 0 : -1;
 }
 
 /*

@@ -192,11 +192,17 @@ int ultrawidelock_prov_kpersistent_set(struct ultrawidelock_trust_store *ts, int
 
 /* ---- target NVS backend (ultrawidelock_prov_nvs.c) ------------------------------ */
 
-/* Load identity+trust from NVS; on absence or a malformed blob fall back to the
- * dev default (leaving NVS untouched). Always yields a usable identity.
- *    0  a stored blob was loaded
- *    1  the dev default was used (nothing stored)
- *   -1  an NVS error occurred; the dev default was used. */
+/* A store with no provisioning record is distinct from a broken store. The
+ * former may be enabled explicitly for a lab image; the latter must never be
+ * mistaken for an empty trust store. */
+#define ULTRAWIDELOCK_PROV_LOAD_EMPTY 1
+
+/* Load identity+trust from NVS. Outputs receive the marked dev identity on
+ * EMPTY/error so diagnostics and recovery APIs remain usable, but callers must
+ * treat every negative result as unavailable and fail closed.
+ *    0                                  stored blob loaded
+ *    ULTRAWIDELOCK_PROV_LOAD_EMPTY      no record exists
+ *   -EBADMSG (or another negative errno) malformed/store failure. */
 int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
 			    struct ultrawidelock_trust_store *ts);
 

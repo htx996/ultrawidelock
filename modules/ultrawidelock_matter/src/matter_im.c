@@ -10,6 +10,108 @@
 
 #include <string.h>
 
+int matter_im_read_pool_init(struct matter_im_read_pool *pool,
+			     struct matter_im_read_state *slots, size_t n_slots)
+{
+	if (pool == NULL || slots == NULL || n_slots == 0u) {
+		return MATTER_E_INVAL;
+	}
+	memset(slots, 0, n_slots * sizeof(*slots));
+	pool->slots = slots;
+	pool->n_slots = n_slots;
+	return MATTER_OK;
+}
+
+struct matter_im_read_state *matter_im_read_pool_find(struct matter_im_read_pool *pool,
+						       uint16_t session_id,
+						       uint16_t exchange_id,
+						       bool over_thread)
+{
+	if (pool == NULL || pool->slots == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		struct matter_im_read_state *slot = &pool->slots[i];
+
+		if (slot->in_use && slot->session_id == session_id &&
+		    slot->exchange_id == exchange_id && slot->over_thread == over_thread) {
+			return slot;
+		}
+	}
+	return NULL;
+}
+
+int matter_im_read_pool_acquire(struct matter_im_read_pool *pool, uint16_t session_id,
+				uint16_t exchange_id, bool over_thread,
+				struct matter_im_read_state **out)
+{
+	struct matter_im_read_state *slot;
+
+	if (pool == NULL || pool->slots == NULL || out == NULL) {
+		return MATTER_E_INVAL;
+	}
+	*out = NULL;
+	slot = matter_im_read_pool_find(pool, session_id, exchange_id, over_thread);
+	if (slot != NULL) {
+		*out = slot;
+		return MATTER_E_DUP;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		if (pool->slots[i].in_use) {
+			continue;
+		}
+		slot = &pool->slots[i];
+		memset(slot, 0, sizeof(*slot));
+		slot->session_id = session_id;
+		slot->exchange_id = exchange_id;
+		slot->over_thread = over_thread;
+		slot->in_use = true;
+		*out = slot;
+		return MATTER_OK;
+	}
+	return MATTER_E_NOSPACE;
+}
+
+int matter_im_read_pool_finish(struct matter_im_read_pool *pool, uint16_t session_id,
+			       uint16_t exchange_id, bool over_thread, uint16_t emitted,
+			       bool more, int status)
+{
+	struct matter_im_read_state *slot =
+		matter_im_read_pool_find(pool, session_id, exchange_id, over_thread);
+
+	if (slot == NULL) {
+		return MATTER_E_STATE;
+	}
+	if (status != MATTER_OK) {
+		slot->in_use = false;
+		return MATTER_OK;
+	}
+	if (emitted == 0u && more) {
+		slot->in_use = false;
+		return MATTER_E_INVAL;
+	}
+	slot->sent = (uint16_t)(slot->sent + emitted);
+	slot->more = more;
+	if (!more) {
+		slot->in_use = false;
+	}
+	return MATTER_OK;
+}
+
+void matter_im_read_pool_drop_session(struct matter_im_read_pool *pool, uint16_t session_id,
+				      bool over_thread)
+{
+	if (pool == NULL || pool->slots == NULL) {
+		return;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		if (pool->slots[i].in_use && pool->slots[i].session_id == session_id &&
+		    pool->slots[i].over_thread == over_thread) {
+			pool->slots[i].in_use = false;
+		}
+	}
+}
+
 /* ReadRequestMessage.h:41-47 */
 #define TAG_READ_ATTRIBUTE_PATHS 0u
 #define TAG_READ_EVENT_PATHS     1u
@@ -1222,6 +1324,47 @@ int matter_im_status_response_encode(uint8_t status, uint8_t *out, size_t cap, s
 	(void)matter_tlv_end_container(&w);
 
 	return matter_tlv_writer_finish(&w, out_len);
+}
+
+int matter_im_status_response_decode(const uint8_t *buf, size_t len, uint8_t *status)
+{
+	struct matter_tlv_reader r;
+	bool found = false;
+	int rc;
+
+	if (buf == NULL || status == NULL || len == 0u) {
+		return MATTER_E_INVAL;
+	}
+	matter_tlv_reader_init(&r, buf, len);
+	rc = matter_tlv_next(&r);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	rc = matter_tlv_enter(&r);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	for (;;) {
+		uint64_t v;
+
+		rc = matter_tlv_next(&r);
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return rc;
+		}
+		if (matter_tlv_tag(&r) == MATTER_TLV_CTX(TAG_STATUS_STATUS)) {
+			rc = matter_tlv_get_u64(&r, &v);
+			if (rc != MATTER_OK || v > UINT8_MAX) {
+				return MATTER_E_INVAL;
+			}
+			*status = (uint8_t)v;
+			found = true;
+		}
+	}
+	rc = matter_tlv_exit(&r);
+	return rc == MATTER_OK && found ? MATTER_OK : (rc != MATTER_OK ? rc : MATTER_E_INVAL);
 }
 
 /* TimedRequestMessage.h: one field, the timeout in milliseconds. */

@@ -91,6 +91,27 @@ uint32_t matter_mrp_backoff_ms(uint32_t base_ms, uint8_t send_count, uint8_t jit
 	return (uint32_t)t;
 }
 
+uint32_t matter_mrp_retry_horizon_ms(uint32_t base_ms)
+{
+	uint64_t horizon = 0u;
+
+	for (uint8_t send_count = 1u; send_count <= MATTER_MRP_MAX_TRANSMISSIONS;
+	     send_count++) {
+		uint64_t delay =
+			(uint64_t)matter_mrp_backoff_ms(base_ms, send_count, UINT8_MAX) +
+			MATTER_MRP_SENDER_BOOST_MS;
+
+		if (delay > MATTER_MRP_MAX_DELAY_MS) {
+			delay = MATTER_MRP_MAX_DELAY_MS;
+		}
+		horizon += delay;
+		if (horizon >= MATTER_MRP_MAX_DELAY_MS) {
+			return MATTER_MRP_MAX_DELAY_MS;
+		}
+	}
+	return (uint32_t)horizon;
+}
+
 /**
  * Initialize an MRP replay detection window to accept the first message.
  */

@@ -107,6 +107,61 @@ config ULTRAWIDELOCK_FACTORY_RESET_BUTTON
 	  losing the key cost a 14-day name collision; f7d3160 ended that. The
 	  reason now is smaller and still real: rejoining beats re-attaching.
 
+config ULTRAWIDELOCK_MCUBOOT_RECOVERY_GESTURE
+	bool "Long SW2 hold enters MCUboot serial recovery"
+	depends on ULTRAWIDELOCK_DFU_RECEIVER && RETENTION_BOOT_MODE
+	default y
+	help
+	  Keep the existing short runtime press as the application DFU-window
+	  gesture. Holding the same button continuously requests MCUboot through
+	  the retained boot-mode byte and warm-resets into serial recovery. This
+	  removes the unconditional serial-probe delay from every ordinary boot.
+
+config ULTRAWIDELOCK_MCUBOOT_RECOVERY_HOLD_MS
+	int "MCUboot recovery hold time, milliseconds"
+	depends on ULTRAWIDELOCK_MCUBOOT_RECOVERY_GESTURE
+	default 5000
+	range 2000 15000
+	help
+	  The button must still be active when this delay expires. Five seconds
+	  keeps an ordinary update-window press distinct from recovery.
+
+config ULTRAWIDELOCK_BENCH
+	bool "Enable DWM3001CDK performance experiments (BENCH ONLY)"
+	default n
+	help
+	  Master acknowledgement for configurations that trade RAM, code size,
+	  radio timing, or ranging evidence to collect comparative measurements.
+	  Release tooling must keep this disabled.
+
+config ULTRAWIDELOCK_LAT_TRACE
+	bool "Trace BLE-to-grant walk-up latency (BENCH ONLY)"
+	depends on ULTRAWIDELOCK_BENCH
+	default y
+	help
+	  Stamp the first occurrence of each credential, ranging and grant phase
+	  and print one consolidated walk-up budget after a grant. The marks are
+	  cheap stores, but the final RTT report is diagnostic output and must be
+	  measured before enabling it in a release image.
+
+config ULTRAWIDELOCK_BENCH_CRED_O2
+	bool "Compile credential hot files with -O2 (BENCH ONLY)"
+	depends on ULTRAWIDELOCK_BENCH
+	default n
+	help
+	  Override the application's size optimization for the reader state machine,
+	  key schedule, hash, and PSA primitive translation units. Compare latency,
+	  stack high water, and flash before retaining any individual file.
+
+config ULTRAWIDELOCK_APPROACH_NEAR_DWELL
+	int "Accepted near samples required before passive grant"
+	default 2
+	range 1 2
+	help
+	  Two is the shipping evidence floor. One is a bench-only latency
+	  experiment and is rejected by the DWM build unless BENCH and strict STS
+	  are both enabled.
+
 config ULTRAWIDELOCK_STATUS_LED
 	bool "Report the board's state on the four LEDs"
 	default y

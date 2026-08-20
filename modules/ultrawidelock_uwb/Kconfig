@@ -103,6 +103,25 @@ config ULTRAWIDELOCK_RANGE_GATE_STRICT
 	  FIRA_STS_QUALITY_MIN from bench captures. Layers 1 (plausibility) and 4
 	  (consensus) are always active in fira_session.c regardless of this option.
 
+config ULTRAWIDELOCK_STS_QUALITY_MIN
+	int "Minimum accepted DW3000 STS quality index"
+	depends on ULTRAWIDELOCK_CRED
+	default 0
+	range -32768 32767
+	help
+	  Require dwt_readstsquality() to succeed and its signed quality index to
+	  meet this floor. Zero preserves the driver's pass/fail verdict. Calibrate
+	  a higher value from LOS/NLOS and interference captures before shipping it.
+
+config ULTRAWIDELOCK_RANGE_TRUST_K
+	int "Consecutive agreeing ranges required for trust"
+	depends on ULTRAWIDELOCK_CRED
+	default 3
+	range 2 3
+	help
+	  Three is the shipping evidence floor. Two removes one roughly 192 ms
+	  ranging block but must only be used as a strict-STS hardware experiment.
+
 config ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT
 	bool "Responder ToF: use the same-round Final-capture timestamp snapshot"
 	depends on ULTRAWIDELOCK_CRED
@@ -199,10 +218,31 @@ config ULTRAWIDELOCK_UWB_CIRDIAG_SUMMARY_LEAN
 	  like a field that measured zero.
 
 	  What survives is exactly what the model training consumes:
-	  ipatovPower, ipatovF1..F3 and ipatovAccumCount give fp_pwr, rx_pwr,
-	  pwr_diff and rxpacc, which is the whole feature set.
+	  ipatovPower, ipatovF1..F3, ipatovAccumCount, ipatovFpIndex and
+	  ipatovPeak give fp_pwr, rx_pwr, pwr_diff, rxpacc, the first-path index
+	  and the first-path-to-peak ratio, which is the whole feature set.
 	  Say y with SUMMARY_EVERY on any board where the diagnostics are
 	  competing with a ranging deadline.
+
+	  THE FIRST-PATH INDEX AND THE PEAK ARE FREE, AND THAT IS WHY THEY ARE NOT
+	  BEHIND A SECOND SYMBOL. What LEAN drops is three SEPARATE transactions --
+	  dwt_read_reg(SYS_CFG), dwt_readstsquality(), dwt_readstsstatus() -- not
+	  part of the diagnostic burst. ipatovFpIndex and ipatovPeak come out of
+	  dwt_readdiagnostics(), which reads the CIA bank in ONE burst whose length
+	  is fixed by the struct the driver fills: it transfers them whether or not
+	  anything reads them, so latching them adds 0 SPI bytes, 0 transactions and
+	  0 chip-side configuration. The measured cost of that burst is unchanged at
+	  62,232 DWT cycles typical / 79,541 worst (972 us / 1.24 ms at 64 cyc/us,
+	  the 2026-08-07 walk-up), against the ~192 ms inter-block gap it runs in
+	  under SUMMARY_FINAL_ONLY.
+	  A new symbol would therefore gate nothing measurable while adding a
+	  configuration in which struct uwb_cirdiag_ipatov is half-populated, and a
+	  zeroed peak is indistinguishable from a peak that measured zero -- the
+	  exact failure the absent-key rule below exists to prevent.
+
+	  The only cost is RAM and line length: 6 more bytes in the accessor struct
+	  and two more keys on the `ev=uwb.diag` line, which already carried ipfp and
+	  ippk under LEAN before anything consumed them.
 
 config ULTRAWIDELOCK_UWB_CIRDIAG_SUMMARY_FINAL_ONLY
 	bool "Latch only on the reception that has no deadline behind it"

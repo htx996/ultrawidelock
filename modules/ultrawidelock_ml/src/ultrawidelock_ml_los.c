@@ -12,6 +12,33 @@
 #include "ultrawidelock_ml_los_scaler.h"
 #include "ultrawidelock_ml_los_tree.h"
 
+/*
+ * THE CARRY-MODE SEAM. A four-class model is two generated headers dropped into
+ * this directory and nothing else: gen_model.py emits ultrawidelock_ml_carry_tree.h
+ * (ultrawidelock_ml_carry_tree_predict) and ultrawidelock_ml_carry_scaler.h
+ * (ultrawidelock_ml_carry_lo[], ultrawidelock_ml_carry_scale[]) under the same naming rule
+ * the LOS pair already follows, and this file compiles against them without an
+ * edit here, in CMakeLists.txt or in Kconfig.
+ *
+ * __has_include RATHER THAN A KCONFIG SYMBOL, on purpose. The question being
+ * asked is "is the generated artifact present", and a Kconfig symbol would be a
+ * second place to state it -- one that can disagree with the filesystem and
+ * produce a build that either misses a model it has or fails to link one it does
+ * not. It also keeps the integration inside the tinyml repo's own output step.
+ *
+ * The fallback below is not a stub that pretends: it classifies binary and says
+ * so through ultrawidelock_ml_los_carry_trained(). See docs/bodycal-falsification.md for
+ * the capture protocol that has to pass before a four-class model is worth
+ * generating at all.
+ */
+#if defined(__has_include)
+#if __has_include("ultrawidelock_ml_carry_tree.h")
+#include "ultrawidelock_ml_carry_scaler.h"
+#include "ultrawidelock_ml_carry_tree.h"
+#define ULTRAWIDELOCK_ML_CARRY_TRAINED 1
+#endif
+#endif
+
 /* The tree was trained on features mapped affinely into int16:
  *
  *     q = (x - lo) * scale - 16000,  rounded to nearest, clamped
@@ -62,6 +89,55 @@ ultrawidelock_ml_los_classify(const float feat[ULTRAWIDELOCK_ML_LOS_N_FEATURES])
 	 * fail: every path through the tree ends in a leaf. */
 	return (enum ultrawidelock_ml_los_class)ultrawidelock_ml_los_tree_predict(
 		q, ULTRAWIDELOCK_ML_LOS_N_FEATURES);
+}
+
+enum ultrawidelock_ml_los_class
+ultrawidelock_ml_carry_to_los(enum ultrawidelock_ml_carry_class c)
+{
+	return (c == ULTRAWIDELOCK_ML_CARRY_CLEAR) ? ULTRAWIDELOCK_ML_LOS_CLEAR
+						   : ULTRAWIDELOCK_ML_LOS_OBSTRUCTED;
+}
+
+bool ultrawidelock_ml_los_carry_trained(void)
+{
+#if defined(ULTRAWIDELOCK_ML_CARRY_TRAINED)
+	return true;
+#else
+	return false;
+#endif
+}
+
+enum ultrawidelock_ml_carry_class
+ultrawidelock_ml_los_carry_classify(const float feat[ULTRAWIDELOCK_ML_LOS_N_FEATURES])
+{
+#if defined(ULTRAWIDELOCK_ML_CARRY_TRAINED)
+	int16_t q[ULTRAWIDELOCK_ML_LOS_N_FEATURES];
+	int32_t cls;
+
+	for (int i = 0; i < ULTRAWIDELOCK_ML_LOS_N_FEATURES; i++) {
+		q[i] = quantise(feat[i], ultrawidelock_ml_carry_lo[i],
+				ultrawidelock_ml_carry_scale[i]);
+	}
+
+	cls = ultrawidelock_ml_carry_tree_predict(q, ULTRAWIDELOCK_ML_LOS_N_FEATURES);
+
+	/* A leaf index outside the enum means the generated model and this
+	 * contract have drifted apart -- a five-class run dropped in, say. Read
+	 * it as the least specific obstructed class rather than as an out-of-range
+	 * table index in the caller's widening array. It cannot happen with a
+	 * model that satisfies the contract, and it is one comparison. */
+	if (cls < 0 || cls >= ULTRAWIDELOCK_ML_CARRY_N_CLASSES) {
+		return ULTRAWIDELOCK_ML_CARRY_HAND;
+	}
+	return (enum ultrawidelock_ml_carry_class)cls;
+#else
+	/* No four-class model. Classify binary and report the least specific
+	 * obstructed class; ultrawidelock_ml_los_carry_trained() is false, so a caller
+	 * that cares can tell this apart from a real HAND. */
+	return (ultrawidelock_ml_los_classify(feat) == ULTRAWIDELOCK_ML_LOS_OBSTRUCTED)
+		       ? ULTRAWIDELOCK_ML_CARRY_HAND
+		       : ULTRAWIDELOCK_ML_CARRY_CLEAR;
+#endif
 }
 
 /* Decawave APS006 section 3.5: a first-path-to-total receive power difference

@@ -7,7 +7,12 @@
  * portable ultrawidelock_prov.c; this file only moves that one blob in and out of the
  * port's key-value store under ULTRAWIDELOCK_KV_KEY_CRED_PROV.
  */
+#include <stdbool.h>
 #include <string.h>
+
+#include <FreeRTOS.h>
+#include <semphr.h>
+#include <task.h>
 
 #include <ultrawidelock_freertos_kv.h>
 #include <ultrawidelock_freertos_platform.h>
@@ -32,11 +37,50 @@ _Static_assert(ULTRAWIDELOCK_PROV_BLOB_MAX <= ULTRAWIDELOCK_KV_VALUE_MAX,
  * twin learned this as an MPU fault through the bottom of the main stack a few
  * seconds into boot.
  *
- * One buffer serves both directions because no caller does both at once: every
- * path into here comes from the reader's provisioning code, which serialises on
- * its own lock, and provisioning writes are rare besides.
+ * One buffer serves both directions. A backend-local mutex covers complete
+ * load/store/erase operations, including shell/reset callers that do not enter
+ * through the reader's higher-level persistence lock.
  */
 static uint8_t s_blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
+static StaticSemaphore_t s_backend_lock_storage;
+static SemaphoreHandle_t s_backend_lock;
+
+static SemaphoreHandle_t prov_backend_lock(void)
+{
+	if (s_backend_lock == NULL) {
+		taskENTER_CRITICAL();
+		if (s_backend_lock == NULL) {
+			s_backend_lock = xSemaphoreCreateMutexStatic(&s_backend_lock_storage);
+		}
+		taskEXIT_CRITICAL();
+	}
+	return s_backend_lock;
+}
+
+/* Before the scheduler starts, boot is single-threaded and taking a FreeRTOS
+ * mutex is invalid. Once it runs, failure to acquire is a storage error rather
+ * than permission to touch the shared blob without serialization. */
+static int prov_backend_lock_take(bool *held)
+{
+	*held = false;
+	if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
+		return ULTRAWIDELOCK_KV_OK;
+	}
+	SemaphoreHandle_t lock = prov_backend_lock();
+
+	if (lock == NULL || xSemaphoreTake(lock, portMAX_DELAY) != pdTRUE) {
+		return ULTRAWIDELOCK_KV_IO;
+	}
+	*held = true;
+	return ULTRAWIDELOCK_KV_OK;
+}
+
+static void prov_backend_lock_give(bool held)
+{
+	if (held) {
+		(void)xSemaphoreGive(s_backend_lock);
+	}
+}
 
 /**
  * Load identity and trust anchors from the key-value store.
@@ -45,7 +89,7 @@ static uint8_t s_blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
  * place; -1 the store failed or held a malformed blob, and the dev default is
  * in place. The identity is always usable on return.
  */
-int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
+static int prov_load_locked(struct ultrawidelock_reader_identity *id,
 			    struct ultrawidelock_trust_store *ts)
 {
 	size_t len = sizeof(s_blob);
@@ -89,11 +133,26 @@ int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
 	return 0;
 }
 
+int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
+			    struct ultrawidelock_trust_store *ts)
+{
+	bool held;
+	int rc = prov_backend_lock_take(&held);
+
+	if (rc != ULTRAWIDELOCK_KV_OK) {
+		ultrawidelock_prov_dev_default(id, ts);
+		return rc;
+	}
+	rc = prov_load_locked(id, ts);
+	prov_backend_lock_give(held);
+	return rc;
+}
+
 /**
  * Persist identity and trust anchors. 0 on success, negative on a store error
  * or on a blob that will not serialise.
  */
-int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
+static int prov_store_locked(const struct ultrawidelock_reader_identity *id,
 			     const struct ultrawidelock_trust_store *ts)
 {
 	size_t len = 0;
@@ -118,6 +177,20 @@ int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
 	return 0;
 }
 
+int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
+			     const struct ultrawidelock_trust_store *ts)
+{
+	bool held;
+	int rc = prov_backend_lock_take(&held);
+
+	if (rc != ULTRAWIDELOCK_KV_OK) {
+		return rc;
+	}
+	rc = prov_store_locked(id, ts);
+	prov_backend_lock_give(held);
+	return rc;
+}
+
 /**
  * Forget the stored identity and every trust anchor.
  *
@@ -125,7 +198,7 @@ int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
  * persistent SRP key share the same four physical pages. Credential reset must
  * not silently turn into Thread or SRP identity reset.
  */
-int ultrawidelock_prov_erase(void)
+static int prov_erase_locked(void)
 {
 	int rc = ultrawidelock_freertos_kv_init();
 
@@ -148,5 +221,18 @@ int ultrawidelock_prov_erase(void)
 	 */
 	ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, PROV_TAG,
 				   "factory reset: erased prov (rc=%d)", rc);
+	return rc;
+}
+
+int ultrawidelock_prov_erase(void)
+{
+	bool held;
+	int rc = prov_backend_lock_take(&held);
+
+	if (rc != ULTRAWIDELOCK_KV_OK) {
+		return rc;
+	}
+	rc = prov_erase_locked();
+	prov_backend_lock_give(held);
 	return rc;
 }

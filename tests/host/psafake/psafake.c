@@ -15,6 +15,10 @@ void psafake_reset(void)
 	psafake.cipher_olen = -1;
 	psafake.aead_enc_olen = -1;
 	psafake.aead_dec_olen = -1;
+	psafake.aead_update_olen = -1;
+	psafake.aead_finish_olen = -1;
+	psafake.aead_tag_olen = -1;
+	psafake.aead_verify_olen = -1;
 	psafake.export_olen = -1;
 	psafake.export_pub_olen = -1;
 	psafake.raw_ka_olen = -1;
@@ -131,6 +135,116 @@ psa_status_t psa_aead_decrypt(psa_key_id_t key, psa_algorithm_t alg, const uint8
 	}
 	*plaintext_length = olen_of(psafake.aead_dec_olen, pt);
 	return psafake.aead_dec_ret;
+}
+
+static psa_status_t aead_setup(psa_aead_operation_t *operation, psa_key_id_t key,
+			       psa_algorithm_t alg, unsigned direction)
+{
+	if (direction == 1u) {
+		psafake.aead_enc_calls++;
+	} else {
+		psafake.aead_dec_calls++;
+	}
+	psafake.last_alg = alg;
+	if (psafake.aead_setup_ret != PSA_SUCCESS) {
+		return psafake.aead_setup_ret;
+	}
+	operation->key = key;
+	operation->alg = alg;
+	operation->direction = direction;
+	return PSA_SUCCESS;
+}
+
+psa_status_t psa_aead_encrypt_setup(psa_aead_operation_t *operation, psa_key_id_t key,
+				    psa_algorithm_t alg)
+{
+	return aead_setup(operation, key, alg, 1u);
+}
+
+psa_status_t psa_aead_decrypt_setup(psa_aead_operation_t *operation, psa_key_id_t key,
+				    psa_algorithm_t alg)
+{
+	return aead_setup(operation, key, alg, 2u);
+}
+
+psa_status_t psa_aead_set_lengths(psa_aead_operation_t *operation, size_t ad_length,
+				  size_t plaintext_length)
+{
+	psafake.aead_lengths_calls++;
+	operation->aad_length = ad_length;
+	operation->plaintext_length = plaintext_length;
+	return psafake.aead_lengths_ret;
+}
+
+psa_status_t psa_aead_set_nonce(psa_aead_operation_t *operation, const uint8_t *nonce,
+				size_t nonce_length)
+{
+	(void)operation;
+	(void)nonce;
+	psafake.aead_nonce_calls++;
+	psafake.last_nonce_len = nonce_length;
+	return psafake.aead_nonce_ret;
+}
+
+psa_status_t psa_aead_update_ad(psa_aead_operation_t *operation, const uint8_t *input,
+				size_t input_length)
+{
+	(void)operation;
+	(void)input;
+	psafake.aead_ad_calls++;
+	psafake.last_aad_len = input_length;
+	return psafake.aead_ad_ret;
+}
+
+psa_status_t psa_aead_update(psa_aead_operation_t *operation, const uint8_t *input,
+			     size_t input_length, uint8_t *output, size_t output_size,
+			     size_t *output_length)
+{
+	(void)operation;
+	psafake.aead_update_calls++;
+	psafake.last_in_len = input_length;
+	if (psafake.block_hold != 0u && output_size < input_length + psafake.block_hold) {
+		*output_length = 0u;
+		return PSA_ERROR_BUFFER_TOO_SMALL;
+	}
+	if (input_length <= output_size) {
+		memcpy(output, input, input_length);
+	}
+	*output_length = olen_of(psafake.aead_update_olen, input_length);
+	return psafake.aead_update_ret;
+}
+
+psa_status_t psa_aead_finish(psa_aead_operation_t *operation, uint8_t *ciphertext,
+			     size_t ciphertext_size, size_t *ciphertext_length, uint8_t *tag,
+			     size_t tag_size, size_t *tag_length)
+{
+	(void)operation;
+	psafake.aead_finish_calls++;
+	fill(ciphertext, ciphertext_size, 0xb0);
+	fill(tag, tag_size, 0xc0);
+	*ciphertext_length = olen_of(psafake.aead_finish_olen, 0u);
+	*tag_length = olen_of(psafake.aead_tag_olen, tag_size);
+	return psafake.aead_enc_ret;
+}
+
+psa_status_t psa_aead_verify(psa_aead_operation_t *operation, uint8_t *plaintext,
+			     size_t plaintext_size, size_t *plaintext_length, const uint8_t *tag,
+			     size_t tag_length)
+{
+	(void)operation;
+	(void)tag;
+	(void)tag_length;
+	psafake.aead_verify_calls++;
+	fill(plaintext, plaintext_size, 0xd0);
+	*plaintext_length = olen_of(psafake.aead_verify_olen, 0u);
+	return psafake.aead_dec_ret;
+}
+
+psa_status_t psa_aead_abort(psa_aead_operation_t *operation)
+{
+	psafake.aead_abort_calls++;
+	memset(operation, 0, sizeof(*operation));
+	return PSA_SUCCESS;
 }
 
 psa_status_t psa_generate_key(const psa_key_attributes_t *attributes, psa_key_id_t *key)

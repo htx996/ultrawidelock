@@ -16,9 +16,7 @@
 
 #include "psa/crypto.h"
 
-/* credential secure-channel messages fit in one L2CAP SDU (<= 512 B); bound the
- * ciphertext||tag scratch used by GCM decrypt accordingly. */
-#define ULTRAWIDELOCK_AEAD_MAX 1024u
+#define ULTRAWIDELOCK_AES_BLOCK 16u
 
 // Initialize the PSA Crypto backend.
 // Must be called before any other ultrawidelock_prim_psa function. Returns 0 on success, -1 on
@@ -37,73 +35,132 @@ int ultrawidelock_random(uint8_t *out, size_t len)
 
 // Encrypt and authenticate plaintext with AES-256-GCM via PSA Crypto.
 // Writes pt_len bytes of ciphertext to ct and tag_len bytes of authentication tag to tag. Returns 0
-// on success, -1 if tag_len exceeds ULTRAWIDELOCK_GCM_TAG, pt_len exceeds ULTRAWIDELOCK_AEAD_MAX,
-// key import fails, or encryption fails.
+// on success, -1 if tag_len exceeds ULTRAWIDELOCK_GCM_TAG, key import fails, or encryption fails.
 int ultrawidelock_aes256_gcm_encrypt(const uint8_t key[32], const uint8_t *nonce, size_t nonce_len,
 			     const uint8_t *aad, size_t aad_len, const uint8_t *pt, size_t pt_len,
 			     uint8_t *ct, uint8_t *tag, size_t tag_len)
 {
 	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_aead_operation_t op = PSA_AEAD_OPERATION_INIT;
 	psa_key_id_t k = 0;
-	uint8_t buf[ULTRAWIDELOCK_AEAD_MAX + ULTRAWIDELOCK_GCM_TAG];
-	size_t olen = 0;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len);
+	/* PSA permits a block backend to delay up to one block, so every update
+	 * must be offered input_length + one block of output room -- not
+	 * input_length, which a strictly conforming backend refuses with
+	 * BUFFER_TOO_SMALL. ct holds exactly pt_len bytes, so the direct prefix
+	 * stops one block short of the end and that block is the headroom; the
+	 * remainder (under two blocks) goes through scratch. Still no
+	 * message-sized buffer: the former one-shot path kept 1040 bytes. */
+	uint8_t pending[3u * ULTRAWIDELOCK_AES_BLOCK];
+	uint8_t final[2u * ULTRAWIDELOCK_AES_BLOCK];
+	size_t bulk_len = (pt_len >= ULTRAWIDELOCK_AES_BLOCK)
+				  ? ((pt_len - ULTRAWIDELOCK_AES_BLOCK) &
+				     ~(size_t)(ULTRAWIDELOCK_AES_BLOCK - 1u))
+				  : 0u;
+	size_t tail_len = pt_len - bulk_len;
+	size_t bulk_out = 0;
+	size_t pending_len = 0;
+	size_t finish_len = 0;
+	size_t actual_tag_len = 0;
 	int rc = -1;
 
-	if (tag_len > ULTRAWIDELOCK_GCM_TAG || pt_len > ULTRAWIDELOCK_AEAD_MAX) {
+	if (tag_len > ULTRAWIDELOCK_GCM_TAG) {
 		return -1;
 	}
 	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
-	psa_set_key_algorithm(&attr, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len));
+	psa_set_key_algorithm(&attr, alg);
 	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
 	psa_set_key_bits(&attr, 256);
 	if (psa_import_key(&attr, key, 32, &k) != PSA_SUCCESS) {
 		return -1;
 	}
-	if (psa_aead_encrypt(k, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len), nonce,
-			     nonce_len, aad, aad_len, pt, pt_len, buf, sizeof(buf),
-			     &olen) == PSA_SUCCESS &&
-	    olen == pt_len + tag_len) {
-		memcpy(ct, buf, pt_len);
-		memcpy(tag, buf + pt_len, tag_len);
+	if (psa_aead_encrypt_setup(&op, k, alg) == PSA_SUCCESS &&
+	    psa_aead_set_lengths(&op, aad_len, pt_len) == PSA_SUCCESS &&
+	    psa_aead_set_nonce(&op, nonce, nonce_len) == PSA_SUCCESS &&
+	    psa_aead_update_ad(&op, aad, aad_len) == PSA_SUCCESS &&
+	    (bulk_len == 0u ||
+	     psa_aead_update(&op, pt, bulk_len, ct, pt_len, &bulk_out) == PSA_SUCCESS) &&
+	    bulk_out <= pt_len &&
+	    (tail_len == 0u ||
+	     psa_aead_update(&op, pt + bulk_len, tail_len, pending, sizeof(pending),
+			     &pending_len) == PSA_SUCCESS) &&
+	    pending_len <= sizeof(pending) &&
+	    psa_aead_finish(&op, final, sizeof(final), &finish_len, tag, tag_len,
+			    &actual_tag_len) == PSA_SUCCESS &&
+	    finish_len <= sizeof(final) && bulk_out <= pt_len &&
+	    pending_len <= pt_len - bulk_out && finish_len == pt_len - bulk_out - pending_len &&
+	    actual_tag_len == tag_len) {
+		memcpy(ct + bulk_out, pending, pending_len);
+		memcpy(ct + bulk_out + pending_len, final, finish_len);
 		rc = 0;
 	}
+	(void)psa_aead_abort(&op);
 	psa_destroy_key(k);
 	return rc;
 }
 
 // Decrypt and authenticate an AES-256-GCM ciphertext via PSA Crypto.
 // Writes ct_len bytes of plaintext to pt. Returns 0 on success (tag verified), -1 if tag_len
-// exceeds ULTRAWIDELOCK_GCM_TAG, ct_len exceeds ULTRAWIDELOCK_AEAD_MAX, key import fails, or
-// authentication/decryption fails.
+// exceeds ULTRAWIDELOCK_GCM_TAG, key import fails, or authentication/decryption fails.
 int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce, size_t nonce_len,
 			     const uint8_t *aad, size_t aad_len, const uint8_t *ct, size_t ct_len,
 			     const uint8_t *tag, size_t tag_len, uint8_t *pt)
 {
 	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_aead_operation_t op = PSA_AEAD_OPERATION_INIT;
 	psa_key_id_t k = 0;
-	uint8_t buf[ULTRAWIDELOCK_AEAD_MAX + ULTRAWIDELOCK_GCM_TAG];
-	size_t olen = 0;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len);
+	/* See encrypt: the direct prefix stops one block short of the end so every
+	 * update has input_length + one block of output room, which is what PSA's
+	 * portable contract requires -- and still no message-sized scratch. */
+	uint8_t pending[3u * ULTRAWIDELOCK_AES_BLOCK];
+	uint8_t final[2u * ULTRAWIDELOCK_AES_BLOCK];
+	size_t bulk_len = (ct_len >= ULTRAWIDELOCK_AES_BLOCK)
+				  ? ((ct_len - ULTRAWIDELOCK_AES_BLOCK) &
+				     ~(size_t)(ULTRAWIDELOCK_AES_BLOCK - 1u))
+				  : 0u;
+	size_t tail_len = ct_len - bulk_len;
+	size_t bulk_out = 0;
+	size_t pending_len = 0;
+	size_t verify_len = 0;
 	int rc = -1;
 
-	if (tag_len > ULTRAWIDELOCK_GCM_TAG || ct_len > ULTRAWIDELOCK_AEAD_MAX) {
+	if (tag_len > ULTRAWIDELOCK_GCM_TAG) {
 		return -1;
 	}
-	memcpy(buf, ct, ct_len);
-	memcpy(buf + ct_len, tag, tag_len);
 	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
-	psa_set_key_algorithm(&attr, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len));
+	psa_set_key_algorithm(&attr, alg);
 	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
 	psa_set_key_bits(&attr, 256);
 	if (psa_import_key(&attr, key, 32, &k) != PSA_SUCCESS) {
 		return -1;
 	}
-	if (psa_aead_decrypt(k, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len), nonce,
-			     nonce_len, aad, aad_len, buf, ct_len + tag_len, pt, ct_len,
-			     &olen) == PSA_SUCCESS &&
-	    olen == ct_len) {
+	if (psa_aead_decrypt_setup(&op, k, alg) == PSA_SUCCESS &&
+	    psa_aead_set_lengths(&op, aad_len, ct_len) == PSA_SUCCESS &&
+	    psa_aead_set_nonce(&op, nonce, nonce_len) == PSA_SUCCESS &&
+	    psa_aead_update_ad(&op, aad, aad_len) == PSA_SUCCESS &&
+	    (bulk_len == 0u ||
+	     psa_aead_update(&op, ct, bulk_len, pt, ct_len, &bulk_out) == PSA_SUCCESS) &&
+	    bulk_out <= ct_len &&
+	    (tail_len == 0u ||
+	     psa_aead_update(&op, ct + bulk_len, tail_len, pending, sizeof(pending),
+			     &pending_len) == PSA_SUCCESS) &&
+	    pending_len <= sizeof(pending) &&
+	    psa_aead_verify(&op, final, sizeof(final), &verify_len, tag, tag_len) == PSA_SUCCESS &&
+	    verify_len <= sizeof(final) && bulk_out <= ct_len &&
+	    pending_len <= ct_len - bulk_out && verify_len == ct_len - bulk_out - pending_len) {
+		memcpy(pt + bulk_out, pending, pending_len);
+		memcpy(pt + bulk_out + pending_len, final, verify_len);
 		rc = 0;
 	}
+	(void)psa_aead_abort(&op);
 	psa_destroy_key(k);
+	/* Multipart PSA decrypt may emit tentative plaintext before tag
+	 * verification. Never return attacker-controlled unauthenticated bytes to
+	 * a caller on any failure path. */
+	if (rc != 0 && ct_len > 0u) {
+		memset(pt, 0, ct_len);
+	}
 	return rc;
 }
 

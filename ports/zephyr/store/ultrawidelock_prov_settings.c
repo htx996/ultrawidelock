@@ -7,7 +7,9 @@
  * of the settings store on `storage_partition`.
  */
 #include <string.h>
+#include <errno.h>
 
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 
@@ -19,6 +21,8 @@ LOG_MODULE_REGISTER(ultrawidelock_prov, CONFIG_LOG_DEFAULT_LEVEL);
 
 static uint8_t s_blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
 static size_t s_blob_len;
+static bool s_blob_seen;
+K_MUTEX_DEFINE(s_backend_lock);
 
 /**
  * Settings callback to deserialize and store a provisioning blob read from persistent storage.
@@ -27,7 +31,13 @@ static size_t s_blob_len;
  */
 static int prov_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
-	ARG_UNUSED(name);
+	/* settings_load_subtree() visits every key below the namespace. Only the
+	 * exact record is provisioning; accepting a sibling as this blob turns an
+	 * unrelated setting into a misleading "malformed provisioning" state. */
+	if (strcmp(name, "prov") != 0) {
+		return 0;
+	}
+	s_blob_seen = true;
 
 	if (len > sizeof(s_blob)) {
 		return -EINVAL;
@@ -38,6 +48,9 @@ static int prov_set(const char *name, size_t len, settings_read_cb read_cb, void
 	if (got < 0) {
 		return (int)got;
 	}
+	if ((size_t)got != len) {
+		return -EIO;
+	}
 	s_blob_len = (size_t)got;
 	return 0;
 }
@@ -46,11 +59,11 @@ SETTINGS_STATIC_HANDLER_DEFINE(ultrawidelock_prov, "ultrawidelock", NULL, prov_s
 
 /**
  * Load credential reader identity and trust anchors from persistent settings. Returns 0 on success
- * with stored data loaded, 1 if never provisioned (DEV identity used), -1 on any error (settings
- * init, load, or malformed blob; DEV identity used). On any failure the loaded identity defaults to
- * DEV and the error is logged as a warning.
+ * with stored data loaded, ULTRAWIDELOCK_PROV_LOAD_EMPTY if never provisioned, and a specific
+ * negative errno on settings/read/malformed data. Outputs use the marked DEV identity for
+ * diagnostics and recovery, but the reader keeps transport offline for every negative result.
  */
-int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
+static int prov_load_locked(struct ultrawidelock_reader_identity *id,
 			    struct ultrawidelock_trust_store *ts)
 {
 	int rc = settings_subsys_init();
@@ -58,7 +71,7 @@ int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
 	if (rc != 0) {
 		LOG_WRN("settings init rc=%d; using DEV identity", rc);
 		ultrawidelock_prov_dev_default(id, ts);
-		return -1;
+		return rc < 0 ? rc : -EIO;
 	}
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_PROV_CLEAR_ON_BOOT)
@@ -69,25 +82,35 @@ int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
 #endif
 
 	s_blob_len = 0;
+	s_blob_seen = false;
 	rc = settings_load_subtree("ultrawidelock");
 	if (rc != 0) {
 		LOG_WRN("settings load rc=%d; using DEV identity", rc);
 		ultrawidelock_prov_dev_default(id, ts);
-		return -1;
+		return rc < 0 ? rc : -EIO;
 	}
 
-	if (s_blob_len == 0) {
+	if (!s_blob_seen) {
 		/* Never provisioned. */
 		ultrawidelock_prov_dev_default(id, ts);
-		return 1;
+		return ULTRAWIDELOCK_PROV_LOAD_EMPTY;
 	}
 
 	if (ultrawidelock_prov_deserialize(s_blob, s_blob_len, id, ts) != 0) {
 		LOG_WRN("stored blob malformed; using DEV identity");
 		ultrawidelock_prov_dev_default(id, ts);
-		return -1;
+		return -EBADMSG;
 	}
 	return 0;
+}
+
+int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
+			    struct ultrawidelock_trust_store *ts)
+{
+	(void)k_mutex_lock(&s_backend_lock, K_FOREVER);
+	int rc = prov_load_locked(id, ts);
+	(void)k_mutex_unlock(&s_backend_lock);
+	return rc;
 }
 
 /**
@@ -96,7 +119,7 @@ int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
  * because a silent factory reset that left the old anchors in place would pair but then reject the
  * phone.
  */
-int ultrawidelock_prov_erase(void)
+static int prov_erase_locked(void)
 {
 	int rc = settings_subsys_init();
 
@@ -113,12 +136,20 @@ int ultrawidelock_prov_erase(void)
 	return rc;
 }
 
+int ultrawidelock_prov_erase(void)
+{
+	(void)k_mutex_lock(&s_backend_lock, K_FOREVER);
+	int rc = prov_erase_locked();
+	(void)k_mutex_unlock(&s_backend_lock);
+	return rc;
+}
+
 /**
  * Serialize and store credential reader identity and trust anchors to persistent settings. Uses a
- * static blob buffer to avoid stack overflow; safe because provisioning writes are rare and
- * serialized on s_prov_lock or the Matter work queue. Returns the result of settings_save_one.
+ * static blob buffer to avoid stack overflow. A backend-local mutex serializes load/store/erase,
+ * including direct shell/reset callers outside the portable reader. Returns settings_save_one.
  */
-int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
+static int prov_store_locked(const struct ultrawidelock_reader_identity *id,
 			     const struct ultrawidelock_trust_store *ts)
 {
 	/*
@@ -130,9 +161,8 @@ int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
 	 * reported "transaction timed out" with nothing in the log after the
 	 * advert line.
 	 *
-	 * Safe as static because every caller reaches here from the reader's
-	 * provisioning paths, which are serialised on s_prov_lock or run on the
-	 * Matter work queue, and provisioning writes are rare besides.
+	 * Safe as static because s_backend_lock covers this complete serialization
+	 * and settings write, as well as every load and erase using the same record.
 	 */
 	static uint8_t blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
 	size_t len = 0;
@@ -141,4 +171,13 @@ int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
 		return -EINVAL;
 	}
 	return settings_save_one(ULTRAWIDELOCK_PROV_KEY, blob, len);
+}
+
+int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
+			     const struct ultrawidelock_trust_store *ts)
+{
+	(void)k_mutex_lock(&s_backend_lock, K_FOREVER);
+	int rc = prov_store_locked(id, ts);
+	(void)k_mutex_unlock(&s_backend_lock);
+	return rc;
 }

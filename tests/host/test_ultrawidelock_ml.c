@@ -18,6 +18,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h> /* NULL, for the rejected-destination check */
 #include <stdint.h>
 
 #include "test.h"
@@ -250,6 +251,113 @@ void test_ultrawidelock_ml(void)
 		     const enum ultrawidelock_ml_los_class c = ultrawidelock_ml_los_classify(feat);
 		     c == ULTRAWIDELOCK_ML_LOS_CLEAR || c == ULTRAWIDELOCK_ML_LOS_OBSTRUCTED;
 	     }));
+
+	t_group("ultrawidelock_ml: training columns (ultrawidelock_ml_los_diag)");
+
+	/* The same synthetic reception as above, with a peak amplitude added, so
+	 * fp_pwr and rx_pwr can be checked against the SAME two anchors the feature
+	 * extractor is held to -- if the two entry points ever compute the first
+	 * path's energy differently, these numbers move apart.
+	 *
+	 *   num        = 251,000,000 (from f1/f2/f3 above)
+	 *   fp_pwr     = -71.3681 dB
+	 *   rx_pwr     = -93.0503 dB
+	 *   delta_p    = rx_pwr - fp_pwr           = -21.6822 dB
+	 *   fp_peak    = 10*log10(251e6 / 20000^2) =  -2.0239 dB
+	 *
+	 * Computed in float64 off-target, like the anchors above; the tolerance is
+	 * the same 0.01 dB. */
+	struct ultrawidelock_ml_cia dcia = cia;
+	struct ultrawidelock_ml_diag dg;
+
+	dcia.peak_amp = 20000;
+
+	T_OK("a good reception yields training columns", ultrawidelock_ml_los_diag(&dcia, &dg));
+	T_OK("fp_pwr matches the float64 formula", fabsf(dg.fp_pwr_db - (-71.3681f)) < 0.01f);
+	T_OK("rx_pwr matches the float64 formula", fabsf(dg.rx_pwr_db - (-93.0503f)) < 0.01f);
+	T_OK("delta_p is rx_pwr minus fp_pwr", fabsf(dg.delta_p_db - (-21.6822f)) < 0.01f);
+	T_OK("fp_peak is the first-path energy over the squared peak amplitude",
+	     fabsf(dg.fp_peak_db - (-2.0239f)) < 0.01f);
+
+	/* The two entry points must agree EXACTLY, not merely to a tolerance: they
+	 * are the same arithmetic on the same registers, so any difference is a
+	 * second implementation that has appeared, and a capture fitted through one
+	 * would not describe the classifier fed by the other. */
+	float dfeat[ULTRAWIDELOCK_ML_LOS_N_FEATURES];
+	float dpwr = 0.0f;
+
+	T_OK("features accept the same reception",
+	     ultrawidelock_ml_los_features(&dcia, 100, dfeat, &dpwr));
+	T_OK("diag rx_pwr is bit-identical to the feature vector's",
+	     dg.rx_pwr_db == dfeat[ULTRAWIDELOCK_ML_LOS_F_RX_PWR]);
+	T_OK("diag delta_p is bit-identical to the extractor's pwr_diff",
+	     dg.delta_p_db == dpwr);
+
+	/* peak_amp is NOT a model input, and this is what says so: the shipped
+	 * classifier must answer the same with it set, unset, or wrong. Without
+	 * this, adding the field to struct ultrawidelock_ml_cia could quietly move an
+	 * unlock decision. */
+	struct ultrawidelock_ml_cia nopeak = dcia;
+	float nofeat[ULTRAWIDELOCK_ML_LOS_N_FEATURES];
+
+	nopeak.peak_amp = 0;
+	T_OK("features ignore peak_amp entirely", ({
+		     ultrawidelock_ml_los_features(&nopeak, 100, nofeat, NULL);
+		     nofeat[ULTRAWIDELOCK_ML_LOS_F_FP_RESID] ==
+			     dfeat[ULTRAWIDELOCK_ML_LOS_F_FP_RESID] &&
+		     nofeat[ULTRAWIDELOCK_ML_LOS_F_RX_PWR] ==
+			     dfeat[ULTRAWIDELOCK_ML_LOS_F_RX_PWR];
+	     }));
+
+	/* SIGN IS THE DISCRIMINANT, so pin both sides of zero rather than one
+	 * comfortable value. With the peak equal to the largest of F1..F3 the first
+	 * path IS the strongest arrival and the ratio sits just above 0 dB, bounded
+	 * by 10*log10(3) = 4.7712 for three equal taps; a peak far above the first
+	 * path drives it negative, which is what an obstruction looks like. */
+	struct ultrawidelock_ml_cia atpeak = dcia;
+
+	atpeak.peak_amp = 11000; /* == f1, the largest first-path tap */
+	T_OK("first path at the peak gives a small positive ratio", ({
+		     ultrawidelock_ml_los_diag(&atpeak, &dg);
+		     fabsf(dg.fp_peak_db - 3.1689f) < 0.01f;
+	     }));
+	T_OK("and never exceeds the three-equal-taps ceiling", dg.fp_peak_db < 4.7712f);
+
+	struct ultrawidelock_ml_cia farpeak = dcia;
+
+	farpeak.peak_amp = 200000; /* an arrival 20x the first path's amplitude */
+	T_OK("a first path far below the peak gives a negative ratio", ({
+		     ultrawidelock_ml_los_diag(&farpeak, &dg);
+		     dg.fp_peak_db < 0.0f;
+	     }));
+
+	/* Rejections. The first three are the extractor's, so a row can never
+	 * appear in a capture that the classifier would have dropped; the fourth is
+	 * this function's own, and it is what catches a caller passing ipatovPeak
+	 * unmasked -- which would otherwise produce a ratio 2^21 too large that
+	 * still reads as a plausible dB number. */
+	struct ultrawidelock_ml_diag untouched = dg;
+	struct ultrawidelock_ml_cia dbad = dcia;
+
+	dbad.peak_amp = 0;
+	T_OK("zero peak amplitude is rejected", !ultrawidelock_ml_los_diag(&dbad, &dg));
+	T_OK("and nothing is written when it is",
+	     dg.fp_peak_db == untouched.fp_peak_db && dg.rx_pwr_db == untouched.rx_pwr_db);
+
+	dbad = dcia;
+	dbad.accum_count = 0;
+	T_OK("zero accumulator count is rejected here too", !ultrawidelock_ml_los_diag(&dbad, &dg));
+
+	dbad = dcia;
+	dbad.channel_area = 0;
+	T_OK("zero channel area is rejected here too", !ultrawidelock_ml_los_diag(&dbad, &dg));
+
+	dbad = dcia;
+	dbad.f1 = dbad.f2 = dbad.f3 = 0;
+	T_OK("all-zero F1..F3 is rejected here too", !ultrawidelock_ml_los_diag(&dbad, &dg));
+
+	T_OK("a NULL destination is rejected rather than dereferenced",
+	     !ultrawidelock_ml_los_diag(&dcia, NULL));
 
 	t_group("ultrawidelock_ml: confidence");
 

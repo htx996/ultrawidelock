@@ -27,6 +27,7 @@
  * something asks for those bytes.
  */
 
+#include <errno.h>
 #include <string.h>
 
 #include <host/ble_gap.h>
@@ -134,6 +135,9 @@ static uint8_t s_rx_unacked;
 
 static matter_ble_msg_cb s_msg_cb;
 static matter_ble_link_cb s_link_cb;
+static matter_ble_tx_cb s_tx_cb;
+/** True only after matter_ble_send() accepted a caller-owned message. */
+static bool s_tx_notifies;
 
 /* ---- deferral ------------------------------------------------------------- */
 
@@ -183,6 +187,14 @@ static int pump_tx(void);
  */
 static void reset_link(void)
 {
+	/* The BTP fragmenter borrows the application's packet. Return that loan
+	 * before clearing its cursor, exactly once. */
+	if (s_tx_notifies) {
+		s_tx_notifies = false;
+		if (s_tx_cb != NULL) {
+			s_tx_cb(-ECONNRESET);
+		}
+	}
 	matter_btp_rx_init(&s_rx, s_rx_buf, sizeof(s_rx_buf), 0u);
 	memset(&s_tx, 0, sizeof(s_tx));
 	s_tx_active = false;
@@ -304,23 +316,44 @@ static int pump_tx(void)
 				&n);
 	if (rc == MATTER_END) {
 		s_tx_active = false;
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(0);
+			}
+		}
 		return 0;
 	}
-	/* The ack rode out on that fragment, so it is no longer owed. */
-	if (s_ack_pending) {
-		s_ack_pending = false;
-		s_rx_unacked = 0u;
-	}
-	s_tx_seq = s_tx.next_seq;
 	if (rc != MATTER_OK) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_ERROR, MATTER_BLE_TAG,
 				 "BTP fragmentation failed (%d)", rc);
 		s_tx_active = false;
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(-EIO);
+			}
+		}
 		return -1;
 	}
 	rc = indicate_raw(s_frag, n);
 	if (rc != 0) {
 		s_tx_active = false;
+		if (s_tx_notifies) {
+			s_tx_notifies = false;
+			if (s_tx_cb != NULL) {
+				s_tx_cb(-EIO);
+			}
+		}
+	} else {
+		/* Commit transport sequence and piggybacked acknowledgement only
+		 * after the stack accepted this fragment. An immediate rejection put
+		 * neither on air, so advancing either would desynchronise the retry. */
+		s_tx_seq = s_tx.next_seq;
+		if (s_ack_pending) {
+			s_ack_pending = false;
+			s_rx_unacked = 0u;
+		}
 	}
 	return rc;
 }
@@ -347,12 +380,23 @@ int matter_ble_send(const uint8_t *msg, size_t len)
 		return -1;
 	}
 	s_tx_active = true;
-	return pump_tx();
+	rc = pump_tx();
+	if (rc == 0) {
+		/* The confirmation arrives asynchronously. Immediate rejection is
+		 * returned directly and must not also complete through the callback. */
+		s_tx_notifies = true;
+	}
+	return rc;
 }
 
 void matter_ble_set_link_handler(matter_ble_link_cb cb)
 {
 	s_link_cb = cb;
+}
+
+void matter_ble_set_tx_handler(matter_ble_tx_cb cb)
+{
+	s_tx_cb = cb;
 }
 
 void matter_ble_set_msg_handler(matter_ble_msg_cb cb)
@@ -624,6 +668,12 @@ static int matter_gap_event(struct ble_gap_event *event, void *arg)
 					 "indication not confirmed (%d)",
 					 event->notify_tx.status);
 			s_tx_active = false;
+			if (s_tx_notifies) {
+				s_tx_notifies = false;
+				if (s_tx_cb != NULL) {
+					s_tx_cb(-EIO);
+				}
+			}
 			break;
 		}
 		/* One indication may be outstanding per connection, so the next

@@ -4,6 +4,25 @@ menuconfig DW3000
 	help
 		Qorvo/Decawave DW3000 driver
 
+config DW3000_SPI_METRICS
+	bool "Count DW3000 SPI transactions and bytes"
+	depends on DW3000
+	default n
+	help
+		Expose zero-log counters for J-Link and phase-delta profiling. Keep this
+		off in shipping builds because even small accounting belongs in the A/B
+		measurement, not the ranging critical path.
+
+config DW3000_STS_BULK_WRITE_EXPERIMENT
+	bool "Fuse each four-word DW3000 STS key/IV load"
+	depends on DW3000_CHIP_DW3000 && ULTRAWIDELOCK_CRED
+	default n
+	help
+		Replace the Qorvo helper's four adjacent 32-bit SPI writes with one
+		16-byte burst for each STS key or IV load. This is an isolated hardware
+		experiment: keep it out of shipping until register readback, STS lock,
+		range yield, and IRQ-to-arm latency match or beat the baseline.
+
 	choice
 		prompt "Select  Chip"
 		depends on DW3000

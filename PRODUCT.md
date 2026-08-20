@@ -163,7 +163,7 @@ Real, re-derivable numbers already on the surfaces:
   120,740 of 131,072 B (92.12%), measured with NCS v3.3.0 and
   `RELEASE=1 SMP=1`.
 - The obstruction classifier costs 776 B flash, 0 B RAM, 28 B stack.
-- 7,524 host tests, no hardware required.
+- 7,979 host tests, no hardware required.
 - The unlock bound is 1.00 m, from `ULTRAWIDELOCK_UNLOCK_RANGE_CM`.
 
 The landing hero computes its scope from the firmware's own constants in

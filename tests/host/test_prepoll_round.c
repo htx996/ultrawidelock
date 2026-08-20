@@ -29,11 +29,28 @@ extern int32_t ultrawidelock_uwb_arm_rx(int32_t mode);
 static uint8_t g_ursk[ULTRAWIDELOCK_URSK_LEN];
 static uint8_t g_mupsk1[CCC_MUPSK1_LEN];
 static uint8_t g_ks[CCC_KEYSOURCE_LEN];
+
+/* The Aux Security Header carries KeySource in transmission order, which is the
+ * byte-reverse of the KeySourceHigh||KeySourceLow layout ccc_uad_addresses()
+ * returns (ccc_kdf.c). Copying g_ks in verbatim made both sides of the receiver's
+ * context check come from the same helper, so the fixture agreed with itself
+ * while a real DWM3001CDK rejected every Pre-POLL and never ranged: observed
+ * uad ks=0f3795ed against on-air ks=ed95370f, dest matching. Build the frame the
+ * way the radio actually delivers it. */
+static void mhr_set_keysource(uint8_t dst[CCC_KEYSOURCE_LEN])
+{
+	size_t i;
+
+	for (i = 0u; i < CCC_KEYSOURCE_LEN; i++) {
+		dst[i] = g_ks[CCC_KEYSOURCE_LEN - 1u - i];
+	}
+}
 static uint8_t g_dest[CCC_DEST_SHORT_ADDR_LEN];
 static uint8_t g_src_long[CCC_SRC_LONG_ADDR_LEN];
 
 /** Build an encrypted Pre-POLL frame; returns its on-air length. */
-static uint16_t mk_prepoll(uint8_t *out, uint32_t fc, uint32_t poll_idx)
+static uint16_t mk_prepoll_for(uint8_t *out, uint32_t fc, uint32_t poll_idx,
+			       uint16_t ranging_block)
 {
 	struct ccc_mhr_fields f;
 	struct ccc_pre_poll pp;
@@ -42,13 +59,13 @@ static uint16_t mk_prepoll(uint8_t *out, uint32_t fc, uint32_t poll_idx)
 	memset(&pp, 0, sizeof(pp));
 	pp.uwb_session_id = RND_SID;
 	pp.poll_sts_index = poll_idx;
-	pp.ranging_block = RND_BLOCK;
+	pp.ranging_block = ranging_block;
 	ccc_pre_poll_pack(&pp, plain);
 
 	memset(&f, 0, sizeof(f));
-	f.dest_short_addr = (uint16_t)(g_dest[0] | ((uint16_t)g_dest[1] << 8));
+	f.dest_short_addr = (uint16_t)(((uint16_t)g_dest[0] << 8) | g_dest[1]);
 	f.frame_counter = fc;
-	memcpy(f.key_source, g_ks, CCC_KEYSOURCE_LEN);
+	mhr_set_keysource(f.key_source);
 	f.msg_id = CCC_MSG_ID_PRE_POLL;
 	f.payload_len = CCC_PRE_POLL_LEN;
 	T_EQ("mk_pp.mhr", ccc_build_mhr(&f, out), 0);
@@ -60,9 +77,15 @@ static uint16_t mk_prepoll(uint8_t *out, uint32_t fc, uint32_t poll_idx)
 	return CCC_MHR_LEN + CCC_PRE_POLL_LEN + CCC_SP0_MIC_LEN;
 }
 
+static uint16_t mk_prepoll(uint8_t *out, uint32_t fc, uint32_t poll_idx)
+{
+	return mk_prepoll_for(out, fc, poll_idx, RND_BLOCK);
+}
+
 /** Build an encrypted Final_Data (1 responder) keyed on the armed POLL index. */
-static uint16_t mk_final_data(uint8_t *out, uint32_t fc, uint32_t armed_idx,
-			      uint32_t t_round1, uint32_t t_reply2)
+static uint16_t mk_final_data_for(uint8_t *out, uint32_t fc, uint32_t armed_idx,
+				  uint32_t t_round1, uint32_t t_reply2, uint32_t session_id,
+				  uint16_t ranging_block, uint32_t final_sts_index)
 {
 	struct ccc_mhr_fields f;
 	struct ccc_final_data fd;
@@ -71,18 +94,18 @@ static uint16_t mk_final_data(uint8_t *out, uint32_t fc, uint32_t armed_idx,
 	size_t pl = 0;
 
 	memset(&fd, 0, sizeof(fd));
-	fd.uwb_session_id = RND_SID;
-	fd.ranging_block = RND_BLOCK;
-	fd.final_sts_index = armed_idx + 2u;
+	fd.uwb_session_id = session_id;
+	fd.ranging_block = ranging_block;
+	fd.final_sts_index = final_sts_index;
 	fd.ranging_ts_final_tx = t_round1 + t_reply2; /* t5-t1 */
 	fd.num_responders = 1u;
 	fd.responders[0].timestamp = t_round1;        /* t4-t1 */
 	T_EQ("mk_fd.pack", ccc_final_data_pack(&fd, plain, sizeof(plain), &pl), 0);
 
 	memset(&f, 0, sizeof(f));
-	f.dest_short_addr = (uint16_t)(g_dest[0] | ((uint16_t)g_dest[1] << 8));
+	f.dest_short_addr = (uint16_t)(((uint16_t)g_dest[0] << 8) | g_dest[1]);
 	f.frame_counter = fc;
-	memcpy(f.key_source, g_ks, CCC_KEYSOURCE_LEN);
+	mhr_set_keysource(f.key_source);
 	f.msg_id = CCC_MSG_ID_FINAL_DATA;
 	f.payload_len = (uint8_t)pl;
 	T_EQ("mk_fd.mhr", ccc_build_mhr(&f, out), 0);
@@ -92,6 +115,13 @@ static uint16_t mk_final_data(uint8_t *out, uint32_t fc, uint32_t armed_idx,
 			     &out[CCC_MHR_LEN], &out[CCC_MHR_LEN + pl]),
 	     0);
 	return (uint16_t)(CCC_MHR_LEN + pl + CCC_SP0_MIC_LEN);
+}
+
+static uint16_t mk_final_data(uint8_t *out, uint32_t fc, uint32_t armed_idx,
+			      uint32_t t_round1, uint32_t t_reply2)
+{
+	return mk_final_data_for(out, fc, armed_idx, t_round1, t_reply2, RND_SID, RND_BLOCK,
+				 armed_idx + 2u);
 }
 
 /** Load a frame + Ipatov timestamp into the stub, then feed it to try_prepoll. */
@@ -197,22 +227,47 @@ void test_prepoll_round(void)
 	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, DWT_INT_CIADONE_BIT_MASK);
 	T_EQ("final.sp0", ultrawidelock_host_rx.last_rxenable_mode, DWT_START_RX_IMMEDIATE);
 
+	/* Advance the live Pre-POLL context before Final_Data is dispatched. The
+	 * accepted Final must remain bound to its capture-time block rather than
+	 * mutable globals from later blocks. The second call flushes the first;
+	 * the pending second one is flushed when Final_Data enters. */
+	len = mk_prepoll_for(frame, fc++, RND_IDX1 + 3u * RND_STRIDE, RND_BLOCK + 1u);
+	stash_frame(frame, len, 0x3110000ull);
+	ccc_shim_rx_try_prepoll(len);
+	len = mk_prepoll_for(frame, fc++, RND_IDX1 + 4u * RND_STRIDE, RND_BLOCK + 2u);
+	stash_frame(frame, len, 0x3120000ull);
+	ccc_shim_rx_try_prepoll(len);
+
 	t_group("Final_Data decrypt latches the DS-TWR range");
 	/* reply1=100k, round2=200k (injected above); round1=101k, reply2=199k
 	 * => tof = (101k*200k - 100k*199k) / 600k = 500 ticks = 234 cm. */
+	len = mk_final_data_for(frame, fc++, widx, 101000u, 199000u, RND_SID ^ 1u,
+				RND_BLOCK, widx + 2u);
+	stash_frame(frame, len, 0x3180000ull);
+	ccc_shim_rx_try_prepoll(len);
+	T_OK("wrong-session Final_Data rejected", !fira_session_last_range(&cm, NULL, NULL, NULL, NULL));
+
 	len = mk_final_data(frame, fc++, widx, 101000u, 199000u);
 	stash_frame(frame, len, 0x3200000ull);
 	ccc_shim_rx_try_prepoll(len); /* Final_Data decodes inline */
 	T_OK("range.latched", fira_session_last_range(&cm, NULL, NULL, NULL, NULL));
 	T_EQ("range.cm", cm, 234);
+	{
+		uint32_t generation = fira_session_range_generation();
+
+		stash_frame(frame, len, 0x3210000ull);
+		ccc_shim_rx_try_prepoll(len);
+		T_EQ("replayed Final_Data cannot relatch", (long)fira_session_range_generation(),
+		     (long)generation);
+	}
 
 	t_group("round 2: POLL result with STS error reverts and reflushes");
 	stash_frame(frame, len, 0x4000000ull);
-	len = mk_prepoll(frame, fc++, RND_IDX1 + 3u * RND_STRIDE);
+	len = mk_prepoll(frame, fc++, RND_IDX1 + 5u * RND_STRIDE);
 	stash_frame(frame, len, 0x4000000ull);
 	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, ST_GOOD);    /* re-arm off decode #3's warm */
 	T_OK("arm2.awaiting", ccc_shim_rx_awaiting_poll());
-	len = mk_prepoll(frame, fc++, RND_IDX1 + 4u * RND_STRIDE);
+	len = mk_prepoll(frame, fc++, RND_IDX1 + 6u * RND_STRIDE);
 	stash_frame(frame, len, 0x4100000ull);
 	ccc_shim_rx_try_prepoll(len);                 /* pending decode #4 */
 	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, DWT_INT_CIADONE_BIT_MASK | ST_CPER);
@@ -253,9 +308,9 @@ void test_prepoll_round(void)
 		struct ccc_mhr_fields f;
 
 		memset(&f, 0, sizeof(f));
-		f.dest_short_addr = (uint16_t)(g_dest[0] | ((uint16_t)g_dest[1] << 8));
+		f.dest_short_addr = (uint16_t)(((uint16_t)g_dest[0] << 8) | g_dest[1]);
 		f.frame_counter = fc++;
-		memcpy(f.key_source, g_ks, CCC_KEYSOURCE_LEN);
+		mhr_set_keysource(f.key_source);
 		f.msg_id = 0x07u;
 		f.payload_len = CCC_PRE_POLL_LEN;
 		memset(frame, 0, sizeof(frame));
@@ -289,9 +344,9 @@ void test_prepoll_round(void)
 		struct ccc_mhr_fields f;
 
 		memset(&f, 0, sizeof(f));
-		f.dest_short_addr = (uint16_t)(g_dest[0] | ((uint16_t)g_dest[1] << 8));
+		f.dest_short_addr = (uint16_t)(((uint16_t)g_dest[0] << 8) | g_dest[1]);
 		f.frame_counter = fc++;
-		memcpy(f.key_source, g_ks, CCC_KEYSOURCE_LEN);
+		mhr_set_keysource(f.key_source);
 		f.msg_id = CCC_MSG_ID_FINAL_DATA;
 		f.payload_len = 100u;
 		memset(frame, 0, sizeof(frame));
@@ -312,9 +367,9 @@ void test_prepoll_round(void)
 
 		memset(plain, 0, sizeof(plain));
 		memset(&f, 0, sizeof(f));
-		f.dest_short_addr = (uint16_t)(g_dest[0] | ((uint16_t)g_dest[1] << 8));
+		f.dest_short_addr = (uint16_t)(((uint16_t)g_dest[0] << 8) | g_dest[1]);
 		f.frame_counter = fc;
-		memcpy(f.key_source, g_ks, CCC_KEYSOURCE_LEN);
+		mhr_set_keysource(f.key_source);
 		f.msg_id = CCC_MSG_ID_FINAL_DATA;
 		f.payload_len = sizeof(plain);
 		T_EQ("mk_fd0.mhr", ccc_build_mhr(&f, frame), 0);

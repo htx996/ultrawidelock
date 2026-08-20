@@ -23,17 +23,23 @@
 extern "C" {
 #endif
 
-/** Request opcodes, first byte of every frame from the host. */
+/**
+ * Version-2 request opcodes, first byte of every frame from the host.
+ *
+ * These deliberately do not overlap the original transfer-blind 0x01..0x04
+ * protocol. Old hosts and firmware therefore fail loudly instead of
+ * misinterpreting a transfer id as a length.
+ */
 enum ultrawidelock_dfu_op {
-	ULTRAWIDELOCK_DFU_OP_BEGIN = 0x01,  /**< u32 total wire length follows */
-	ULTRAWIDELOCK_DFU_OP_DATA = 0x02,   /**< payload bytes follow */
-	ULTRAWIDELOCK_DFU_OP_COMMIT = 0x03, /**< no body; reboots on success */
-	ULTRAWIDELOCK_DFU_OP_ABORT = 0x04,  /**< no body; erases what was staged */
+	ULTRAWIDELOCK_DFU_OP_BEGIN = 0x11,  /**< u32 transfer id + u32 total follow */
+	ULTRAWIDELOCK_DFU_OP_DATA = 0x12,   /**< u32 transfer id + u32 offset + bytes */
+	ULTRAWIDELOCK_DFU_OP_COMMIT = 0x13, /**< u32 transfer id; reboots on success */
+	ULTRAWIDELOCK_DFU_OP_ABORT = 0x14,  /**< u32 transfer id; erases staged data */
 };
 
 /** Reply opcodes, first byte of every frame back to the host. */
 enum ultrawidelock_dfu_rsp {
-	ULTRAWIDELOCK_DFU_RSP_OK = 0x81,  /**< u32 bytes received so far follows */
+	ULTRAWIDELOCK_DFU_RSP_OK = 0x81,  /**< u32 transfer id + u32 next offset follow */
 	ULTRAWIDELOCK_DFU_RSP_ERR = 0x82, /**< one @ref ultrawidelock_dfu_err byte follows */
 };
 
@@ -51,10 +57,23 @@ enum ultrawidelock_dfu_err {
 	ULTRAWIDELOCK_DFU_ERR_INTEGRITY = 5, /**< length or CRC disagreed at commit */
 	ULTRAWIDELOCK_DFU_ERR_FLASH = 6,     /**< a write or erase failed */
 	ULTRAWIDELOCK_DFU_ERR_MALFORMED = 7, /**< frame too short for its opcode */
+	ULTRAWIDELOCK_DFU_ERR_BUSY = 8,      /**< another transport owns the receiver */
 };
 
 /** Largest reply this ever produces. */
-#define ULTRAWIDELOCK_DFU_RSP_MAX 5u
+#define ULTRAWIDELOCK_DFU_RSP_MAX 9u
+
+/**
+ * A receiver owner. Each transport gets a distinct value so a disconnect or
+ * malformed request on one endpoint cannot discard another endpoint's upload.
+ */
+enum ultrawidelock_dfu_owner {
+	ULTRAWIDELOCK_DFU_OWNER_NONE = 0,
+	ULTRAWIDELOCK_DFU_OWNER_L2CAP = 1,
+	ULTRAWIDELOCK_DFU_OWNER_GATT = 2,
+	ULTRAWIDELOCK_DFU_OWNER_SMP = 3,
+	ULTRAWIDELOCK_DFU_OWNER_TEST = 4,
+};
 
 /**
  * Open the update window for @p duration_ms.
@@ -107,10 +126,17 @@ void ultrawidelock_dfu_set_window_cb(ultrawidelock_dfu_window_cb cb);
  * @retval 0 always; failures are reported to the peer through @p rsp, because
  *           a transport has nothing useful to do with an error code.
  */
-int ultrawidelock_dfu_rx_frame(const uint8_t *frame, size_t len, uint8_t *rsp, size_t *rsp_len);
+int ultrawidelock_dfu_rx_frame(enum ultrawidelock_dfu_owner owner, const uint8_t *frame, size_t len,
+			      uint8_t *rsp, size_t *rsp_len);
 
-/** Drop any transfer in progress. Transports call this on disconnect. */
-void ultrawidelock_dfu_rx_reset(void);
+/** Drop the transfer only when @p owner currently owns it. */
+void ultrawidelock_dfu_rx_reset(enum ultrawidelock_dfu_owner owner);
+
+/** Drop all receiver state. Window close and tests use this global boundary. */
+void ultrawidelock_dfu_rx_reset_all(void);
+
+/** Erase staging only if it is unowned or owned by @p owner. */
+int ultrawidelock_dfu_rx_erase(enum ultrawidelock_dfu_owner owner);
 
 #ifdef CONFIG_ULTRAWIDELOCK_DFU_SMP_IMG
 /**
@@ -130,6 +156,7 @@ void ultrawidelock_dfu_rx_reset(void);
  *
  * @retval 0        chunk accepted, or a resync was requested
  * @retval -EACCES  no update window is open
+ * @retval -EBUSY   another transport owns the receiver
  * @retval -EINVAL  refused; the transfer is discarded and must restart at 0
  */
 int ultrawidelock_dfu_rx_upload(uint32_t off, uint32_t total, const uint8_t *data, size_t len,

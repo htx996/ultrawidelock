@@ -21,6 +21,12 @@
  */
 #include <errno.h>
 
+/* The production header chain provides this Kconfig helper. This test defines
+ * every flag consumed by the real settings sources to 0 or 1. */
+#ifndef IS_ENABLED
+#define IS_ENABLED(config_flag) (config_flag)
+#endif
+
 /** Zephyr hands a loader this to pull the stored value out. */
 typedef ssize_t (*settings_read_cb)(void *cb_arg, void *data, size_t len);
 

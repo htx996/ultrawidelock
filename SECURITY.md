@@ -51,6 +51,32 @@ upstream, though we are glad to know about them:
   are expected to set access-port protection; `scripts/check-approtect.sh`
   exists for exactly that check.
 
+## Known accepted risks
+
+Weighed and kept deliberately. They are recorded here so that finding one is not
+mistaken for finding a vulnerability. Reasoning lives beside the code.
+
+- **The DFU receiver takes an ownership claim before anything is authenticated.**
+  Whoever sends BEGIN first holds the receiver until they disconnect or the
+  update window shuts, because the header signature is only checked once the
+  full header has arrived. It is denial of an update, never a forged one: the
+  ECDSA-P256 check and the magic/ABI/CRC checks both still stand. It is bounded
+  by an owner-gated window and by `CONFIG_BT_MAX_CONN=1`, which means a peer that
+  can send BEGIN has already taken the board's only connection slot. The obvious
+  fix is barred: requiring an encrypted link would mean pairing, and the reader
+  deliberately never asks a phone to pair. **Revisit if `CONFIG_BT_MAX_CONN` ever
+  exceeds 1.** See `begin_at()` in `modules/ultrawidelock_dfu/src/dfu_receiver.c`.
+- **`CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST` is a build-time authentication bypass.**
+  It lets the built-in development identity authenticate against an empty trust
+  store, for bring-up on a board with nothing provisioned. It is **LAB ONLY** and
+  must be off in anything you ship. One arm of `tests/shared/run.sh` enables it
+  on purpose.
+- **The STS-quality floor has never been sized from real captures.** The
+  DWM3001CDK now enforces the range-integrity gate rather than shadowing it, but
+  the threshold it enforces is still the permissive default, so layer 2 rejects
+  only what the DW3000 driver itself calls bad. See
+  [`docs/range-integrity.md`](docs/range-integrity.md).
+
 ## Hardening expectations
 
 Anyone shipping this firmware is responsible for provisioning their own MCUboot

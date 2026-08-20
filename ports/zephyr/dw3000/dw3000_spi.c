@@ -9,6 +9,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/device.h>
+#include <string.h>
 
 #include "dw3000_spi.h"
 
@@ -32,9 +33,56 @@ static struct spi_cs_control* cs_ctrl = SPI_CS_CONTROL_PTR_DT(DW_INST, 0);
 #endif
 static struct spi_config spi_cfgs[2] = {0}; // configs for slow and fast
 static struct spi_config* spi_cfg;
+static struct k_poll_signal s_xfer_signal;
+static bool s_xfer_signal_initialized;
+static bool s_xfer_pending;
+
+#if CONFIG_DW3000_SPI_METRICS
+static volatile struct dw3000_spi_metrics g_dw3000_spi_metrics;
+#endif
+
+void dw3000_spi_metrics_get(struct dw3000_spi_metrics *out)
+{
+	if (out == NULL) {
+		return;
+	}
+#if CONFIG_DW3000_SPI_METRICS
+	out->transactions = g_dw3000_spi_metrics.transactions;
+	out->reads = g_dw3000_spi_metrics.reads;
+	out->writes = g_dw3000_spi_metrics.writes;
+	out->wire_bytes = g_dw3000_spi_metrics.wire_bytes;
+	out->errors = g_dw3000_spi_metrics.errors;
+	out->timeouts = g_dw3000_spi_metrics.timeouts;
+#else
+	memset(out, 0, sizeof(*out));
+#endif
+}
+
+void dw3000_spi_metrics_reset(void)
+{
+#if CONFIG_DW3000_SPI_METRICS
+	memset((void *)&g_dw3000_spi_metrics, 0, sizeof(g_dw3000_spi_metrics));
+#endif
+}
 
 int dw3000_spi_init(void)
 {
+	if (!s_xfer_signal_initialized) {
+		k_poll_signal_init(&s_xfer_signal);
+		s_xfer_signal_initialized = true;
+	}
+	if (s_xfer_pending) {
+		unsigned int signaled = 0;
+		int result = 0;
+
+		k_poll_signal_check(&s_xfer_signal, &signaled, &result);
+		if (!signaled) {
+			LOG_ERR("DW3000 SPI still owns a timed-out transfer");
+			return -EBUSY;
+		}
+		s_xfer_pending = false;
+		k_poll_signal_reset(&s_xfer_signal);
+	}
 	/* set common SPI config */
 	for (int i = 0; i < ARRAY_SIZE(spi_cfgs); i++) {
 		spi_cfgs[i].cs = cs_ctrl;
@@ -89,6 +137,18 @@ void dw3000_spi_speed_fast(void)
 
 void dw3000_spi_fini(void)
 {
+	if (s_xfer_pending) {
+		unsigned int signaled = 0;
+		int result = 0;
+
+		k_poll_signal_check(&s_xfer_signal, &signaled, &result);
+		if (!signaled) {
+			LOG_ERR("refusing SPI fini while timed-out transfer is still owned");
+			return;
+		}
+		s_xfer_pending = false;
+		k_poll_signal_reset(&s_xfer_signal);
+	}
 	// TODO: I can't find a SPI uninit function in Zephyr
 #if CONFIG_PM_DEVICE
 	int rc = pm_device_action_run(spi, PM_DEVICE_ACTION_SUSPEND);
@@ -111,30 +171,67 @@ void dw3000_spi_fini(void)
 static int dw3000_spi_xfer_poll(const struct spi_buf_set* tx,
 								const struct spi_buf_set* rx)
 {
-	/* File-scope, not on the stack: spi_transceive_signal() hands this pointer
-	 * to the driver, which raises it from the SPI END IRQ whenever the transfer
-	 * finally completes.  A stack-local signal that we abandon on the timeout
-	 * path below would be written through after its frame is gone.  Safe as a
-	 * single instance because DW3000 transfers are already serialised -- they
-	 * share the spi_cfg pointer too. */
-	static struct k_poll_signal sig;
 	unsigned int signaled = 0;
 	int result = 0;
-	uint32_t spins = 0;
+	uint32_t started_ms;
 	int ret;
 
-	k_poll_signal_init(&sig);
-	ret = spi_transceive_signal(spi, spi_cfg, tx, rx, &sig);
+	if (s_xfer_pending) {
+		/* A timeout does not cancel an nrfx SPIM transfer. Reap its late IRQ
+		 * before reusing the one signal, or refuse without racing the driver. */
+		k_poll_signal_check(&s_xfer_signal, &signaled, &result);
+		if (!signaled) {
+			return -EBUSY;
+		}
+		s_xfer_pending = false;
+		k_poll_signal_reset(&s_xfer_signal);
+		signaled = 0;
+	}
+
+	ret = spi_transceive_signal(spi, spi_cfg, tx, rx, &s_xfer_signal);
 	if (ret) {
+#if CONFIG_DW3000_SPI_METRICS
+		g_dw3000_spi_metrics.errors++;
+#endif
 		return ret;
 	}
+	s_xfer_pending = true;
+#if CONFIG_DW3000_SPI_METRICS
+	{
+		size_t tx_bytes = 0u;
+		size_t rx_bytes = 0u;
+
+		for (size_t i = 0; tx != NULL && i < tx->count; i++) {
+			tx_bytes += tx->buffers[i].len;
+		}
+		for (size_t i = 0; rx != NULL && i < rx->count; i++) {
+			rx_bytes += rx->buffers[i].len;
+		}
+		g_dw3000_spi_metrics.transactions++;
+		g_dw3000_spi_metrics.reads += (rx != NULL) ? 1u : 0u;
+		g_dw3000_spi_metrics.writes += (rx == NULL) ? 1u : 0u;
+		g_dw3000_spi_metrics.wire_bytes += (uint32_t)((rx_bytes > tx_bytes) ? rx_bytes : tx_bytes);
+	}
+#endif
+	started_ms = k_uptime_get_32();
 	do {
-		k_poll_signal_check(&sig, &signaled, &result);
-	} while (!signaled && ++spins < 4000000u); /* ~ms-scale safety net */
+		k_poll_signal_check(&s_xfer_signal, &signaled, &result);
+	} while (!signaled && (uint32_t)(k_uptime_get_32() - started_ms) < 10u);
 	if (!signaled) {
 		LOG_ERR("SPI xfer-poll timeout");
+#if CONFIG_DW3000_SPI_METRICS
+		g_dw3000_spi_metrics.timeouts++;
+		g_dw3000_spi_metrics.errors++;
+#endif
 		return -ETIMEDOUT;
 	}
+	s_xfer_pending = false;
+	k_poll_signal_reset(&s_xfer_signal);
+#if CONFIG_DW3000_SPI_METRICS
+	if (result != 0) {
+		g_dw3000_spi_metrics.errors++;
+	}
+#endif
 	return result;
 }
 

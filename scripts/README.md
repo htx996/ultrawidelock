@@ -25,3 +25,19 @@ missing colour, UTF-8, width or `$TERM`.
 Prefer a documented Make target when one exists. Run `make help` to see the
 supported interface and required variables. Use `make hitl` for `hitl-run.sh`;
 pass its optional flags through `HITL_ARGS`.
+
+The native BLE delta-update protocol is version 2. Every request carries a
+nonzero transfer ID, DATA also carries its absolute offset, and each successful
+reply echoes the transfer ID plus the receiver's next offset. Retrying an
+unchanged frame after a lost notification is therefore safe. Version-2 request
+opcodes are `0x11` through `0x14`; they intentionally do not overlap the old
+transfer-blind protocol, so a mixed host and firmware pair fails loudly.
+
+Error 8, "another update transport owns the receiver", means the SMP half or an
+earlier BLE session still holds the claim. It clears on disconnect or when the
+update window closes; it is not a signature or a corruption failure.
+
+`cdk-dfu.sh` no longer resets the board over SWD, because the bootloader no
+longer waits for mcumgr on every boot. Its operator step is now a **>= 5 s SW2
+hold while the application is running**, which requests MCUboot serial recovery
+and warm-reboots into it. Its fourth argument, the chip name, is vestigial.

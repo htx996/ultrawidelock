@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ultrawidelock.local/schemas/zephyr-opt-dashboard-v1.json",
+  "title": "DWM3001CDK optimization dashboard model",
+  "description": "Stable top-level contract for latest.json. Detailed collector subrecords are additive within schema version 1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run", "tools", "memory", "latency", "runtime",
+    "evidence", "artifacts", "warnings", "next_action", "verdict"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run": {
+      "type": "object",
+      "required": ["id", "generated_at", "commit", "dirty", "profile", "experiment", "board", "image"],
+      "properties": {
+        "id": {"type": "string"},
+        "generated_at": {"type": "string"},
+        "commit": {"type": ["string", "null"]},
+        "dirty": {"type": ["boolean", "null"]},
+        "profile": {"type": "string"},
+        "experiment": {"type": "string"},
+        "board": {"const": "decawave_dwm3001cdk"},
+        "image": {"const": "dwm3001cdk-lock"}
+      }
+    },
+    "tools": {"type": "object"},
+    "memory": {
+      "type": "object",
+      "required": ["status", "comparable", "regions", "gate_failures"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "comparable": {"type": "boolean"},
+        "regions": {"type": "array"},
+        "gate_failures": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "latency": {
+      "type": "object",
+      "required": ["status", "unit", "outcomes", "end_to_end_ms", "phases"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "unit": {"const": "ms"},
+        "outcomes": {"type": "object"},
+        "end_to_end_ms": {"type": "object"},
+        "phases": {"type": "array"}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["status", "hardware", "stacks", "cpu", "uwb", "spi", "gates"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "hardware": {"type": "object"},
+        "stacks": {"type": "array"},
+        "cpu": {"type": ["object", "null"]},
+        "uwb": {"type": ["object", "null"]},
+        "spi": {"type": ["object", "null"]},
+        "gates": {"type": "array"}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "status", "detail"],
+        "properties": {
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "status": {"$ref": "#/$defs/status"},
+          "detail": {"type": "string"},
+          "artifact": {"type": "string"}
+        }
+      }
+    },
+    "artifacts": {"type": "array"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "next_action": {"type": "string"},
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "label", "detail"],
+      "properties": {
+        "code": {"enum": ["blocked", "setup-required", "failed", "incomplete", "software-only", "measured"]},
+        "label": {"type": "string"},
+        "detail": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "status": {"enum": ["measured", "unavailable", "failed", "not-run"]}
+  }
+}

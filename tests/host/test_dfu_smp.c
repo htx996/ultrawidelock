@@ -79,7 +79,7 @@ static void ready(void)
 	dfufake_reset();
 	psafake_reset();
 	smpfake_reset();
-	ultrawidelock_dfu_rx_reset();
+	ultrawidelock_dfu_rx_reset_all();
 	ultrawidelock_dfu_window_close();
 }
 

@@ -16,6 +16,24 @@ config ULTRAWIDELOCK_CRED_STACK
 	  transport and does not displace libaliro on its own; the nRF5340 build
 	  still links the closed archive.
 
+config ULTRAWIDELOCK_CRED_DEV_TRUST
+	bool "LAB ONLY: accept credentials with an empty dev trust store"
+	help
+	  Permit the built-in development identity to authenticate a presented
+	  credential when no trust anchors exist. This bypass is for isolated lab
+	  bring-up only. Production and release images must leave it disabled.
+
+config ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE
+	int "Credential housekeeping thread stack size"
+	depends on ULTRAWIDELOCK_CRED_STACK
+	range 2048 8192
+	default 3072
+	help
+	  Static stack, in bytes, for deferred P-256 spare generation and
+	  provisioning persistence. Keep this low-priority worker large enough for
+	  the selected crypto and settings backends; validate changes with target
+	  stack instrumentation.
+
 module = ULTRAWIDELOCK_CRED
 module-str = ultrawidelock_cred
 source "subsys/logging/Kconfig.template.log_config"

@@ -7,6 +7,183 @@
 
 #include <string.h>
 
+int matter_tx_pool_init(struct matter_tx_pool *pool, struct matter_tx_slot *slots,
+			uint8_t *backing, size_t n_slots, size_t slot_capacity)
+{
+	if (pool == NULL || slots == NULL || backing == NULL || n_slots == 0u ||
+	    slot_capacity == 0u) {
+		return MATTER_E_INVAL;
+	}
+	memset(slots, 0, n_slots * sizeof(*slots));
+	for (size_t i = 0u; i < n_slots; i++) {
+		slots[i].data = backing + i * slot_capacity;
+		slots[i].capacity = slot_capacity;
+	}
+	pool->slots = slots;
+	pool->n_slots = n_slots;
+	pool->next_token = 0u;
+	pool->next_order = 0u;
+	return MATTER_OK;
+}
+
+struct matter_tx_slot *matter_tx_pool_acquire(struct matter_tx_pool *pool, uint8_t transport)
+{
+	if (pool == NULL || pool->slots == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		struct matter_tx_slot *slot = &pool->slots[i];
+
+		if (slot->state != MATTER_TX_SLOT_FREE) {
+			continue;
+		}
+		do {
+			pool->next_token++;
+		} while (pool->next_token == 0u);
+		pool->next_order++;
+		slot->token = pool->next_token;
+		slot->order = pool->next_order;
+		slot->retry_deadline_ms = 0u;
+		slot->retry_deadline_set = false;
+		slot->transport = transport;
+		slot->len = 0u;
+		slot->state = MATTER_TX_SLOT_BUILDING;
+		return slot;
+	}
+	return NULL;
+}
+
+int matter_tx_slot_commit(struct matter_tx_slot *slot, size_t len)
+{
+	if (slot == NULL || slot->state != MATTER_TX_SLOT_BUILDING || len == 0u ||
+	    len > slot->capacity) {
+		return MATTER_E_INVAL;
+	}
+	slot->len = len;
+	slot->state = MATTER_TX_SLOT_READY;
+	return MATTER_OK;
+}
+
+struct matter_tx_slot *matter_tx_pool_ready(struct matter_tx_pool *pool, uint8_t transport)
+{
+	struct matter_tx_slot *oldest = NULL;
+
+	if (pool == NULL || pool->slots == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		struct matter_tx_slot *slot = &pool->slots[i];
+
+		if (slot->state != MATTER_TX_SLOT_READY || slot->transport != transport) {
+			continue;
+		}
+		if (oldest == NULL || (int32_t)(slot->order - oldest->order) < 0) {
+			oldest = slot;
+		}
+	}
+	return oldest;
+}
+
+int matter_tx_slot_in_flight(struct matter_tx_slot *slot)
+{
+	if (slot == NULL || slot->state != MATTER_TX_SLOT_READY) {
+		return MATTER_E_STATE;
+	}
+	slot->state = MATTER_TX_SLOT_IN_FLIGHT;
+	return MATTER_OK;
+}
+
+struct matter_tx_slot *matter_tx_pool_find(struct matter_tx_pool *pool, uint32_t token)
+{
+	if (pool == NULL || pool->slots == NULL || token == 0u) {
+		return NULL;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		if (pool->slots[i].state != MATTER_TX_SLOT_FREE && pool->slots[i].token == token) {
+			return &pool->slots[i];
+		}
+	}
+	return NULL;
+}
+
+int matter_tx_pool_retry(struct matter_tx_pool *pool, uint32_t token, uint32_t now_ms,
+			 uint32_t retain_ms)
+{
+	struct matter_tx_slot *slot = matter_tx_pool_find(pool, token);
+
+	if (slot == NULL || slot->state != MATTER_TX_SLOT_IN_FLIGHT) {
+		return MATTER_E_STATE;
+	}
+	/* A peer repeating a request must not extend an abandoned packet forever.
+	 * Only the first failed attempt fixes the absolute reap deadline. */
+	if (!slot->retry_deadline_set) {
+		slot->retry_deadline_ms = now_ms + retain_ms;
+		slot->retry_deadline_set = true;
+	}
+	slot->state = MATTER_TX_SLOT_READY;
+	return MATTER_OK;
+}
+
+struct matter_tx_slot *matter_tx_pool_expired(struct matter_tx_pool *pool, uint8_t transport,
+					      uint32_t now_ms)
+{
+	if (pool == NULL || pool->slots == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0u; i < pool->n_slots; i++) {
+		struct matter_tx_slot *slot = &pool->slots[i];
+
+		if (slot->state == MATTER_TX_SLOT_READY && slot->transport == transport &&
+		    slot->retry_deadline_set &&
+		    (int32_t)(now_ms - slot->retry_deadline_ms) >= 0) {
+			return slot;
+		}
+	}
+	return NULL;
+}
+
+static int matter_tx_pool_release(struct matter_tx_pool *pool, uint32_t token,
+				  bool allow_ready)
+{
+	struct matter_tx_slot *slot = matter_tx_pool_find(pool, token);
+
+	if (slot == NULL || (slot->state != MATTER_TX_SLOT_IN_FLIGHT &&
+			     !(allow_ready && slot->state == MATTER_TX_SLOT_READY))) {
+		return MATTER_E_STATE;
+	}
+	slot->state = MATTER_TX_SLOT_FREE;
+	slot->len = 0u;
+	slot->retry_deadline_ms = 0u;
+	slot->retry_deadline_set = false;
+	slot->transport = 0u;
+	return MATTER_OK;
+}
+
+int matter_tx_pool_cancel(struct matter_tx_pool *pool, uint32_t token)
+{
+	struct matter_tx_slot *slot = matter_tx_pool_find(pool, token);
+
+	if (slot == NULL || slot->state != MATTER_TX_SLOT_BUILDING) {
+		return MATTER_E_STATE;
+	}
+	slot->state = MATTER_TX_SLOT_FREE;
+	slot->len = 0u;
+	slot->retry_deadline_ms = 0u;
+	slot->retry_deadline_set = false;
+	slot->transport = 0u;
+	return MATTER_OK;
+}
+
+int matter_tx_pool_complete(struct matter_tx_pool *pool, uint32_t token)
+{
+	return matter_tx_pool_release(pool, token, false);
+}
+
+int matter_tx_pool_reject(struct matter_tx_pool *pool, uint32_t token)
+{
+	return matter_tx_pool_release(pool, token, true);
+}
+
 /**
  * Initialize a Matter exchange: clear state, set MRP mode, init the message counter with the given
  * entropy, and init the MRP window.
@@ -86,8 +263,9 @@ static void exchange_remember(struct matter_exchange *x, uint16_t id)
  * pointers are null or structure is invalid; MATTER_E_STATE if the exchange ID does not match and
  * the message is not a valid acknowledgement.
  */
-int matter_exchange_recv(struct matter_exchange *x, const uint8_t *msg, size_t len,
-			 struct matter_exchange_in *in, uint8_t *pt, size_t pt_cap)
+static int matter_exchange_recv_impl(struct matter_exchange *x, const uint8_t *msg,
+				     uint8_t *mutable_msg, size_t len,
+				     struct matter_exchange_in *in, uint8_t *pt, size_t pt_cap)
 {
 	struct matter_msg_header mh;
 	struct matter_proto_header ph;
@@ -114,7 +292,14 @@ int matter_exchange_recv(struct matter_exchange *x, const uint8_t *msg, size_t l
 
 	if (x->secure) {
 		if (pt == NULL) {
-			return MATTER_E_INVAL;
+			if (mutable_msg == NULL) {
+				return MATTER_E_INVAL;
+			}
+			/* ccm_ctr consumes and produces each byte once, so exact aliasing
+			 * is safe. The tag follows this range and remains intact while it
+			 * is verified. */
+			pt = mutable_msg + mh_len;
+			pt_cap = len - mh_len;
 		}
 		/*
 		 * Decrypt before anything else is believed. The protocol header
@@ -243,6 +428,18 @@ int matter_exchange_recv(struct matter_exchange *x, const uint8_t *msg, size_t l
 	matter_mrp_window_commit(&x->window, mh.message_counter);
 
 	return MATTER_OK;
+}
+
+int matter_exchange_recv(struct matter_exchange *x, const uint8_t *msg, size_t len,
+			 struct matter_exchange_in *in, uint8_t *pt, size_t pt_cap)
+{
+	return matter_exchange_recv_impl(x, msg, NULL, len, in, pt, pt_cap);
+}
+
+int matter_exchange_recv_in_place(struct matter_exchange *x, uint8_t *msg, size_t len,
+				  struct matter_exchange_in *in)
+{
+	return matter_exchange_recv_impl(x, msg, msg, len, in, NULL, 0u);
 }
 
 /**
@@ -396,7 +593,10 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 		return MATTER_E_NOSPACE;
 	}
 	if (payload_len > 0u) {
-		memcpy(out + mh_len + ph_len, payload, payload_len);
+		/* The caller may build the payload in reserved headroom inside out.
+		 * memmove makes that owned-packet path explicit and remains identical
+		 * to memcpy for the traditional disjoint buffers. */
+		memmove(out + mh_len + ph_len, payload, payload_len);
 	}
 
 	if (x->secure) {

@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "hardware": {
+    "used": true,
+    "authorized": true,
+    "fixture": "synthetic-fixture",
+    "workload": "representative-full-auth",
+    "sample_count": 48
+  },
+  "stacks": [
+    {"thread": "main", "configured_bytes": 4096, "peak_bytes": 2736, "method": "stack-paint", "samples": 48},
+    {"thread": "system-workq", "configured_bytes": 6144, "peak_bytes": 3992, "method": "stack-paint", "samples": 48},
+    {"thread": "ot-workq", "configured_bytes": 4096, "peak_bytes": 3216, "method": "stack-paint", "samples": 48},
+    {"thread": "uwb-irq", "configured_bytes": 2048, "peak_bytes": 1136, "method": "stack-paint", "samples": 48}
+  ],
+  "cpu": {
+    "busy_pct": 38.4,
+    "method": "runtime-stats-window",
+    "threads": [
+      {"thread": "ot-workq", "utilization_pct": 14.2},
+      {"thread": "system-workq", "utilization_pct": 10.7},
+      {"thread": "uwb-irq", "utilization_pct": 8.1},
+      {"thread": "other", "utilization_pct": 5.4}
+    ]
+  },
+  "uwb": {
+    "ticks_per_us": 250,
+    "bucket_width_us": 250,
+    "deadline_us": 1836,
+    "phases": {
+      "prepoll": {"samples": 48, "min_ticks": 94000, "max_ticks": 231500, "histogram": [0, 9, 29, 10, 0, 0, 0, 0], "deadline_misses": 0, "arm_failures": 0},
+      "response": {"samples": 48, "min_ticks": 121000, "max_ticks": 319500, "histogram": [0, 3, 19, 21, 5, 0, 0, 0], "deadline_misses": 0, "arm_failures": 0},
+      "final": {"samples": 48, "min_ticks": 114000, "max_ticks": 354000, "histogram": [0, 4, 17, 19, 8, 0, 0, 0], "deadline_misses": 0, "arm_failures": 0}
+    }
+  },
+  "spi": {
+    "frequency_hz": 8000000,
+    "phases": {
+      "poll_arm": {"samples": 48, "transactions": 240, "reads": 96, "writes": 144, "wire_bytes": 4704, "errors": 0, "timeouts": 0, "max_transactions": 6, "max_wire_bytes": 112},
+      "response_arm": {"samples": 48, "transactions": 336, "reads": 144, "writes": 192, "wire_bytes": 6816, "errors": 0, "timeouts": 0, "max_transactions": 8, "max_wire_bytes": 160},
+      "final_arm": {"samples": 48, "transactions": 288, "reads": 96, "writes": 192, "wire_bytes": 5664, "errors": 0, "timeouts": 0, "max_transactions": 7, "max_wire_bytes": 136}
+    }
+  },
+  "gates": [
+    {"name": "uwb-deadlines", "status": "pass", "detail": "zero misses in representative fixture"},
+    {"name": "spi-errors", "status": "pass", "detail": "zero errors and timeouts"},
+    {"name": "stack-headroom", "status": "pass", "detail": "all observed stacks retain headroom"}
+  ],
+  "notes": ["Synthetic fixture for deterministic tooling tests"]
+}

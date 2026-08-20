@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <errno.h>
+#include <string.h>
 
 #include "ultrawidelock_port.h"
 #include "ultrawidelock_bytes.h"
@@ -23,6 +24,13 @@
 #include "ultrawidelock_diag.h" /* DIAGK — verbose per-frame trace, gated off in pretty mode */
 #include "uwb_rxdiag.h"         /* uwb_rxdiag_stream_get — the `ultrawidelock log` runtime toggle */
 #include "flight_recorder.h"    /* fr_capture_ev — record/replay walk-up capture (gated) */
+
+#if defined(CONFIG_DW3000_SPI_METRICS)
+#include "dw3000_spi.h"
+#endif
+#if defined(CONFIG_DW3000_STS_BULK_WRITE_EXPERIMENT)
+#include "dw3000_sts_fastpath.h"
+#endif
 
 /* DIAGK runtime gate — default is per-platform; see ultrawidelock_diag.h for the rationale. */
 volatile int ultrawidelock_uwb_diag_on = ULTRAWIDELOCK_UWB_DIAG_DEFAULT;
@@ -222,6 +230,18 @@ static bool g_final_armed_sync;
  * strict gate. See fira_session.h for the predicates and thresholds. */
 static int32_t g_final_sts_verdict = -1;
 static int16_t g_final_sts_index;
+static bool g_final_evidence_valid;
+static uint32_t g_final_evidence_index;
+static uint32_t g_final_evidence_poll_index;
+
+/* Authenticated SP0 anti-replay and context state. Counters are independent by
+ * message class because CCC may allocate them from distinct sender streams. */
+static bool g_have_prepoll_counter;
+static uint32_t g_prepoll_counter;
+static bool g_have_final_counter;
+static uint32_t g_final_counter;
+static bool g_have_session_block;
+static uint16_t g_session_block;
 
 /** @brief Per-session Pre-POLL decrypt constants (mUPSK1 + UAD-derived src/dest/keysource): depend
  * only on URSK + STS_Index0, derived once and reused. */
@@ -230,6 +250,59 @@ static uint8_t g_c_mupsk1[CCC_MUPSK1_LEN];
 static uint8_t g_c_src_long[CCC_SRC_LONG_ADDR_LEN];
 static uint8_t g_c_keysource[CCC_KEYSOURCE_LEN];
 static uint8_t g_c_dest[CCC_DEST_SHORT_ADDR_LEN];
+
+static bool counter_newer(uint32_t next, uint32_t previous)
+{
+	return (int32_t)(next - previous) > 0;
+}
+
+static bool mhr_context_ok(const struct ccc_mhr_fields *mhr)
+{
+	/* BOTH fields here are the byte-REVERSE of the UAD-derived arrays.
+	 * ccc_uad_addresses() emits them most-significant byte first, while the
+	 * frame carries them least-significant byte first (ccc_parse_mhr reads
+	 * DestShort with get_le16 and copies KeySource verbatim). So DestShort is
+	 * assembled MSB-first here, and KeySource is compared reversed below.
+	 *
+	 * Assembling DestShort little-endian instead rejected every Pre-POLL on a
+	 * DWM3001CDK, and the DIAGK trace hid it by printing the two halves in
+	 * different formats: "uad dest=02ff | hdr dest=02ff" is bytes 02,ff on the
+	 * left against the u16 0x02ff on the right, and those bytes read
+	 * little-endian are 0xff02. They were never equal.
+	 */
+	uint16_t dest = ((uint16_t)g_c_dest[0] << 8) | (uint16_t)g_c_dest[1];
+	size_t i;
+
+	if (mhr->dest_short_addr != dest) {
+		return false;
+	}
+	/* KeySource is compared REVERSED, and that is not a workaround.
+	 *
+	 * ccc_uad_addresses() assembles g_c_keysource most-significant half first
+	 * (KeySourceHigh || KeySourceLow, ccc_kdf.c), while ccc_parse_mhr() copies
+	 * the Aux Security Header field in transmission order, which is LSB-first.
+	 * The two are therefore byte-reverses of each other by construction.
+	 *
+	 * A straight memcmp here compiled fine, passed every host test, and then
+	 * rejected every Pre-POLL on air -- the walk-up stopped ranging entirely,
+	 * because this gate sits ahead of the whole DS-TWR chain. Observed on a
+	 * DWM3001CDK: uad ks=0f3795ed against hdr ks=ed95370f.
+	 * The host fakes never caught it because nothing in tests/ built an MHR the
+	 * way the radio delivers one; the fixture filled both sides from the same
+	 * helper, so it agreed with itself. tests/host/test_prepoll_round.c now
+	 * builds the frame in transmission order and fails without this function.
+	 *
+	 * Reverse here rather than in ccc_uad_addresses(): g_c_keysource has no
+	 * other consumer, whereas that helper's output order is asserted by the
+	 * KDF tests and is the order the CCC spec defines.
+	 */
+	for (i = 0u; i < sizeof(g_c_keysource); i++) {
+		if (mhr->key_source[i] != g_c_keysource[sizeof(g_c_keysource) - 1u - i]) {
+			return false;
+		}
+	}
+	return true;
+}
 
 /** @brief Pre-POLL frame stashed at RX for a DEFERRED decode: the ~2 ms decrypt+derive must not run
  * between the Pre-POLL and the POLL. */
@@ -280,6 +353,15 @@ void ccc_shim_rx_log_reset(void)
 	g_poll_ip_for_final = 0u;
 	g_final_sts_verdict = -1; /* fail-closed until a Final RFRAME is measured */
 	g_final_sts_index = 0;
+	g_final_evidence_valid = false;
+	g_final_evidence_index = 0u;
+	g_final_evidence_poll_index = 0u;
+	g_have_prepoll_counter = false;
+	g_prepoll_counter = 0u;
+	g_have_final_counter = false;
+	g_final_counter = 0u;
+	g_have_session_block = false;
+	g_session_block = 0u;
 #if defined(ESP_PLATFORM) || defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 	g_final_round_valid = false;
 #endif
@@ -442,6 +524,12 @@ static void prepoll_decode(const uint8_t *frame, uint16_t datalength)
 		ccc_uad_addresses(uad, g_c_keysource, g_c_dest, g_c_src_long);
 		g_uad_cached = true;
 	}
+	if (!mhr_context_ok(&mhr)) {
+		if (lg) {
+			DIAGK("PREPOLL context mismatch\n");
+		}
+		return;
+	}
 	if (lg) {
 		/* Self-check: the UAD-derived DestShort + KeySource must equal the on-air header,
 		 * else STS_Index0 byte order is wrong. */
@@ -462,6 +550,20 @@ static void prepoll_decode(const uint8_t *frame, uint16_t datalength)
 		return;
 	}
 	ccc_pre_poll_parse(plain, &pp);
+	if (pp.uwb_session_id != fira_session_id() ||
+	    (g_have_prepoll_counter && !counter_newer(mhr.frame_counter, g_prepoll_counter)) ||
+	    (g_have_poll_index && !counter_newer(pp.poll_sts_index, g_poll_sts_index))) {
+		if (lg) {
+			DIAGK("PREPOLL replay/context reject sid=%08x fc=%u idx=%08x\n",
+			      (unsigned)pp.uwb_session_id, (unsigned)mhr.frame_counter,
+			      (unsigned)pp.poll_sts_index);
+		}
+		return;
+	}
+	g_prepoll_counter = mhr.frame_counter;
+	g_have_prepoll_counter = true;
+	g_session_block = pp.ranging_block;
+	g_have_session_block = true;
 	if (g_have_poll_index) {
 		/* Learn the per-block Poll_STS_Index stride so the POLL-result path can pre-warm
 		 * the next block's dURSK. */
@@ -552,12 +654,18 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 	if (ccc_parse_mhr(frame, &mhr) != 0 || mhr.msg_id != CCC_MSG_ID_FINAL_DATA) {
 		return;
 	}
+	if (!g_uad_cached || !mhr_context_ok(&mhr)) {
+		return;
+	}
 	if (mhr.payload_len > sizeof(plain) ||
 	    (uint16_t)(CCC_MHR_LEN + mhr.payload_len + CCC_SP0_MIC_LEN) > datalength) {
 		return;
 	}
-	/* dUDSK for this round's cycle (any in-cycle index works — use the POLL index). */
-	if (ccc_shim_dudsk_for_index(g_armed_index, dudsk) != 0) {
+	/* Final_Data can be dispatched after the next block has changed the live
+	 * armed index. Derive against the Final capture's snapshotted POLL index,
+	 * never that mutable live value. */
+	if (!g_final_evidence_valid ||
+	    ccc_shim_dudsk_for_index(g_final_evidence_poll_index, dudsk) != 0) {
 		return;
 	}
 	rc = ccc_sp0_decrypt(dudsk, g_c_src_long, mhr.frame_counter, frame, CCC_MHR_LEN,
@@ -578,6 +686,34 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 		}
 		return;
 	}
+	/* Deliberately NOT comparing fd.ranging_block against a snapshot of the
+	 * Pre-POLL's block number. That number reaches us through the DEFERRED
+	 * Pre-POLL decode (g_session_block, set in prepoll_decode), while the Final
+	 * evidence is snapshotted synchronously in the Final RFRAME callback, so the
+	 * two are one block apart whenever the stashed Pre-POLL has not been decoded
+	 * yet. On a DWM3001CDK that raced every round: "blk=2 want=1" with the
+	 * session id and the STS index both matching exactly, and no range ever
+	 * latched.
+	 *
+	 * Nothing is lost by dropping it. final_sts_index is derived from
+	 * g_armed_index, increments once per block, and is checked below, so it
+	 * already binds this Final_Data to one specific round -- more tightly than a
+	 * 16-bit block counter does. Session binding and replay protection are the
+	 * other two terms, both kept.
+	 */
+	if (fd.uwb_session_id != fira_session_id() ||
+	    fd.final_sts_index != g_final_evidence_index ||
+	    (g_have_final_counter && !counter_newer(mhr.frame_counter, g_final_counter))) {
+		if (lg) {
+			DIAGK("FINALDATA replay/context reject sid=%08x blk=%u idx=%08x fc=%u\n",
+			      (unsigned)fd.uwb_session_id, (unsigned)fd.ranging_block,
+			      (unsigned)fd.final_sts_index, (unsigned)mhr.frame_counter);
+			g_fd_logged++;
+		}
+		return;
+	}
+	g_final_counter = mhr.frame_counter;
+	g_have_final_counter = true;
 	if (lg) {
 		/* final_tx = t5-t1 (POLL->Final tx), r0_ts = t4-t1 (POLL->Response rx) — the two
 		 * initiator timestamps DS-TWR needs. */
@@ -694,6 +830,7 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 			 * travelled with the range instead of being dropped here. */
 			fira_session_set_ccc_range_sts(g_final_sts_verdict, g_final_sts_index);
 
+
 			/* Feed the range into fira_session_last_range ->
 			 * UltraWideBandImpl::ReportRange -> AccessManager -> BoltLockMgr -> Matter
 			 * DoorLock cluster. */
@@ -706,19 +843,16 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 
 			/* Consume the per-block capture: the next block must re-stash a
 			 * fresh verdict + interval snapshot, else the gate fails closed. */
-			g_final_sts_verdict = -1;
-			g_final_sts_index = 0;
-#if defined(ESP_PLATFORM)
-			g_final_round_valid = false;
-#elif defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
-			/* Single-core CDK: do NOT consume-once. Final RFRAME captures (~90) far
-			 * outnumber Final_Data decodes (~9) and don't pair 1:1, so consume-once
-			 * dropped 8 of 9 ranges. The responder's reply1/round2 are fixed by the
-			 * slot schedule, so the latest snapshot is always a valid stand-in; keep
-			 * it live so every decode latches a range and the approach gate sees a
-			 * steady in-range stream. */
-#endif
 		}
+		/* One authenticated Final_Data consumes exactly one matching Final
+		 * capture, even when its timestamps fail the DS-TWR estimator. */
+		g_final_evidence_valid = false;
+		g_final_evidence_poll_index = 0u;
+		g_final_sts_verdict = -1;
+		g_final_sts_index = 0;
+#if defined(ESP_PLATFORM) || defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
+		g_final_round_valid = false;
+#endif
 	}
 }
 
@@ -837,7 +971,11 @@ static void sts_key_load(const uint8_t dursk[CCC_DURSK_LEN])
 	}
 #endif
 	pack_key(&k, dursk);
+#if defined(CONFIG_DW3000_STS_BULK_WRITE_EXPERIMENT)
+	ultrawidelock_dw3000_write_sts_key_bulk(&k.key0);
+#else
 	dwt_configurestskey(&k);
+#endif
 #if defined(ESP_PLATFORM) || defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 	for (i = 0u; i < CCC_DURSK_LEN; i++) {
 		g_sts_key_cache[i] = dursk[i];
@@ -1066,6 +1204,51 @@ static volatile struct ccc_lat_stat g_lat_prepoll; /* Pre-POLL RMARKER -> POLL R
 static volatile struct ccc_lat_stat g_lat_resp;    /* POLL RMARKER -> Response TX arm */
 static volatile struct ccc_lat_stat g_lat_final;   /* Response TX RMARKER (t3) -> Final RX arm */
 
+#if defined(CONFIG_DW3000_SPI_METRICS)
+/* Aggregate SPI work inside each deadline-critical CCC leg. Read these symbols
+ * over J-Link alongside g_lat_*; the hot path performs no logging. */
+struct ccc_spi_phase_stat {
+	uint32_t samples;
+	uint32_t transactions;
+	uint32_t reads;
+	uint32_t writes;
+	uint32_t wire_bytes;
+	uint32_t errors;
+	uint32_t timeouts;
+	uint32_t max_transactions;
+	uint32_t max_wire_bytes;
+};
+
+static volatile struct ccc_spi_phase_stat g_spi_poll_arm;
+static volatile struct ccc_spi_phase_stat g_spi_response_arm;
+static volatile struct ccc_spi_phase_stat g_spi_final_arm;
+
+static void spi_phase_record(volatile struct ccc_spi_phase_stat *phase,
+			     const struct dw3000_spi_metrics *before)
+{
+	struct dw3000_spi_metrics after;
+	uint32_t transactions;
+	uint32_t wire_bytes;
+
+	dw3000_spi_metrics_get(&after);
+	transactions = after.transactions - before->transactions;
+	wire_bytes = after.wire_bytes - before->wire_bytes;
+	phase->samples++;
+	phase->transactions += transactions;
+	phase->reads += after.reads - before->reads;
+	phase->writes += after.writes - before->writes;
+	phase->wire_bytes += wire_bytes;
+	phase->errors += after.errors - before->errors;
+	phase->timeouts += after.timeouts - before->timeouts;
+	if (transactions > phase->max_transactions) {
+		phase->max_transactions = transactions;
+	}
+	if (wire_bytes > phase->max_wire_bytes) {
+		phase->max_wire_bytes = wire_bytes;
+	}
+}
+#endif
+
 static void lat_record(volatile struct ccc_lat_stat *s, uint32_t d)
 {
 	uint32_t b = d / CCC_LAT_BUCKET_HI32;
@@ -1112,12 +1295,18 @@ static int arm_poll_sp3(uint32_t prepoll_ip)
 {
 	const uint8_t *pd, *pv;
 	dwt_sts_cp_iv_t v;
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	struct dw3000_spi_metrics spi_before;
+#endif
 
 	/* The STS for the predicted index was pre-derived in the idle (g_warm_*); pack it with no
 	 * KDF on the critical path. No warm yet => skip. */
 	if (!g_warm_valid) {
 		return -EIO;
 	}
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	dw3000_spi_metrics_get(&spi_before);
+#endif
 	pd = g_warm_dursk;
 	pv = g_warm_sts_v;
 	/* Commit the Response_0 (idx+1) AND Final (idx+2) STS NOW, before this block's decode
@@ -1132,7 +1321,11 @@ static int arm_poll_sp3(uint32_t prepoll_ip)
 	}
 	pack_iv(&v, pv);
 	sts_key_load(pd);         /* ESP32/CDK: writes the 4 STS_KEY regs only on a dURSK change */
+#if defined(CONFIG_DW3000_STS_BULK_WRITE_EXPERIMENT)
+	ultrawidelock_dw3000_write_sts_iv_bulk(&v.iv0);
+#else
 	dwt_configurestsiv(&v);   /* the shim is us; load it directly */
+#endif
 	dwt_configurestsloadiv(); /* reset HW STS counter to our IV */
 	dwt_configurestsmode((uint8_t)DWT_STS_MODE_ND); /* SP0 -> SP3/ND for the POLL */
 
@@ -1167,8 +1360,14 @@ static int arm_poll_sp3(uint32_t prepoll_ip)
 			arm_fail_n++;
 		}
 		dwt_configurestsmode((uint8_t)DWT_STS_MODE_OFF); /* revert to SP0 */
+#if defined(CONFIG_DW3000_SPI_METRICS)
+		spi_phase_record(&g_spi_poll_arm, &spi_before);
+#endif
 		return -EIO;
 	}
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	spi_phase_record(&g_spi_poll_arm, &spi_before);
+#endif
 	return 0;
 }
 
@@ -1264,12 +1463,21 @@ static int tx_response_sp3(uint32_t poll_ip, uint32_t resp_idx)
 	dwt_sts_cp_iv_t v;
 	uint32_t dx, now;
 	int r;
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	struct dw3000_spi_metrics spi_before;
+
+	dw3000_spi_metrics_get(&spi_before);
+#endif
 
 	/* NO KDF here — pack the Response STS committed at the arm (g_armed_resp_*); the derive
 	 * already ran in the idle. resp_idx is only for the diagnostic print. */
 	sts_key_load(g_armed_resp_dursk); /* same dURSK as the POLL round (ESP32/CDK: a no-op) */
 	pack_iv(&v, g_armed_resp_sts_v);
+#if defined(CONFIG_DW3000_STS_BULK_WRITE_EXPERIMENT)
+	ultrawidelock_dw3000_write_sts_iv_bulk(&v.iv0);
+#else
 	dwt_configurestsiv(&v);   /* Response STS-V (index+1); the shim is us, load it directly */
+#endif
 	dwt_configurestsloadiv(); /* reset the HW STS counter to our V */
 	/* STS mode stays SP3/ND (the POLL arm set it) — the Response is the same RFRAME. */
 	dx = poll_ip +
@@ -1290,6 +1498,9 @@ static int tx_response_sp3(uint32_t poll_ip, uint32_t resp_idx)
 		      (ss & DWT_INT_HPDWARN_BIT_MASK) ? 1u : 0u, (unsigned)ss, (unsigned)resp_idx);
 		dbg_n++;
 	}
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	spi_phase_record(&g_spi_response_arm, &spi_before);
+#endif
 	return (r == DWT_SUCCESS) ? 0 : -EIO;
 }
 
@@ -1303,10 +1514,19 @@ static int arm_final_sp3(uint32_t poll_ip)
 	dwt_sts_cp_iv_t v;
 	uint32_t dx, now;
 	int r;
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	struct dw3000_spi_metrics spi_before;
+
+	dw3000_spi_metrics_get(&spi_before);
+#endif
 
 	sts_key_load(g_armed_final_dursk); /* same per-cycle dURSK (ESP32/CDK: a no-op) */
 	pack_iv(&v, g_armed_final_sts_v);
+#if defined(CONFIG_DW3000_STS_BULK_WRITE_EXPERIMENT)
+	ultrawidelock_dw3000_write_sts_iv_bulk(&v.iv0);
+#else
 	dwt_configurestsiv(&v);
+#endif
 	dwt_configurestsloadiv();
 	dx = poll_ip +
 	     ULTRAWIDELOCK_FINAL_SLOT_OFFSET *
@@ -1326,6 +1546,9 @@ static int arm_final_sp3(uint32_t poll_ip)
 									       -> +2, n=2 -> +3 */
 		dbg_n++;
 	}
+#if defined(CONFIG_DW3000_SPI_METRICS)
+	spi_phase_record(&g_spi_final_arm, &spi_before);
+#endif
 	return (r == DWT_SUCCESS) ? 0 : -EIO;
 }
 
@@ -1494,8 +1717,12 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 			qret = dwt_readstsquality(&stsq, 0);
 			/* Range-integrity gate (layer 2): stash this Final RFRAME's STS
 			 * verdict for the Final_Data decode that computes the distance. */
-			g_final_sts_verdict = qret;
+			g_final_sts_verdict = (cper == 0u) ? qret : -1;
 			g_final_sts_index = stsq;
+			g_final_evidence_index =
+				g_armed_index + ULTRAWIDELOCK_FINAL_SLOT_OFFSET;
+			g_final_evidence_poll_index = g_armed_index;
+			g_final_evidence_valid = g_have_session_block;
 		}
 		/* Time-critical FIRST: revert to SP0 and re-open RX before the (blocking) UART
 		 * print, so the phone's SP0 Final_Data (~1 slot behind this Final) lands in our

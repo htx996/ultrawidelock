@@ -176,6 +176,56 @@ struct matter_im_read {
 	uint32_t subscription_id;
 };
 
+/** One bounded app-owned cursor for a chunked Read interaction. */
+struct matter_im_read_state {
+	struct matter_im_read read;
+	uint16_t session_id;
+	uint16_t exchange_id;
+	uint16_t sent;
+	bool more;
+	bool in_use;
+	bool over_thread;
+};
+
+/** Caller-backed set of simultaneous chunked Read interactions. */
+struct matter_im_read_pool {
+	struct matter_im_read_state *slots;
+	size_t n_slots;
+};
+
+/** Attach and clear @p n_slots Read cursors. */
+int matter_im_read_pool_init(struct matter_im_read_pool *pool,
+			     struct matter_im_read_state *slots, size_t n_slots);
+
+/** Find a cursor only when session, exchange, and transport all match. */
+struct matter_im_read_state *matter_im_read_pool_find(struct matter_im_read_pool *pool,
+						       uint16_t session_id,
+						       uint16_t exchange_id,
+						       bool over_thread);
+
+/**
+ * Reserve a cursor for a new Read.
+ *
+ * MATTER_E_DUP returns the existing cursor without resetting it. MATTER_E_NOSPACE
+ * means every bounded cursor is live. On MATTER_OK the returned cursor is fresh.
+ */
+int matter_im_read_pool_acquire(struct matter_im_read_pool *pool, uint16_t session_id,
+				uint16_t exchange_id, bool over_thread,
+				struct matter_im_read_state **out);
+
+/**
+ * Commit or reject transport completion for one Read chunk.
+ *
+ * A non-OK @p status drops the cursor. Successful final chunks also release it.
+ */
+int matter_im_read_pool_finish(struct matter_im_read_pool *pool, uint16_t session_id,
+			       uint16_t exchange_id, bool over_thread, uint16_t emitted,
+			       bool more, int status);
+
+/** Drop every cursor for one secure session on one transport. */
+void matter_im_read_pool_drop_session(struct matter_im_read_pool *pool, uint16_t session_id,
+				      bool over_thread);
+
 /** A SubscribeRequest: the same paths a read asks for, plus how often. */
 struct matter_im_subscribe {
 	struct matter_im_read read;
@@ -218,6 +268,14 @@ int matter_im_subscribe_response_encode(uint32_t subscription_id, uint16_t max_i
  * sends back after a priming report -- the same message in both directions.
  */
 int matter_im_status_response_encode(uint8_t status, uint8_t *out, size_t cap, size_t *out_len);
+
+/**
+ * Decode a bare StatusResponseMessage.
+ *
+ * @return MATTER_OK with @p status set, or a parse error when the structure is
+ *         malformed or omits its mandatory Status field.
+ */
+int matter_im_status_response_decode(const uint8_t *buf, size_t len, uint8_t *status);
 
 /**
  * Decode a TimedRequestMessage, whose only field is the timeout.

@@ -91,6 +91,11 @@ int ultrawidelock_ble_disconnect(uint16_t conn_handle);
  * the BleSK counter. `cb` runs on the host task and is passed `unsecured`. */
 void ultrawidelock_ble_post_reader_status(void (*cb)(bool unsecured), bool unsecured);
 
+/* Marshal the reader's coalesced deadline/replay tick onto the BLE host owner.
+ * This has a dedicated queue slot so a frequent tick cannot replace a grant,
+ * presence reset, or revocation sweep callback. */
+void ultrawidelock_ble_post_reader_tick(void (*cb)(void));
+
 /* Marshal a presence-proof reset onto the NimBLE host task. The callback may
  * inspect the reader session table and terminate links without racing the
  * transaction callbacks that own it. Only one proof command is served at a

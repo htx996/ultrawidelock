@@ -21,6 +21,7 @@
 #include <zephyr/usb/usb_device.h>
 
 #include "ultrawidelock_approach.h"
+#include "ultrawidelock_lat.h"
 #include "ultrawidelock_prov.h" /* ultrawidelock_prov_erase, for the factory-reset button */
 #include <ultrawidelock/reader.h>
 #include <ultrawidelock/uwb.h>
@@ -33,6 +34,11 @@
 #include "uwb_cirdiag.h" /* latched Ipatov scalars, for the channel classifier */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
 #include "ultrawidelock_satellite.h" /* second-anchor verdict; gates PREDICT only */
+#endif
+/* The sensors are ANCHOR's; the event they raise is the Matter node's. An
+ * anchor build with no Matter in it has nowhere to put an alarm. */
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+#include "door_alarm.h" /* impact latch + swing angle -> DoorLockAlarm */
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
 #include "ultrawidelock_side.h" /* fail-closed OUTSIDE-only passive unlock gate */
@@ -135,6 +141,7 @@ static struct k_sem s_range_sig;
  */
 static void on_range_latched(void)
 {
+	(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_FIRST_RANGE);
 	k_sem_give(&s_range_sig);
 }
 
@@ -347,6 +354,11 @@ int main(void)
 	ultrawidelock_satellite_init(&satellite, &fusion_cfg, CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
 			   IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SELF_INSIDE));
 #endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	/* Door alarms. The ajar half waits on the same missing transport as the
+	 * satellite verdict above; the forced-open half is live below. */
+	door_alarm_init();
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
 	/*
 	 * Fail-closed side gate. BLE witness summaries arrive as SF1 lines on
@@ -405,6 +417,7 @@ int main(void)
 	 * far out in this session, so a phone that was already at the door when
 	 * ranging started does not open it. See ultrawidelock_approach_cfg::approach_cm. */
 	ultrawidelock_approach_init(&approach, NULL);
+	approach.cfg.near_dwell = CONFIG_ULTRAWIDELOCK_APPROACH_NEAR_DWELL;
 
 	/* Same seam the ESP32 matter-lock uses (app_main.cpp on_uwb_range): the engine
 	 * signals, this thread decides. Both lines run before the listener can fire --
@@ -571,6 +584,7 @@ int main(void)
 			last_gen = gen;
 			last_obs_gen = gen;
 			present = true;
+			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
 			act = ml_feed_range(&approach, now, cm);
 		} else {
 			/*
@@ -600,6 +614,10 @@ int main(void)
 		}
 
 		ml_feed_vote_trace(&approach, now);
+		if (act == ULTRAWIDELOCK_APPROACH_UNLOCK_PREDICT ||
+		    act == ULTRAWIDELOCK_APPROACH_UNLOCK_THRESHOLD) {
+			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_NEAR_DWELL);
+		}
 
 		switch (act) {
 		case ULTRAWIDELOCK_APPROACH_UNLOCK_PREDICT:
@@ -652,6 +670,11 @@ int main(void)
 			ultrawidelock_reader_notify_unlock(true); /* Reader Status -> Unsecured (animate) */
 			status_led_signal(STATUS_LED_UNLOCKED, true);
 			granted = true;
+			if (ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_BOLT_DRIVEN)) {
+				/* This CDK has no motor. BOLT_DRIVEN means the software grant
+				 * and its visible output have both been committed. */
+				ultrawidelock_lat_report();
+			}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_HEAP_PROBE)
 			heap_peak_log("unlock");
 #endif
@@ -718,6 +741,12 @@ int main(void)
 		switch (ultrawidelock_slam_poll(&slam_cfg, &slam, ultrawidelock_slam_hw_take(), now)) {
 		case ULTRAWIDELOCK_SLAM_TAMPER:
 			LOG_WRN("tamper: repeated impacts on the door");
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			/* A struck door while the bolt is thrown is what
+			 * DoorForcedOpen means. The bolt test is applied by the
+			 * Matter half, which owns that state. */
+			door_alarm_tamper();
+#endif
 			break;
 		case ULTRAWIDELOCK_SLAM_IMPACT:
 			LOG_INF("impact");

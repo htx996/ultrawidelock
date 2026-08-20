@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "commit": "2222222222222222222222222222222222222222",
+  "config": {
+    "board": "decawave_dwm3001cdk",
+    "image": "dwm3001cdk-lock",
+    "extra_conf_file": "overlay-thread.conf;overlay-release.conf;overlay-smp.conf;overlay-lto.conf",
+    "kconfig": {
+      "CONFIG_ISR_TABLES_LOCAL_DECLARATION": "y",
+      "CONFIG_LOG": "y",
+      "CONFIG_LOG_DEFAULT_LEVEL": "1",
+      "CONFIG_LTO": "y",
+      "CONFIG_MCUMGR": "y",
+      "CONFIG_SEGGER_RTT_BUFFER_SIZE_UP": "1024",
+      "CONFIG_SIZE_OPTIMIZATIONS": "y",
+      "CONFIG_ULTRAWIDELOCK_MATTER_BLE": "y"
+    },
+    "zephyr_version": "4.3.99",
+    "ncs_version": "3.3.0",
+    "toolchain": "fixture-toolchain"
+  },
+  "regions": {
+    "FLASH": {"origin": 41472, "size": 433664, "used": 378424, "free": 55240, "pct": 87.26},
+    "RAM": {"origin": 536870912, "size": 131072, "used": 111168, "free": 19904, "pct": 84.81}
+  },
+  "sections": {
+    ".text": 277184,
+    ".bss": 77280,
+    ".rodata": 61920,
+    ".data": 18128,
+    ".noinit": 4096
+  },
+  "symbols": {
+    "matter_case_process": 4680,
+    "ccc_prepare_response": 3672,
+    "credential_exchange": 2712,
+    "dw3000_spi_transfer": 1232,
+    "logging_ring": 1024
+  },
+  "crosscheck": {
+    "ram": {"regions": 111168, "ram_report": 111132, "delta": 36},
+    "rom": {"regions": 378424, "rom_report": 378388, "delta": 36}
+  }
+}

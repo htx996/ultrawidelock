@@ -38,6 +38,10 @@
 /* ultrawidelock_uptime_ms: the clock the status tick's deadline uses */
 #include "ultrawidelock_port.h"
 
+#ifndef CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST
+#define CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST 0
+#endif
+
 /* Failure injection into the prim double (ultrawidelock_prim_host.c). Every hook
  * defaults off and disarms itself after firing, so the walk-ups before
  * section E run against the plain fakes. */
@@ -47,6 +51,9 @@ extern int ultrawidelock_prim_host_fail_sign;
 extern int ultrawidelock_prim_host_fail_pub_from_priv;
 extern int ultrawidelock_prim_host_fail_random_after;  /* -1 off; N: fail after N successes */
 extern int ultrawidelock_prim_host_fail_encrypt_after; /* -1 off; N: fail after N successes */
+extern uint8_t ultrawidelock_reader_housekeeping_run_once_for_test(void);
+extern uint8_t ultrawidelock_reader_fast_trial_order_for_test(uint8_t *out, uint8_t cap);
+extern bool ultrawidelock_reader_store_locked_for_test(void);
 
 static int fails;
 
@@ -71,6 +78,13 @@ static struct {
 	size_t n;
 } s_tx[TX_MAX];
 static int s_txn, s_tx_rd;
+static int s_ble_send_rc;
+static uint32_t s_fake_now_ms;
+
+int64_t ultrawidelock_reader_monotonic_ms(void)
+{
+	return s_fake_now_ms;
+}
 
 static int s_adv_sets;
 static uint8_t s_adv_grk[16];
@@ -115,6 +129,12 @@ uint16_t ultrawidelock_ble_spsm(void)
 int ultrawidelock_ble_send(uint16_t conn_handle, const uint8_t *data, size_t len)
 {
 	(void)conn_handle;
+	if (s_ble_send_rc != 0) {
+		int rc = s_ble_send_rc;
+
+		s_ble_send_rc = 0;
+		return rc;
+	}
 	if (s_txn < TX_MAX && len <= sizeof(s_tx[0].b)) {
 		memcpy(s_tx[s_txn].b, data, len);
 		s_tx[s_txn].n = len;
@@ -126,6 +146,25 @@ int ultrawidelock_ble_send(uint16_t conn_handle, const uint8_t *data, size_t len
 void ultrawidelock_ble_post_reader_status(void (*cb)(bool unsecured), bool unsecured)
 {
 	cb(unsecured); /* the double runs "the host task" inline */
+}
+
+static void (*s_reader_tick_pending)(void);
+
+void ultrawidelock_ble_post_reader_tick(void (*cb)(void))
+{
+	s_reader_tick_pending = cb;
+}
+
+static int drain_reader_tick(void)
+{
+	void (*cb)(void) = s_reader_tick_pending;
+
+	if (cb == NULL) {
+		return 0;
+	}
+	s_reader_tick_pending = NULL;
+	cb();
+	return 1;
 }
 
 void ultrawidelock_ble_post_presence_reset(void (*cb)(void))
@@ -274,25 +313,38 @@ static uint8_t s_nvs[ULTRAWIDELOCK_PROV_BLOB_MAX];
 static size_t s_nvs_len;
 static bool s_nvs_has;
 static bool s_nvs_fail;
+static int s_nvs_load_errno;
 /* What the failing store reports. -1 keeps the older cases meaning what they
  * did; a real errno is what the settings backend actually returns, and the
  * point of the propagation tests below. */
 static int s_nvs_errno = -1;
 static int s_nvs_stores;
+static int s_nvs_unserialized;
 
 int ultrawidelock_prov_load(struct ultrawidelock_reader_identity *id,
 			    struct ultrawidelock_trust_store *ts)
 {
-	if (s_nvs_has && ultrawidelock_prov_deserialize(s_nvs, s_nvs_len, id, ts) == 0) {
-		return 0;
+	if (s_nvs_load_errno != 0) {
+		ultrawidelock_prov_dev_default(id, ts);
+		return s_nvs_load_errno;
+	}
+	if (s_nvs_has) {
+		if (ultrawidelock_prov_deserialize(s_nvs, s_nvs_len, id, ts) == 0) {
+			return 0;
+		}
+		ultrawidelock_prov_dev_default(id, ts);
+		return -EBADMSG;
 	}
 	ultrawidelock_prov_dev_default(id, ts);
-	return 1;
+	return ULTRAWIDELOCK_PROV_LOAD_EMPTY;
 }
 
 int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
 			     const struct ultrawidelock_trust_store *ts)
 {
+	if (!ultrawidelock_reader_store_locked_for_test()) {
+		s_nvs_unserialized++;
+	}
 	if (s_nvs_fail) {
 		return s_nvs_errno;
 	}
@@ -878,6 +930,17 @@ static int ph_exchange_err(struct ph *p, uint16_t conn)
 
 int main(void)
 {
+#if !CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST
+	printf("== release-safe empty provisioning policy ==\n");
+	okc("safe.start_empty", ultrawidelock_reader_start() == 0);
+	int disconnects = s_disconnects;
+	s_cfg.cb.on_connected(1);
+	static const uint8_t initiate[] = {0x00, 0x05, 0x00, 0x00};
+	s_cfg.cb.on_data(1, initiate, sizeof(initiate));
+	okc("safe.empty_dev_rejected", s_disconnects == disconnects + 1 && s_txn == 0);
+	printf("\n%s: %d failure(s)\n", fails == 0 ? "PASS" : "FAIL", fails);
+	return fails != 0;
+#else
 	struct ph p;
 	struct ultrawidelock_reader_identity dev_id;
 	struct ultrawidelock_trust_store dev_ts;
@@ -886,6 +949,18 @@ int main(void)
 	memset(&p, 0, sizeof(p));
 
 	printf("== T0: start + dev-identity walk-up (dev-open trust policy) ==\n");
+	/* Storage failures and malformed records are not treated as an empty
+	 * developer reader. Start stays offline until storage becomes usable. */
+	s_nvs_load_errno = -EIO;
+	okc("t0.store_error_fails_closed", ultrawidelock_reader_start() == -EIO && !s_ble_started);
+	s_nvs_load_errno = 0;
+	s_nvs_has = true;
+	s_nvs_len = 3;
+	memset(s_nvs, 0xA5, s_nvs_len);
+	okc("t0.malformed_store_fails_closed", ultrawidelock_reader_start() == -EBADMSG &&
+					       !s_ble_started);
+	s_nvs_has = false;
+	s_nvs_len = 0;
 	/* console/notify paths before anything is provisioned or presented, plus
 	 * the compiled-out (CONFIG_ULTRAWIDELOCK_CRED_LAB=n) lab stubs */
 	ultrawidelock_reader_prov_print(); /* "last cred : (none presented yet)" branch */
@@ -1029,6 +1104,18 @@ int main(void)
 	okc("a.proof_checkpoint_waits_for_disconnect",
 	     !ultrawidelock_reader_presence_checkpoint(proof_request, &proof_checkpoint));
 	s_cfg.cb.on_disconnected(2);
+	okc("a.housekeeping_deferred", s_nvs_stores == 2);
+	s_nvs_fail = true;
+	okc("a.housekeeping_retry_retained",
+	     ultrawidelock_reader_housekeeping_run_once_for_test() != 0u && s_nvs_stores == 2);
+	/* Another disconnect coalesces with the retained retry; a single successful
+	 * batch lands one snapshot, and another drain is empty. */
+	s_cfg.cb.on_disconnected(999);
+	s_nvs_fail = false;
+	okc("a.housekeeping_retry_lands",
+	     ultrawidelock_reader_housekeeping_run_once_for_test() == 0u && s_nvs_stores == 3);
+	okc("a.housekeeping_coalesced",
+	     ultrawidelock_reader_housekeeping_run_once_for_test() == 0u && s_nvs_stores == 3);
 	okc("a.proof_checkpoint_ready",
 	     ultrawidelock_reader_presence_checkpoint(proof_request, &proof_checkpoint));
 	okc("a.old_auth_not_fresh",
@@ -1100,6 +1187,7 @@ int main(void)
 	okc("b.exchange_no_auth1", ph_exchange_resp(&p, 3) == 0); /* next TX is EXCHANGE */
 	okc("b.ap_completed", ph_take_ap_completed(&p) == 0);
 	okc("b.ranging_armed", s_rng_starts == 3);
+	okc("b.reconnect_session_active", ultrawidelock_reader_session_active());
 
 	/* Stale-Wallet resync: the Secured lost in A rides out on this session so the
 	 * phone stops showing a locked door as unlocked. Secured only — an unsolicited
@@ -1114,12 +1202,14 @@ int main(void)
 		static const uint8_t relock[8] = {0x02, 0x02, 0x00, 0x04, 0x00, 0x02, 0x04, 0x00};
 
 		/* Still inside the window: a tick before the deadline releases nothing. */
-		ultrawidelock_reader_status_tick(ultrawidelock_uptime_ms());
+			ultrawidelock_reader_status_tick(s_fake_now_ms);
+			(void)drain_reader_tick();
 		okc("b.replay_held_before_deadline", tx_pending() == 0);
 
 		/* Past it, with no grant having intervened, so the phone gets the truth.
 		 * Offsetting the real clock keeps the deadline exact without a fake one. */
-		ultrawidelock_reader_status_tick(ultrawidelock_uptime_ms() + 10000);
+			ultrawidelock_reader_status_tick(s_fake_now_ms + 3000u);
+			(void)drain_reader_tick();
 		f = tx_next(&n);
 		okc("b.secured_replayed", f != NULL && ph_open_ble(&p, f, n, plain, &pn) == 0 &&
 						  pn == 8 && memcmp(plain, relock, 8) == 0);
@@ -1127,6 +1217,7 @@ int main(void)
 	/* One shot: the flag is cleared by the replay, so nothing trails it. */
 	okc("b.replay_not_repeated", tx_pending() == 0);
 	ultrawidelock_reader_status_tick(ultrawidelock_uptime_ms() + 10000);
+	(void)drain_reader_tick();
 	okc("b.replay_disarmed_after_firing", tx_pending() == 0);
 
 	okc("b.ursk_match", memcmp(s_rng_ursk, p.ursk, ULTRAWIDELOCK_URSK_LEN) == 0);
@@ -1137,6 +1228,7 @@ int main(void)
 	s_disconnect_inline = false;
 	okc("b.inline_disconnect_checkpoint",
 	     ultrawidelock_reader_presence_checkpoint(proof_request, &proof_checkpoint));
+	okc("b.inline_disconnect_session_gone", !ultrawidelock_reader_session_active());
 	okc("b.no_new_persist", s_nvs_stores == 3); /* fast phase mints nothing */
 
 	printf("\n== C: failure paths ==\n");
@@ -1538,40 +1630,45 @@ int main(void)
 		s_cfg.cb.on_disconnected(40);
 	}
 
-	/* E6: full standard walk-up under odd SWs + established-phase failures */
+	/* E6: non-success APDU status and an unavailable ranging handoff are
+	 * deterministic terminal results. A separate successful standard auth mints
+	 * the Kpersistent exercised by E7. */
 	{
-		int stores;
+		int disconnects = s_disconnects;
+		s_cfg.cb.on_connected(62);
+		ph_initiate(&p, 62, 1);
+		okc("e6.auth0", ph_take_auth0(&p) == 0);
+		ph_auth0_resp_sw2(&p, 62, 0xEB, 0x6A, 0x80);
+		okc("e6.non_success_sw_disconnects", s_disconnects == disconnects + 1 &&
+						 tx_pending() == 0);
+		s_cfg.cb.on_disconnected(62);
 
+		disconnects = s_disconnects;
 		s_cfg.cb.on_connected(41);
 		ph_initiate(&p, 41, 1);
-		okc("e6.auth0", ph_take_auth0(&p) == 0);
-		ph_auth0_resp_sw2(&p, 41, 0xEB, 0x6A, 0x80); /* odd SW: warn + continue */
-		okc("e6.auth1_resp_sw", ph_auth1_resp_v(&p, 41, 0, 0x69, 0x82) == 0);
-		s_rng_start_fail = 1; /* ranging adapter refuses to arm: warn only */
-		okc("e6.exchange", ph_exchange_resp(&p, 41) == 0);
-		okc("e6.ap_completed", ph_take_ap_completed(&p) == 0);
-
-		/* an SDU the BleSK channel cannot open is dumped, not fed */
-		{
-			static const uint8_t junk[5] = {0xDE, 0xAD, 0xBE, 0xEF, 0x55};
-			int feeds = s_rng_feeds;
-
-			s_cfg.cb.on_data(41, junk, sizeof(junk));
-			okc("e6.bad_sdu_not_fed", s_rng_feeds == feeds);
-		}
-
-		/* reader-status seal failure: nothing goes on the wire */
-		ultrawidelock_prim_host_fail_encrypt_after = 0;
-		ultrawidelock_reader_notify_unlock(true);
-		okc("e6.notify_seal_fail", tx_pending() == 0);
-
-		/* the standard phase minted a Kpersistent; the persist fails on this
-		 * disconnect and is retried on a later one */
-		stores = s_nvs_stores;
-		s_nvs_fail = true;
+		okc("e6.standard_auth0", ph_take_auth0(&p) == 0);
+		ph_auth0_resp(&p, 41, 0xEB);
+		okc("e6.standard_auth1", ph_auth1_resp(&p, 41, NULL, 0) == 0);
+		s_rng_start_fail = 1;
+		okc("e6.standard_exchange", ph_exchange_resp(&p, 41) == 0);
+		okc("e6.ap_completed_sent", ph_take_ap_completed(&p) == 0);
+		okc("e6.ranging_failure_disconnects", s_disconnects == disconnects + 1);
 		s_cfg.cb.on_disconnected(41);
-		okc("e6.kp_persist_deferred", s_nvs_stores == stores);
-		s_nvs_fail = false;
+
+		/* Mint the other anchor's key last, making slot 0 the MRU before E7
+		 * presents slot 1. */
+		struct ph q = {0};
+		memcpy(q.rvk, p.rvk, sizeof(q.rvk));
+		memcpy(q.cred_priv, idle_priv, sizeof(q.cred_priv));
+		memcpy(q.cred_pub, idle_pub, sizeof(q.cred_pub));
+		s_cfg.cb.on_connected(63);
+		ph_initiate(&q, 63, 1);
+		okc("e6.mru_auth0", ph_take_auth0(&q) == 0);
+		ph_auth0_resp(&q, 63, 0xEC);
+		okc("e6.mru_auth1", ph_auth1_resp(&q, 63, NULL, 0) == 0);
+		okc("e6.mru_exchange", ph_exchange_resp(&q, 63) == 0);
+		okc("e6.mru_ap_completed", ph_take_ap_completed(&q) == 0);
+		s_cfg.cb.on_disconnected(63);
 	}
 
 	/* E7: expedited-fast — skipped anchor, no-match fallback, lost group key */
@@ -1582,6 +1679,10 @@ int main(void)
 		ph_initiate(&p, 42, 1);
 		okc("e7.auth0_fast_offered", ph_take_auth0(&p) == 0 && p.exp_phase == 0x01);
 		okc("e7.fast_resp", ph_auth0_resp_fast(&p, 42, 0xEC) == 0);
+		uint8_t trials[ULTRAWIDELOCK_TRUST_MAX] = {0};
+		uint8_t trial_count = ultrawidelock_reader_fast_trial_order_for_test(
+			trials, sizeof(trials));
+		okc("e7.mru_then_match", trial_count == 2u && trials[0] == 0u && trials[1] == 1u);
 		okc("e7.exchange", ph_exchange_resp(&p, 42) == 0);
 		okc("e7.ap_completed", ph_take_ap_completed(&p) == 0);
 		s_cfg.cb.on_disconnected(42); /* also retries the deferred persist */
@@ -1591,6 +1692,8 @@ int main(void)
 		ph_initiate(&p, 43, 1);
 		okc("e7.auth0_b", ph_take_auth0(&p) == 0 && p.exp_phase == 0x01);
 		ph_auth0_resp_badcrypt(&p, 43, 0xED);
+		trial_count = ultrawidelock_reader_fast_trial_order_for_test(trials, sizeof(trials));
+		okc("e7.mru_first_all_once", trial_count == 2u && trials[0] == 1u && trials[1] == 0u);
 		okc("e7.nomatch_auth1_resp", ph_auth1_resp(&p, 43, NULL, 0) == 0);
 		okc("e7.nomatch_exchange", ph_exchange_resp(&p, 43) == 0);
 		okc("e7.nomatch_ap_completed", ph_take_ap_completed(&p) == 0);
@@ -1767,8 +1870,103 @@ int main(void)
 					    pn == 8 && memcmp(plain, grant, 8) == 0);
 
 		ultrawidelock_reader_status_tick(ultrawidelock_uptime_ms() + 10000);
+		(void)drain_reader_tick();
 		okc("b2.replay_cancelled_by_grant", tx_pending() == 0);
 		s_cfg.cb.on_disconnected(5);
+	}
+
+	printf("\n== T: transport acceptance is transactional at every outbound seam ==\n");
+	{
+		int disconnects;
+		uint8_t trust_before[ULTRAWIDELOCK_PROV_BLOB_MAX];
+		uint8_t trust_after[ULTRAWIDELOCK_PROV_BLOB_MAX];
+		size_t trust_before_len = 0;
+		size_t trust_after_len = 0;
+
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(64);
+		ph_initiate(&p, 64, 0);
+		okc("t.auth1.auth0", ph_take_auth0(&p) == 0);
+		s_ble_send_rc = -EIO;
+		ph_auth0_resp(&p, 64, 0xD1);
+		okc("t.auth1_ambiguous_terminal", s_disconnects == disconnects + 1 &&
+						 tx_pending() == 0);
+		s_cfg.cb.on_disconnected(64);
+		okc("t.exchange.preflush", ultrawidelock_reader_housekeeping_run_once_for_test() == 0u);
+		int stores_before_exchange = s_nvs_stores;
+		okc("t.exchange.snapshot_before",
+		     ultrawidelock_reader_export_blob(trust_before, sizeof(trust_before),
+						      &trust_before_len) == 0);
+
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(65);
+		ph_initiate(&p, 65, 0);
+		okc("t.exchange.auth0", ph_take_auth0(&p) == 0);
+		ph_auth0_resp(&p, 65, 0xD2);
+		s_ble_send_rc = -EIO;
+		okc("t.exchange.auth1_response", ph_auth1_resp(&p, 65, NULL, 0) == 0);
+		okc("t.exchange_ambiguous_terminal", s_disconnects == disconnects + 1 &&
+						    tx_pending() == 0);
+		okc("t.exchange.snapshot_after",
+		     ultrawidelock_reader_export_blob(trust_after, sizeof(trust_after),
+						      &trust_after_len) == 0 &&
+			     trust_after_len == trust_before_len &&
+			     memcmp(trust_after, trust_before, trust_before_len) == 0);
+		s_cfg.cb.on_disconnected(65);
+		okc("t.exchange.failed_kp_not_dirty",
+		     ultrawidelock_reader_housekeeping_run_once_for_test() == 0u &&
+			     s_nvs_stores == stores_before_exchange);
+
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(66);
+		ph_initiate(&p, 66, 0);
+		okc("t.ap.auth0", ph_take_auth0(&p) == 0);
+		ph_auth0_resp(&p, 66, 0xD3);
+		okc("t.ap.auth1", ph_auth1_resp(&p, 66, NULL, 0) == 0);
+		s_ble_send_rc = -EIO;
+		okc("t.ap.exchange_response", ph_exchange_resp(&p, 66) == 0);
+		okc("t.ap_ambiguous_terminal", s_disconnects == disconnects + 1 &&
+						 tx_pending() == 0);
+		s_cfg.cb.on_disconnected(66);
+
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(67);
+		ph_initiate(&p, 67, 1);
+		okc("t.status.auth0", ph_take_auth0(&p) == 0);
+		okc("t.status.fast", ph_auth0_resp_fast(&p, 67, 0xD4) == 0);
+		okc("t.status.exchange", ph_exchange_resp(&p, 67) == 0);
+		okc("t.status.ap", ph_take_ap_completed(&p) == 0);
+		s_ble_send_rc = -EIO;
+		ultrawidelock_reader_notify_unlock(false);
+		okc("t.status_ambiguous_terminal", s_disconnects == disconnects + 1 &&
+						     tx_pending() == 0);
+		s_cfg.cb.on_disconnected(67);
+
+		/* ESTABLISHED has no phase-response timer, but the hard connected cap
+		 * still prevents a peer from monopolizing CONFIG_BT_MAX_CONN=1. */
+		tx_reset();
+		s_fake_now_ms = UINT32_MAX - 1000u;
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(68);
+		ph_initiate(&p, 68, 1);
+		okc("t.overall.auth0", ph_take_auth0(&p) == 0);
+		okc("t.overall.fast", ph_auth0_resp_fast(&p, 68, 0xD5) == 0);
+		okc("t.overall.exchange", ph_exchange_resp(&p, 68) == 0);
+		okc("t.overall.ap", ph_take_ap_completed(&p) == 0);
+		uint32_t overall_deadline = s_fake_now_ms + ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS;
+		ultrawidelock_reader_status_tick(overall_deadline - 1u);
+		(void)drain_reader_tick();
+		okc("t.overall_wrap_before", s_disconnects == disconnects);
+		ultrawidelock_reader_status_tick(overall_deadline);
+		okc("t.overall_tick_only_posts", s_disconnects == disconnects);
+		(void)drain_reader_tick();
+		okc("t.overall_wrap_exact", s_disconnects == disconnects + 1);
+		s_cfg.cb.on_disconnected(68);
+		s_fake_now_ms = 0;
 	}
 
 	/*
@@ -1927,11 +2125,50 @@ int main(void)
 		s_cfg.cb.on_disconnected(41);
 	}
 
+	printf("\n== S: transactional send + monotonic phase deadlines ==\n");
+	{
+		int disconnects = s_disconnects;
+		int sent = s_txn;
+
+		s_cfg.cb.on_connected(60);
+		s_ble_send_rc = -EIO;
+		ph_initiate(&p, 60, 0);
+		okc("s.auth0_ambiguous_disconnects", s_disconnects == disconnects + 1 &&
+						  s_txn == sent);
+		/* A second receive on that connection cannot silently consume another
+		 * send/counter while disconnect completion is pending. */
+		ph_initiate(&p, 60, 0);
+		okc("s.auth0_no_continuation", s_txn == sent);
+		s_cfg.cb.on_disconnected(60);
+
+		/* Start close enough to uint32 rollover that the deadline wraps. One
+		 * millisecond before remains live; exact equality terminates once. */
+		s_fake_now_ms = UINT32_MAX - 1000u;
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(61);
+		uint32_t deadline = s_fake_now_ms + ULTRAWIDELOCK_READER_PHASE_TIMEOUT_MS;
+		ultrawidelock_reader_status_tick((uint32_t)(deadline - 1u));
+		okc("s.deadline_tick_only_posts", s_disconnects == disconnects);
+		okc("s.deadline_wrap_before", drain_reader_tick() == 1 &&
+					       s_disconnects == disconnects);
+		ultrawidelock_reader_status_tick(deadline);
+		okc("s.deadline_wrap_exact_posted", s_disconnects == disconnects);
+		okc("s.deadline_wrap_exact", drain_reader_tick() == 1 &&
+					      s_disconnects == disconnects + 1);
+		ultrawidelock_reader_status_tick((uint32_t)(deadline + 1u));
+		(void)drain_reader_tick();
+		okc("s.deadline_disconnect_once", s_disconnects == disconnects + 1);
+		s_cfg.cb.on_disconnected(61);
+		s_fake_now_ms = 0;
+	}
+
 	/* console/status entry points: exercised for effect-free execution */
 	ultrawidelock_reader_prov_print();
 	ultrawidelock_reader_stepup_arm();
 	ultrawidelock_reader_stepup_status();
+	okc("store.every_write_serialized", s_nvs_unserialized == 0);
 
 	printf("\n%s: %d failure(s)\n", fails == 0 ? "PASS" : "FAIL", fails);
 	return fails != 0;
+#endif
 }

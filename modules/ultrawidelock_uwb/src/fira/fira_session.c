@@ -16,6 +16,7 @@
 /* credential URSK stash: the Pre-POLL decode reads it to derive the CCC STS. */
 static bool g_have_ursk;
 static uint8_t g_ursk[ULTRAWIDELOCK_URSK_LEN];
+static uint32_t g_session_id;
 
 void fira_session_set_provisioned_ursk(const uint8_t *ursk)
 {
@@ -31,6 +32,16 @@ void fira_session_set_provisioned_ursk(const uint8_t *ursk)
 const uint8_t *fira_session_get_ursk(void)
 {
 	return g_have_ursk ? g_ursk : NULL;
+}
+
+void fira_session_set_id(uint32_t session_id)
+{
+	g_session_id = session_id;
+}
+
+uint32_t fira_session_id(void)
+{
+	return g_session_id;
 }
 
 uint32_t fira_session_current_slot(void)

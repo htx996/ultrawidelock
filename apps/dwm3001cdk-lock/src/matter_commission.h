@@ -6,6 +6,9 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
+
+#include <zephyr/sys/util.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +52,27 @@ bool matter_commission_has_fabric(void);
  * the very ecosystem the window was opened for.
  */
 bool matter_commission_window_open(void);
+
+/**
+ * Finish the one packet previously accepted by the Matter BLE transport.
+ * Called exactly once by the transport after final confirmation or failure.
+ */
+void matter_commission_ble_tx_complete(int status);
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
+/**
+ * Record a DoorLockAlarm, if the bolt says it is one.
+ *
+ * The bolt test lives here rather than in the caller because the lock state is
+ * this file's, held under the same mutex as everything else in it: a forced
+ * door or a door left ajar is only an alarm while the lock is LOCKED, and a
+ * sensor cannot know that on its own. An alarm raised while the owner has the
+ * lock open is noise, and this node has one report channel to spend.
+ *
+ * @param alarm_code MATTER_DL_ALARM_*.
+ */
+void matter_commission_record_alarm(uint8_t alarm_code);
+#endif
 
 #ifdef __cplusplus
 }
