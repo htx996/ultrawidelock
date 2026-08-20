@@ -244,6 +244,70 @@ static void test_rotated_address_ghost_is_retired(void)
 	T_EQ("ghost.successor_is_new_label", got, 0x00DDDDDDu);
 }
 
+static void test_rotation_successor_inherits_the_pick(void)
+{
+	struct ultrawidelock_witness_pick p;
+	struct ultrawidelock_witness_msg m;
+	uint32_t got = 0u;
+
+	t_group("witness_pick: a rotated address hands its pick to the successor");
+	ultrawidelock_witness_pick_init(&p, NULL);
+
+	/* The handset earns the pick... */
+	m = win(-84, -70, -75);
+	ultrawidelock_witness_pick_feed(&p, &m, 6000);
+	m = win(-76, -71, -74);
+	ultrawidelock_witness_pick_feed(&p, &m, 4500);
+	m = win(-68, -70, -75);
+	ultrawidelock_witness_pick_feed(&p, &m, 3000);
+	m = win(-60, -71, -74);
+	ultrawidelock_witness_pick_feed(&p, &m, 1500);
+	T_OK("succ.picked", ultrawidelock_witness_pick_best(&p, &got));
+	T_EQ("succ.is_phone", got, PHONE);
+
+	/* ...then rotates: the old label vanishes and a newborn appears near
+	 * its last level. Three windows pass before the caller notices, the
+	 * range holding still, so the newborn accumulates windows but no
+	 * score. TV and TAG keep aging alongside. */
+	for (int i = 0; i < 3; i++) {
+		m = win(-62, -70, -75);
+		m.tuples[0].hash24 = 0x00DDDDDDu;
+		ultrawidelock_witness_pick_feed(&p, &m, 1500);
+	}
+
+	/* An established neighbour at EXACTLY the old level does not qualify:
+	 * it was heard beside the old label for seven windows and is a
+	 * different device, whatever its loudness. */
+	memset(&m, 0, sizeof(m));
+	m.ver = ULTRAWIDELOCK_WITNESS_MSG_VER;
+	m.role = ULTRAWIDELOCK_WITNESS_ROLE_OUTSIDE;
+	m.n_tuples = 1u;
+	m.tuples[0].hash24 = TV;
+	m.tuples[0].mean_dbm = -60;
+	m.tuples[0].n_pkts = 8u;
+	T_EQ("succ.established_refused",
+	     ultrawidelock_witness_pick_succeed(&p, PHONE, &m), 0u);
+	T_OK("succ.old_label_kept", ultrawidelock_witness_pick_best(&p, &got));
+	T_EQ("succ.old_label_still_phone", got, PHONE);
+
+	/* The newborn two dB off inherits over the established neighbour at
+	 * zero dB off. */
+	m.n_tuples = 2u;
+	m.tuples[1].hash24 = 0x00DDDDDDu;
+	m.tuples[1].mean_dbm = -62;
+	m.tuples[1].n_pkts = 6u;
+	T_EQ("succ.newborn_inherits",
+	     ultrawidelock_witness_pick_succeed(&p, PHONE, &m), 0x00DDDDDDu);
+	T_OK("succ.pick_survives", ultrawidelock_witness_pick_best(&p, &got));
+	T_EQ("succ.pick_is_successor", got, 0x00DDDDDDu);
+
+	/* Guards. */
+	T_EQ("succ.null_pick", ultrawidelock_witness_pick_succeed(NULL, PHONE, &m), 0u);
+	T_EQ("succ.null_msg",
+	     ultrawidelock_witness_pick_succeed(&p, 0x00DDDDDDu, NULL), 0u);
+	T_EQ("succ.unknown_old", ultrawidelock_witness_pick_succeed(&p, PHONE, &m), 0u);
+}
+
 static void test_guards(void)
 {
 	struct ultrawidelock_witness_pick p;
@@ -298,6 +362,7 @@ void test_ultrawidelock_witness_pick(void)
 	test_one_handset_many_advertising_sets();
 	test_crowded_room_still_picks_the_mover();
 	test_rotated_address_ghost_is_retired();
+	test_rotation_successor_inherits_the_pick();
 	test_receding_is_not_approaching();
 	test_guards();
 }

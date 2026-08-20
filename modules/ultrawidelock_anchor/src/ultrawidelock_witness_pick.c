@@ -267,6 +267,72 @@ void ultrawidelock_witness_pick_retire(struct ultrawidelock_witness_pick *p, uin
 	}
 }
 
+uint32_t ultrawidelock_witness_pick_succeed(struct ultrawidelock_witness_pick *p,
+					    uint32_t old_hash24,
+					    const struct ultrawidelock_witness_msg *msg)
+{
+	struct ultrawidelock_witness_pick_cand *old = NULL;
+	struct ultrawidelock_witness_pick_cand *succ = NULL;
+	int32_t succ_d = 0;
+
+	if (p == NULL || msg == NULL) {
+		return 0u;
+	}
+	for (size_t i = 0; i < ULTRAWIDELOCK_WITNESS_PICK_MAX; i++) {
+		if (p->cand[i].used && p->cand[i].hash24 == old_hash24) {
+			old = &p->cand[i];
+			break;
+		}
+	}
+	if (old == NULL) {
+		return 0u;
+	}
+	for (uint8_t i = 0; i < ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES; i++) {
+		const struct ultrawidelock_witness_tuple *t =
+			ultrawidelock_witness_msg_at(msg, i);
+		struct ultrawidelock_witness_pick_cand *c = NULL;
+		int32_t d;
+
+		if (t == NULL || t->hash24 == old_hash24) {
+			continue;
+		}
+		for (size_t j = 0; j < ULTRAWIDELOCK_WITNESS_PICK_MAX; j++) {
+			if (p->cand[j].used && p->cand[j].hash24 == t->hash24) {
+				c = &p->cand[j];
+				break;
+			}
+		}
+		/* The caller retires after three both-absent publishes, so a
+		 * genuine successor has been heard for three or four windows.
+		 * Anything older coexisted with the old label and is a
+		 * different device, whatever its level. */
+		if (c == NULL || c->windows > 6u) {
+			continue;
+		}
+		d = (int32_t)t->mean_dbm - (int32_t)old->last_dbm;
+		if (d < 0) {
+			d = -d;
+		}
+		if (d > (int32_t)p->cfg.cluster_db) {
+			continue;
+		}
+		if (succ == NULL || d < succ_d) {
+			succ = c;
+			succ_d = d;
+		}
+	}
+	if (succ == NULL) {
+		return 0u;
+	}
+	/* Same radio, new name: the score and the observation history follow
+	 * the emitter. Its own last_dbm/last_range tracking stays -- that
+	 * continuity is real and fresher than the ghost's. */
+	succ->score = old->score;
+	succ->windows = old->windows;
+	memset(old, 0, sizeof(*old));
+	return succ->hash24;
+}
+
 bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p, uint32_t *hash24)
 {
 	struct ultrawidelock_witness_pick_stats st;
