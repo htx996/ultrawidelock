@@ -212,6 +212,13 @@ operational discovery and CASE) picks out which third of the path is broken.
 | it works once, then stops | the session was lost and the backoff is running | it recovers by itself; the backoff doubles to a minute |
 | the unlock lands seconds late, or not at all | the target is a sleepy device polling slowly | expected. A granted unlock is dropped after 8 seconds rather than delivered late, deliberately: a lock that opens by itself half a minute later is a surprise |
 
+## Before you trust any of it
+
+None of the client half has run against real hardware. If you are the first to
+try it, `docs/matter-binding-bench.md` is the bring-up procedure: what to prove
+before involving this node, which line the log stops on, and the four things
+most likely to be wrong.
+
 ## The Home Assistant alternative
 
 If you would rather not run `chip-tool`, Home Assistant's Matter integration can
