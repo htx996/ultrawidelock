@@ -31,9 +31,9 @@ config WITNESS_BOOT_TRACE
 	help
 	  The dongle has no debug connector, so firmware that dies before USB
 	  enumerates cannot be diagnosed at all: no console, no RTT, nothing to
-	  attach. This lights a different LED at PRE_KERNEL_1, POST_KERNEL,
-	  APPLICATION and main(), and never clears them, so whatever is still lit
-	  when the board stops says how far it got. See src/boot_trace.c.
+	  attach. This puts a colour on the RGB LED at each of seven points in the
+	  boot; the colour still showing when the board stops says how far it got.
+	  See src/boot_trace.c for the mapping.
 
 	  Off in anything deployed: it takes the LEDs the status indication owns,
 	  and two owners for one lamp is worse than no instrument.
