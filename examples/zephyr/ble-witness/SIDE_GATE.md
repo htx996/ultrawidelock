@@ -6,6 +6,9 @@ This is the operator flow for the two-dongle system that enforces that.
 Design and safety argument: `docs/inside-latch.md`. Read it before changing a
 default; every threshold here has a reason recorded next to it.
 
+Running it for the first time: `docs/bench-inside-outside.md` is the linear
+recipe, with the pass/fail for each step and the point at which to stop.
+
 ## What runs where
 
 | device | image | job |

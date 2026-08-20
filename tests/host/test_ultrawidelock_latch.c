@@ -84,8 +84,12 @@ static void test_clean_walkup_clears(void)
 	ultrawidelock_latch_note_grant(&l, CRED_A, t);
 	T_OK("clear.relatched", !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t + 1, &why));
 	T_OK("clear.dwell", (why & ULTRAWIDELOCK_LATCH_R_DWELL) != 0u);
-	T_OK("clear.opportunity_spent",
-	     (why & ULTRAWIDELOCK_LATCH_R_NO_OPPORTUNITY) != 0u);
+	/* The opportunity is NOT what re-latches. A grant is as consistent with
+	 * an exit as with an entry, so the flag stands and the dwell is the
+	 * whole of the veto here; asserting that keeps the two from being
+	 * quietly merged again. */
+	T_OK("clear.opportunity_stands",
+	     (why & ULTRAWIDELOCK_LATCH_R_NO_OPPORTUNITY) == 0u);
 	/* And progress is discarded, so the next approach starts from zero. */
 	T_OK("clear.windows_reset", (why & ULTRAWIDELOCK_LATCH_R_WINDOWS) != 0u);
 }
@@ -99,18 +103,60 @@ static void test_opportunity_is_required(void)
 	t_group("latch: RF alone never clears the veto");
 	ultrawidelock_latch_init(&l, NULL);
 
-	/* Entered, never had a chance to leave. This is the failure the module
-	 * exists for: a phone indoors that the differential misreads. */
-	ultrawidelock_latch_note_grant(&l, CRED_A, 0);
+	/* Never granted, so no record: the resting refusal, before any of the
+	 * timing rules get a say. */
 	ultrawidelock_latch_session_open(&l, CRED_A);
 	t = walk_up(&l, CRED_A, T0, 6);
+	T_OK("opp.no_record", !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t, &why));
+	T_OK("opp.no_record_why", (why & ULTRAWIDELOCK_LATCH_R_NO_RECORD) != 0u);
 
-	T_OK("opp.refused", !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t, &why));
-	T_EQ("opp.reason", why, ULTRAWIDELOCK_LATCH_R_NO_OPPORTUNITY);
+	/* An unrelated credential opening the door is a crossing chance for A,
+	 * but A has produced no evidence of its own, so nothing clears. */
+	ultrawidelock_latch_session_close(&l);
+	ultrawidelock_latch_note_grant(&l, CRED_B, t);
+	T_OK("opp.evidence_still_needed",
+	     !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t + 1, &why));
+	T_OK("opp.windows_missing", (why & ULTRAWIDELOCK_LATCH_R_WINDOWS) != 0u);
+}
 
-	/* Give it one and the same evidence now suffices. */
-	ultrawidelock_latch_note_opportunity(&l, CRED_A, t);
-	T_OK("opp.granted", ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t, &why));
+/*
+ * The single-credential household, which is the case the firmware actually
+ * runs: nothing but note_grant() ever sets an opportunity, so if a grant did
+ * not set one for its own credential this walk-up could never be permitted and
+ * the veto would be indistinguishable from a lock that is simply broken.
+ */
+static void test_one_credential_can_come_back(void)
+{
+	struct ultrawidelock_latch l;
+	struct ultrawidelock_latch_cfg cfg;
+	uint8_t why = 0u;
+	int64_t t;
+
+	t_group("latch: the only enrolled phone can leave and return");
+	ultrawidelock_latch_defaults(&cfg);
+	ultrawidelock_latch_init(&l, &cfg);
+
+	/* The tap on the way out. Nothing else is enrolled. */
+	ultrawidelock_latch_note_grant(&l, CRED_A, 0);
+
+	/* Walking in is not walking out: inside the dwell the same evidence is
+	 * refused, and refused for the dwell specifically. */
+	ultrawidelock_latch_session_open(&l, CRED_A);
+	t = walk_up(&l, CRED_A, 1000, 4);
+	T_OK("return.dwell_refuses", !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t, &why));
+	T_OK("return.dwell_why", (why & ULTRAWIDELOCK_LATCH_R_DWELL) != 0u);
+	T_OK("return.opp_held", (why & ULTRAWIDELOCK_LATCH_R_NO_OPPORTUNITY) == 0u);
+
+	/* Away for the evening, then a walk-up from beyond clear_min_mm. */
+	ultrawidelock_latch_session_close(&l);
+	ultrawidelock_latch_session_open(&l, CRED_A);
+	t = walk_up(&l, CRED_A, (int64_t)cfg.entry_dwell_ms + 100000, 3);
+	T_OK("return.granted", ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t, &why));
+
+	/* And the grant re-latches, so the walk-in behind it is vetoed again. */
+	ultrawidelock_latch_note_grant(&l, CRED_A, t);
+	T_OK("return.relatched", !ultrawidelock_latch_may_passive_unlock(&l, CRED_A, t + 1, &why));
+	T_OK("return.relatch_why", (why & ULTRAWIDELOCK_LATCH_R_DWELL) != 0u);
 }
 
 static void test_inside_window_contradicts(void)
@@ -296,10 +342,14 @@ static void test_persistence(void)
 
 	ultrawidelock_latch_session_close(&r);
 	ultrawidelock_latch_session_open(&r, CRED_B);
-	t = walk_up(&r, CRED_B, T0, 3);
+	/* B's record and its entry timestamp survived too. Checked inside B's
+	 * dwell, because the dwell is the belief the reboot must not lose --
+	 * a lock that forgets who just walked in is the whole point of row 4. */
 	T_OK("persist.b_still_inside",
-	     !ultrawidelock_latch_may_passive_unlock(&r, CRED_B, t, &why));
-	T_OK("persist.b_reason", (why & ULTRAWIDELOCK_LATCH_R_NO_OPPORTUNITY) != 0u);
+	     !ultrawidelock_latch_may_passive_unlock(&r, CRED_B, 7000, &why));
+	T_OK("persist.b_reason", (why & ULTRAWIDELOCK_LATCH_R_DWELL) != 0u);
+	/* And no clear progress crossed the reboot with it. */
+	T_OK("persist.b_no_progress", (why & ULTRAWIDELOCK_LATCH_R_WINDOWS) != 0u);
 }
 
 static void test_corrupt_storage_fails_closed(void)
@@ -443,6 +493,7 @@ void test_ultrawidelock_latch(void)
 	test_resting_state_is_inside();
 	test_clean_walkup_clears();
 	test_opportunity_is_required();
+	test_one_credential_can_come_back();
 	test_inside_window_contradicts();
 	test_dead_band_does_not_destroy_a_proven_approach();
 	test_proven_approach_expires();
