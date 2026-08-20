@@ -22,7 +22,7 @@
 #                                         a button that downloads nothing
 
 .PHONY: docs docs-check docs-serve docs-clean docs-deps docs-graph3d \
-        docs-graph-refresh release-all
+        docs-graph-refresh release-all test-twin
 
 # ---------------------------------------------------------------------------
 # Auto-provisioning, used by `docs` and deliberately NOT by `docs-check`.
@@ -182,6 +182,13 @@ docs-serve: docs
 	fi
 	@printf '  serving web/dist on http://localhost:%s  (Ctrl-C to stop)\n' '$(DOCS_PORT)'
 	@cd $(REPO_ROOT)/web/dist && python3 -m http.server $(DOCS_PORT)
+
+## test-twin: build the WASM twin and replay its ranging scenarios
+##   The page's firmware is the real modules/ultrawidelock_uwb through emcc, so this
+##   is a firmware test that needs no board. Skipped loudly without emcc/node;
+##   `make check` runs the same script as the `twin` suite.
+test-twin:
+	@bash $(REPO_ROOT)/tests/tooling/twin_suite.sh
 
 ## docs-clean: remove the built site
 docs-clean:

@@ -21,6 +21,27 @@ void twin_peer_init(struct twin_peer *p, const uint8_t *ursk, uint32_t sid, uint
 	ccc_uad_addresses(uad, p->ks, p->dest, p->src_long);
 }
 
+/* DestShort and KeySource go on the wire in TRANSMISSION order, which is the
+ * byte-reverse of what ccc_uad_addresses() emits. mhr_context_ok() in
+ * ccc_shim_rx.c is the gate that cares, and it sits ahead of the whole DS-TWR
+ * chain: get this wrong and every Pre-POLL is dropped, exactly as it was on a
+ * DWM3001CDK before that gate was fixed. Same convention as
+ * tests/host/test_prepoll_round.c, which builds a frame the way the radio
+ * delivers one. */
+static uint16_t mhr_dest(const struct twin_peer *p)
+{
+	return (uint16_t)(((uint16_t)p->dest[0] << 8) | p->dest[1]);
+}
+
+static void mhr_set_keysource(const struct twin_peer *p, uint8_t dst[CCC_KEYSOURCE_LEN])
+{
+	size_t i;
+
+	for (i = 0u; i < CCC_KEYSOURCE_LEN; i++) {
+		dst[i] = p->ks[CCC_KEYSOURCE_LEN - 1u - i];
+	}
+}
+
 uint16_t twin_mk_prepoll(const struct twin_peer *p, uint8_t *out, uint32_t fc, uint32_t poll_idx,
 			 uint32_t block)
 {
@@ -35,9 +56,9 @@ uint16_t twin_mk_prepoll(const struct twin_peer *p, uint8_t *out, uint32_t fc, u
 	ccc_pre_poll_pack(&pp, plain);
 
 	memset(&f, 0, sizeof(f));
-	f.dest_short_addr = (uint16_t)(p->dest[0] | ((uint16_t)p->dest[1] << 8));
+	f.dest_short_addr = mhr_dest(p);
 	f.frame_counter = fc;
-	memcpy(f.key_source, p->ks, CCC_KEYSOURCE_LEN);
+	mhr_set_keysource(p, f.key_source);
 	f.msg_id = CCC_MSG_ID_PRE_POLL;
 	f.payload_len = CCC_PRE_POLL_LEN;
 	ccc_build_mhr(&f, out);
@@ -66,9 +87,9 @@ uint16_t twin_mk_final_data(const struct twin_peer *p, uint8_t *out, uint32_t fc
 	ccc_final_data_pack(&fd, plain, sizeof(plain), &pl);
 
 	memset(&f, 0, sizeof(f));
-	f.dest_short_addr = (uint16_t)(p->dest[0] | ((uint16_t)p->dest[1] << 8));
+	f.dest_short_addr = mhr_dest(p);
 	f.frame_counter = fc;
-	memcpy(f.key_source, p->ks, CCC_KEYSOURCE_LEN);
+	mhr_set_keysource(p, f.key_source);
 	f.msg_id = CCC_MSG_ID_FINAL_DATA;
 	f.payload_len = (uint8_t)pl;
 	ccc_build_mhr(&f, out);

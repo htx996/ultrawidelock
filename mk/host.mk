@@ -1,7 +1,7 @@
 # mk/host.mk — everything that runs on this machine: the host suites. No NCS
 # toolchain, no ESP-IDF, no hardware. Output lands under build/host.
 
-.PHONY: test sdk-check sdk-export test-san coverage cbmc check drift seam scope purity lint sca ci
+.PHONY: test sdk-check sdk-export test-san coverage cbmc check drift seam scope purity lint sca ci regress
 
 ##@ Test
 ## test: run the host test suite for our logic  (no NCS toolchain / hardware)
@@ -56,6 +56,22 @@ ci:
 	  printf '     CI still runs it. install: brew install gitleaks\n\n'; \
 	fi
 	@$(MAKE) --no-print-directory check
+
+## regress: everything a machine can check without hardware  ·  run before a push
+##   `make ci` is what a pull request is judged by, and it deliberately builds no
+##   firmware. This is the superset a bench can run: the CI gates, then the one
+##   suite CI cannot host (the integration patches, which need the network), then
+##   every DWM3001CDK configuration and the size gate.
+##
+##   Needs the NCS toolchain, a bootstrapped ./workspace and the checkout's dev
+##   signing key (`make bootstrap` and `make dfu-key`, once per clone).
+##
+##   The other two boards stay manual: `make nrf-build` and `make esp-build`.
+##   With hardware on the bench, `make regress-hil` goes one tier further.
+regress:
+	@$(MAKE) --no-print-directory ci
+	@SUITES="patchdrift" $(REPO_ROOT)/scripts/test-runner.sh
+	@$(MAKE) --no-print-directory fw-regress
 
 ## seam: no call reaches the radio past the CCC STS seam
 seam:

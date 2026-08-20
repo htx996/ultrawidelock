@@ -3,10 +3,11 @@
 # Two jobs on stock ubuntu-latest runners, no toolchain: python3, cmake and a C
 # compiler are all this needs, which is what makes it cheap enough to run on
 # every pull request. Nothing here builds firmware -- the Zephyr and ESP32
-# images need NCS, ESP-IDF and esp-matter and take hours, and `make fw-check`
-# and `make esp-release` cover them on a bench where the hardware also is. A
-# green run does not mean the firmware builds; it means nothing broke that a
-# host can see.
+# images need NCS, ESP-IDF and esp-matter and take hours. `make regress` covers
+# every DWM3001CDK configuration and the size gate on a bench where the hardware
+# also is, and `make regress-hil` goes on to prove it on air; `make esp-release`
+# covers the ESP32. A green run here does not mean the firmware builds; it means
+# nothing broke that a host can see.
 #
 # `gates` is a serial list of steps rather than parallel jobs: each job pays a
 # checkout to save less time than it spends, and one list reads better in a pull
