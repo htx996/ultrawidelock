@@ -432,6 +432,74 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
 /** Secure Channel MsgType 0x10 (Constants.h). Not a PASE opcode. */
 #define MATTER_SC_OP_ACK 0x10u
 
+/*
+ * ---------------------------------------------- this node as the INITIATOR ---
+ *
+ * Everything above assumes the session was opened by somebody else. The two
+ * functions below are for the one case where it was not: a CASE session this
+ * node started, so it could send a command to another node.
+ *
+ * Compiled only into a client build (see matter_clusters.h on
+ * MATTER_FEATURE_CLIENT), so an image without the client preprocesses this
+ * file to exactly what it was before. That is why they are here rather than in
+ * a file of their own: they need frame()'s neighbours -- the header encoders
+ * and the seal -- and everything in this file is already about that.
+ */
+/*
+ * Defaulted here as well as in matter_clusters.h, rather than included from
+ * there: the real definition comes from the compiler command line, and a
+ * header whose declarations depend on which OTHER header was included first is
+ * a link error waiting for an unlucky include order.
+ */
+#ifndef MATTER_FEATURE_CLIENT
+#define MATTER_FEATURE_CLIENT 0
+#endif
+
+#if MATTER_FEATURE_CLIENT
+
+/**
+ * Adopt a secure session this node INITIATED.
+ *
+ * matter_exchange_promote() is the responder's version and deliberately leaves
+ * the exchange CLOSED: a commissioner opens a new exchange on the secure
+ * session and the first message arrives from the peer. An initiator has the
+ * opposite problem -- the first message on the session is one it SENDS, and
+ * frame() refuses to build a message on a closed exchange -- so this opens the
+ * exchange with an id of this node's own choosing.
+ *
+ * MRP is on, because this session only exists over UDP; see struct
+ * matter_exchange::mrp for why that is a property of the transport.
+ *
+ * @param exchange_id chosen by this node. Also recorded as the exchange this
+ *        node will acknowledge on, which is what makes
+ *        matter_exchange_ack_initiator() below able to name it.
+ * @param entropy seeds a fresh session counter, as promote does.
+ * @return MATTER_OK, or MATTER_E_INVAL.
+ */
+int matter_exchange_open_initiator(struct matter_exchange *x, uint16_t local_id, uint16_t peer_id,
+				   uint16_t exchange_id, const struct matter_session_keys *keys,
+				   uint32_t entropy);
+
+/**
+ * Frame a standalone acknowledgement on an exchange this node OPENED.
+ *
+ * matter_exchange_standalone_ack() cannot do this and must not be taught to:
+ * it frames with I clear, which is right for every exchange the peer opened
+ * and wrong for one this node did. CHIP matches an incoming message to an
+ * exchange by id AND by the initiator flag being the opposite of its own
+ * (ExchangeContext::MatchExchange), so an acknowledgement sent with I clear on
+ * this node's own exchange matches nothing at the peer and is dropped as
+ * unsolicited -- and the peer goes on retransmitting the message it is meant to
+ * be acknowledging.
+ *
+ * @return MATTER_OK; MATTER_E_STATE when nothing is pending or the session is
+ *         not secure; MATTER_E_NOSPACE; or MATTER_E_INVAL.
+ */
+int matter_exchange_ack_initiator(struct matter_exchange *x, uint16_t exchange_id, uint8_t *out,
+				  size_t cap, size_t *out_len);
+
+#endif /* MATTER_FEATURE_CLIENT */
+
 #ifdef __cplusplus
 }
 #endif

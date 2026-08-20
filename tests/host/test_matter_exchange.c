@@ -68,6 +68,9 @@ static size_t inbound_ok(uint8_t *buf, size_t cap, uint8_t opcode, uint32_t coun
 
 static void t_matter_exchange_ack_for_self_initiated(void);
 static void t_matter_tx_pool(void);
+#if MATTER_FEATURE_CLIENT
+static void t_matter_exchange_initiator_session(void);
+#endif
 
 void test_matter_exchange(void)
 {
@@ -905,7 +908,142 @@ void test_matter_exchange(void)
 
 	t_matter_exchange_ack_for_self_initiated();
 	t_matter_tx_pool();
+#if MATTER_FEATURE_CLIENT
+	t_matter_exchange_initiator_session();
+#endif
 }
+
+#if MATTER_FEATURE_CLIENT
+/*
+ * A session this node OPENED, which is the client role's whole difference.
+ *
+ * Two things separate it from every session above, and both are invisible from
+ * the payload: the exchange has to be usable before the peer has said anything
+ * (nothing has arrived to open it), and the acknowledgement this node owes has
+ * to go out with I SET. CHIP matches an inbound message to an exchange by id
+ * AND by the initiator flag being the opposite of its own, so an ack with I
+ * clear on this node's own exchange matches nothing and the peer keeps
+ * retransmitting -- a failure whose only symptom is a peer that gives up.
+ */
+static void t_matter_exchange_initiator_session(void)
+{
+	struct matter_exchange x;
+	struct matter_exchange_in in;
+	struct matter_session_keys keys;
+	struct matter_msg_header mh;
+	struct matter_msg_header got;
+	struct matter_proto_header ph;
+	uint8_t msg[256];
+	uint8_t out[256];
+	uint8_t pt[256];
+	uint8_t plain[64];
+	uint8_t body[5] = {0x15u, 0x24u, 0x00u, 0x01u, 0x18u};
+	size_t plain_len = 0u;
+	size_t sealed = 0u;
+	size_t opened = 0u;
+	size_t out_len = 0u;
+
+	for (size_t i = 0; i < MATTER_KEY_LEN; i++) {
+		keys.i2r[i] = (uint8_t)(0x10u + i);
+		keys.r2i[i] = (uint8_t)(0x40u + i);
+		keys.attestation_challenge[i] = (uint8_t)(0x70u + i);
+	}
+
+	t_group("a session this node opened, and sends on first");
+
+	memset(&x, 0, sizeof(x));
+	T_EQ("the session installs",
+	     matter_exchange_open_initiator(&x, 0xABCDu, 0x1234u, 0x0055u, &keys, SEED), MATTER_OK);
+	T_OK("secure", x.secure);
+	T_OK("MRP is on, because this only exists over UDP", x.mrp);
+	/*
+	 * The whole point. matter_exchange_promote() leaves this closed, which
+	 * is right for a responder and would refuse the first message an
+	 * initiator has to send before the peer has said anything at all.
+	 */
+	T_OK("and the exchange is already open", x.open);
+	T_EQ("carrying the id this node chose", (long)x.exchange_id, 0x0055L);
+
+	T_EQ("a request sends",
+	     matter_exchange_send_initiator(&x, 0x0055u, MATTER_PROTOCOL_INTERACTION_MODEL, 0x0Au,
+					    body, sizeof(body), out, sizeof(out), &out_len),
+	     MATTER_OK);
+	/* Role-relative keys: as the INITIATOR this node still seals with r2i,
+	 * because matter_case_client_keys() swapped them on the way in. */
+	T_EQ("the peer opens it",
+	     matter_crypto_open(out, out_len, keys.r2i, MATTER_PASE_NODE_ID, &got, pt, sizeof(pt),
+				&opened),
+	     MATTER_OK);
+
+	t_group("the acknowledgement it owes, with I set");
+
+	/* The peer answers on this node's exchange, so I is CLEAR from its side,
+	 * and it asks to be acknowledged. */
+	memset(&ph, 0, sizeof(ph));
+	ph.exchange_flags = MATTER_EX_FLAG_R;
+	ph.opcode = 0x01u;
+	ph.exchange_id = 0x0055u;
+	ph.protocol_id = MATTER_PROTOCOL_INTERACTION_MODEL;
+	plain_len = 0u;
+	T_EQ("proto header", matter_proto_header_encode(&ph, plain, sizeof(plain), &plain_len),
+	     MATTER_OK);
+	memset(&mh, 0, sizeof(mh));
+	mh.flags = MATTER_MSG_DSIZ_NONE;
+	mh.session_id = 0xABCDu;
+	mh.security_flags = MATTER_SESSION_TYPE_UNICAST;
+	mh.message_counter = 4242u;
+	T_EQ("the peer's answer seals",
+	     matter_crypto_seal(&mh, keys.i2r, MATTER_PASE_NODE_ID, plain, plain_len, msg,
+				sizeof(msg), &sealed),
+	     MATTER_OK);
+	T_EQ("and is accepted", matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)),
+	     MATTER_OK);
+	T_OK("an ack is owed", x.ack_pending);
+	/* Consumed through exchange_is_ours(): the id stays this node's. */
+	T_EQ("on the exchange this node opened", (long)x.exchange_id, 0x0055L);
+
+	out_len = 0u;
+	T_EQ("the ack frames",
+	     matter_exchange_ack_initiator(&x, 0x0055u, out, sizeof(out), &out_len), MATTER_OK);
+	T_EQ("and the peer opens it",
+	     matter_crypto_open(out, out_len, keys.r2i, MATTER_PASE_NODE_ID, &got, pt, sizeof(pt),
+				&opened),
+	     MATTER_OK);
+	{
+		struct matter_proto_header rph;
+		size_t rph_len = 0u;
+
+		T_EQ("its proto header decodes",
+		     matter_proto_header_decode(pt, opened, &rph, &rph_len), MATTER_OK);
+		T_EQ("a standalone ack", (long)rph.opcode, (long)MATTER_SC_OP_ACK);
+		T_EQ("on this node's exchange", (long)rph.exchange_id, 0x0055L);
+		T_OK("marked INITIATOR, which is the whole reason this exists",
+		     (rph.exchange_flags & MATTER_EX_FLAG_I) != 0u);
+		T_OK("carrying the acknowledgement", (rph.exchange_flags & MATTER_EX_FLAG_A) != 0u);
+		T_EQ("of the counter that asked for it", (long)rph.ack_counter, 4242L);
+		/* An acknowledgement that asks to be acknowledged never ends. */
+		T_OK("and asking for nothing back", (rph.exchange_flags & MATTER_EX_FLAG_R) == 0u);
+	}
+	T_OK("nothing is owed any more", !x.ack_pending);
+
+	T_EQ("and a second ack has nothing to say",
+	     matter_exchange_ack_initiator(&x, 0x0055u, out, sizeof(out), &out_len),
+	     MATTER_E_STATE);
+
+	t_group("neither entry point invents a session");
+
+	T_EQ("no exchange to open",
+	     matter_exchange_open_initiator(NULL, 0xABCDu, 0x1234u, 0x0055u, &keys, SEED),
+	     MATTER_E_INVAL);
+	T_EQ("session id 0 is the unsecured one and can never be this node's",
+	     matter_exchange_open_initiator(&x, MATTER_SESSION_ID_UNSECURED, 0x1234u, 0x0055u,
+					    &keys, SEED),
+	     MATTER_E_INVAL);
+	T_EQ("and an ack with nowhere to go",
+	     matter_exchange_ack_initiator(&x, 0x0055u, NULL, sizeof(out), &out_len),
+	     MATTER_E_INVAL);
+}
+#endif /* MATTER_FEATURE_CLIENT */
 
 /*
  * The acknowledgement for a report this node initiated.

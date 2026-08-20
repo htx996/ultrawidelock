@@ -685,6 +685,99 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
 		     0u, out, cap, out_len);
 }
 
+#if MATTER_FEATURE_CLIENT
+
+int matter_exchange_open_initiator(struct matter_exchange *x, uint16_t local_id, uint16_t peer_id,
+				   uint16_t exchange_id, const struct matter_session_keys *keys,
+				   uint32_t entropy)
+{
+	int rc;
+
+	if (x == NULL) {
+		return MATTER_E_INVAL;
+	}
+	/* MRP true: this session only ever runs over UDP. */
+	matter_exchange_init(x, entropy, true);
+	rc = matter_exchange_promote(x, local_id, peer_id, keys, entropy);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	/*
+	 * What promote() deliberately withholds. The exchange id is set as well
+	 * as the flag, because the peer's answers arrive with I CLEAR on this
+	 * id: recv_impl() consumes those through exchange_is_ours() without
+	 * adopting the id, so nothing else would ever put it here, and
+	 * matter_exchange_ack_initiator() needs to know which exchange the
+	 * pending acknowledgement belongs to.
+	 */
+	x->open = true;
+	x->exchange_id = exchange_id;
+	return MATTER_OK;
+}
+
+int matter_exchange_ack_initiator(struct matter_exchange *x, uint16_t exchange_id, uint8_t *out,
+				  size_t cap, size_t *out_len)
+{
+	struct matter_msg_header mh;
+	struct matter_proto_header ph;
+	size_t mh_len = 0u;
+	size_t ph_len = 0u;
+	uint32_t counter;
+	int rc;
+
+	if (x == NULL || out == NULL || out_len == NULL) {
+		return MATTER_E_INVAL;
+	}
+	if (!x->secure || !x->mrp || !x->ack_pending) {
+		return MATTER_E_STATE;
+	}
+
+	rc = matter_counter_next(&x->counter, &counter);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+
+	/* Addressed by session id alone, exactly as frame() does on a secure
+	 * session: no node ids travel in a secure message header. */
+	memset(&mh, 0, sizeof(mh));
+	mh.security_flags = MATTER_SESSION_TYPE_UNICAST;
+	mh.message_counter = counter;
+	mh.session_id = x->peer_session_id;
+	mh.flags = MATTER_MSG_DSIZ_NONE;
+
+	memset(&ph, 0, sizeof(ph));
+	/* I, because this node opened the exchange; A, because that is the
+	 * whole message; and NOT R -- an acknowledgement that asks to be
+	 * acknowledged is an exchange that never ends. */
+	ph.exchange_flags = MATTER_EX_FLAG_I | MATTER_EX_FLAG_A;
+	ph.ack_counter = x->ack_counter;
+	ph.opcode = MATTER_SC_OP_ACK;
+	ph.exchange_id = exchange_id;
+	ph.protocol_id = MATTER_PROTOCOL_SECURE_CHANNEL;
+
+	rc = matter_msg_header_encode(&mh, out, cap, &mh_len);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	rc = matter_proto_header_encode(&ph, out + mh_len, cap - mh_len, &ph_len);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	/* The proto header IS the plaintext; the message header is the AAD.
+	 * Sealed in place for the reason frame() sets out at length. */
+	rc = matter_crypto_seal(&mh, x->keys.r2i, x->local_op_node_id, out + mh_len, ph_len, out,
+				cap, out_len);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+
+	/* Only now: an ack that was never encoded is an ack still owed. */
+	x->ack_pending = false;
+	return MATTER_OK;
+}
+
+#endif /* MATTER_FEATURE_CLIENT */
+
 /**
  * Set the operational node IDs for this exchange; used to populate node ID fields in secure channel
  * messages.
