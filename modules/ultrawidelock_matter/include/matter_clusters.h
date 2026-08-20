@@ -425,6 +425,34 @@ struct matter_user {
 #define MATTER_FEATURE_CLIENT 0
 #endif
 
+/**
+ * Multi-administrator commissioning: more than one ecosystem on this lock.
+ *
+ * Off, the node is the single-administrator Matter server it has always been.
+ * Apple Home commissions it, controls it, and nothing else can be added. On, it
+ * holds five fabrics, keeps access control per fabric, and can hand a second
+ * ecosystem an administrator identity of its own.
+ *
+ * Defaulted here rather than in the build system for the reason
+ * MATTER_FEATURE_CLIENT is: this header declares struct matter_device_info, and
+ * a header that means one thing to the module and another to its caller is a
+ * struct layout mismatch that links cleanly and fails at run time.
+ */
+#ifndef MATTER_FEATURE_MULTI_ADMIN
+#define MATTER_FEATURE_MULTI_ADMIN 0
+#endif
+
+/*
+ * A binding is written by an administrator over an attribute write, and Apple
+ * Home does not write bindings. So the client role is only reachable on a node
+ * that can hold a SECOND administrator to do the writing -- the dependency is
+ * not stylistic, and a client build without it would compile, run, and never be
+ * configurable by anybody.
+ */
+#if MATTER_FEATURE_CLIENT && !MATTER_FEATURE_MULTI_ADMIN
+#error "MATTER_FEATURE_CLIENT requires MATTER_FEATURE_MULTI_ADMIN: no second administrator can write a binding"
+#endif
+
 #if MATTER_FEATURE_CLIENT
 #include "matter_binding.h"
 
@@ -726,8 +754,20 @@ struct matter_lock_event {
  * Apple Home identities and one Home Assistant identity observed on hardware.
  * Failed attempts do not consume one of these slots: they are attempt-owned
  * until CommissioningComplete durably promotes them.
+ *
+ * Three without MATTER_FEATURE_MULTI_ADMIN, which is what a single Apple Home
+ * needs (two identities) plus one spare, and which is what this node shipped
+ * with before multi-administrator support existed. The count is the ONLY thing
+ * the flag changes here: every array below is sized from it, so both builds are
+ * the same code over a different number of slots rather than two code paths.
+ * Each slot costs sizeof(struct matter_fabric) plus one struct
+ * matter_fabric_acl, so the difference is real RAM rather than a policy knob.
  */
+#if MATTER_FEATURE_MULTI_ADMIN
 #define MATTER_SUPPORTED_FABRICS 5u
+#else
+#define MATTER_SUPPORTED_FABRICS 3u
+#endif
 
 /** One byte is enough for the five physical fabric-slot ownership bits. */
 #define MATTER_FABRIC_SLOT_BIT(slot) ((uint8_t)(1u << (slot)))

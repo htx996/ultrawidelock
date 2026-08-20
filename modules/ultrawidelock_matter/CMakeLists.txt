@@ -55,6 +55,12 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
     zephyr_compile_definitions(MATTER_FEATURE_CLIENT=1)
   endif()
 
+  # Same reasoning as the client macro above: it changes struct
+  # matter_device_info, so the app and the module have to agree on it.
+  if(CONFIG_ULTRAWIDELOCK_MATTER_MULTI_ADMIN)
+    zephyr_compile_definitions(MATTER_FEATURE_MULTI_ADMIN=1)
+  endif()
+
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
   # The DoorLockAlarm event, and nothing else, rides with the anchor build.

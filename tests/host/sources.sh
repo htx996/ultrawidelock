@@ -223,7 +223,12 @@ INCS=(
 # the firmware compiles in only for CONFIG_ULTRAWIDELOCK_MATTER_CLIENT. On here
 # always, because the fabric scoping of that list is the part that is invisible
 # when it is wrong and a board proves nothing about it.
-DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1 -DMATTER_FEATURE_CLIENT=1)
+# MATTER_FEATURE_MULTI_ADMIN: required by the line above -- a client build with
+# no second administrator is configurable by nobody, and matter_clusters.h
+# refuses the combination. On here for the same reason as the other two: the
+# per-fabric access control this turns on is what the cluster tests assert.
+# The off-topology is NOT covered by this pass; see the multi-admin-off suite.
+DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1 -DMATTER_FEATURE_CLIENT=1 -DMATTER_FEATURE_MULTI_ADMIN=1)
 
 # PY — the interpreter the python-side suites run under: the repo-local .venv
 # when one exists, else the system python3.
