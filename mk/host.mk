@@ -59,10 +59,9 @@ ci:
 
 ## regress: everything a machine can check without hardware  ·  run before a push
 ##   `make ci` is what a pull request is judged by, and it deliberately builds no
-##   firmware. This is the superset a bench can run: the CI gates, then the two
-##   suites CI cannot host (the integration patches, which need the network, and
-##   the WASM twin, which needs emscripten), then every DWM3001CDK configuration
-##   and the size gate.
+##   firmware. This is the superset a bench can run: the CI gates, then the one
+##   suite CI cannot host (the integration patches, which need the network), then
+##   every DWM3001CDK configuration and the size gate.
 ##
 ##   Needs the NCS toolchain, a bootstrapped ./workspace and the checkout's dev
 ##   signing key (`make bootstrap` and `make dfu-key`, once per clone).
@@ -71,7 +70,7 @@ ci:
 ##   With hardware on the bench, `make regress-hil` goes one tier further.
 regress:
 	@$(MAKE) --no-print-directory ci
-	@SUITES="patchdrift twin" $(REPO_ROOT)/scripts/test-runner.sh
+	@SUITES="patchdrift" $(REPO_ROOT)/scripts/test-runner.sh
 	@$(MAKE) --no-print-directory fw-regress
 
 ## seam: no call reaches the radio past the CCC STS seam

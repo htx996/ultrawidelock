@@ -12,6 +12,8 @@
 #   lint       tests/tooling/cppcheck_gate.sh   cppcheck over the portable tree
 #   sizegate   tests/tooling/cdk_size_test.sh   the CDK size gate's own logic
 #   zopt       tests/tooling/zephyr_opt_suite.sh  the instrument + dashboard tools
+#   twin       tests/tooling/twin_suite.sh      the WASM firmware twin, when the
+#                                               emscripten SDK is present
 #   ui         scripts/lib/ui.sh --self-test    the progress display keeps the
 #                                               output it wraps byte for byte
 #
@@ -19,13 +21,10 @@
 #
 #   freertos   tests/ports/freertos-nrf52833/run.sh  standalone RTOS contract
 #   patchdrift tests/tooling/patch_drift_check.sh    integration patches still apply
-#   twin       tests/tooling/twin_suite.sh           the WASM firmware twin
 #
-# Both of these are in `make regress` rather than here, and for reasons this
-# file's own warning about opt-in suites says are the dangerous kind -- so they
-# are named in one target that a bench runs before every push, not left for
-# someone to remember. patchdrift fetches from public GitHub, so it cannot be in
-# a set that has to pass offline. twin needs the emscripten SDK.
+# patchdrift fetches from public GitHub, so it cannot be in a set that has to
+# pass offline; it runs from `make regress` instead, which a bench runs before
+# every push, rather than being left for someone to remember.
 #
 # The FreeRTOS port has no hardware verdict yet -- no bring-up, no coexistence
 # proof, none of the four release gates -- so it does not get a vote on whether
@@ -189,7 +188,7 @@ run_suite() { # <suite> <outfile> <metafile>
 	printf '%s|%d|%d|%d|%d\n' "$s" "$passed" "$failed" "$((t1 - t0))" "$rc" >"$meta"
 }
 
-SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt ui}"
+SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt twin ui}"
 declare -a NAMES OUTS METAS PIDS
 n=0
 for s in $SEL; do

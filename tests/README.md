@@ -41,10 +41,11 @@ writes `build/regress-hil/<timestamp>/verdict.txt`, mapping each stage to its ro
 in `docs/hardware-validation.md`; rows CDK-9, CDK-10 and CDK-14..CDK-18 are still
 manual.
 
-Two suites are registered but out of the default set, and run from `make regress`
+One suite is registered but out of the default set, and runs from `make regress`
 instead: `patchdrift` fetches from public GitHub, so it cannot be in a set that has
-to pass offline, and `twin` needs the emscripten SDK (it skips loudly without it,
-rather than passing quietly).
+to pass offline. The `twin` suite is in the default set and needs the emscripten
+SDK, which it skips loudly for rather than passing quietly, so a machine without
+emscripten still gets an honest verdict on everything else.
 
 ## Static analysis
 
