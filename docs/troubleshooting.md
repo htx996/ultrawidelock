@@ -167,6 +167,12 @@ flash budget (app FLASH is ~89.7%). Extra features may need a config trim; build
 
 ## Unlock behavior
 
+**This lock does not open the lock it is bound to.** That path is off unless the
+firmware was built with `CLIENT=1`, and it has never been proven on hardware.
+`docs/matter-binding-bench.md` is the bring-up procedure: it says what to prove
+before blaming the client, which log line to read, and which two failures are
+known deviations rather than bugs.
+
 The first diagnostic question is always: **does tap still work?** Tap exercises the BLE
 transport, provisioning, and credentials. If tap works and only approach fails, the fault
 is UWB-specific, not in the credential path.

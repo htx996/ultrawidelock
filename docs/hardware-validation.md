@@ -91,14 +91,16 @@ this one.
 CDK-8 is this target's EV-7, and it is faked the same way: the bolt moving is not a
 pass. The Wallet animation is, because that is what proves the reader told the phone
 it granted access rather than just actuating locally.
+| CDK-27 | With a second administrator on and a Matter DoorLock peer bound, walk up once and read the RTT log | The peer's bolt moves, and the log reaches `the bound lock UNLOCKED` | **open, never run.** The CASE initiator has never met a peer; `docs/matter-binding-bench.md` is the procedure and names what is most likely to fail |
 
-CDK-14 through CDK-26 are the open rows, and none has ever been run to
+CDK-14 through CDK-27 are the open rows, and none has ever been run to
 completion. CDK-16, CDK-17 and CDK-18 cover recovery, STS quality and NLOS
 walk-up. CDK-19 through CDK-26 are the Apple Home plus Home Assistant release
 gate added with the five-fabric transaction work: host tests and the target
 build cover their local state machines, but none inherits a hardware result
 from those tests. Do not describe multi-admin operation as hardware-robust
-until all eight of those rows pass. CDK-14 is
+until all eight of those rows pass. CDK-27 is the binding, which depends on
+CDK-20: nothing can write a binding until a second administrator exists. CDK-14 is
 the only rate on this list: everything above it has been demonstrated at least once,
 and none of it at a rate. CDK-15 is the resumable apply, whose step counter is
 exercised by design and by host test but has never met a real power cut.

@@ -184,7 +184,10 @@ esp-matter `93b1680`.
 - **A Matter client**, so a walk-up at this lock can open a *second* Matter
   lock directly, with no hub automation in the path: CASE as initiator, the
   Binding cluster, and a `chip-tool` helper that sets up both ends.
-  Off by default. [Unlocking another lock](docs/matter-binding.md).
+  Off by default, and unproven on hardware: [unlocking another
+  lock](docs/matter-binding.md) sets it up, [bringing it
+  up](docs/matter-binding-bench.md) is the bench procedure for the first person
+  to try it.
 - **A capture path for the classifier**: one `[FEAT]` CSV row per ranging block
   over RTT, carrying the first-path index and peak the model cannot currently
   see. Data collection only, no decision reads it.
