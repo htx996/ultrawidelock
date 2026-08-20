@@ -559,6 +559,20 @@ Three properties make this stronger than anything on the multi-responder path:
 3. **Neither anchor loses rate.** Alternation halves each anchor's sample rate; two rounds
    per block does not.
 
+**Each of the two rounds is a complete exchange.** Figure 12-1 (p.157 of the PDF; the text
+extraction drops it) draws the round as `PP | P | R1 | R2 | R3 | F | FD` and the block as six
+ranging rounds with two of them shaded, their positions moving block to block under the two
+hopping sequences. So a two-round block is not one exchange with extra responder slots -- it
+is *two* full exchanges, each with its own Pre-POLL, POLL, responder slots, Final and
+Final_Data. That is why §12.1.2 subscripts everything by `p` (`Hop_Flag_p`, `Round_Idx_p`,
+`p = 1` and `p = 2`) and why l.9709-9736 speaks of Final_Data1 and Final_Data2.
+
+The consequence for a second anchor is the whole argument for this route. In round 2 the
+satellite is **responder 0 of its own round**, and the phone sends it an ordinary
+single-responder `Final_Data` containing its record. It never depends on the phone reporting
+a *second* responder in one round -- which is precisely the behaviour that failed on
+2026-08-21. The route sidesteps the observed limitation instead of arguing with it.
+
 The specific hazard (l.9709-9736): if *either* Final_Data goes unheard, the responder-device
 unconditionally assumes a hop and sets both `Hop_Flag` to 1. Two physical units must
 therefore share Final_Data reception state, not merely the URSK, or they will compute
