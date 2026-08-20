@@ -302,6 +302,15 @@ static bool s_latch_dirty;
  */
 #define LATCH_CRED_NONE 0x00000000u
 
+/* How long a credential-session gap still counts as the SAME approach --
+ * the latch twin of SESSION_CARRY_MS in witness_link.c. iOS tears the
+ * session down on its credential phase deadline and reconnects within
+ * seconds, mid-walk; closing the latch session on that flap zeroes the
+ * clear-run at the moment it completes (measured 2026-08-21: agree hit
+ * clear_windows as the session flapped, and with the phone then at the
+ * door no run could restart beyond clear_min_mm -- why=0x10 for good). */
+#define LATCH_SESSION_CARRY_MS 30000
+
 static uint32_t latch_cred_id(void)
 {
 	uint8_t cred_pub[65];
@@ -531,6 +540,9 @@ int main(void)
 	static uint8_t latch_why;
 	/* Which credential the open latch session belongs to, or CRED_NONE. */
 	uint32_t latch_cred = LATCH_CRED_NONE;
+	/* Nonzero while that credential's session is down but within
+	 * LATCH_SESSION_CARRY_MS: the uptime when the gap began. */
+	int64_t latch_gap_ms = 0;
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
 	witness_link_init();
@@ -761,19 +773,64 @@ int main(void)
 		{
 			uint32_t cred_now = session_now ? latch_cred_id() : LATCH_CRED_NONE;
 
-			if (cred_now != latch_cred) {
+			if (cred_now == latch_cred) {
+				if (latch_gap_ms != 0) {
+					/* The same credential is back inside the
+					 * carry window: same approach, and the
+					 * run of agreeing windows survives. */
+					latch_gap_ms = 0;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+					witness_link_session(true);
+#endif
+				}
+			} else if (cred_now == LATCH_CRED_NONE) {
+				/* Hold the latch session through the flap; no
+				 * evidence can accumulate meanwhile (windows on
+				 * a rolled challenge arrive degraded), and no
+				 * grant can be delivered to a phone that is not
+				 * connected. Only a gap long enough to be a
+				 * different approach closes the session. */
+				if (latch_gap_ms == 0) {
+					latch_gap_ms = now;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+					witness_link_session(false);
+#endif
+				} else if ((now - latch_gap_ms) >
+					   (int64_t)LATCH_SESSION_CARRY_MS) {
+					ultrawidelock_latch_session_close(&s_latch);
+					latch_cred = LATCH_CRED_NONE;
+					latch_gap_ms = 0;
+				}
+			} else {
+				/* A different credential: a run of agreeing
+				 * windows must never be inherited by another
+				 * phone, so open (which resets) even when a gap
+				 * was pending. */
 				if (latch_cred != LATCH_CRED_NONE) {
 					ultrawidelock_latch_session_close(&s_latch);
 				}
-				if (cred_now != LATCH_CRED_NONE) {
-					ultrawidelock_latch_session_open(&s_latch, cred_now);
-				}
+				ultrawidelock_latch_session_open(&s_latch, cred_now);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
-				witness_link_session(cred_now != LATCH_CRED_NONE);
+				witness_link_session(true);
 #endif
 				latch_cred = cred_now;
+				latch_gap_ms = 0;
 			}
 		}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+		/*
+		 * A Home-tile unlock is the deliberate act that creates the
+		 * latch record. Without this, the only note_grant call sat on
+		 * the passive-grant path, which itself requires the record --
+		 * so no credential could ever earn its first one (measured
+		 * 2026-08-21: why=0x12 with every other gate green).
+		 */
+		if (matter_commission_take_deliberate_unlock() &&
+		    latch_cred != LATCH_CRED_NONE) {
+			LOG_INF("inside latch: record from deliberate unlock");
+			latch_note_opened(latch_cred, now);
+		}
+#endif
 #endif
 		session_was_up = session_now;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)

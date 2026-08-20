@@ -54,6 +54,18 @@ bool matter_commission_has_fabric(void);
 bool matter_commission_window_open(void);
 
 /**
+ * True exactly once after an UnlockDoor command was invoked; reading clears it.
+ *
+ * The inside latch needs this: its per-credential record is only ever created
+ * by a DELIBERATE unlock, and the Matter path runs on OpenThread's thread
+ * where the latch (owned by the main loop) must not be touched. The main loop
+ * polls this and attributes the unlock to whichever credential is currently
+ * authenticated -- with none authenticated the event is consumed unattributed,
+ * which fails closed: no record, no passive unlock.
+ */
+bool matter_commission_take_deliberate_unlock(void);
+
+/**
  * Finish the one packet previously accepted by the Matter BLE transport.
  * Called exactly once by the transport after final confirmation or failure.
  */

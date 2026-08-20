@@ -108,6 +108,8 @@ static struct matter_device_info s_info = {
  * administrative state to a second lock owner. Static zero is the correct
  * pre-init state: no restored fabric yet and no open window. */
 static atomic_t s_has_fabric_snapshot;
+/* An UnlockDoor command was invoked; the main loop consumes this. */
+static atomic_t s_deliberate_unlock;
 static atomic_t s_window_open_snapshot;
 
 static void fabric_snapshot_refresh_owned(void)
@@ -1455,6 +1457,9 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	if (inv.cluster == MATTER_CLUSTER_DOOR_LOCK &&
 	    (inv.command == MATTER_CMD_DL_LOCK_DOOR || inv.command == MATTER_CMD_DL_UNLOCK_DOOR)) {
 		notify_lock_state_changed();
+		if (inv.command == MATTER_CMD_DL_UNLOCK_DOOR) {
+			atomic_set(&s_deliberate_unlock, 1);
+		}
 	}
 	if (inv.cluster == MATTER_CLUSTER_NETWORK_COMMISSIONING &&
 	    inv.command == MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK) {
@@ -3983,6 +3988,11 @@ static void on_link_reset(void)
 bool matter_commission_has_fabric(void)
 {
 	return atomic_get(&s_has_fabric_snapshot) != 0;
+}
+
+bool matter_commission_take_deliberate_unlock(void)
+{
+	return atomic_clear(&s_deliberate_unlock) != 0;
 }
 
 int matter_commission_init(void)
