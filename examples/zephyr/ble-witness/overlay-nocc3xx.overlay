@@ -1,0 +1,20 @@
+/*
+ * DIAGNOSTIC, paired with overlay-nocc3xx.conf.
+ *
+ * nrf52840.dtsi:15 makes the CryptoCell the entropy source for every nRF52840
+ * board. Taking CC310 out of the boot therefore has to re-point that chosen at
+ * the plain RNG peripheral, or the SoftDevice Controller, the 802.15.4 driver
+ * and sys_rand_get all link against a device that no longer exists.
+ *
+ * The RNG peripheral is what the DWM3001CDK uses: the nRF52833 has no
+ * CryptoCell at all, and that lock has been running this stack for weeks.
+ */
+/ {
+	chosen {
+		zephyr,entropy = &rng;
+	};
+};
+
+&cryptocell {
+	status = "disabled";
+};
