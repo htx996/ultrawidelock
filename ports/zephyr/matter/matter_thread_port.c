@@ -263,7 +263,7 @@ static void log_addresses(otInstance *ot)
  * message cannot carry 220 hex characters. Bare lines between the markers, no
  * prefix, so they concatenate without editing.
  */
-void matter_thread_dump_active_dataset(void)
+int matter_thread_dump_active_dataset(void)
 {
 	otInstance *ot = openthread_get_default_instance();
 	otOperationalDatasetTlvs tlvs;
@@ -271,7 +271,7 @@ void matter_thread_dump_active_dataset(void)
 	otError err;
 
 	if (ot == NULL) {
-		return;
+		return -1;
 	}
 
 	openthread_mutex_lock();
@@ -279,8 +279,10 @@ void matter_thread_dump_active_dataset(void)
 	openthread_mutex_unlock();
 
 	if (err != OT_ERROR_NONE) {
-		LOG_ERR("no active dataset to dump (%d)", err);
-		return;
+		/* Not attached yet, or never commissioned. Quiet, because the
+		 * bench caller retries and a per-second error line would bury
+		 * the dataset it is waiting for. */
+		return -1;
 	}
 
 	LOG_ERR("---- BEGIN THREAD DATASET (hex, %u B) -- CONTAINS THE NETWORK KEY ----",
@@ -297,11 +299,16 @@ void matter_thread_dump_active_dataset(void)
 	}
 	LOG_ERR("---- END THREAD DATASET ----");
 	LOG_ERR("join those lines; pass as hex:<joined> to chip-tool pairing ble-thread");
+	return 0;
 }
 #else /* !CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP */
 
-void matter_thread_dump_active_dataset(void)
+/* 0, not an error: a shipping build has nothing to print and nothing to retry.
+ * Returning "not yet" here would spin the bench caller forever in an image
+ * that can never satisfy it. */
+int matter_thread_dump_active_dataset(void)
 {
+	return 0;
 }
 
 #endif /* CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP */
@@ -1364,8 +1371,9 @@ int matter_thread_unadvertise_commissionable(void)
 /**
  * Print the active dataset. No-op; Thread is not built into this image.
  */
-void matter_thread_dump_active_dataset(void)
+int matter_thread_dump_active_dataset(void)
 {
+	return 0;
 }
 
 /**

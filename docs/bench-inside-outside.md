@@ -69,14 +69,15 @@ make flash CDK_BUILD=build/cdk-latch          # NOT flash-erase
 `flash-erase` would take the keys you just stored, along with the credential
 and the Matter fabric. Never use it here.
 
-Let it attach -- `Thread attached after N ms, role 2` on the log -- then open
-the commissioning window from **Apple Home on the iPhone**: the lock's
-settings, **Turn On Pairing Mode**. That sends AdministratorCommissioning
-`OpenCommissioningWindow`, which is what `admin_arm()` hangs the dump on.
+Nothing to press. The bench build retries the dump from its main loop until a
+dataset exists, so it prints itself a second or two after the node attaches.
+No controller involved, which matters: the commissioning window was the only
+trigger until 2026-08-20, and it needs a controller that is talking to you --
+exactly what you do not have when the dataset is what you are missing.
 
-SW2 is **not** the gesture. A short SW2 press opens the DFU window only
-(`ports/zephyr/dfu/dfu_ble_zephyr.c:295`), and holding it through reset on this
-image is a factory reset, which costs you the credential and step 1.
+**Do not hold SW2 through reset on this image.** There is no provisioning
+console here, so that gesture is a factory reset: credential and Matter fabric
+gone. A short press opens the DFU window and is harmless.
 
 The log prints the dataset between two markers:
 
