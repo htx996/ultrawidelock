@@ -69,8 +69,16 @@ make flash CDK_BUILD=build/cdk-latch          # NOT flash-erase
 `flash-erase` would take the keys you just stored, along with the credential
 and the Matter fabric. Never use it here.
 
-Let it attach, then press **SW2** to open the commissioning window. The log
-prints the dataset between two markers:
+Let it attach -- `Thread attached after N ms, role 2` on the log -- then open
+the commissioning window from **Apple Home on the iPhone**: the lock's
+settings, **Turn On Pairing Mode**. That sends AdministratorCommissioning
+`OpenCommissioningWindow`, which is what `admin_arm()` hangs the dump on.
+
+SW2 is **not** the gesture. A short SW2 press opens the DFU window only
+(`ports/zephyr/dfu/dfu_ble_zephyr.c:295`), and holding it through reset on this
+image is a factory reset, which costs you the credential and step 1.
+
+The log prints the dataset between two markers:
 
 ```
 ---- BEGIN THREAD DATASET (hex, NNN B) -- CONTAINS THE NETWORK KEY ----
@@ -182,6 +190,8 @@ OUTSIDE. That is the discrimination working.
 
 `why=0x04` on every approach from both sides means no grant has been recorded
 since boot -- tap NFC once and it goes away.
+
+`why=0x08` for a minute after every unlock is the entry dwell, working.
 
 ## How fast can Test B be?
 
