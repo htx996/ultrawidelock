@@ -31,9 +31,10 @@ developed on the DK and lands on the CDK by changing `ANCHOR_BOARD`.
 |---|---|---|
 | Two-distance side-of-door + triangle gate | `ultrawidelock_fusion` | built, tested |
 | Freshness gate, fail-safe rules | `ultrawidelock_satellite` | built, tested, wired into the lock's PREDICT arm |
-| Anchor-to-anchor DS-TWR on these two boards | `examples/zephyr/anchor` (stage A) | built, never run on this bench |
+| Anchor-to-anchor DS-TWR on these two boards | `examples/zephyr/anchor` (stage A) | run and calibrated 2026-08-21 |
+| CRED ranging engine as a standalone app, no Matter workspace | `examples/zephyr/satellite` (stage B) | built 129 KB, joins a live session from air |
 | Full CRED-tier ranging engine on nRF5340+DWM3000EVB | `apps/nrf5340dk-lock` | built (it is a whole lock) |
-| Phone accepts `N_Resp = 2` | `ULTRAWIDELOCK_NUM_RESPONDERS`, protocol-research.md §7 | measured 2026-07-17 |
+| Phone builds the `N_Resp = 2` layout | `ULTRAWIDELOCK_NUM_RESPONDERS`, protocol-research.md §7 | measured 2026-07-17; slot layout only, see stage B |
 | Sealed lock↔peer link over Thread UDP | `witness_link.c` pattern | built for witnesses, reusable |
 
 What does not exist: `ultrawidelock_satellite_report()` has zero call sites.
@@ -74,8 +75,10 @@ Alternatives considered: **anchor-to-anchor ranging only** never sees the
 phone — it calibrates the baseline and nothing else (kept, as stage A).
 **Passive TDoA listening** needs the same session keys to receive SP3 frames
 plus a solved timebase, and yields worse geometry than an active slot the
-phone is already holding open; it is the fallback if stage B's one real
-unknown fails, not the first choice.
+phone is already holding open. It was written here as stage B's fallback;
+after the 2026-08-21 run it is the *second* fallback, behind block-parity
+alternation (stage B', below), which needs no new timebase and no phone
+behaviour that has not been watched on this bench.
 
 ## Stages
 
@@ -131,6 +134,65 @@ Pass: phone's `Final_Data` reports `nresp=2`, and the satellite's computed
 range tracks a tape measure. Fail twice: fall back to passive TDoA using the
 same key handoff.
 
+RUN 2026-08-21, ~04:15-04:30. Every question the stage asked about OUR
+hardware answered yes; the one question it asked about the PHONE answered no.
+
+Proven, each on a console this night:
+
+- **The satellite joins from air alone.** Given only the lock's session keys,
+  it decrypted the Pre-POLLs cold, tracked block indices, decoded POLL and
+  Final with `cper=0` at `stsq` ~60, and decoded `Final_Data`. The whole
+  URSK -> mURSK -> dURSK/dUDSK ladder runs on a second board that never
+  touched BLE. Receipt: `FINALDATA-2RESP blk=…` plus a `cper=0` FINAL on the
+  satellite's own console. Ground 2 above stops being an inference.
+- **The key handoff works end to end and can be fully automatic.** The lock
+  prints the session line at credential start; a host-side watcher injected
+  it into the satellite's shell at ~0 s lag and the satellite joined
+  mid-session. Late joins cost one block, exactly as pre-poll recovery
+  predicts. Receipt: auto-injected `sid=…` -> `SAT joined sid=…`.
+- **Precision TX in an arbitrary slot works.** `Response_1` fired every round
+  with ~3 ms arm margin, no `HPDWARN`, correct STS index. Receipt:
+  `RESPTX r=0`, 16+ `RESP txdone`.
+
+Answered no: **the phone does not report a second responder.** It builds the
+grown round faithfully -- Final at POLL+3, `Final_Data` at POLL+4, key
+derivation in step -- and still emits `nresp=1` in every `Final_Data`. The
+discriminator was the slot-3 probe (`overlays/bench-2resp-idx1.conf`): the
+LOCK's own radio, the one the phone has granted on for weeks, answered from
+slot 3 and got `tx123` responses, zero records, and a session that FAILED at
+the phase deadline. The transmitter is not the variable; the slot is.
+Confirmed twice, and close-range RF was ruled out separately.
+
+VERDICT: a stock iPhone honors `N_Resp = 2` as slot LAYOUT only -- its
+receive-and-report path is single-responder. Stage B as specified cannot
+pass, and the `nresp=2` pass criterion in the satellite README is unreachable
+on stock phone firmware. Nothing the stage was built out of is wasted: every
+component below it is proven and feeds stage B'.
+
+### B'. Block-parity alternation — the fallback built only from proven parts
+
+Where B's failure routes, ahead of TDoA. Run the ordinary 1-responder round,
+the exact session the phone already grants on. Lock and satellite share the
+session keys (proven, B above) and alternate who transmits `Response_0` by
+ranging-block parity (both nodes track block indices -- also proven). The
+phone sees the session it has always seen. Each node gets a true
+authenticated DS-TWR distance to the credential, on its own half of the
+blocks, at half the previous rate.
+
+Every phone behaviour this depends on was watched on the bench all night.
+The two unproven pieces are both in our own firmware:
+
+1. **The lock's K-consecutive trust layer must tolerate its silent blocks.**
+   Either K counts only the blocks the lock owns, or the window doubles.
+   Cheap to check in the module tests before any board is flashed.
+2. **The phone must not mind its range alternating between two nearby
+   anchors.** Per block the measured distance steps by up to the install
+   baseline. Nothing in the round rejects a range, but a phone-side filter
+   could smooth or drop; only the bench answers this.
+
+Pass: with both nodes alternating, the phone's session survives 40+ blocks
+with `cper=0`, and each node's range tracks a tape measure on its own blocks.
+
 ### C. Report path and the owed timebase
 
 Satellite → lock: `(block index, peer_mm)` in a sealed report. The block
@@ -162,8 +224,12 @@ Deferred until the board exists; nothing above depends on it.
 
 ## Risks
 
-- Stage B's acceptance question is genuinely open; the fallback (TDoA) is
-  real but strictly harder. Budget for stage B to be the long stage.
+- Stage B's acceptance question is CLOSED, negative (2026-08-21): a stock
+  iPhone will not report a second responder. The live risk moved to stage B',
+  where it is smaller and lives in our own code -- the K-consecutive trust
+  layer over silent blocks, and whether the phone tolerates an alternating
+  range. TDoA remains behind B' and is still strictly harder: it needs
+  ns-grade cross-anchor time transfer for a worse measurement.
 - `N_Resp` is baked into key derivation, so lock and satellite builds must
   agree and the setting applies from session establishment — a mid-session
   change desyncs every derived key (known, documented at the knob).
