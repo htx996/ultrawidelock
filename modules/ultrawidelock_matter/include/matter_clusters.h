@@ -1061,17 +1061,6 @@ struct matter_device_info {
 	uint8_t acl[MATTER_ACL_MAX];
 	size_t acl_len;
 
-#if MATTER_FEATURE_CLIENT
-	/*
-	 * ---- binding --------------------------------------------------------
-	 *
-	 * Who this node, as a CLIENT, sends commands to. Unlike the ACL above
-	 * this one IS acted on: matter_client.c walks it on every granted
-	 * unlock. See matter_binding.h for the fabric scoping, which is the
-	 * part that is invisible when it is wrong.
-	 */
-	struct matter_binding_table binding;
-#endif
 	/**
 	 * The NodeOperationalCertStatusEnum the last AddNOC produced, held for
 	 * the same reason as last_commissioning_error: the reply is serialised
@@ -1086,6 +1075,19 @@ struct matter_device_info {
 	 * is no longer the same thing as "the only one".
 	 */
 	uint8_t last_noc_index;
+
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * ---- binding --------------------------------------------------------
+	 *
+	 * Who this node, as a CLIENT, sends commands to. Everything above
+	 * describes what this node SERVES; this is the one thing it originates,
+	 * and matter_client.c walks the table on every granted unlock. See
+	 * matter_binding.h for the fabric scoping, which is the part that is
+	 * invisible when it is wrong.
+	 */
+	struct matter_binding_table binding;
+#endif
 };
 
 /**

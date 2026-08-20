@@ -44,12 +44,14 @@ extern "C" {
 /**
  * How many targets this node stores, across all fabrics.
  *
- * Four rather than one because the list is fabric-scoped and there may be three
- * administrators (MATTER_SUPPORTED_FABRICS), and because a person with a front
- * and a back door has two locks. Beyond that, a write is refused with
- * RESOURCE_EXHAUSTED rather than truncated: a binding list that is silently
- * shorter than what was written is a lock that does not open with no way to
- * see why.
+ * Four rather than one because the list is fabric-scoped, so more than one
+ * administrator (MATTER_SUPPORTED_FABRICS) may want an entry, and because a
+ * person with a front and a back door has two locks. It is deliberately not
+ * derived from MATTER_SUPPORTED_FABRICS: the number that matters is doors this
+ * lock opens, and raising the fabric count does not add a door. Beyond that, a
+ * write is refused with RESOURCE_EXHAUSTED rather than truncated: a binding
+ * list that is silently shorter than what was written is a lock that does not
+ * open with no way to see why.
  */
 #define MATTER_BINDING_MAX 4u
 
