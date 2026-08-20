@@ -80,6 +80,7 @@ static struct ultrawidelock_witness_pick s_pick;
 static int32_t s_range_mm = -1;
 static uint64_t s_nonce;
 static int64_t s_nonce_ms;
+static int64_t s_nonce_sent_ms;
 static int64_t s_deaf_ms;
 static bool s_session;
 
@@ -157,6 +158,7 @@ static void nonce_send(void)
 		}
 	}
 	openthread_mutex_unlock();
+	s_nonce_sent_ms = k_uptime_get();
 }
 
 static bool unseal(struct witness_slot *w, const uint8_t *in, size_t in_len, uint8_t *out,
@@ -197,14 +199,47 @@ static void publish_pair(int64_t now_ms)
 	uint32_t hash = 0u;
 	static uint32_t seq;
 
+	/* Rate-limited: a link that has not yet formed a pair is otherwise
+	 * silent, and "no reports at all", "one witness missing" and "pair
+	 * fine but the phone not yet correlated" all look identical from the
+	 * console. One line every 5 s names the stage that is starving. */
+	static int64_t s_pair_log_ms;
+	bool say = (now_ms - s_pair_log_ms) > 5000;
+
 	if (in == NULL || out == NULL || !in->have || !out->have) {
+		if (say) {
+			s_pair_log_ms = now_ms;
+			LOG_INF("witness pair: waiting (in=%d out=%d)",
+				(in != NULL && in->have) ? 1 : 0,
+				(out != NULL && out->have) ? 1 : 0);
+		}
 		return;
 	}
 	if ((now_ms - in->msg_ms) > WITNESS_STALE_MS ||
 	    (now_ms - out->msg_ms) > WITNESS_STALE_MS) {
+		if (say) {
+			s_pair_log_ms = now_ms;
+			LOG_INF("witness pair: stale (in %d ms, out %d ms)",
+				(int)(now_ms - in->msg_ms), (int)(now_ms - out->msg_ms));
+		}
 		return;
 	}
 	if (!ultrawidelock_witness_pick_best(&s_pick, &hash)) {
+		if (say) {
+			struct ultrawidelock_witness_pick_stats st;
+
+			s_pair_log_ms = now_ms;
+			ultrawidelock_witness_pick_stats(&s_pick, &st);
+			/* Which gate refuses: score, windows, or the rival's
+			 * margin. evict counts labels pushed out of the table;
+			 * climbing fast means the room has more advertisers
+			 * than slots and nothing can accumulate score. */
+			LOG_INF("witness pair: no pick (cand=%u best=%d win=%u rival=%d gap=%d evict=%u range=%d)",
+				(unsigned)st.n_cand, (int)st.best_score,
+				(unsigned)st.best_windows, (int)st.runner_score,
+				(int)st.runner_gap_db,
+				(unsigned)st.evictions, (int)s_range_mm);
+		}
 		return; /* nothing in the room is moving with the ranged phone */
 	}
 
@@ -233,6 +268,37 @@ static void publish_pair(int64_t now_ms)
 		f.ble_rssi_outside_dbm = t->mean_dbm;
 		f.ble_pkts_outside = t->n_pkts;
 		f.anchor_health_mask |= ULTRAWIDELOCK_SIDE_ANCHOR_BLE_OUTSIDE;
+	}
+
+	/*
+	 * A picked label that NEITHER fresh report carries any more is not weak
+	 * signal, it is a retired advertising address: the handset rotated its
+	 * RPA and will never use this label again. Left in place, its banked
+	 * score outranks the same handset's new label by the pick margin and
+	 * blocks re-picking for the rest of the approach (measured 2026-08-21:
+	 * phone touching the outside witness, oi_pkts=0/0 for minutes). Three
+	 * misses tell it apart from one report's tuple-cut flicker.
+	 */
+	{
+		static uint32_t s_miss_hash;
+		static uint8_t s_miss_n;
+
+		if ((f.anchor_health_mask & (ULTRAWIDELOCK_SIDE_ANCHOR_BLE_INSIDE |
+					     ULTRAWIDELOCK_SIDE_ANCHOR_BLE_OUTSIDE)) == 0u) {
+			if (s_miss_hash == hash && s_miss_n < 0xFFu) {
+				s_miss_n++;
+			} else {
+				s_miss_hash = hash;
+				s_miss_n = 1u;
+			}
+			if (s_miss_n >= 3u) {
+				LOG_INF("witness pick: label retired (address rotated)");
+				ultrawidelock_witness_pick_retire(&s_pick, hash);
+				s_miss_n = 0u;
+			}
+		} else {
+			s_miss_n = 0u;
+		}
 	}
 	if (th != NULL && th->have && (now_ms - th->msg_ms) <= WITNESS_STALE_MS) {
 		t = ultrawidelock_witness_msg_find(&th->msg, hash);
@@ -415,19 +481,37 @@ void witness_link_set_range_mm(int32_t range_mm)
 	s_range_mm = range_mm;
 }
 
+/* How long a gap between credential sessions still counts as the SAME
+ * approach. iOS tears the session down on its credential phase deadline and
+ * reconnects within seconds, mid-walk; resetting the pick on that flap
+ * discards the correlation right when it was about to complete (measured
+ * 2026-08-20: session destroyed 22:53:28, recreated 22:53:30, walk lost).
+ * Two different walk-ups are separated by minutes, not seconds. */
+#define SESSION_CARRY_MS 30000
+
 void witness_link_session(bool up)
 {
+	static int64_t s_down_ms;
+	int64_t now = k_uptime_get();
+
 	if (up == s_session) {
 		return;
 	}
 	s_session = up;
-	/* Scoring belongs to one approach. Carrying it across sessions would
-	 * let a candidate proven by one walk-up decide a different one. */
-	ultrawidelock_witness_pick_reset(&s_pick);
-	nonce_roll(k_uptime_get());
-	if (up) {
-		nonce_send();
+	if (!up) {
+		s_down_ms = now;
+		nonce_roll(now);
+		return;
 	}
+	/* Scoring belongs to one approach. Carrying it across approaches would
+	 * let a candidate proven by one walk-up decide a different one -- but a
+	 * session that flaps for seconds inside a single walk-up keeps its
+	 * evidence. */
+	if ((now - s_down_ms) > SESSION_CARRY_MS) {
+		ultrawidelock_witness_pick_reset(&s_pick);
+	}
+	nonce_roll(now);
+	nonce_send();
 }
 
 void witness_link_tick(int64_t now_ms)
@@ -436,6 +520,16 @@ void witness_link_tick(int64_t now_ms)
 		return; /* no approach in progress, nothing to challenge for */
 	}
 	if ((now_ms - s_nonce_ms) < (int64_t)NONCE_MS) {
+		/* Re-send the CURRENT challenge without rolling it. A challenge
+		 * is one unacknowledged UDP multicast through a sleepy child's
+		 * parent queue; when that single datagram is lost, every report
+		 * stays degraded until the next roll, 30 s away (measured
+		 * 2026-08-20: one lost challenge degraded a whole approach).
+		 * Resending is free -- the challenge is a freshness beacon, not
+		 * a secret, and the witnesses just overwrite the same value. */
+		if ((now_ms - s_nonce_sent_ms) >= 3000) {
+			nonce_send();
+		}
 		return;
 	}
 	nonce_roll(now_ms);
