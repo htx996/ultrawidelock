@@ -92,6 +92,7 @@ int main(void)
 		{ "matter_case_client", test_matter_case_client },
 		{ "matter_client_sm", test_matter_client_sm },
 		{ "matter_im_client", test_matter_im_client },
+		{ "matter_binding", test_matter_binding },
 		{ "matter_clusters", test_matter_clusters },
 		{ "ultrawidelock_ml", test_ultrawidelock_ml },
 		{ "ultrawidelock_port", test_ultrawidelock_port },
