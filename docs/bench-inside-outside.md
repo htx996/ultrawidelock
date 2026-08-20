@@ -161,7 +161,35 @@ walk away.
 
 > **Pass: zero unlocks. One unlock is a failure of the whole spike.**
 
-Expect `passive unlock withheld: inside latch (why=0x..)` in the log.
+**Two different refusal lines, and which one you see matters.**
+
+```
+passive unlock withheld: side=<n> conf=<n> flags=0x<nn>    <- the side gate
+passive unlock withheld: inside latch (why=0x<nn>)         <- the latch
+```
+
+The side gate runs first and `break`s, so the latch line only appears once the
+witnesses have produced a confident OUTSIDE decision. During Test A you should
+mostly see the side-gate line: the witnesses are saying INSIDE or nothing, and
+the classifier never hands the latch a decision to veto. Seeing the latch line
+during Test A means the side gate was convinced you were outside and the latch
+caught it -- a much narrower escape, and worth writing down.
+
+Side-gate flags:
+
+| bit | means |
+|---|---|
+| `0x01` | DEGRADED -- a report echoed a retired nonce |
+| `0x02` | MULTI_PHONE |
+| `0x04` | SESSION_MISMATCH |
+| `0x08` | REPLAY |
+| `0x10` | VERSION_MISMATCH |
+| `0x20` | INSIDE_CONTRADICT |
+| `0x40` | EVIDENCE_STALE |
+| `0x80` | QUORUM_FAIL -- not enough witnesses reporting |
+
+`side=0 conf=0 flags=0x80` with no dongles powered is the correct resting
+refusal, MEASURED 2026-08-20 on a walk-up that ranged to 0 cm.
 
 **Test B -- outside.**
 Start 8 m outside, walk to the door at normal pace.
