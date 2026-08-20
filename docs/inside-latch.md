@@ -254,10 +254,14 @@ outside one. During a walk-up the phone is nearly on top of the outside
 witness and certainly ranks in the top few; the inside witness hears that same
 phone through a door and ranks it below whatever else the house is running. If
 it misses the cut there the pair has no inside reading, quorum fails, and no
-clear is possible -- safe, and indistinguishable from a broken lock. A denser
-RF environment than K = 8 covers wants the lock to hint the picked label back
-to the witnesses so it is always included; that is a protocol addition on both
-ends and is not built.
+clear is possible -- safe, and indistinguishable from a broken lock. In a denser
+RF environment than K = 8 covers, the lock hints its picked label back on the
+challenge (the nonce grows a hash24 trailer, 9 B to 12 B) and the witness
+forces that label into the report -- appended when there is room, else in
+place of the quietest tuple. A hint can only name a label the witness actually
+heard in the window; a label heard zero times cannot be conjured, so a forged
+hint buys at most one junk tuple. A bare 9 B challenge clears any standing
+hint. Built on both ends; see ultrawidelock_witness_core_include().
 
 Rules the lock enforces (all lock-side; witnesses hold no authority):
 
