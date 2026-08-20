@@ -62,6 +62,38 @@ static size_t count_array(const uint8_t *buf, size_t len)
 	return n;
 }
 
+/**
+ * OR together the FabricIndex stamp on every entry of an encoded value.
+ *
+ * A bitmask rather than a list because the question these tests ask is WHICH
+ * administrators an unfiltered read exposed, and a count cannot tell two
+ * entries of one fabric from one entry each of two.
+ */
+static unsigned int fabric_mask(const uint8_t *buf, size_t len)
+{
+	struct matter_tlv_reader r;
+	unsigned int mask = 0u;
+
+	matter_tlv_reader_init(&r, buf, len);
+	T_EQ("into an array", matter_tlv_next(&r), MATTER_OK);
+	T_EQ("that opens", matter_tlv_enter(&r), MATTER_OK);
+	while (matter_tlv_next(&r) == MATTER_OK) {
+		if (matter_tlv_enter(&r) != MATTER_OK) {
+			continue;
+		}
+		while (matter_tlv_next(&r) == MATTER_OK) {
+			uint64_t v = 0u;
+
+			if (matter_tlv_tag(&r) == MATTER_TLV_CTX(254u) &&
+			    matter_tlv_get_u64(&r, &v) == MATTER_OK) {
+				mask |= 1u << (unsigned int)v;
+			}
+		}
+		(void)matter_tlv_exit(&r);
+	}
+	return mask;
+}
+
 /** How many entries a read for @p fabric hands back. */
 static size_t read_count(const struct matter_binding_table *t, uint8_t fabric)
 {
@@ -301,6 +333,7 @@ void test_matter_binding(void)
 		struct matter_im_path path;
 		struct matter_tlv_writer w;
 		const uint64_t nodes[] = {0x0102030405060708ULL};
+		const uint64_t nodes_b[] = {0x1112131415161718ULL};
 		const uint16_t endpoints[] = {1u};
 		const uint32_t clusters[] = {MATTER_CLUSTER_DOOR_LOCK};
 		const uint32_t *attrs = NULL;
@@ -411,5 +444,40 @@ void test_matter_binding(void)
 		     (int)srv.write(srv.ctx, &path, buf, len), (int)MATTER_IM_STATUS_SUCCESS);
 		T_EQ("and nothing was taken for a PIN", (int)info.binding.pin_len, 0);
 		T_EQ("the list is what changed", (int)info.binding.count, 1);
+
+		t_group("an unfiltered read crosses fabrics, a filtered one does not");
+
+		/*
+		 * The second administrator binds a door of its own, so the two
+		 * reads below differ by more than a count.
+		 */
+		info.accessing_fabric_index = FABRIC_B;
+		info.accessing_node_id = FABRIC_B;
+		path.attribute = MATTER_ATTR_BINDING_LIST;
+		len = write_list(buf, sizeof(buf), nodes_b, endpoints, clusters, 1u);
+		T_EQ("the second administrator binds one too",
+		     (int)srv.write(srv.ctx, &path, buf, len), (int)MATTER_IM_STATUS_SUCCESS);
+
+		matter_tlv_writer_init(&w, buf, sizeof(buf));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
+			  MATTER_ATTR_BINDING_LIST, true, &w, MATTER_TLV_ANON);
+		T_EQ("a filtered read encodes", matter_tlv_writer_finish(&w, &len), MATTER_OK);
+		T_EQ("and still hands back one entry", (int)count_array(buf, len), 1);
+		T_EQ("stamped with the reader's own fabric", (int)fabric_mask(buf, len),
+		     1 << FABRIC_B);
+
+		matter_tlv_writer_init(&w, buf, sizeof(buf));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
+			  MATTER_ATTR_BINDING_LIST, false, &w, MATTER_TLV_ANON);
+		T_EQ("an unfiltered read encodes", matter_tlv_writer_finish(&w, &len), MATTER_OK);
+		T_EQ("and enumerates both administrators", (int)count_array(buf, len), 2);
+		/*
+		 * The FabricIndex on every entry is what makes this legible
+		 * rather than a leak: a controller reading unfiltered can tell
+		 * whose binding is whose, which is the whole reason the spec
+		 * expects the cross-fabric read to work.
+		 */
+		T_EQ("each stamped with the fabric that wrote it", (int)fabric_mask(buf, len),
+		     (1 << FABRIC_A) | (1 << FABRIC_B));
 	}
 }

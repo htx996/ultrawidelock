@@ -902,18 +902,18 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 		 */
 		if (attribute == MATTER_ATTR_BINDING_LIST) {
 			/*
-			 * Filtered even when the read asked not to be. The
-			 * spec's unfiltered read of a fabric-scoped list
-			 * returns every fabric's entries, each carrying its
-			 * FabricIndex; this one answers with the accessing
-			 * fabric's alone. The entries name DOORS, and one
-			 * administrator enumerating another's bound locks is a
-			 * disclosure this node has no reason to make. Revisit
-			 * with the spec text if a controller is observed to
-			 * need the full list.
+			 * Zero means every fabric. A controller building its
+			 * device model reads wildcards unfiltered, and a
+			 * fabric-scoped list that answered those with one
+			 * fabric's entries would describe this cluster as empty
+			 * to everybody who did not already know what to ask
+			 * for. Nothing is protected by refusing: the privilege
+			 * gate above already required Administer, and a peer
+			 * holding that can write this list and unlock the door.
 			 */
-			(void)fabric_filtered;
-			matter_binding_read(&info->binding, info->accessing_fabric_index, w, tag);
+			matter_binding_read(&info->binding,
+					    fabric_filtered ? info->accessing_fabric_index : 0u,
+					    w, tag);
 			return;
 		}
 		if (info->vendor_id != 0u &&

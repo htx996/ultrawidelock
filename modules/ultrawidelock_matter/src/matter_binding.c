@@ -167,8 +167,13 @@ void matter_binding_read(const struct matter_binding_table *t, uint8_t fabric_in
 		for (uint8_t i = 0u; i < t->count; i++) {
 			const struct matter_binding_target *e = &t->e[i];
 
-			/* One administrator may not enumerate another's. */
-			if (e->fabric_index != fabric_index) {
+			/*
+			 * Zero enumerates every fabric, which is what an
+			 * unfiltered read asks for. Not a magic number that
+			 * could one day collide: matter_binding_write() refuses
+			 * a zero fabric index, so no stored entry can carry one.
+			 */
+			if (fabric_index != 0u && e->fabric_index != fabric_index) {
 				continue;
 			}
 			(void)matter_tlv_start_container(w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);

@@ -131,10 +131,14 @@ int matter_binding_write(struct matter_binding_table *t, uint8_t fabric_index, c
 /**
  * Encode one fabric's entries as the Binding attribute's value.
  *
- * Only @p fabric_index's own entries, because a fabric-scoped list read by one
- * administrator must not enumerate another's. Writes exactly one element,
- * an ARRAY, tagged @p tag -- an empty one when this fabric has bound nothing,
- * which is a legal and common answer.
+ * Only @p fabric_index's own entries, or EVERY fabric's when it is zero, which
+ * is what a read with FabricFiltered false asks for. Every entry carries its
+ * own FabricIndex either way, so an unfiltered reader can still tell them
+ * apart -- that field is why the spec expects cross-fabric reads to work
+ * rather than treating them as a disclosure.
+ *
+ * Writes exactly one element, an ARRAY, tagged @p tag -- an empty one when
+ * there is nothing to report, which is a legal and common answer.
  */
 void matter_binding_read(const struct matter_binding_table *t, uint8_t fabric_index,
 			 struct matter_tlv_writer *w, matter_tlv_tag_t tag);
