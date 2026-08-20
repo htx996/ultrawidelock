@@ -38,7 +38,8 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
   if(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
     zephyr_library_sources(
       ${SRC}/matter_case_client.c
-      ${SRC}/matter_client_sm.c)
+      ${SRC}/matter_client_sm.c
+      ${SRC}/matter_im_client.c)
   endif()
 
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)

@@ -67,6 +67,16 @@ extern "C" {
  */
 #define MATTER_IM_STATUS_SUCCESS               0x00u /* line 31 */
 #define MATTER_IM_STATUS_FAILURE               0x01u /* line 32 */
+/**
+ * The peer knows the command and will not let THIS node run it (line 34).
+ *
+ * Here because the client direction needs to name it: it is what a bound lock
+ * answers when its access control list has no entry for this node, and it is
+ * the single most likely way a binding fails once everything else is right.
+ * Reported as itself rather than as a generic failure, because the fix is
+ * specific and the log line is the only place it can be named.
+ */
+#define MATTER_IM_STATUS_UNSUPPORTED_ACCESS    0x7Eu
 #define MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT  0x7Fu /* line 35 */
 #define MATTER_IM_STATUS_UNSUPPORTED_COMMAND   0x81u /* line 37 */
 #define MATTER_IM_STATUS_INVALID_COMMAND       0x85u /* line 41 */
