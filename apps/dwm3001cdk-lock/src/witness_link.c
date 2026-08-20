@@ -52,7 +52,9 @@ LOG_MODULE_REGISTER(witness_link, LOG_LEVEL_INF);
 #define NONCE_MS      CONFIG_ULTRAWIDELOCK_WITNESS_NONCE_MS
 #define CCM_TAG_LEN   8u
 #define CCM_NONCE_LEN 13u
-#define KEY_LEN       16u
+/* From witness_link.h, so the reader build's `ultrawidelock witkey` writes the
+ * same name and length this reads. */
+#define KEY_LEN       WITNESS_LINK_KEY_LEN
 
 /* One report must fit a single 802.15.4 frame with room for the seal. */
 #define SEALED_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN + CCM_TAG_LEN + CCM_NONCE_LEN)
@@ -78,6 +80,7 @@ static struct ultrawidelock_witness_pick s_pick;
 static int32_t s_range_mm = -1;
 static uint64_t s_nonce;
 static int64_t s_nonce_ms;
+static int64_t s_deaf_ms;
 static bool s_session;
 
 /* Reports older than this are not reports. Matches the satellite module's
@@ -285,6 +288,18 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 		if (unseal(&s_wit[i], sealed, len, plain, sizeof(plain), &plain_len)) {
 			goto opened;
 		}
+	}
+	/*
+	 * Rate-limited on purpose, and present at all for one reason: a link
+	 * key typed differently on the two ends drops every report here in
+	 * silence, and silence is indistinguishable from a witness that never
+	 * booted. Both fail closed, but only one is fixed by retyping a key.
+	 * Says nothing about which key or how it differed.
+	 */
+	if (now - s_deaf_ms > 10000) {
+		s_deaf_ms = now;
+		LOG_WRN("witness datagram no enrolled key opened (%u B); check the "
+			"link keys match", (unsigned)len);
 	}
 	return;
 

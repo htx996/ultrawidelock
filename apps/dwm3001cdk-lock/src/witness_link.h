@@ -22,6 +22,24 @@
 extern "C" {
 #endif
 
+/**
+ * Length of a witness link key.
+ *
+ * Declared here because the code that WRITES these keys is not in the same
+ * image as the code that reads them. The lock image is a Thread build, which
+ * sets CONFIG_SHELL=n, so the image that runs the latch can never have a
+ * console to type a key into. Enrollment is `ultrawidelock witkey` on the
+ * `make reader` build (src/prov_shell.c), and the record survives the reflash
+ * to the Thread image in the settings partition.
+ *
+ * The record is "uwl/wit/k/<role>", role 1..3 (ULTRAWIDELOCK_WITNESS_ROLE_*):
+ * "uwl/wit/k/2" is the outside witness. Reader and writer are registered
+ * separately in PORTING.md and checked against the code by
+ * tests/tooling/port_purity_check.sh, which is what keeps the two ends of a
+ * name nothing prints at runtime from drifting apart.
+ */
+#define WITNESS_LINK_KEY_LEN 16u
+
 /** Open the UDP socket and load witness keys. Safe to call before Thread is up. */
 void witness_link_init(void);
 

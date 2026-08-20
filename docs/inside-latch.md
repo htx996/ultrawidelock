@@ -305,13 +305,49 @@ SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
 - **group key** — 16 bytes, THE SAME on every dongle and deliberately NOT on
   the lock. It labels advertisers so inside can be compared against outside
   (section 5) while the labels stay opaque to the lock.
-- **dataset** — the Thread active operational dataset TLVs, from
-  `ot-ctl dataset active -x` on any node of the network.
+- **dataset** — the Thread active operational dataset TLVs. Take them from the
+  lock, which is already on the network: build it with
+  `overlays/thread-dataset-dump.conf` appended to the whole default `CDK_CONF`
+  list (its header says why the whole list), flash, and press SW2. The dump is
+  on the commissioning-window path, not the attach path, so it prints when the
+  window opens. `ot-ctl dataset active -x` is the alternative and needs a node
+  with a CLI, which an Apple border router does not give you.
 
 All four persist in the witness's settings. It cold-boots into scanning,
 joining and reporting, and holds that for weeks with nothing attached. The LED
 is the only diagnostic once it is on the wall: fast blink unprovisioned, slow
 blink provisioned but not attached, solid attached and reporting.
+
+### 6.1 The lock's half, and why it is a different image
+
+The lock has to be told the same link keys, and it cannot be told them on the
+image that uses them: `overlay-latch.conf` is layered on `overlay-thread.conf`,
+which sets `CONFIG_SHELL=n` because reader plus console plus Thread overruns
+this part's RAM by 1,752 B (`apps/dwm3001cdk-lock/Kconfig`). The image that
+runs the latch has no console at all.
+
+So enrollment happens on the reader image, which does have one, and the record
+survives the reflash:
+
+```
+make reader && make flash CDK_BUILD=build/cdk-reader
+# hold SW2 through reset -> USB CDC console
+ultrawidelock witkey inside   <link-key-hex32>
+ultrawidelock witkey outside  <link-key-hex32>
+
+make build LATCH=1 && make flash LATCH=1      # NOT flash-erase
+```
+
+`flash` without `--erase` is what preserves the settings partition at 0x7E000,
+the same property the reader identity already depends on (`pm_static.yml`).
+`flash-erase` takes the witness keys with everything else, and the lock comes
+back accepting no report from any witness.
+
+Like the dongle's console, `witkey` prints no key material back. It refuses an
+all-zero key, which is what both an uninitialised buffer and a mistyped
+`openssl rand` produce. A key that does not match its dongle is not silent: no
+enrolled key opens the datagram, and `witness_link.c` says so on the log, rate
+limited to once per 10 s.
 
 **Why this is not over the air, which was the earlier plan.** The lock builds
 with `CONFIG_BT_OBSERVER=n` and `CONFIG_BT_CENTRAL=n`: it advertises and
@@ -414,27 +450,33 @@ ULTRAWIDELOCK_WITNESS_STALE_MS       int, default 1500
 decisions) plus the three new bools; `SIDE_FEED_RTT` and `SIDE_PEER_EMIT`
 stay off -- no probe, no address logging.
 
-Size, MEASURED 2026-08-19 on this tree. The estimate this section used to
+Size, MEASURED 2026-08-20 on this tree. The estimate this section used to
 carry was ~7 KB flash / ~1.1 KB RAM, and it held.
 
 | build | FLASH | RAM |
 |---|---|---|
 | `make build` (thread+lto) | 417,684 (96.32%) | 118,312 (90.26%) |
-| `make build LATCH=1` | 424,544 (97.90%) | 119,464 (91.14%) |
-| **delta** | **+6,860 B** | **+1,152 B** |
+| `make build LATCH=1` | 424,672 (97.93%) | 119,464 (91.14%) |
+| **delta** | **+6,988 B** | **+1,152 B** |
 | `RELEASE=1 SMP=1 LATCH=1` | 406,536 (93.74%) | 115,944 (88.46%) |
 
+The `RELEASE=1` row is from 2026-08-19 and predates the 128 B the
+no-key-opened warning added; the two dev rows are current.
+
 The delta is not the interesting number; the residue is. On the dev config
-LATCH=1 leaves 9,120 B free, which is not a budget anything else can be added
+LATCH=1 leaves 8,992 B free, which is not a budget anything else can be added
 to. On the shipping configuration it leaves 27,128 B, which is workable. The
 asymmetry is the logging the dev config carries, and it means the enrollment
 path (stage P7, unbuilt) must be measured against the shipping config or it
 will look affordable and not be.
 
-Default build unchanged, VERIFIED 2026-08-19: commit 588459f5 and this
-branch's HEAD both produce a 417,684 B loadable image differing in exactly 4
-bytes, the `__TIME__` inside OpenThread's version string. Every allocated
-section is identical in size and placement.
+Default build unchanged, VERIFIED 2026-08-20: commit 588459f5 and this
+branch's HEAD both produce a 417,684 B loadable image differing in exactly 8
+bytes, all of them inside OpenThread's version string (`Aug 19 2026 05:14:11`
+against `Aug 20 2026 14:27:53` -- the build date rolled between the two
+comparisons, so more digits differ than the 4 measured on 2026-08-19). text,
+data and bss are identical to the byte, and every allocated section matches in
+size and placement.
 
 ---
 
@@ -492,6 +534,18 @@ Pass: default `make build` byte-identical to baseline;
 `make build LATCH=1 CDK_BUILD=build/cdk-latch` links;
 `make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-latch` reports the
 delta against the section 10 budget.
+
+**P5a -- lock-side enrollment. BUILT.**
+`ultrawidelock witkey <role> <hex32>` on the reader image writes
+`uwl/wit/k/<role>`; the record survives the reflash to the Thread image because
+`make flash` does not erase. Restoring it exposed a separate defect: commit
+4bdfd44a had replaced `prov_shell.c`'s line in
+`apps/dwm3001cdk-lock/CMakeLists.txt` with the `side_feed.c` one instead of
+adding it, so the whole provisioning console -- `prov`, `import`, `export`,
+`erase` -- had been absent from every build since 2026-08-11 while the file and
+its comment stayed in the tree. Both are fixed here.
+Pass: `make reader` links and `cmd_witkey` is in its map (VERIFIED); the lock
+image is unchanged (VERIFIED, section 10). NOT exercised on hardware.
 
 **P6 -- witness firmware v2. BUILT.**
 `examples/zephyr/ble-witness/` is one image for every mounting position: it

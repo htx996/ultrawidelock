@@ -610,8 +610,10 @@ config ULTRAWIDELOCK_THREAD_DATASET_DUMP
 	depends on OPENTHREAD
 	default n
 	help
-	  Logs the active operational dataset as hex the moment Thread attaches,
-	  in the raw TLV form `chip-tool pairing ble-thread` takes.
+	  Logs the active operational dataset as hex in the raw TLV form
+	  `chip-tool pairing ble-thread` takes, when the commissioning window
+	  opens -- an SW2 press, not every attach. Tying it to a gesture the
+	  owner just made is deliberate; see admin_arm() in matter_commission.c.
 
 	  THIS PRINTS THE THREAD NETWORK KEY IN THE CLEAR. Whoever reads that log
 	  can join the network. It exists for one bench job: commissioning a second
