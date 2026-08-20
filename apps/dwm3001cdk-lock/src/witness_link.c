@@ -123,7 +123,8 @@ static void nonce_send(void)
 	otInstance *ot = openthread_get_default_instance();
 	otMessageInfo info;
 	otMessage *msg;
-	uint8_t body[9];
+	uint8_t body[12];
+	uint32_t hint = 0u;
 
 	if (!s_open || ot == NULL) {
 		return;
@@ -150,6 +151,18 @@ static void nonce_send(void)
 	 * must not take it again.
 	 */
 	openthread_mutex_lock();
+	/* The picked label rides along, so the witnesses can keep it in their
+	 * reports even when it would lose the loudness cut -- a pick whose
+	 * label one report drops fails quorum, and that was every window of
+	 * an approach (measured 2026-08-21). The label is opaque to anyone
+	 * without the witness group key, and a forged hint buys at most one
+	 * junk tuple per report: inclusion is not authority. Zero means no
+	 * pick; a real label hashing to zero loses its hint, one in 16M.
+	 * Read under the OT lock: udp_rx() feeds s_pick on the OT thread. */
+	(void)ultrawidelock_witness_pick_best(&s_pick, &hint);
+	body[9] = (uint8_t)(hint >> 16);
+	body[10] = (uint8_t)(hint >> 8);
+	body[11] = (uint8_t)hint;
 	msg = otUdpNewMessage(ot, NULL);
 	if (msg != NULL) {
 		if (otMessageAppend(msg, body, sizeof(body)) != OT_ERROR_NONE ||

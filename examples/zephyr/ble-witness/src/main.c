@@ -108,6 +108,7 @@ static bool s_sock_open;
 static uint32_t s_boot_id;
 static uint32_t s_ctr;
 static uint64_t s_nonce; /* newest challenge heard from the lock */
+static uint32_t s_hint;  /* label the lock asked to always include; 0 = none */
 static bool s_attached;
 
 static struct gpio_dt_spec s_leds[2];
@@ -309,14 +310,20 @@ static void report_send(const uint8_t *buf, size_t len)
  * command, and echoing a wrong one costs a clear rather than granting one. */
 static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 {
-	uint8_t body[9];
+	uint8_t body[12];
 	uint16_t len;
 
 	ARG_UNUSED(ctx);
 	ARG_UNUSED(info);
 
+	/* 9 B is the bare challenge; 12 B carries the lock's picked label as a
+	 * trailer, to be kept in every report while the pick lasts (see
+	 * ultrawidelock_witness_core_include). Either length is a valid
+	 * challenge, and a bare one clears any standing hint -- the lock
+	 * sends the trailer on every challenge for as long as it has a pick,
+	 * so a missing trailer means the pick is gone, not lost in the air. */
 	len = otMessageGetLength(msg) - otMessageGetOffset(msg);
-	if (len != sizeof(body)) {
+	if (len != 9u && len != sizeof(body)) {
 		return;
 	}
 	if (otMessageRead(msg, otMessageGetOffset(msg), body, len) != len) {
@@ -329,6 +336,9 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 	for (int i = 0; i < 8; i++) {
 		s_nonce = (s_nonce << 8) | body[1 + i];
 	}
+	s_hint = (len == sizeof(body))
+			 ? (((uint32_t)body[9] << 16) | ((uint32_t)body[10] << 8) | body[11])
+			 : 0u;
 }
 
 static void ot_state_changed(otChangedFlags flags, void *context)
@@ -420,6 +430,9 @@ static void window_close_and_send(void)
 
 	k_mutex_lock(&s_core_lock, K_FOREVER);
 	n = ultrawidelock_witness_core_summarize(&s_core, &wm, MIN_PKTS);
+	if (s_hint != 0u && ultrawidelock_witness_core_include(&s_core, &wm, s_hint)) {
+		n = wm.n_tuples;
+	}
 	ultrawidelock_witness_core_open(&s_core);
 	k_mutex_unlock(&s_core_lock);
 

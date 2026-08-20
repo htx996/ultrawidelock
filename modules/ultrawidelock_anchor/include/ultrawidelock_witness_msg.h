@@ -70,9 +70,11 @@ extern "C" {
  * clear is possible. That fails safe and feels like a broken lock.
  *
  * Eight tuples plus the header is 85 B, still one 802.15.4 frame with room for
- * the seal. A denser RF environment than that wants the lock to hint the
- * picked label back to the witnesses so it is always included; that is a
- * protocol addition on both ends and is deliberately not done here.
+ * the seal. Raising the count was considered and rejected: past eight the
+ * sealed report no longer fits one frame, and a fragmented report on a
+ * sleepy end device loses more windows than the wider cut saves. The
+ * lock instead hints its picked label back on the challenge so the witnesses
+ * always include it -- see ultrawidelock_witness_core_include().
  */
 #define ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES 8u
 

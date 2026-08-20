@@ -164,6 +164,72 @@ static void test_label_masking(void)
 	T_EQ("mask.pkts", m.tuples[0].n_pkts, 2);
 }
 
+static void test_hinted_label_always_travels(void)
+{
+	struct ultrawidelock_witness_core c;
+	struct ultrawidelock_witness_msg m;
+	uint8_t n;
+
+	t_group("witness_core: the lock's hinted label survives the cut");
+	memset(&m, 0, sizeof(m));
+	ultrawidelock_witness_core_open(&c);
+
+	/* Ten advertisers all louder than the phone, and the phone heard ONCE:
+	 * without the hint it fails both the loudness cut and min_pkts. This is
+	 * the inside witness hearing the phone through a door. */
+	for (int i = 0; i < 10; i++) {
+		for (int k = 0; k < 3; k++) {
+			ultrawidelock_witness_core_note(&c, (uint32_t)(0x2000u + i),
+							(int8_t)(-40 - i));
+		}
+	}
+	ultrawidelock_witness_core_note(&c, 0xABCDEFu, -78);
+
+	n = ultrawidelock_witness_core_summarize(&c, &m, 2u);
+	T_EQ("hint.cut_dropped_it", n, ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES);
+	T_OK("hint.absent_before", ultrawidelock_witness_msg_find(&m, 0xABCDEFu) == NULL);
+
+	T_OK("hint.included", ultrawidelock_witness_core_include(&c, &m, 0xABCDEFu));
+	T_OK("hint.present_after", ultrawidelock_witness_msg_find(&m, 0xABCDEFu) != NULL);
+	/* Full report: the quietest tuple made way, the count did not grow. */
+	T_EQ("hint.still_capped", m.n_tuples, ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES);
+	T_EQ("hint.replaced_last",
+	     m.tuples[ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES - 1u].hash24, 0xABCDEFu);
+	T_EQ("hint.one_packet_mean",
+	     m.tuples[ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES - 1u].mean_dbm, -78);
+}
+
+static void test_hint_appends_when_room_and_never_conjures(void)
+{
+	struct ultrawidelock_witness_core c;
+	struct ultrawidelock_witness_msg m;
+
+	t_group("witness_core: hint appends into a short report, invents nothing");
+	memset(&m, 0, sizeof(m));
+	ultrawidelock_witness_core_open(&c);
+
+	ultrawidelock_witness_core_note(&c, 0x111u, -50);
+	ultrawidelock_witness_core_note(&c, 0x111u, -52);
+	ultrawidelock_witness_core_note(&c, 0x222u, -60);
+
+	T_EQ("append.base", ultrawidelock_witness_core_summarize(&c, &m, 2u), 1);
+	T_OK("append.included", ultrawidelock_witness_core_include(&c, &m, 0x222u));
+	T_EQ("append.grew", m.n_tuples, 2);
+	T_EQ("append.last", m.tuples[1].hash24, 0x222u);
+
+	/* Already in the report: nothing changes, still a success. */
+	T_OK("append.idempotent", ultrawidelock_witness_core_include(&c, &m, 0x111u));
+	T_EQ("append.no_dup", m.n_tuples, 2);
+
+	/* Never heard this window: cannot be conjured. And 0 is the no-hint
+	 * sentinel, never a label. */
+	T_OK("append.unheard", !ultrawidelock_witness_core_include(&c, &m, 0x333u));
+	T_OK("append.zero", !ultrawidelock_witness_core_include(&c, &m, 0u));
+	T_EQ("append.unchanged", m.n_tuples, 2);
+	T_OK("append.null_core", !ultrawidelock_witness_core_include(NULL, &m, 0x111u));
+	T_OK("append.null_msg", !ultrawidelock_witness_core_include(&c, NULL, 0x111u));
+}
+
 void test_ultrawidelock_witness_core(void)
 {
 	test_ranks_by_loudness();
@@ -172,4 +238,6 @@ void test_ultrawidelock_witness_core(void)
 	test_quiet_chatter_cannot_evict_a_near_phone();
 	test_window_boundaries();
 	test_label_masking();
+	test_hinted_label_always_travels();
+	test_hint_appends_when_room_and_never_conjures();
 }

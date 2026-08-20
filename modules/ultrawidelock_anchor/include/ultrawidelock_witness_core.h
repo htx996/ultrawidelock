@@ -99,6 +99,33 @@ uint8_t ultrawidelock_witness_core_summarize(struct ultrawidelock_witness_core *
 					     struct ultrawidelock_witness_msg *msg,
 					     uint8_t min_pkts);
 
+/**
+ * Force one label into an already-summarized report, if it was heard at all.
+ *
+ * This is the receiving half of the lock's hint: the lock sends the label it
+ * has picked back with each challenge, because the pick is worthless the
+ * moment either witness's loudness cut drops that label -- the pair loses
+ * quorum and every window is thrown away (measured 2026-08-21: the picked
+ * label alternated between the two witnesses' reports and no clear was ever
+ * possible). The witness itself cannot know which label matters; only the
+ * lock can, and this is how it says so.
+ *
+ * Call between summarize() and open(), while the window's slots still exist.
+ * A hinted label already in the report is left alone; one heard even once is
+ * appended, or replaces the report's quietest tuple when it is full; one not
+ * heard this window cannot be conjured. The tuple lands last regardless of
+ * loudness, so a report that was loudest-first may end one tuple out of
+ * order -- the lock matches by label and does not care.
+ *
+ * min_pkts is deliberately not applied: for every other label a one-packet
+ * mean is too weak to rank, but the hinted label is not being ranked, it is
+ * being watched, and absence is the one thing the lock cannot afford.
+ *
+ * @return true if the label is in the report on return.
+ */
+bool ultrawidelock_witness_core_include(struct ultrawidelock_witness_core *c,
+					struct ultrawidelock_witness_msg *msg, uint32_t hash24);
+
 #ifdef __cplusplus
 }
 #endif
