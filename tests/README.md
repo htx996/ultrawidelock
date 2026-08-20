@@ -48,8 +48,8 @@ manual.
 baseline still describes the same configuration. When it does not, it exits 3,
 "not comparable", and `fw-regress` fails: a size gate that cannot compare must be
 as loud as one that fails, because the alternative is what already happened here.
-The baseline went not-comparable at the Aliro rename and stayed there for 93
-firmware commits, quietly absorbing about 17 KB of flash growth.
+The baseline went not-comparable at the Kconfig prefix rename and stayed there for
+93 firmware commits, quietly absorbing about 17 KB of flash growth.
 
 So refresh it after a merge to main, not on a feature branch:
 

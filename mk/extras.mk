@@ -48,7 +48,7 @@ fw-regress:
 
 ## cdk-size-age: how far the recorded baseline has fallen behind the firmware
 ##   A baseline is only a gate while it still describes a recent image. This one
-##   went "not comparable" at the Aliro rename and stayed that way for 93
+##   went "not comparable" at the Kconfig prefix rename and stayed that way for 93
 ##   firmware commits, absorbing ~17 KB of flash growth that nothing reported --
 ##   the gate was green-adjacent and judging nothing. cdk-size-check catches a
 ##   changed configuration; this catches the slower failure, a baseline that
