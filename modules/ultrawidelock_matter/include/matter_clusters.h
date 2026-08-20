@@ -401,6 +401,37 @@ struct matter_user {
 #define MATTER_FEATURE_DL_ALARMS 0
 #endif
 
+/*
+ * The Matter CLIENT role, off unless the build asks for it.
+ *
+ * Same shape and the same reason as MATTER_FEATURE_DL_ALARMS above: a portable
+ * macro, defined by this module's CMakeLists when
+ * CONFIG_ULTRAWIDELOCK_MATTER_CLIENT is set, so the host suite and the firmware
+ * agree about it without either one seeing a Kconfig. Off, every source file
+ * here preprocesses to what it was before the client existed -- which is what
+ * keeps the default image byte-identical -- and the four client sources are
+ * not compiled at all.
+ *
+ * It reaches two files that have no client-only source of their own to hide in:
+ * the Binding cluster's surface here (the target list has to be reachable from
+ * a controller and has to live in struct matter_device_info), and the two
+ * initiator-side entry points in matter_exchange.h.
+ *
+ * The cluster is on the LOCK endpoint rather than the root, because a binding
+ * belongs to the endpoint that will act as the client, and the endpoint that
+ * unlocks another lock is the one carrying this one's Door Lock.
+ */
+#ifndef MATTER_FEATURE_CLIENT
+#define MATTER_FEATURE_CLIENT 0
+#endif
+
+#if MATTER_FEATURE_CLIENT
+#include "matter_binding.h"
+
+/** Binding cluster spec, 9.6.4: revision 1, and it has had no other. */
+#define MATTER_BINDING_CLUSTER_REV 1u
+#endif
+
 #if MATTER_FEATURE_DL_ALARMS
 /*
  * The DoorLockAlarm event (door-lock-cluster.xml:709-713).
@@ -1029,6 +1060,18 @@ struct matter_device_info {
 	 */
 	uint8_t acl[MATTER_ACL_MAX];
 	size_t acl_len;
+
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * ---- binding --------------------------------------------------------
+	 *
+	 * Who this node, as a CLIENT, sends commands to. Unlike the ACL above
+	 * this one IS acted on: matter_client.c walks it on every granted
+	 * unlock. See matter_binding.h for the fabric scoping, which is the
+	 * part that is invisible when it is wrong.
+	 */
+	struct matter_binding_table binding;
+#endif
 	/**
 	 * The NodeOperationalCertStatusEnum the last AddNOC produced, held for
 	 * the same reason as last_commissioning_error: the reply is serialised

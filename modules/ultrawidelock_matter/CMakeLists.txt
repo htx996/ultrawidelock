@@ -41,6 +41,18 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
       ${SRC}/matter_client_sm.c
       ${SRC}/matter_im_client.c
       ${SRC}/matter_binding.c)
+    # The client-role code that has no file of its own to live in: the Binding
+    # cluster's surface inside matter_clusters.{c,h} -- the target list has to
+    # be reachable from a controller and has to sit in struct
+    # matter_device_info -- and the two initiator entry points in
+    # matter_exchange.c. Neither can move to a separate file, so both are
+    # guarded by the macro instead and preprocess away without it.
+    #
+    # Global rather than library-scoped, for the same reason as
+    # MATTER_FEATURE_DL_ALARMS below: the app includes matter_clusters.h, and a
+    # header that means one thing to the module and another to its caller is a
+    # struct layout mismatch waiting to happen.
+    zephyr_compile_definitions(MATTER_FEATURE_CLIENT=1)
   endif()
 
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)

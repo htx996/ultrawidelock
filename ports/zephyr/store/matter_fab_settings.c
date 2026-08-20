@@ -35,6 +35,18 @@ LOG_MODULE_REGISTER(matter_fab, CONFIG_LOG_DEFAULT_LEVEL);
 #define KEY_XP    FAB_TREE "/xp"
 #define KEY_ICAC  FAB_TREE "/ic"
 #define KEY_ICLEN FAB_TREE "/il"
+#if MATTER_FEATURE_CLIENT
+/*
+ * The Binding table, in this record rather than one of its own.
+ *
+ * It rides along for the commit record: a binding names a node on a FABRIC, so
+ * a binding that outlived the fabric table would point at an administrator this
+ * node no longer has, and keeping the two under one KEY_OK is what makes them
+ * impossible to restore separately. It also means every path that already
+ * calls matter_fab_store() persists a binding for free.
+ */
+#define KEY_BIND FAB_TREE "/bn"
+#endif
 /*
  * The commit record, and the ONLY key whose presence means "this record is
  * whole". Written last, deleted first.
@@ -193,6 +205,27 @@ static int fab_set(const char *name, size_t len, settings_read_cb read_cb, void 
 		return 0;
 	}
 
+#if MATTER_FEATURE_CLIENT
+	if (settings_name_steq(name, "bn", &next)) {
+		/*
+		 * Refused rather than read short, for the reason the fabric
+		 * above gives: a truncated table has a count that no longer
+		 * describes the entries under it, and this node would then
+		 * unlock a door named by whatever was left in the tail.
+		 */
+		if (len != sizeof(info->binding)) {
+			LOG_WRN("stored bindings are %u B, expected %u -- discarding",
+				(unsigned int)len, (unsigned int)sizeof(info->binding));
+			return -EINVAL;
+		}
+		got = read_cb(cb_arg, &info->binding, sizeof(info->binding));
+		if (got < 0) {
+			return (int)got;
+		}
+		return 0;
+	}
+#endif
+
 	if (settings_name_steq(name, "il", &next)) {
 		uint32_t both = 0u;
 
@@ -284,6 +317,20 @@ int matter_fab_store(const struct matter_device_info *info)
 		}
 	}
 
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * Written whole, including an empty one: "no bindings" is a
+	 * configuration an administrator can choose, and a store that skipped
+	 * an empty table would restore the last non-empty one after a reboot --
+	 * a lock that starts unlocking a door its owner unbound.
+	 */
+	rc = settings_save_one(KEY_BIND, &info->binding, sizeof(info->binding));
+	if (rc != 0) {
+		LOG_ERR("cannot store the binding table (%d)", rc);
+		return rc;
+	}
+#endif
+
 	/*
 	 * The ICAC costs 400 B and Apple has never sent one (icac_len is 0 on
 	 * every fabric this node has held), so it is written only when it
@@ -334,6 +381,9 @@ static void discard_partial(struct matter_device_info *info)
 	info->have_thread_xpanid = false;
 	info->icac.len = 0u;
 	info->icac.owner_index = 0u;
+#if MATTER_FEATURE_CLIENT
+	memset(&info->binding, 0, sizeof(info->binding));
+#endif
 }
 
 int matter_fab_load(struct matter_device_info *info)
@@ -406,7 +456,11 @@ int matter_fab_erase(void)
 	/* KEY_OK first: if the erase is interrupted part way, what is left
 	 * behind is already uncommitted rather than a plausible half-record. */
 	static const char *const keys[] = { KEY_OK, KEY_VER,   KEY_TD,
-					    KEY_XP, KEY_ICLEN, KEY_ICAC };
+					    KEY_XP, KEY_ICLEN, KEY_ICAC,
+#if MATTER_FEATURE_CLIENT
+					    KEY_BIND,
+#endif
+	};
 	int first_err = 0;
 
 	/*

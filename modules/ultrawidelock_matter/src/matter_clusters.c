@@ -81,6 +81,16 @@ static const uint32_t k_lock_servers[] = {
 	MATTER_CLUSTER_DESCRIPTOR,
 	MATTER_CLUSTER_DOOR_LOCK,
 	MATTER_CLUSTER_APPROACH_DIRECTION,
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * Advertised as a SERVER even though the point of it is to make this
+	 * node a client. Not a contradiction: the Binding cluster's server is
+	 * the thing an administrator writes the target list into, and a
+	 * controller that cannot find it here has no way to configure the
+	 * client at all.
+	 */
+	MATTER_CLUSTER_BINDING,
+#endif
 };
 
 /* NetworkInfoStruct (python clusters/Objects.py, NetworkInfoStruct). */
@@ -163,6 +173,9 @@ static bool has_cluster(void *ctx, uint16_t endpoint, uint32_t cluster)
 	if (endpoint == MATTER_ENDPOINT_LOCK) {
 		return cluster == MATTER_CLUSTER_DESCRIPTOR ||
 		       cluster == MATTER_CLUSTER_DOOR_LOCK ||
+#if MATTER_FEATURE_CLIENT
+		       cluster == MATTER_CLUSTER_BINDING ||
+#endif
 		       cluster == MATTER_CLUSTER_APPROACH_DIRECTION;
 	}
 	if (endpoint != MATTER_ENDPOINT_ROOT) {
@@ -229,6 +242,36 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
 			}
 		}
+#if MATTER_FEATURE_CLIENT
+		if (cluster == MATTER_CLUSTER_BINDING) {
+			const struct matter_device_info *info =
+				(const struct matter_device_info *)ctx;
+
+			/*
+			 * The one place in this function that reads ctx, and it
+			 * has to: the PIN attribute's id is built from this
+			 * node's vendor id (MATTER_ATTR_BINDING_PIN), so there
+			 * is no constant to put in a case label. A node with no
+			 * vendor id has no such attribute rather than one at
+			 * 0x0000, which is the standard list.
+			 */
+			if (info != NULL && info->vendor_id != 0u &&
+			    attribute == MATTER_ATTR_BINDING_PIN(info->vendor_id)) {
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			switch (attribute) {
+			case MATTER_ATTR_BINDING_LIST:
+			case MATTER_ATTR_FEATURE_MAP:
+			case MATTER_ATTR_CLUSTER_REVISION:
+			case MATTER_ATTR_ATTRIBUTE_LIST:
+			case MATTER_ATTR_ACCEPTED_CMD_LIST:
+			case MATTER_ATTR_GENERATED_CMD_LIST:
+				return MATTER_IM_STATUS_SUCCESS;
+			default:
+				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
+			}
+		}
+#endif
 		if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			switch (attribute) {
 			case MATTER_ATTR_APPROACH_DIRECTION:
@@ -476,6 +519,26 @@ static const uint32_t k_approach_attrs[] = {
 	MATTER_ATTR_GENERATED_CMD_LIST,
 };
 
+#if MATTER_FEATURE_CLIENT
+/*
+ * The manufacturer-specific PIN attribute is deliberately NOT in this list.
+ *
+ * Its id depends on info->vendor_id and so could not sit in a static array
+ * anyway, but the reason to leave it out is the better one: it never reads back
+ * (see matter_binding_read_pin), and an AttributeList naming an attribute whose
+ * every read is empty invites a controller to keep asking a question this node
+ * has already decided not to answer.
+ */
+static const uint32_t k_binding_attrs[] = {
+	MATTER_ATTR_BINDING_LIST,
+	MATTER_ATTR_FEATURE_MAP,
+	MATTER_ATTR_CLUSTER_REVISION,
+	MATTER_ATTR_ATTRIBUTE_LIST,
+	MATTER_ATTR_ACCEPTED_CMD_LIST,
+	MATTER_ATTR_GENERATED_CMD_LIST,
+};
+#endif
+
 /** An array attribute whose members are bare unsigned ids; NULL/0 is legal
  * and encodes the empty list, which is how a cluster says "no commands". */
 static void put_id_list(struct matter_tlv_writer *w, matter_tlv_tag_t tag, const uint32_t *ids,
@@ -532,6 +595,45 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 			return;
 		}
 	}
+
+#if MATTER_FEATURE_CLIENT
+	if (cluster == MATTER_CLUSTER_BINDING) {
+		/*
+		 * The list first, so a node whose vendor id is still 0 cannot
+		 * have MATTER_ATTR_BINDING_PIN(0) -- which is 0x0000 -- shadow
+		 * the standard attribute that shares that number.
+		 */
+		if (attribute == MATTER_ATTR_BINDING_LIST) {
+			matter_binding_read(&info->binding, info->accessing_fabric_index, w, tag);
+			return;
+		}
+		if (info->vendor_id != 0u &&
+		    attribute == MATTER_ATTR_BINDING_PIN(info->vendor_id)) {
+			matter_binding_read_pin(&info->binding, w, tag);
+			return;
+		}
+		switch (attribute) {
+		case MATTER_ATTR_FEATURE_MAP:
+			/* The cluster defines no features. */
+			(void)matter_tlv_put_u64(w, tag, 0u);
+			return;
+		case MATTER_ATTR_CLUSTER_REVISION:
+			(void)matter_tlv_put_u64(w, tag, MATTER_BINDING_CLUSTER_REV);
+			return;
+		case MATTER_ATTR_ATTRIBUTE_LIST:
+			put_id_list(w, tag, k_binding_attrs,
+				    sizeof(k_binding_attrs) / sizeof(k_binding_attrs[0]));
+			return;
+		case MATTER_ATTR_ACCEPTED_CMD_LIST:
+		case MATTER_ATTR_GENERATED_CMD_LIST:
+			/* A list and nothing else: the cluster has no commands. */
+			put_id_list(w, tag, NULL, 0u);
+			return;
+		default:
+			return;
+		}
+	}
+#endif
 
 	if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 		switch (attribute) {
@@ -1212,6 +1314,12 @@ static size_t list_attrs(void *ctx, uint16_t endpoint, uint32_t cluster, const u
 			*out = k_approach_attrs;
 			return sizeof(k_approach_attrs) / sizeof(k_approach_attrs[0]);
 		}
+#if MATTER_FEATURE_CLIENT
+		if (cluster == MATTER_CLUSTER_BINDING) {
+			*out = k_binding_attrs;
+			return sizeof(k_binding_attrs) / sizeof(k_binding_attrs[0]);
+		}
+#endif
 		return 0u;
 	}
 	if (endpoint != MATTER_ENDPOINT_ROOT) {
@@ -2010,6 +2118,16 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 					(void)matter_thread_unadvertise(iname);
 				}
 			}
+#if MATTER_FEATURE_CLIENT
+			/*
+			 * And the bindings this administrator wrote. A binding
+			 * that outlives the fabric it belongs to is this lock
+			 * still unlocking another lock on behalf of somebody
+			 * who has been removed from the system -- and there is
+			 * nothing left in the table to say who asked for it.
+			 */
+			matter_binding_forget_fabric(&info->binding, f->index);
+#endif
 			memset(f, 0, sizeof(*f));
 			info->last_noc_status = MATTER_NOC_STATUS_OK;
 			info->last_noc_index = (uint8_t)v;
@@ -2774,6 +2892,60 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 			info->approach_direction = (uint8_t)v;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
+#if MATTER_FEATURE_CLIENT
+		if (path->cluster == MATTER_CLUSTER_BINDING) {
+			int rc;
+
+			if (data == NULL || data_len == 0u) {
+				return MATTER_IM_STATUS_INVALID_COMMAND;
+			}
+			/*
+			 * The PIN before the list, and only for a node that has
+			 * a vendor id: MATTER_ATTR_BINDING_PIN(0) is 0x0000,
+			 * which is the standard list attribute, and answering a
+			 * list write by storing its bytes as a PIN is the kind
+			 * of mistake nothing downstream can detect.
+			 */
+			if (info->vendor_id != 0u &&
+			    path->attribute == MATTER_ATTR_BINDING_PIN(info->vendor_id)) {
+				struct matter_tlv_reader r;
+				const uint8_t *pin = NULL;
+				size_t pin_len = 0u;
+
+				matter_tlv_reader_init(&r, data, data_len);
+				if (matter_tlv_next(&r) != MATTER_OK ||
+				    matter_tlv_get_bytes(&r, &pin, &pin_len) != MATTER_OK) {
+					return MATTER_IM_STATUS_INVALID_COMMAND;
+				}
+				if (matter_binding_write_pin(&info->binding, pin, pin_len) !=
+				    MATTER_OK) {
+					return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+				}
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			if (path->attribute != MATTER_ATTR_BINDING_LIST) {
+				return MATTER_IM_STATUS_UNSUPPORTED_WRITE;
+			}
+			/*
+			 * The fabric index comes from the SESSION, which the
+			 * port put here before dispatching. Zero means no
+			 * session chose one, and a fabric-scoped write with no
+			 * fabric behind it has no list to replace.
+			 */
+			if (info->accessing_fabric_index == 0u) {
+				return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+			}
+			rc = matter_binding_write(&info->binding, info->accessing_fabric_index,
+						  data, data_len);
+			if (rc == MATTER_E_NOSPACE) {
+				return MATTER_IM_STATUS_RESOURCE_EXHAUSTED;
+			}
+			if (rc != MATTER_OK) {
+				return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+			}
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+#endif
 		if (path->cluster != MATTER_CLUSTER_DOOR_LOCK) {
 			return has_cluster(ctx, path->endpoint, path->cluster)
 				       ? MATTER_IM_STATUS_UNSUPPORTED_WRITE

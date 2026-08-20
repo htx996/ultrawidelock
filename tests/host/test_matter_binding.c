@@ -45,18 +45,12 @@ static size_t write_list(uint8_t *buf, size_t cap, const uint64_t *nodes, const 
 	return len;
 }
 
-/** How many entries a read for @p fabric hands back. */
-static size_t read_count(const struct matter_binding_table *t, uint8_t fabric)
+/** How many entries an encoded Binding attribute value carries. */
+static size_t count_array(const uint8_t *buf, size_t len)
 {
-	struct matter_tlv_writer w;
 	struct matter_tlv_reader r;
-	uint8_t buf[512];
-	size_t len = 0u;
 	size_t n = 0u;
 
-	matter_tlv_writer_init(&w, buf, sizeof(buf));
-	matter_binding_read(t, fabric, &w, MATTER_TLV_ANON);
-	T_EQ("the read encodes", matter_tlv_writer_finish(&w, &len), MATTER_OK);
 
 	matter_tlv_reader_init(&r, buf, len);
 	T_EQ("into an array", matter_tlv_next(&r), MATTER_OK);
@@ -66,6 +60,19 @@ static size_t read_count(const struct matter_binding_table *t, uint8_t fabric)
 		n++;
 	}
 	return n;
+}
+
+/** How many entries a read for @p fabric hands back. */
+static size_t read_count(const struct matter_binding_table *t, uint8_t fabric)
+{
+	struct matter_tlv_writer w;
+	uint8_t buf[512];
+	size_t len = 0u;
+
+	matter_tlv_writer_init(&w, buf, sizeof(buf));
+	matter_binding_read(t, fabric, &w, MATTER_TLV_ANON);
+	T_EQ("the read encodes", matter_tlv_writer_finish(&w, &len), MATTER_OK);
+	return count_array(buf, len);
 }
 
 void test_matter_binding(void)
@@ -277,4 +284,113 @@ void test_matter_binding(void)
 	matter_binding_read_pin(NULL, NULL, MATTER_TLV_ANON);
 	matter_binding_forget_fabric(NULL, FABRIC_A);
 	T_OK("and an iteration over nothing ends", matter_binding_next(NULL, 0u, &idx) == NULL);
+
+	/*
+	 * From here on the table is reached the way a controller reaches it:
+	 * through the cluster surface in matter_clusters.c. The table itself is
+	 * proven above, so what these check is the WIRING -- that the cluster is
+	 * on the endpoint a controller looks at, that a write is scoped by the
+	 * SESSION's fabric, and that the manufacturer PIN attribute cannot
+	 * shadow the standard list it shares a number with.
+	 */
+	t_group("the cluster a controller writes it through");
+
+	{
+		struct matter_im_server srv;
+		static struct matter_device_info info;
+		struct matter_im_path path;
+		struct matter_tlv_writer w;
+		const uint64_t nodes[] = {0x0102030405060708ULL};
+		const uint16_t endpoints[] = {1u};
+		const uint32_t clusters[] = {MATTER_CLUSTER_DOOR_LOCK};
+		const uint32_t *attrs = NULL;
+		size_t n;
+
+		memset(&info, 0, sizeof(info));
+		matter_clusters_init(&srv, &info);
+		info.vendor_id = 0xFFF1u;
+
+		T_OK("the lock endpoint carries it",
+		     srv.has_cluster(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING));
+		T_OK("the root endpoint does not",
+		     !srv.has_cluster(srv.ctx, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_BINDING));
+
+		n = srv.list_attrs(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING, &attrs);
+		T_OK("and reports an attribute list", n > 0u && attrs != NULL);
+		T_EQ("beginning with the list itself", (int)attrs[0], (int)MATTER_ATTR_BINDING_LIST);
+
+		path.endpoint = MATTER_ENDPOINT_LOCK;
+		path.cluster = MATTER_CLUSTER_BINDING;
+		path.attribute = MATTER_ATTR_BINDING_LIST;
+
+		len = write_list(buf, sizeof(buf), nodes, endpoints, clusters, 1u);
+		/*
+		 * No session, so no fabric. Refused rather than stored under
+		 * fabric 0, which is not a fabric and which no read could hand
+		 * back to anybody.
+		 */
+		info.accessing_fabric_index = 0u;
+		T_EQ("a write with no session behind it", (int)srv.write(srv.ctx, &path, buf, len),
+		     (int)MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+
+		info.accessing_fabric_index = FABRIC_A;
+		T_EQ("the same write on a session", (int)srv.write(srv.ctx, &path, buf, len),
+		     (int)MATTER_IM_STATUS_SUCCESS);
+		T_EQ("stores one target", (int)info.binding.count, 1);
+		T_EQ("stamped with the session's fabric", (int)info.binding.e[0].fabric_index,
+		     (int)FABRIC_A);
+
+		matter_tlv_writer_init(&w, buf, sizeof(buf));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
+			  MATTER_ATTR_BINDING_LIST, &w, MATTER_TLV_ANON);
+		T_EQ("the read encodes", matter_tlv_writer_finish(&w, &len), MATTER_OK);
+		T_EQ("and hands that fabric its one entry", (int)count_array(buf, len), 1);
+
+		/* The other administrator sees an empty list, not this one's. */
+		info.accessing_fabric_index = FABRIC_B;
+		matter_tlv_writer_init(&w, buf, sizeof(buf));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
+			  MATTER_ATTR_BINDING_LIST, &w, MATTER_TLV_ANON);
+		T_EQ("a second administrator's read encodes", matter_tlv_writer_finish(&w, &len),
+		     MATTER_OK);
+		T_EQ("and enumerates nothing of the first's", (int)count_array(buf, len), 0);
+
+		t_group("the PIN attribute, and the number it shares");
+
+		path.attribute = MATTER_ATTR_BINDING_PIN(0xFFF1u);
+		T_EQ("is readable",
+		     (int)srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
+				     path.attribute),
+		     (int)MATTER_IM_STATUS_SUCCESS);
+		{
+			struct matter_tlv_writer pw;
+			uint8_t pin_buf[32];
+			size_t pin_len = 0u;
+
+			matter_tlv_writer_init(&pw, pin_buf, sizeof(pin_buf));
+			(void)matter_tlv_put_bytes(&pw, MATTER_TLV_ANON, (const uint8_t *)"4321",
+						   4u);
+			T_EQ("a PIN encodes", matter_tlv_writer_finish(&pw, &pin_len), MATTER_OK);
+			T_EQ("and the write lands", (int)srv.write(srv.ctx, &path, pin_buf, pin_len),
+			     (int)MATTER_IM_STATUS_SUCCESS);
+		}
+		T_EQ("as four digits", (int)info.binding.pin_len, 4);
+
+		/*
+		 * MATTER_ATTR_BINDING_PIN(0) is 0x0000, which IS the standard
+		 * list attribute. A node that has not been told its vendor id
+		 * must answer that number as the LIST -- otherwise an
+		 * administrator writing a binding has the bytes stored as a
+		 * PIN, and neither end has anything to notice it by.
+		 */
+		info.vendor_id = 0u;
+		info.accessing_fabric_index = FABRIC_A;
+		info.binding.pin_len = 0u;
+		path.attribute = MATTER_ATTR_BINDING_PIN(0u);
+		len = write_list(buf, sizeof(buf), nodes, endpoints, clusters, 1u);
+		T_EQ("with no vendor id, attribute 0 is still the list",
+		     (int)srv.write(srv.ctx, &path, buf, len), (int)MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and nothing was taken for a PIN", (int)info.binding.pin_len, 0);
+		T_EQ("the list is what changed", (int)info.binding.count, 1);
+	}
 }

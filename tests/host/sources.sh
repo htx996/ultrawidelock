@@ -219,7 +219,11 @@ INCS=(
 # exist to pin down and the alternative is a feature whose only proof is on a
 # board. The LockOperation path is compiled identically either way, so the
 # suites covering it still describe the default image.
-DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1)
+# MATTER_FEATURE_CLIENT: the same arrangement for the Binding cluster, which
+# the firmware compiles in only for CONFIG_ULTRAWIDELOCK_MATTER_CLIENT. On here
+# always, because the fabric scoping of that list is the part that is invisible
+# when it is wrong and a board proves nothing about it.
+DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1 -DMATTER_FEATURE_CLIENT=1)
 
 # PY — the interpreter the python-side suites run under: the repo-local .venv
 # when one exists, else the system python3.
