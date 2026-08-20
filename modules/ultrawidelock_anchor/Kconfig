@@ -45,6 +45,21 @@ config ULTRAWIDELOCK_SIDE_GATE
 	  commissioned BLE witnesses will refuse every passive unlock -- that
 	  is intentional fail-closed behaviour, not a regression.
 
+config ULTRAWIDELOCK_SIDE_OUTSIDE_MARGIN_DB
+	int "RSSI margin to call OUTSIDE, decibels"
+	default 6
+	range 1 20
+	depends on ULTRAWIDELOCK_SIDE_GATE
+	help
+	  How much louder the outside witness must hear the phone than the
+	  inside one before a window classifies as OUTSIDE (symmetrically,
+	  INSIDE). Below the margin the window is dead-band and cannot commit
+	  a side. 6 dB assumes the door itself sits between the witnesses; a
+	  bench with both dongles in open air on one plane rarely reaches it,
+	  so bench overlays lower this. Lowering it on a mounted door trades
+	  inside-safety for availability -- the margin is the whole defence
+	  against multipath reading an inside phone as outside.
+
 config ULTRAWIDELOCK_SIDE_PEER_EMIT
 	bool "Bench: log the credential peer address at L2CAP CoC open"
 	depends on ULTRAWIDELOCK_SIDE_GATE
