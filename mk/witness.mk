@@ -18,10 +18,14 @@ WITNESS_PRISTINE := $(if $(PRISTINE),always,auto)
 ##@ BLE witness  ·  one image, role provisioned at install
 ## witness-build: build the witness  -> build/witness-<board>
 ##   TRACE=1 adds the boot-milestone LEDs for a dongle that will not start
+##   WITNESS_CONF=<file> layers a diagnostic overlay on prj.conf
+##   WITNESS_DTC=<file>  layers a devicetree overlay too
 witness-build:
 	@$(CDK_RUN) build -p $(WITNESS_PRISTINE) -b $(WITNESS_BOARD) \
 	  -d $(WITNESS_BUILD) $(WITNESS_APP) \
-	  $(if $(TRACE),-- -DCONFIG_WITNESS_BOOT_TRACE=y)
+	  -- $(if $(TRACE),-DCONFIG_WITNESS_BOOT_TRACE=y) \
+	     $(if $(WITNESS_CONF),-Dble-witness_EXTRA_CONF_FILE="$(WITNESS_CONF)") \
+	     $(if $(WITNESS_DTC),-Dble-witness_EXTRA_DTC_OVERLAY_FILE="$(WITNESS_DTC)")
 
 # The dongle has no debug probe. Its image is linked at 0x1000 behind Nordic's
 # factory USB bootloader (CONFIG_FLASH_LOAD_OFFSET=0x1000, VERIFIED in the
@@ -30,10 +34,18 @@ witness-build:
 WITNESS_HEX := $(WITNESS_BUILD)/ble-witness/zephyr/zephyr.hex
 WITNESS_PKG := $(WITNESS_BUILD)/witness-dfu.zip
 
+# Monotonic, not the constant 1 it used to be. Nordic's bootloader can refuse an
+# update whose application version does not advance, and a refusal that leaves
+# the previous image running is indistinguishable at the LED from a firmware
+# that hangs in the same place -- which cost several bench rounds on 2026-08-20.
+# The build time in seconds always advances and always fits a uint32.
+WITNESS_APP_VERSION := $(shell date +%s)
+
 ## witness-flash: load the witness over USB DFU  ·  WITNESS_PORT_DEV=/dev/tty...
 witness-flash: $(WITNESS_HEX)
 	@if [ -z "$(WITNESS_PORT_DEV)" ]; then 	  printf '  set WITNESS_PORT_DEV to the dongle in bootloader mode.\n'; 	  printf '  Press its RESET button until the LED pulses red, then:\n\n'; 	  printf '    make witness-flash WITNESS_PORT_DEV=$$(ls /dev/tty.usbmodem*)\n\n'; 	  printf '  visible now:\n'; ls /dev/tty.usbmodem* 2>/dev/null || printf '    (none)\n'; 	  exit 1; 	fi
-	@nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 	  --application $(WITNESS_HEX) --application-version 1 $(WITNESS_PKG) >/dev/null
+	@printf '  image: %s  %s\n' "$$(shasum -a 256 $(WITNESS_HEX) | cut -c1-12)" "$$(date -r $(WITNESS_HEX) '+%Y-%m-%d %H:%M:%S')"
+	@nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 	  --application $(WITNESS_HEX) --application-version $(WITNESS_APP_VERSION) $(WITNESS_PKG) >/dev/null
 	@nrfutil nrf5sdk-tools dfu usb-serial -pkg $(WITNESS_PKG) -p $(WITNESS_PORT_DEV)
 	@printf '  loaded. It re-enumerates as a CDC console: screen /dev/tty.usbmodem* 115200\n'
 

@@ -54,6 +54,10 @@
 
 #if IS_ENABLED(CONFIG_WITNESS_BOOT_TRACE)
 void witness_boot_trace_main(void); /* src/boot_trace.c, bench only */
+void witness_boot_trace_phase(unsigned int n); /* src/boot_trace.c, bench only */
+#define TRACE_PHASE(n) witness_boot_trace_phase(n)
+#else
+#define TRACE_PHASE(n) ((void)0)
 #endif
 
 #include <openthread/dataset.h>
@@ -377,6 +381,7 @@ static void thread_start(void)
 
 /* ---- scanning and windows --------------------------------------------- */
 
+#if IS_ENABLED(CONFIG_BT)
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		    struct net_buf_simple *ad)
 {
@@ -395,6 +400,7 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	ultrawidelock_witness_core_note(&s_core, label, rssi);
 	k_mutex_unlock(&s_core_lock);
 }
+#endif /* CONFIG_BT */
 
 static void window_close_and_send(void)
 {
@@ -670,12 +676,14 @@ static void console_poll(void)
 
 int main(void)
 {
+#if IS_ENABLED(CONFIG_BT)
 	static const struct bt_le_scan_param scan_param = {
 		.type = BT_LE_SCAN_TYPE_PASSIVE,
 		.options = BT_LE_SCAN_OPT_NONE,
 		.interval = BT_GAP_SCAN_FAST_INTERVAL,
 		.window = BT_GAP_SCAN_FAST_WINDOW,
 	};
+#endif
 	int64_t next_window;
 
 #if IS_ENABLED(CONFIG_WITNESS_BOOT_TRACE)
@@ -698,12 +706,41 @@ int main(void)
 
 	printk("witness role=%s provisioned=%d\n", role_name(s_prov.role),
 	       provisioned() ? 1 : 0);
+	TRACE_PHASE(1);
 
+#if !IS_ENABLED(CONFIG_OPENTHREAD_SYS_INIT)
+	/* DIAGNOSTIC BUILD ONLY (overlay-otmain.conf). With OPENTHREAD_SYS_INIT
+	 * off, nothing has created the OpenThread instance and main() must do
+	 * it. That is the entire point: called from here the console already
+	 * exists, so a stall inside otSysInit is a printed line rather than a
+	 * dead board. The sleep is for the USB host, which needs a moment to
+	 * enumerate and open the port before anything printed can be seen. */
+	{
+		int ot_rc;
+
+		k_sleep(K_SECONDS(5));
+		printk("openthread_init: calling\n");
+		TRACE_PHASE(2);
+		ot_rc = openthread_init();
+		TRACE_PHASE(3);
+		printk("openthread_init: returned %d\n", ot_rc);
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_BT)
 	if (bt_enable(NULL) != 0) {
 		LOG_ERR("bluetooth would not start");
 	} else if (bt_le_scan_start(&scan_param, scan_cb) != 0) {
 		LOG_ERR("scan would not start");
 	}
+#else
+	/* DIAGNOSTIC BUILD ONLY (overlay-nobt.conf). A witness that does not
+	 * scan cannot witness anything; this exists to answer one question --
+	 * whether the boot survives without the BLE controller -- and the
+	 * answer is read off the LED, not off any report. */
+	LOG_WRN("built with CONFIG_BT=n: this image reports nothing");
+#endif
+	TRACE_PHASE(4);
 
 	if (provisioned()) {
 		thread_start();
@@ -713,6 +750,7 @@ int main(void)
 		LOG_WRN("not provisioned; scanning only, reporting nothing");
 	}
 
+	TRACE_PHASE(5);
 	ultrawidelock_witness_core_open(&s_core);
 	next_window = k_uptime_get() + WINDOW_MS;
 
