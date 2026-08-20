@@ -288,6 +288,106 @@ record only for a responder that actually replied.
 Source: commits `9106aed` (the probe) and `2da85c4` (collapsed onto the
 `ULTRAWIDELOCK_NUM_RESPONDERS` knob), PR #8. The raw serial capture was never committed.
 
+### Bench check: a real `Response_1`, and what CCC v4 requires (2026-08-21)
+
+The 2026-07-17 probe left one thing open: no second anchor had ever transmitted. On
+2026-08-21 one did. A satellite (`examples/zephyr/satellite`, nRF5340 DK + DWM3000EVB)
+holding the session URSK joined from the air alone, decoded Pre-POLL, POLL and Final at
+`cper=0`, and transmitted `Response_1` in slot 3 every round with about 3 ms of arm margin
+and no HPDWARN. The phone's `Final_Data` still reported `nresp=1`. A control run with the
+LOCK's own proven radio rebuilt as `RESPONDER_INDEX=1` answered the same way: `tx123`
+responses, zero records, session FAILED at the phase deadline.
+
+**Our slot and STS arithmetic is spec-conformant, so it is not the cause.** Checked against
+Table 20-2 (`ccc-v4.txt` l.53806-53874), the responder-slot formula (l.54244-54246) and the
+STS increment list (l.55650-55668):
+
+| Frame | CCC absolute | Relative to POLL | This tree | Site |
+|---|---|---|---|---|
+| `Response_l` STS | slot `2+l`, STS `+2+l` | `+1+l` | `widx + 1u + RESPONDER_INDEX` | `ccc_shim_rx.c:585` |
+| `Response_l` RMARKER | slot `2+l` | `+1+l` slots | `poll_ip + RESP_SLOT + l*SLOT` | `ccc_shim_rx.c:1485` |
+| Final | slot `N+2`, STS `+N+2` | `+N+1` | `FINAL_SLOT_OFFSET = N+1` | `cred_round_config.h:88` |
+| Final_Data | slot `N+3` | `+N+2` | observed at POLL+4 for `N=2` | bench |
+
+**What CCC actually requires of the report is narrower than "report every responder."** On
+the `Final_Data` payload (l.54234-54252):
+
+> "All the ranging measurement time stamps for all responders, up to N_Responder, whose
+> valid ranging responses have been received at the initiator. The initiator may
+> additionally add the time stamp data of responders where no valid response has been
+> received."
+
+Shall for validated responders, may for the rest. So `nresp=1` is compliant if and only if
+the phone did not treat the slot-3 frame as a *valid* response, and the phone is never
+obliged to pad. Nor is there any capability by which an initiator may declare itself
+single-responder: the device's `Ranging_Capability_RS` carries only `Selected_UWB_Config_Id`
+and `Selected_PulseShape_Combo` (l.44869-44913), and its `Ranging_Session_Setup_RS` carries
+only `STS_Index0`, `UWB_Time0`, `HOP_Mode_Key`, `SYNC_Code_Index` (l.45361-45400).
+`Number_Responder_Nodes` is set unilaterally by the vehicle in `Ranging_Session_Setup_RQ`
+and cannot be negotiated down.
+
+**There is no addressing to get wrong.** An SP3 RFRAME has no MAC header at all
+(l.55249-55252):
+
+> "the Auxiliary header is not relevant to SP3 packets [...] since SP3 packets do not get
+> security processing due to the fact they do not carry MAC data frames (payload, MHR, and
+> MFR)."
+
+and identity is positional by design (l.55789-55792):
+
+> "SP3 is intended for use cases where the participants in the secure ranging exchange are
+> known to each other such that information about the source and/or the destination are
+> implicit in the knowledge of what STS is used for transmission and reception."
+
+So a responder is identified by *which slot it transmits in and which STS it uses*, and
+nothing else. Both were verified conformant above. This kills the obvious benign
+explanation -- there is no address field we could have failed to populate.
+
+What the initiator is able to object to is enumerated in Table 20-7 (l.54536-54556):
+`0x0` success, `0x1` transaction overflow ("RESPONSE SP3 frame from this responder cannot be
+processed by the device"), `0x2` transaction expired ("No RESPONSE SP3 frame was received
+from this responder"), `0x3` incorrect frame ("The RESPONSE SP3 frame received from this
+responder was not correct"). Had the phone padded a record for responder 1, that byte would
+have named the reason. It padded nothing, which the spec permits, so the silence carries no
+diagnosis.
+
+That leaves the conclusion the 2026-08-21 run reached, now on firmer ground: **the phone's
+report path is single-responder in practice**, whatever the spec permits. The residual
+alternative is only that it never armed a receiver in slot 3 -- which is the same statement
+from the other side.
+
+The discriminator still worth running: have the LOCK listen in slot 3 and verify the
+satellite's `Response_1` STS using the session keys it already holds. A peer holding the same
+keys validating that frame closes the last gap between "we transmitted something wrong" and
+"the phone does not listen there."
+
+**Roles, for the record** (l.52707-52716). The PHONE is initiator *and* controller; the lock
+is the "responder-device"; each anchor is a "responder". The party that builds and transmits
+the measurement report is therefore the phone, and a lock cannot compel what goes into it.
+
+**Two clauses that matter for any two-anchor design.** First, silence in a slot is ordinary
+(l.54128-54130):
+
+> "If any of the responders does not receive the POLL message in the current ranging round
+> from the initiator, that responder shall not transmit during its dedicated response slot."
+
+No retry counter, no round abort; a skipped round is merely "mitigated by employing the
+ranging round hopping strategy" (l.52862-52867). Second, per-round responder selection is
+explicitly the responder-device's call (l.54484-54491):
+
+> "It is up to the vehicle to determine which set of its responders it will involve in the
+> ranging exchange in each ranging round."
+
+Together those put block-parity alternation (second-anchor.md stage B') inside the
+sanctioned model, where stage B's un-enrolled second responder sat outside it: l.52730-52736
+makes coordinating "which logical responders transmit and in which order" the
+responder-device's duty. Also noted there: one round is limited to 7 responders "due to the
+maximum time stamp value for the Final message", with `N_Responder <= 10` fixed at setup.
+
+Source: `ccc-v4.txt`, the CCC Digital Key Technical Specification v4.0.0 (CCC-TS-101), read
+locally. Line numbers index that text extraction, not the PDF's pages. Quotes above were
+re-read at those lines rather than copied from notes.
+
 ### STS index and the key ladder
 
 ```
@@ -402,6 +502,76 @@ negotiated but the STS is mismatched" from "STS lines up but there is no RF link
 single most useful question when distances vanish: is BLE still trading setup and ranging
 control messages while the UWB side has gone silent? If so, the problem is in the
 radio/parameter/STS path, not the control stack.
+
+## 11. Aliro 1.0: what it inherits, and the two-round block
+
+Aliro v1.0 (dated 2026-02-18) is the access-control profile of this same machinery. It cites
+CCC Digital Key **4.0.0 specifically** (`aliro-1.0.txt` l.750) and delegates nearly
+everything: the MAC layer to CCC §20 (l.9555-9557), the ranging exchange sequence to CCC
+§20.5 (l.9596-9597), the PHY to CCC §21 (l.10011-10012), and the key ladder and STS to CCC
+§22.1/22.2 (l.10015-10016). Roles are preserved exactly: User Device is Initiator, Reader is
+Responder-device (Figure 12-2, l.9762-9767).
+
+What it actually changes:
+
+| Area | Aliro |
+|---|---|
+| Vendor OUI in the SP0 MHR | `0x4A191B`, the CSA identifier (l.10006-10007) |
+| Hopping | CCC's AES sequence is FORBIDDEN; only Aliro §17's default applies (l.7527-7528) |
+| URSK root | not CCC's ladder -- offset 128 of `derived_keys_fast` / `_volatile` (l.3011-3013, 3055-3057) |
+| URSK lifetime | 12 h TTL, and discarded when the BLE link drops (l.6272-6285) |
+| Setup | four messages M1-M4, not CCC's two RQ/RS pairs (l.9748-10003) |
+| UWB session id | low four octets of the Transaction Identifier (l.7509-7511) |
+| New attribute | MAC Mode, attribute ID 15 (l.7589-7600) |
+
+`Number_Responder_Nodes` is left alone: Aliro states no numeric constraint, so CCC's 1-255
+range and 10-per-round cap govern. Its one arithmetic addition,
+`N_Slot_per_Round >= N_Responder + 4` (l.9955-9959), independently corroborates the slot
+layout above -- four overhead slots plus one per responder puts `Response_l` at slot `2+l`.
+
+### The two-round block -- Aliro's own answer to inside/outside
+
+This is the single architectural idea Aliro adds, and it addresses precisely the question
+this repo exists to answer (§12.1.1, l.9571-9582):
+
+> "One or two ranging rounds out of all the ranging rounds per ranging block of a ranging
+> session are used for the UWB ranging procedure. [...] **Two ranging rounds per ranging
+> block enable 'in front of' and 'behind the Reader' detection by the Reader.** [...] A
+> Reader MAY optionally support two ranging rounds per ranging block while **a User Device
+> SHALL support two ranging rounds per ranging block.** [...] Additionally, the
+> responder-device SHALL be responsible for mapping responders (at the responder-device) to
+> the appropriate ranging rounds."
+
+Mechanics: the two rounds sit at a session-constant non-zero offset `O^k` in rounds, chosen
+by the Reader at setup and signalled in the MAC Mode attribute. They run two hopping
+sequences related by `f_i = h_i + O^k` (l.9585-9591). `N_Responder` is per round, so a
+two-round block ranges up to `2N` nodes. Round indices start at `Round_Idx_1 = 0`,
+`Round_Idx_2 = O^k`.
+
+Three properties make this stronger than anything on the multi-responder path:
+
+1. **Phone support is mandatory.** "A User Device SHALL support two ranging rounds per
+   ranging block." By contrast `Number_Responder_Nodes = 2` only ever obliged the phone to
+   reserve a slot, and the 2026-08-21 bench showed it will not report the occupant.
+2. **Both anchors measure inside the same block**, separated by `O^k x T_Round` rather than
+   a whole 192 ms block. `ultrawidelock_fusion_eval` demands a same-round pair; this gets far
+   closer to one than block-parity alternation can.
+3. **Neither anchor loses rate.** Alternation halves each anchor's sample rate; two rounds
+   per block does not.
+
+The specific hazard (l.9709-9736): if *either* Final_Data goes unheard, the responder-device
+unconditionally assumes a hop and sets both `Hop_Flag` to 1. Two physical units must
+therefore share Final_Data reception state, not merely the URSK, or they will compute
+different next-round indices and desynchronise.
+
+Not addressed by Aliro at all: AoA and antennas (zero hits), any distance threshold or
+proximity policy (`distance`, zero hits), relay attacks (zero hits). How a Reader turns a
+range into an access decision is out of scope. The only key-sharing language is
+non-normative §16.2.6 (l.11545-11551), which contemplates a URSK travelling "to an external
+UWB chip" over a protected channel, and does not require that chip to sit in the same
+enclosure.
+
+Source: `aliro-1.0.txt`, Aliro Specification v1.0. Line numbers index that text extraction.
 
 ## Credits
 
