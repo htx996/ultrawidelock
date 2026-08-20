@@ -41,6 +41,31 @@ writes `build/regress-hil/<timestamp>/verdict.txt`, mapping each stage to its ro
 in `docs/hardware-validation.md`; rows CDK-9, CDK-10 and CDK-14..CDK-18 are still
 manual.
 
+### Keeping the size baseline honest
+
+`make cdk-size-check` compares the built image against
+`apps/dwm3001cdk-lock/size-baseline.json`, and it can only do that while the
+baseline still describes the same configuration. When it does not, it exits 3,
+"not comparable", and `fw-regress` fails: a size gate that cannot compare must be
+as loud as one that fails, because the alternative is what already happened here.
+The baseline went not-comparable at the Aliro rename and stayed there for 93
+firmware commits, quietly absorbing about 17 KB of flash growth.
+
+So refresh it after a merge to main, not on a feature branch:
+
+```
+make regress                 # builds every configuration and gates size
+make cdk-size-baseline       # re-record from the matter build
+make cdk-size-baseline CDK_BUILD=$ULTRAWIDELOCK_BUILD_ROOT/cdk-shipping
+```
+
+Both entries are recorded, and the shipping one is what the gate treats as
+primary. `fw-regress` ends with `cdk-size-age`, which prints how many
+firmware-touching commits the baseline is behind HEAD and says so loudly past
+`CDK_SIZE_AGE_WARN` (25). It warns rather than fails, because a feature branch is
+legitimately ahead of the baseline and a gate that cries on every branch is one
+people learn to ignore.
+
 One suite is registered but out of the default set, and runs from `make regress`
 instead: `patchdrift` fetches from public GitHub, so it cannot be in a set that has
 to pass offline. The `twin` suite is in the default set and needs the emscripten
