@@ -493,6 +493,7 @@ int main(void)
 	int64_t side_deny_log_ms = 0;
 
 	ultrawidelock_side_defaults(&side_cfg);
+	side_cfg.rssi_outside_margin_db = CONFIG_ULTRAWIDELOCK_SIDE_OUTSIDE_MARGIN_DB;
 	ultrawidelock_side_filter_init(&side_filt, &side_cfg);
 	{
 		/* Boot: no witnesses yet => UNKNOWN + quorum fail (fail-closed). */
@@ -620,10 +621,12 @@ int main(void)
 				feat.calibration_ver = side_cfg.calibration_ver;
 				side_dec = ultrawidelock_side_filter_feed(&side_filt, &feat);
 				side_feed_ms = now;
-				LOG_INF("side feed: side=%u conf=%u flags=0x%02x oi_pkts=%u/%u",
+				LOG_INF("side feed: side=%u conf=%u flags=0x%02x oi_pkts=%u/%u rssi_io=%d/%d",
 					(unsigned)side_dec.side, side_dec.confidence,
 					side_dec.flags, feat.ble_pkts_inside,
-					feat.ble_pkts_outside);
+					feat.ble_pkts_outside,
+					(int)feat.ble_rssi_inside_dbm,
+					(int)feat.ble_rssi_outside_dbm);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 				/*
 				 * Only decisions the side gate would itself
