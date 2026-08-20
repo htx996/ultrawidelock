@@ -1066,6 +1066,124 @@ static void t_matter_exchange_initiator_session(void)
 	     matter_exchange_ack_initiator(&x, 0x0055u, out, sizeof(out), &out_len),
 	     MATTER_E_STATE);
 
+	t_group("initiator and responder, both real, talking to each other");
+	{
+		/*
+		 * Every other initiator case above hand-builds the peer's side
+		 * of the conversation, so it can only assert that this node
+		 * framed what the test author expected. This one runs a real
+		 * responder against it: the bytes the initiator seals go into
+		 * matter_exchange_recv(), and the bytes the responder seals come
+		 * back. A disagreement about session ids, node ids, the I flag
+		 * or which key seals which direction fails here rather than on a
+		 * bench.
+		 *
+		 * NOT a conformance test. Both halves share this repo's reading
+		 * of the spec, so a misunderstanding they share still passes.
+		 * What it catches is the two of them disagreeing with EACH
+		 * OTHER, which is where both bugs found during development were.
+		 */
+		struct matter_session_keys keys_r;
+		struct matter_session_keys keys_i;
+		struct matter_exchange ini;
+		struct matter_exchange res;
+		struct matter_exchange_in got_req;
+		struct matter_exchange_in got_rsp;
+		uint8_t wire[256];
+		uint8_t plain[256];
+		size_t wire_len = 0u;
+		int rc_loop;
+		static const uint8_t k_req[] = {0x15u, 0x24u, 0x00u, 0x01u, 0x18u};
+		static const uint8_t k_rsp[] = {0x15u, 0x24u, 0x00u, 0x02u, 0x18u};
+
+		for (size_t i = 0; i < MATTER_KEY_LEN; i++) {
+			keys_r.i2r[i] = (uint8_t)(0x10u + i);
+			keys_r.r2i[i] = (uint8_t)(0x40u + i);
+			keys_r.attestation_challenge[i] = (uint8_t)(0x70u + i);
+		}
+		/*
+		 * Mirrored, because matter_exchange.c always seals with r2i and
+		 * opens with i2r whatever role it is playing. The initiator gets
+		 * the swapped pair that matter_case_client_keys() hands it, and
+		 * the two then agree. Give both sides the same struct and every
+		 * message fails to decrypt.
+		 */
+		memcpy(keys_i.i2r, keys_r.r2i, MATTER_KEY_LEN);
+		memcpy(keys_i.r2i, keys_r.i2r, MATTER_KEY_LEN);
+		memcpy(keys_i.attestation_challenge, keys_r.attestation_challenge,
+		       MATTER_KEY_LEN);
+
+		memset(&ini, 0, sizeof(ini));
+		memset(&res, 0, sizeof(res));
+		T_EQ("the initiator opens its session",
+		     matter_exchange_open_initiator(&ini, 0x00A1u, 0x00B2u, 0x0077u, &keys_i, SEED),
+		     MATTER_OK);
+		matter_exchange_init(&res, SEED, true);
+		T_EQ("the responder installs the same session",
+		     matter_exchange_promote(&res, 0x00B2u, 0x00A1u, &keys_r, SEED), MATTER_OK);
+		matter_exchange_set_op_node_ids(&ini, 0xAAAAu, 0xBBBBu);
+		matter_exchange_set_op_node_ids(&res, 0xBBBBu, 0xAAAAu);
+
+		T_EQ("the initiator sends first, which is the whole point",
+		     matter_exchange_send_initiator(&ini, 0x0077u,
+						    MATTER_PROTOCOL_INTERACTION_MODEL, 0x08u,
+						    k_req, sizeof(k_req), wire, sizeof(wire),
+						    &wire_len),
+		     MATTER_OK);
+
+		/*
+		 * Guarded on the return code, because got_req carries no payload
+		 * pointer when the receive failed and reading one crashes the
+		 * runner instead of printing a FAIL row. A test that segfaults
+		 * on regression reports nothing about what regressed.
+		 */
+		rc_loop = matter_exchange_recv(&res, wire, wire_len, &got_req, plain, sizeof(plain));
+		T_EQ("and a real responder accepts it", rc_loop, MATTER_OK);
+		if (rc_loop == MATTER_OK) {
+			T_EQ("with the opcode intact", got_req.opcode, 0x08L);
+			T_EQ("and the payload intact", (long)got_req.payload_len,
+			     (long)sizeof(k_req));
+			T_OK("byte for byte", memcmp(got_req.payload, k_req, sizeof(k_req)) == 0);
+			/* It adopted the id the INITIATOR chose, not one of its own. */
+			T_EQ("on the exchange the initiator named", (long)res.exchange_id, 0x0077L);
+			T_OK("and owes an acknowledgement", res.ack_pending);
+		}
+
+		wire_len = 0u;
+		T_EQ("the responder answers",
+		     matter_exchange_reply(&res, 0x09u, k_rsp, sizeof(k_rsp), wire, sizeof(wire),
+					   &wire_len),
+		     MATTER_OK);
+		T_OK("having paid the acknowledgement it owed", !res.ack_pending);
+
+		rc_loop = matter_exchange_recv(&ini, wire, wire_len, &got_rsp, plain, sizeof(plain));
+		T_EQ("and the initiator accepts that", rc_loop, MATTER_OK);
+		if (rc_loop != MATTER_OK) {
+			got_rsp.opcode = 0;
+			got_rsp.carries_ack = false;
+		} else {
+			T_EQ("with its opcode", got_rsp.opcode, 0x09L);
+			T_OK("and its payload",
+			     memcmp(got_rsp.payload, k_rsp, sizeof(k_rsp)) == 0);
+		}
+		/*
+		 * The reply carried the responder's ack. An initiator that could
+		 * not match it would sit waiting for one and retry a request the
+		 * peer already answered.
+		 */
+		T_OK("the answer acknowledged the request", got_rsp.carries_ack);
+		T_EQ("still this node's exchange", (long)ini.exchange_id, 0x0077L);
+
+		wire_len = 0u;
+		T_EQ("and the initiator can acknowledge in turn",
+		     matter_exchange_ack_initiator(&ini, 0x0077u, wire, sizeof(wire), &wire_len),
+		     MATTER_OK);
+		T_EQ("which the responder accepts as well",
+		     matter_exchange_recv(&res, wire, wire_len, &got_req, plain, sizeof(plain)),
+		     MATTER_OK);
+		T_EQ("as a standalone acknowledgement", got_req.opcode, (long)MATTER_SC_OP_ACK);
+	}
+
 	t_group("neither entry point invents a session");
 
 	T_EQ("no exchange to open",
