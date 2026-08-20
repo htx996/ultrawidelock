@@ -25,6 +25,22 @@ config ULTRAWIDELOCK_MATTER
 config ULTRAWIDELOCK_MATTER_CLIENT
 	bool "Matter client: start CASE and send commands to another node"
 	depends on ULTRAWIDELOCK_MATTER
+	# Finding the bound peer is a DNS-SD service query, and OpenThread's DNS
+	# client is not in a default build: MEASURED at 4,052 B of flash and 160 B
+	# of RAM on this image, which is why it arrives with the feature that
+	# needs it rather than being on for everyone. Conditional, because this
+	# module also builds on hosts and ports that have no OpenThread at all.
+	#
+	# Guarded on OPENTHREAD and NOT on NET_L2_OPENTHREAD, which is the one
+	# that looks right and is not: this app drives OpenThread's own API
+	# directly and never brings up Zephyr's L2, so that symbol is unset and a
+	# select behind it silently does nothing. MEASURED: the resulting image
+	# had CONFIG_ULTRAWIDELOCK_MATTER_CLIENT=y and
+	# `# CONFIG_OPENTHREAD_DNS_CLIENT is not set`, and still linked, because
+	# nothing called the resolver yet and LTO dropped it. It would have
+	# failed as an undefined otDnsClientResolveService the moment something
+	# did.
+	select OPENTHREAD_DNS_CLIENT if OPENTHREAD
 	default n
 	help
 	  Compile the CASE INITIATOR: the half of the handshake this node needs

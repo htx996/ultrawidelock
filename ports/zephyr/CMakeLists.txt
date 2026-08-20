@@ -137,6 +137,15 @@ if(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 		${CMAKE_CURRENT_SOURCE_DIR}/store/matter_fab_settings.c)
 endif()
 
+# Resolving somebody ELSE, which only a client build does. Separate from
+# matter_thread_port.c rather than guarded inside it, so an image without the
+# client carries no otDnsClient at all -- the measured cost of that library is
+# 4,052 B of flash, which is not a rounding error on this part.
+if(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
+	target_sources(app PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/matter/matter_dns_port.c)
+endif()
+
 # Initiator (User-Device role) BLE central transport, the mirror of
 # ble/ultrawidelock_ble_zephyr.c. examples/zephyr/nrf5340dk-initiator lists this file by path
 # instead: it carries no Kconfig of its own to define this gate.
