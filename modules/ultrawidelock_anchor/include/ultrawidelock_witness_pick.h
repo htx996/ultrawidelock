@@ -71,9 +71,14 @@ extern "C" {
  * MSG_MAX_TUPLES is forced to evict on every report even when nothing
  * changed, and in a room with more advertisers than slots that cycled the
  * whole table window to window, so no label ever survived long enough to
- * score (measured 2026-08-20).
+ * score (measured 2026-08-20). +4 carryover was still not enough: rotating
+ * ambient RPAs kept the table full and evicting at ~1.4 slots per report,
+ * and a phone mid-build at score 0-1 is exactly who the eviction rule picks
+ * next, so its windows kept resetting (measured 2026-08-21, evict 0->21 in
+ * 90 s). Each slot is ~16 B; carrying two full reports of strangers is
+ * cheaper than never finishing a score.
  */
-#define ULTRAWIDELOCK_WITNESS_PICK_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES + 4u)
+#define ULTRAWIDELOCK_WITNESS_PICK_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES + 16u)
 
 /** Scoring thresholds. */
 struct ultrawidelock_witness_pick_cfg {
