@@ -51,6 +51,25 @@ Every command it runs is printed before it runs. `chip-tool`'s argument
 spelling has drifted between releases, so if one is rejected by your build, the
 printed line is the thing to adjust.
 
+## Any administrator will do, not just chip-tool
+
+The helper uses `chip-tool` because it is the reference implementation and it
+runs anywhere. Nothing in the design requires it. Both writes in the list above
+are ordinary Matter attribute writes, so **any** administrator on the fabric
+that can write an attribute can do them: the ACL entry on the target lock, and
+the binding list on this one.
+
+Home Assistant's Matter integration is the obvious second option, and it is a
+better one for most people: it is probably already commissioned onto the target
+lock, and it does not need a terminal. Note what role it is playing here. It is
+the *administrator*, used once at setup time to write two attributes. It is
+**not** in the unlock path afterwards, and it can be switched off, rebooted or
+thrown away without the front door noticing. That is a different arrangement
+from the automation described at the bottom of this page, and the difference is
+the whole point of the binding.
+
+Whichever administrator you use, the sequence and the values are the ones below.
+
 ## Doing it by hand
 
 The helper is a wrapper, not magic. The four commands, with `$UWB` the UWB
@@ -154,6 +173,22 @@ Four limits, stated because none of them is visible from the outside:
 - **The binding survives a reboot, and dies with its fabric.** It is stored in
   the same record as the operational identity, so removing the administrator
   that wrote a binding removes the binding too.
+
+## Before any of it: getting a second administrator on
+
+Everything on this page assumes this lock already carries a second
+administrator, because Apple Home will not write a binding and no ecosystem
+lets a device bind itself. Adding one is the AdministratorCommissioning path:
+open a window from the first ecosystem, then commission from the second.
+
+**This is currently the weak link, and it is not a binding problem.** A user
+reported on 2026-08-21 that adding this lock to Home Assistant from an open
+Apple Home pairing window ends in "pairing failed", repeatably. The cause is
+not known and is not reproduced here. It is upstream of every command on this
+page: with no second administrator there is nobody to write a binding.
+
+If you hit it, a capture of the RTT console (`make monitor`) across one failed
+attempt is the thing that identifies it, and it is worth filing.
 
 ## When it does not work
 
