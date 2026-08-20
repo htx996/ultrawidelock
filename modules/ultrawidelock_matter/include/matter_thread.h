@@ -174,12 +174,18 @@ int matter_thread_unadvertise_commissionable(void);
  * here, and whose chip-tool command takes a dataset argument. The only safe
  * value is the dataset already in force, so the node has to say which that is.
  *
- * Called when a commissioning window opens, not at boot and not at attach. At
- * boot the node may not be attached yet; at attach is worse than useless,
- * because matter_thread_wait_attached() only runs during INITIAL commissioning
- * and never on a reboot of a node that is already on a fabric.
+ * Called when a commissioning window opens, and -- since 2026-08-20 -- retried
+ * from the bench build's main loop until it succeeds. The window is a fine
+ * trigger when a controller is talking to you and useless when it is not,
+ * which is exactly the case the dataset is usually wanted in. Retrying is what
+ * makes it work on a reboot of a node already on a fabric;
+ * matter_thread_wait_attached() only runs during INITIAL commissioning, so
+ * hanging it off attach would never fire there.
+ *
+ * @return 0 when the dataset was printed, negative when there is none yet, so
+ *         a caller can retry rather than guess how long attaching takes.
  */
-void matter_thread_dump_active_dataset(void);
+int matter_thread_dump_active_dataset(void);
 
 /**
  * Where a subscriber can be reached, kept opaque on purpose.

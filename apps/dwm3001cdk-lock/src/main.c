@@ -27,6 +27,9 @@
 #include <ultrawidelock/uwb.h>
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 #include "matter_commission.h"
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
+#include <matter_thread.h> /* bench-only dataset disclosure; see the main loop */
+#endif
 #include "matter_fab_settings.h" /* matter_fab_erase, the Matter half of a reset */
 #endif
 #include "ml_feed.h" /* channel-classifier glue; plain feed when ML is off */
@@ -584,6 +587,22 @@ int main(void)
 		enum ultrawidelock_approach_action act;
 
 		ultrawidelock_reader_status_tick(now);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
+		/*
+		 * BENCH ONLY, and it prints the Thread network key. The other
+		 * trigger is a commissioning window opening, which needs a
+		 * controller that is talking to you -- not much use when the
+		 * dataset is wanted precisely because the controller is not.
+		 * Retried rather than tried once because the dataset does not
+		 * exist until the node attaches, and how long that takes is
+		 * not something this loop should have to know.
+		 */
+		static bool dataset_dumped;
+
+		if (!dataset_dumped && matter_thread_dump_active_dataset() == 0) {
+			dataset_dumped = true;
+		}
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
 		witness_link_tick(now);
 #endif

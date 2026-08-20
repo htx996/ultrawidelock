@@ -625,7 +625,7 @@ static void admin_arm(uint16_t timeout_s, uint8_t kind)
 	/* Bench builds only, and deliberately here: the dataset is wanted exactly
 	 * when a window is open, and tying the disclosure to that keeps it to a
 	 * gesture the owner just made rather than every boot. */
-	matter_thread_dump_active_dataset();
+	(void)matter_thread_dump_active_dataset();
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_DFU_RECEIVER)
 	/* The same gesture opens the update window. This is what the SW2 press
 	 * stands in for: an owner who can re-pair the lock is the owner who may
