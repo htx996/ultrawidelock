@@ -10,12 +10,22 @@
 #   scope      tests/tooling/uwb_engine_scope_check.sh  no vendor radio API outside the DW3000 engine
 #   purity     tests/tooling/port_purity_check.sh  one source, one OS per port
 #   lint       tests/tooling/cppcheck_gate.sh   cppcheck over the portable tree
+#   sizegate   tests/tooling/cdk_size_test.sh   the CDK size gate's own logic
+#   zopt       tests/tooling/zephyr_opt_suite.sh  the instrument + dashboard tools
 #   ui         scripts/lib/ui.sh --self-test    the progress display keeps the
 #                                               output it wraps byte for byte
 #
 # Opt-in, not in the default set:
 #
 #   freertos   tests/ports/freertos-nrf52833/run.sh  standalone RTOS contract
+#   patchdrift tests/tooling/patch_drift_check.sh    integration patches still apply
+#   twin       tests/tooling/twin_suite.sh           the WASM firmware twin
+#
+# Both of these are in `make regress` rather than here, and for reasons this
+# file's own warning about opt-in suites says are the dangerous kind -- so they
+# are named in one target that a bench runs before every push, not left for
+# someone to remember. patchdrift fetches from public GitHub, so it cannot be in
+# a set that has to pass offline. twin needs the emscripten SDK.
 #
 # The FreeRTOS port has no hardware verdict yet -- no bring-up, no coexistence
 # proof, none of the four release gates -- so it does not get a vote on whether
@@ -49,8 +59,12 @@ suite_cmd() {
 	scope) echo "bash tests/tooling/uwb_engine_scope_check.sh" ;;
 	purity) echo "bash tests/tooling/port_purity_check.sh" ;;
 	lint) echo "bash tests/tooling/cppcheck_gate.sh" ;;
+	sizegate) echo "bash tests/tooling/cdk_size_test.sh" ;;
+	zopt) echo "bash tests/tooling/zephyr_opt_suite.sh" ;;
+	twin) echo "bash tests/tooling/twin_suite.sh" ;;
 	ui) echo "bash scripts/lib/ui.sh --self-test" ;;
 	freertos) echo "bash tests/ports/freertos-nrf52833/run.sh" ;;
+	patchdrift) echo "bash tests/tooling/patch_drift_check.sh" ;;
 	esac
 }
 
@@ -64,8 +78,12 @@ suite_label() {
 	scope) echo "uwb engine scope" ;;
 	purity) echo "port purity" ;;
 	lint) echo "cppcheck" ;;
+	sizegate) echo "cdk size gate" ;;
+	zopt) echo "zephyr-opt tooling" ;;
+	twin) echo "wasm twin" ;;
 	ui) echo "progress display" ;;
 	freertos) echo "FreeRTOS port" ;;
+	patchdrift) echo "integration patches" ;;
 	esac
 }
 
@@ -94,6 +112,7 @@ suite_counts() { # <outfile> -> "passed failed"
 			rows = 0
 		}
 		/constants? verified/           { p += $1 }
+		/all [0-9]+ patches apply cleanly/ { p += $3 }
 		END { printf "%d %d", p + 0, f + 0 }
 	' "$1"
 }
@@ -134,6 +153,10 @@ self_test() {
 	printf '  ok   a\n  FAIL b\nRESULT: FAIL (2 checks)\n' >"$tmp"
 	expect "a failing harness" 1 1
 
+	# The patch drift check counts patches, and prints one line for all of them.
+	printf '    \xe2\x9c\x93 all 15 patches apply cleanly at the pinned revisions\n' >"$tmp"
+	expect "patches applied" 15 0
+
 	# Forked scenarios report parts and a scenario count, never a check total.
 	printf '  ok   a\n  ok   b\nRESULT-PART: 2 checks\nRESULT: PASS (1 scenarios)\n' >"$tmp"
 	expect "forked scenarios" 2 0
@@ -166,7 +189,7 @@ run_suite() { # <suite> <outfile> <metafile>
 	printf '%s|%d|%d|%d|%d\n' "$s" "$passed" "$failed" "$((t1 - t0))" "$rc" >"$meta"
 }
 
-SEL="${SUITES:-firmware shared sdk drift seam scope purity lint ui}"
+SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt ui}"
 declare -a NAMES OUTS METAS PIDS
 n=0
 for s in $SEL; do

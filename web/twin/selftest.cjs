@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-/* Self-test for the WASM twin firmware (web-twin/twin.js): replays the
- * scenario tests/host/test_twin.c asserts, through the same glue entry points
- * the page uses, plus the per-leg stepper. Run by `make test-twin` and CI;
- * the page's footer self-test runs the same sequence in the browser. */
+/* Self-test for the WASM twin firmware (web-twin/twin.js): replays a legitimate
+ * approach, the Ghost-Peak spoof and the K-block trust earn through the same
+ * glue entry points the page uses, plus the per-leg stepper. Run by
+ * `make test-twin` and by the `twin` suite in `make check`; the page's footer
+ * self-test runs the same sequence in the browser. */
 "use strict";
 const createTwin = require("./twin.js");
 
@@ -11,7 +12,12 @@ const createTwin = require("./twin.js");
 createTwin({ print: () => {} }).then((m) => {
   const NO_RANGE = -100000; /* twin_glue.c TWIN_NO_RANGE */
   const r = [];
-  const ok = (name, cond) => r.push([name, !!cond]);
+  /* A row per check, in the shape the rest of the tree's harnesses print, so
+   * `make check` counts each one exactly once and names the ones that failed. */
+  const ok = (name, cond) => {
+    r.push([name, !!cond]);
+    console.log(`  ${cond ? "ok   " : "FAIL "} ${name}`);
+  };
 
   ok("boot", m._twin_boot() === 0);
 
@@ -50,10 +56,9 @@ createTwin({ print: () => {} }).then((m) => {
   ok("step.latched", m._twin_last_cm() === 150);
 
   const fails = r.filter((x) => !x[1]);
-  for (const [name] of fails) console.error("twin selftest FAIL:", name);
   if (fails.length) {
-    console.error(`twin selftest: ${fails.length}/${r.length} FAILED`);
+    console.error(`RESULT: FAIL (${r.length} checks, ${fails.length} failed)`);
     process.exit(1);
   }
-  console.log(`twin selftest: ${r.length}/${r.length} PASS (wasm firmware, test_twin.c scenario)`);
+  console.log(`RESULT: PASS (${r.length} checks, wasm firmware)`);
 });

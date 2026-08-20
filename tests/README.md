@@ -19,9 +19,32 @@ make check
 ```
 
 Use `make test`, `make sdk-check`, `make test-san`, `make coverage`, `make cbmc`,
-`make drift`, `make seam`, `make purity`, or `make lint` for a narrower surface.
-Hardware tests are kept separate because they require attached boards and, for
-end-to-end flows, a commissioned phone.
+`make drift`, `make seam`, `make purity`, `make lint`, or `make test-twin` for a
+narrower surface.
+
+## The three tiers
+
+Each tier is a superset of the one above it, and each costs more to run. Pick the
+cheapest one that can see the change you made.
+
+| Command | Needs | Covers | Cost |
+|---|---|---|---|
+| `make check` | a C compiler and python3 | every host suite; what CI judges, via `make ci` | ~2 min |
+| `make regress` | the NCS toolchain, `./workspace`, a signing key | the above, plus the network and emscripten suites, plus every DWM3001CDK configuration and the size gate | ~15 min |
+| `make regress-hil` | a reader on its probe and the DK as the phone | the above, plus the walk-up loop on air | ~25 min |
+
+CI runs the first tier only, and says why in `.github/workflows/ci.yml`: the NCS
+toolchain and its multi-GB workspace are more than a hosted runner should carry.
+`make regress` is the pre-push gate for anything that reaches Kconfig, devicetree,
+a linker script or flash fit, none of which a host suite can see. `make regress-hil`
+writes `build/regress-hil/<timestamp>/verdict.txt`, mapping each stage to its row
+in `docs/hardware-validation.md`; rows CDK-9, CDK-10 and CDK-14..CDK-18 are still
+manual.
+
+Two suites are registered but out of the default set, and run from `make regress`
+instead: `patchdrift` fetches from public GitHub, so it cannot be in a set that has
+to pass offline, and `twin` needs the emscripten SDK (it skips loudly without it,
+rather than passing quietly).
 
 ## Static analysis
 
