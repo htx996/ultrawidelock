@@ -156,6 +156,94 @@ static void test_receding_is_not_approaching(void)
 	T_OK("pick.anticorrelated", !ultrawidelock_witness_pick_best(&p, &got));
 }
 
+static void test_crowded_room_still_picks_the_mover(void)
+{
+	struct ultrawidelock_witness_pick p;
+	struct ultrawidelock_witness_pick_stats st;
+	struct ultrawidelock_witness_msg m;
+	uint32_t got = 0u;
+
+	t_group("witness_pick: a crowded room does not starve the pick");
+	ultrawidelock_witness_pick_init(&p, NULL);
+
+	/* Every window carries a full report: the phone plus seven bystander
+	 * labels drawn round-robin from a pool larger than the candidate
+	 * table. Under score-only eviction everyone ties at zero, the whole
+	 * table cycles window to window, and no label ever survives to its
+	 * second sighting -- the phone included, so nothing can ever score. */
+	for (int i = 0; i < 6; i++) {
+		memset(&m, 0, sizeof(m));
+		m.ver = ULTRAWIDELOCK_WITNESS_MSG_VER;
+		m.role = ULTRAWIDELOCK_WITNESS_ROLE_OUTSIDE;
+		m.window_ms = 2000u;
+		m.n_tuples = ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES;
+		m.tuples[0].hash24 = PHONE;
+		m.tuples[0].mean_dbm = (int8_t)(-84 + i * 8);
+		m.tuples[0].n_pkts = 6u;
+		for (uint8_t j = 1; j < ULTRAWIDELOCK_WITNESS_MSG_MAX_TUPLES; j++) {
+			uint32_t k = ((uint32_t)i * 7u + j) % 21u;
+
+			m.tuples[j].hash24 = 0x00C00000u + k;
+			m.tuples[j].mean_dbm = (int8_t)(-70 - (int32_t)(k % 5u));
+			m.tuples[j].n_pkts = 4u;
+		}
+		ultrawidelock_witness_pick_feed(&p, &m, 6000 - i * 900);
+	}
+
+	T_OK("crowd.picked", ultrawidelock_witness_pick_best(&p, &got));
+	T_EQ("crowd.is_phone", got, PHONE);
+	/* The pool is larger than the table, so evictions did happen; the pick
+	 * survived them because proven-stationary labels went first. */
+	ultrawidelock_witness_pick_stats(&p, &st);
+	T_OK("crowd.evicted_someone", st.evictions > 0u);
+	T_EQ("crowd.best_is_phone", st.best_hash24, PHONE);
+}
+
+static void test_rotated_address_ghost_is_retired(void)
+{
+	struct ultrawidelock_witness_pick p;
+	struct ultrawidelock_witness_msg m;
+	uint32_t got = 0u;
+
+	t_group("witness_pick: a rotated address does not haunt the pick");
+	ultrawidelock_witness_pick_init(&p, NULL);
+
+	/* The handset earns the pick under one advertising address... */
+	m = win(-84, -70, -75);
+	ultrawidelock_witness_pick_feed(&p, &m, 6000);
+	m = win(-76, -71, -74);
+	ultrawidelock_witness_pick_feed(&p, &m, 4500);
+	m = win(-68, -70, -75);
+	ultrawidelock_witness_pick_feed(&p, &m, 3000);
+	m = win(-60, -71, -74);
+	ultrawidelock_witness_pick_feed(&p, &m, 1500);
+	T_OK("ghost.picked", ultrawidelock_witness_pick_best(&p, &got));
+	T_EQ("ghost.is_phone", got, PHONE);
+
+	/* ...then rotates it. The caller sees the label gone from every
+	 * report and retires it; its banked score must not outrank the
+	 * successor address for the rest of the approach. */
+	ultrawidelock_witness_pick_retire(&p, PHONE);
+	T_OK("ghost.gone", !ultrawidelock_witness_pick_best(&p, &got));
+
+	/* The successor label (TAG's slot reused as the new address here)
+	 * correlates just as the old one did, and may now win. */
+	m = win(-84, -70, -60);
+	m.tuples[0].hash24 = 0x00DDDDDDu;
+	ultrawidelock_witness_pick_feed(&p, &m, 6000);
+	m = win(-76, -71, -68);
+	m.tuples[0].hash24 = 0x00DDDDDDu;
+	ultrawidelock_witness_pick_feed(&p, &m, 4500);
+	m = win(-68, -70, -76);
+	m.tuples[0].hash24 = 0x00DDDDDDu;
+	ultrawidelock_witness_pick_feed(&p, &m, 3000);
+	m = win(-60, -71, -84);
+	m.tuples[0].hash24 = 0x00DDDDDDu;
+	ultrawidelock_witness_pick_feed(&p, &m, 1500);
+	T_OK("ghost.successor_picked", ultrawidelock_witness_pick_best(&p, &got));
+	T_EQ("ghost.successor_is_new_label", got, 0x00DDDDDDu);
+}
+
 static void test_guards(void)
 {
 	struct ultrawidelock_witness_pick p;
@@ -208,6 +296,8 @@ void test_ultrawidelock_witness_pick(void)
 	test_static_room_picks_nothing();
 	test_two_movers_are_an_ambiguity();
 	test_one_handset_many_advertising_sets();
+	test_crowded_room_still_picks_the_mover();
+	test_rotated_address_ghost_is_retired();
 	test_receding_is_not_approaching();
 	test_guards();
 }

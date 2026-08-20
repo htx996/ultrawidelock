@@ -30,11 +30,17 @@ void ultrawidelock_witness_pick_defaults(struct ultrawidelock_witness_pick_cfg *
 	 */
 	cfg->min_margin = 2;
 	/*
-	 * 3 dB. Stationary advertisers wander by a couple of dB window to
-	 * window from multipath alone; below this a change is not motion.
+	 * 3 dB. Not a noise fence -- stationary advertisers wander past it, and
+	 * UWB range to a standing phone wobbles past 300 mm (both measured
+	 * 2026-08-20). Raising the floors to exclude that noise was tried and
+	 * silenced the walk itself: far out a 2 s window moves RSSI only
+	 * 3-4 dB, close in it moves range under 700 mm, so a 5 dB / 700 mm
+	 * floor left nothing that could score. The floors only have to make a
+	 * window's SIGN meaningful; separating phone from noise is the
+	 * asymmetric penalty's job (see the feed).
 	 */
 	cfg->rssi_eps_db = 3;
-	/* 300 mm. Below this the phone has not meaningfully moved. */
+	/* 300 mm. Same reasoning. */
 	cfg->range_eps_mm = 300;
 	/*
 	 * 6 dB. Wide enough to hold one handset's concurrent advertising sets
@@ -64,6 +70,7 @@ void ultrawidelock_witness_pick_reset(struct ultrawidelock_witness_pick *p)
 		return;
 	}
 	memset(p->cand, 0, sizeof(p->cand));
+	p->evictions = 0u;
 }
 
 static struct ultrawidelock_witness_pick_cand *cand_get(struct ultrawidelock_witness_pick *p,
@@ -81,13 +88,26 @@ static struct ultrawidelock_witness_pick_cand *cand_get(struct ultrawidelock_wit
 			victim = &p->cand[i];
 			break;
 		}
-		/* Evict the weakest: the label least like an approach. */
-		if (victim == NULL || p->cand[i].score < victim->score) {
+		/* Evict the label least like an approach: lowest score first,
+		 * and on a score tie the LONGEST-seen. Stationary advertisers
+		 * never score, so score 0 across many windows is proof of a
+		 * label that is not the phone -- while the newest zero may be
+		 * the phone just entering range. Evicting by score alone tied
+		 * everyone at 0 and cycled the whole table each report in a
+		 * room with more advertisers than slots (measured 2026-08-20:
+		 * every candidate stuck at windows=1, ~3 evictions per report,
+		 * no pick ever), which starved the scoring it exists to feed. */
+		if (victim == NULL || p->cand[i].score < victim->score ||
+		    (p->cand[i].score == victim->score &&
+		     p->cand[i].windows > victim->windows)) {
 			victim = &p->cand[i];
 		}
 	}
 	if (victim == NULL) {
 		return NULL;
+	}
+	if (victim->used) {
+		p->evictions++;
 	}
 	memset(victim, 0, sizeof(*victim));
 	victim->used = true;
@@ -152,41 +172,61 @@ void ultrawidelock_witness_pick_feed(struct ultrawidelock_witness_pick *p,
 		}
 
 		/* Closing range with rising RSSI, or opening with falling: the
-		 * signature of the advertiser that is moving with the phone. */
+		 * signature of the advertiser that is moving with the phone.
+		 *
+		 * Disagreement costs double. The phone's RSSI tracks the range
+		 * by construction, so it almost never lands here; a noise label
+		 * clears both floors with a random sign, agreeing half the
+		 * time. At +1/-1 that is a driftless random walk, and measured
+		 * 2026-08-20 bystanders walked to score 3 and erased the
+		 * winner's margin. At +1/-2 noise drifts at -0.5 per scored
+		 * window and sinks, while a real approach still climbs. */
 		if ((d_rssi > 0 && d_range < 0) || (d_rssi < 0 && d_range > 0)) {
 			if (c->score < SCORE_MAX) {
 				c->score++;
 			}
-		} else if (c->score > SCORE_MIN) {
-			c->score--;
+		} else {
+			c->score = (c->score - 2 < SCORE_MIN) ? SCORE_MIN
+							      : (int8_t)(c->score - 2);
 		}
 	}
 }
 
-bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p, uint32_t *hash24)
+void ultrawidelock_witness_pick_stats(const struct ultrawidelock_witness_pick *p,
+				      struct ultrawidelock_witness_pick_stats *st)
 {
 	const struct ultrawidelock_witness_pick_cand *best = NULL;
 	int32_t runner = SCORE_MIN;
+	uint8_t n = 0u;
 
-	if (p == NULL) {
-		return false;
+	if (st == NULL) {
+		return;
 	}
+	memset(st, 0, sizeof(*st));
+	st->runner_score = SCORE_MIN;
+	if (p == NULL) {
+		return;
+	}
+	st->evictions = p->evictions;
 	for (size_t i = 0; i < ULTRAWIDELOCK_WITNESS_PICK_MAX; i++) {
 		const struct ultrawidelock_witness_pick_cand *c = &p->cand[i];
 
 		if (!c->used) {
 			continue;
 		}
+		n++;
 		if (best == NULL || c->score > best->score) {
 			best = c;
 		}
 	}
+	st->n_cand = n;
 	if (best == NULL) {
-		return false;
+		return;
 	}
-	if (best->score < p->cfg.min_score || best->windows < p->cfg.min_windows) {
-		return false;
-	}
+	st->have = true;
+	st->best_hash24 = best->hash24;
+	st->best_score = best->score;
+	st->best_windows = best->windows;
 
 	/* Runner-up, counting only labels that could be a DIFFERENT emitter.
 	 * One handset's concurrent advertising sets correlate just as well as
@@ -208,13 +248,44 @@ bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p,
 		}
 		if ((int32_t)c->score > runner) {
 			runner = c->score;
+			st->runner_gap_db = (int16_t)d;
 		}
 	}
-	if ((int32_t)best->score - runner < (int32_t)p->cfg.min_margin) {
+	st->runner_score = (int8_t)runner;
+}
+
+void ultrawidelock_witness_pick_retire(struct ultrawidelock_witness_pick *p, uint32_t hash24)
+{
+	if (p == NULL) {
+		return;
+	}
+	for (size_t i = 0; i < ULTRAWIDELOCK_WITNESS_PICK_MAX; i++) {
+		if (p->cand[i].used && p->cand[i].hash24 == hash24) {
+			memset(&p->cand[i], 0, sizeof(p->cand[i]));
+			return;
+		}
+	}
+}
+
+bool ultrawidelock_witness_pick_best(const struct ultrawidelock_witness_pick *p, uint32_t *hash24)
+{
+	struct ultrawidelock_witness_pick_stats st;
+
+	if (p == NULL) {
+		return false;
+	}
+	ultrawidelock_witness_pick_stats(p, &st);
+	if (!st.have) {
+		return false;
+	}
+	if (st.best_score < p->cfg.min_score || st.best_windows < p->cfg.min_windows) {
+		return false;
+	}
+	if ((int32_t)st.best_score - (int32_t)st.runner_score < (int32_t)p->cfg.min_margin) {
 		return false;
 	}
 	if (hash24 != NULL) {
-		*hash24 = best->hash24;
+		*hash24 = st.best_hash24;
 	}
 	return true;
 }
