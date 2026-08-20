@@ -146,11 +146,36 @@ void ultrawidelock_latch_note_grant(struct ultrawidelock_latch *l, uint32_t cred
 		}
 	}
 	r->confirmed_inside_ms = now_ms;
-	r->opportunity_ms = 0;
-	r->flags = ULTRAWIDELOCK_LATCH_F_USED; /* clears F_OPPORTUNITY */
 
-	/* The door just opened, so every OTHER credential gained a chance to
-	 * cross it -- but this one is being asserted inside, so it does not. */
+	/*
+	 * The door opened, and the lock cannot tell an entry from an exit: the
+	 * same tap unlocks it whether the holder is coming in or going out. So
+	 * this credential is asserted INSIDE *and* granted the opportunity,
+	 * and the two are not in tension -- the dwell is what separates them.
+	 * For entry_dwell_ms after the grant, R_DWELL vetoes regardless; after
+	 * it, the opportunity stands and the evidence decides.
+	 *
+	 * It used to clear the flag here, on the reasoning that a credential
+	 * being asserted inside cannot also have crossed. That is true at the
+	 * instant of the grant and false a minute later, and it had a
+	 * consequence the tests never caught because they set the flag by hand:
+	 * with a single enrolled credential NOTHING set it, so passive unlock
+	 * was refused forever with R_NO_OPPORTUNITY. A latch that never opens
+	 * is not a safe latch, it is an unmeasurable one -- it withholds
+	 * correctly indoors for a reason that has nothing to do with where the
+	 * phone is.
+	 *
+	 * What this gives up is stated: for one credential the opportunity is
+	 * no longer independent evidence, and the whole discrimination rests on
+	 * the dwell plus the N agreeing OUTSIDE windows with a UWB range that
+	 * started beyond clear_min_mm. That is safety-table row 10, which was
+	 * already the residual whenever a second credential opened the door.
+	 */
+	r->opportunity_ms = now_ms;
+	r->flags = ULTRAWIDELOCK_LATCH_F_USED | ULTRAWIDELOCK_LATCH_F_OPPORTUNITY;
+
+	/* Every OTHER credential gained a chance to cross the same door. They
+	 * get no confirmed_inside_ms refresh, so no dwell applies to them. */
 	for (size_t i = 0; i < ULTRAWIDELOCK_LATCH_MAX_CREDS; i++) {
 		struct ultrawidelock_latch_rec *o = &l->rec[i];
 

@@ -113,17 +113,27 @@ factor.
 
 ### 3.2 Events
 
-1. **Any unlock grant, passive or deliberate, any path:** re-latch INSIDE at
-   `t + entry_dwell` (default 60 s, covering the walk-in), then
-   `opportunity = false`. Pessimism is the resting state: after any door
-   opening, the phone plausibly went inside, and the design assumes it did.
-2. **Opportunity events** set `crossing_opportunity = true`: any unlock
-   command after the dwell, and -- if stage P7 measures out -- an LIS2DH12
-   door-swing event. Attributable events (a specific credential's unlock)
-   set that credential's flag; non-attributable events (door motion,
-   mechanical operation if ever sensed) set every credential's flag, because
-   there is no identity at a door event. The safety cost of the broad set is
-   bounded: opportunity alone clears nothing (see 3.3).
+1. **Any unlock grant, passive or deliberate, any path:** re-latch INSIDE for
+   `entry_dwell` (default 60 s, covering the walk-in). Pessimism is the
+   resting state: after any door opening the phone plausibly went inside, and
+   the design assumes it did, refusing for the whole dwell whatever the RF
+   says.
+2. **The same grant sets `crossing_opportunity = true`, for every credential
+   including the one that just unlocked.** The lock cannot tell an entry from
+   an exit -- the same tap serves both -- so a door opening is a crossing
+   chance for everyone who was near it, and the dwell rather than the flag is
+   what stops a walk-in from clearing the latch it just set. If stage P7
+   measures out, a sensed LIS2DH12 door swing is a second such event; it
+   carries no identity, so it sets every credential's flag too.
+
+   This is a correction, MADE 2026-08-20, and it is worth naming because the
+   rule it replaces was both wrong and unfalsifiable. Clearing the granting
+   credential's flag meant that in a **single-credential household nothing
+   ever set one**: no firmware path calls `note_opportunity`, so the veto
+   refused every passive unlock forever with `R_NO_OPPORTUNITY`, from either
+   side of the door. The host suite missed it because the tests set the flag
+   by hand. A latch that never opens is not a safe latch; it is one whose
+   safety cannot be measured.
 3. **Reboot:** records restore from settings. Corruption degrades to INSIDE
    with no opportunity.
 
@@ -135,9 +145,12 @@ holds:
 1. A live credential session exists and the lock holds C's current peer
    address (in RAM only -- section 7).
 2. `C.crossing_opportunity == true` -- there has been a door-crossing
-   opportunity since C was last confirmed inside. A pure RF misread through
-   the door can therefore never clear the latch by itself; there must also
-   have been a moment the phone could physically have left.
+   opportunity since C was last confirmed inside. With two or more credentials
+   this is independent evidence: a phone that never left cannot be freed by RF
+   alone, because somebody else has to have opened the door. With ONE enrolled
+   credential it reduces to "this lock has been opened at least once", which
+   every lock in service satisfies, and the discrimination then rests entirely
+   on the dwell in 1 and the window run in 4. Size those accordingly.
 3. Witness reports echo the current challenge nonce, their counters are
    monotonic per (witness, boot_id), and their age is inside the staleness
    bound. This is `ultrawidelock_satellite`'s staleness rule plus the nonce.
@@ -157,9 +170,12 @@ deliberate unlock re-seeds the record and restores normal walk-up behaviour.
 ### 3.4 The cases the brief asked about
 
 - **Phone leaves without an observed door-open** (thumbturn exit, no sensed
-  event): `opportunity` stays false; the next walk-up is vetoed; the user
-  taps NFC once. Annoying, never unsafe. The optional accelerometer
-  opportunity source (P7) exists to shrink exactly this case.
+  event): the opportunity from the last grant still stands, so the walk-up
+  turns on the dwell and the window run like any other. Before the 2026-08-20
+  correction this case was vetoed until an NFC tap. P7's accelerometer is
+  correspondingly less load-bearing now: what it would buy is restoring
+  opportunity as *independent* evidence for the single-credential case, not
+  unsticking a door that would otherwise stay shut.
 - **Multi-credential, one leaves and one stays:** latches are per
   credential. B inside stays latched; A outside clears and unlocks on
   approach. Opening for A while B is inside is the normal household case,
@@ -386,12 +402,12 @@ log does not compromise the link.
 | 2 | Thread mesh down / border router reboot | reports stop arriving | veto stands |
 | 3 | witness reboot | `boot_id` changes, counters reset, fresh nonce echo required | brief veto at worst |
 | 4 | lock reboot | latch restored from settings | latch holds |
-| 5 | settings corrupt / first boot / new credential | record reads INSIDE + no opportunity | veto until one deliberate unlock re-seeds |
+| 5 | settings corrupt / first boot / new credential | no record at all, which is stricter than INSIDE | veto until one deliberate unlock creates the record |
 | 6 | phone stops advertising or rotates its RPA mid-approach | condition 4 fails | veto; retry or NFC |
 | 7 | replayed reports | nonce epoch (clear direction) + counters | rejected |
 | 8 | forged reports without the key | CCM | rejected |
-| 9 | witness link key stolen | attacker can fabricate outside evidence | needs opportunity set AND the real phone closing on UWB from 3 m out; possessing a witness means being inside the home already. Residual, stated |
-| 10 | through-door RF misread while an opportunity is set | must survive N consecutive confident-OUTSIDE paired windows plus a closing UWB trajectory | residual, stated; the margin and N are the knobs, sized on the bench in P8 |
+| 9 | witness link key stolen | attacker can fabricate outside evidence | needs the real phone closing on UWB from 3 m out, past the dwell; possessing a witness means being inside the home already. Residual, stated |
+| 10 | through-door RF misread past the dwell | must survive N consecutive confident-OUTSIDE paired windows plus a closing UWB trajectory | residual, stated; since 2026-08-20 this row covers the single-credential case too, so N, the margin and `entry_dwell_ms` are the whole defence. Sized on the bench in P8 |
 
 Every row degrades to "the door does not open passively", except 9 and 10,
 which are stated residuals with their preconditions -- neither is reachable

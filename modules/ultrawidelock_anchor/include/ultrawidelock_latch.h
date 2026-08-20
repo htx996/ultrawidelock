@@ -84,6 +84,13 @@ extern "C" {
 
 /** Record flags. */
 #define ULTRAWIDELOCK_LATCH_F_USED        0x01u
+/**
+ * The credential has had a chance to cross the door since it was last
+ * confirmed inside. Set by any grant, for every record -- see
+ * ultrawidelock_latch_note_grant(). Not independent evidence when only one
+ * credential is enrolled; the dwell and the window run carry the discrimination
+ * there.
+ */
 #define ULTRAWIDELOCK_LATCH_F_OPPORTUNITY 0x02u
 
 /** Tunables. All defaults are conservative; raising them is always safe. */
@@ -163,9 +170,15 @@ void ultrawidelock_latch_session_close(struct ultrawidelock_latch *l);
  * Record that the door was opened for @p cred_id, by any path at all --
  * passive, NFC, app, or a mechanical operation the lock managed to see.
  *
- * Asserts INSIDE for that credential, consumes its opportunity, and discards
- * clear progress. This is the pessimism the whole module rests on: after a
- * door opening the phone plausibly went in, so the lock assumes it did.
+ * Asserts INSIDE for that credential and discards clear progress. This is the
+ * pessimism the whole module rests on: after a door opening the phone
+ * plausibly went in, so the lock assumes it did, and refuses for entry_dwell_ms
+ * whatever the RF says.
+ *
+ * It also grants the opportunity, to this credential and to every other one.
+ * The lock cannot tell an entry from an exit -- the same tap serves both -- so
+ * a door opening is a crossing chance for everybody who was near it. The dwell,
+ * not the flag, is what keeps the walk-in from clearing the latch it just set.
  *
  * When the record table is full the oldest confirmed_inside_ms is evicted; the
  * evicted credential then reads as "no record", which fails closed.
@@ -181,6 +194,10 @@ void ultrawidelock_latch_note_grant(struct ultrawidelock_latch *l, uint32_t cred
  *                it grants the opportunity to everyone. That breadth is safe
  *                because an opportunity alone clears nothing: conditions 3 and
  *                4 still have to be met by live RF for the specific phone.
+ *
+ * No production caller today. ultrawidelock_latch_note_grant() is the only
+ * opportunity source the firmware wires up; this exists for the sensed door
+ * event of stage P7, and for the tests.
  */
 void ultrawidelock_latch_note_opportunity(struct ultrawidelock_latch *l, uint32_t cred_id,
 					  int64_t now_ms);
