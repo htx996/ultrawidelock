@@ -15,15 +15,22 @@
  * rather than the running engine's state, which in this mode does not exist.
  * The one exception is `import`, which routes through ultrawidelock_reader_import_blob
  * so the engine's own commit path stays the single place that adopts identity.
+ *
+ * It carries the BLE witness link keys for the same reason, though they belong
+ * to a different subsystem: they are per-install secrets that must not be in an
+ * image, and the image that uses them has no console. See cmd_witkey.
  */
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/util.h>
 
 #include "ultrawidelock_prov.h"
+#include "witness_link.h"
 #include <ultrawidelock/reader.h>
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_HEAP_PROBE)
@@ -209,6 +216,102 @@ static int cmd_erase(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * Witness link keys.
+ *
+ * WHY THEY ARE ENROLLED FROM HERE, on an image that does not run the latch.
+ * The lock image is a Thread build and overlay-thread.conf sets CONFIG_SHELL=n
+ * (reader + console + Thread overflows this part's RAM), so the image that
+ * READS these keys can never have a console to type one into. This image can.
+ * They land in the settings partition, which `west flash` without --erase
+ * preserves, so the enrollment survives the reflash to the Thread image -- the
+ * same route the reader identity already takes.
+ *
+ * A key is write-only from here on. There is no `witkey show`: this console
+ * already prints a private key on demand and one such command is one more than
+ * this file should carry. A key typed wrong presents as a lock that accepts no
+ * report from that witness, which witness_link.c names in its log.
+ */
+static const char *const s_witness_roles[] = {
+	NULL,        /* 0 is ULTRAWIDELOCK_WITNESS_ROLE_UNKNOWN, not a mounting */
+	"inside",
+	"outside",
+	"threshold",
+};
+
+/* Role word -> the number witness_link.c indexes its table by. 0 = no match. */
+static unsigned int witness_role_of(const char *word)
+{
+	for (unsigned int i = 1u; i < ARRAY_SIZE(s_witness_roles); i++) {
+		if (strcmp(word, s_witness_roles[i]) == 0) {
+			return i;
+		}
+	}
+	return 0u;
+}
+
+/**
+ * Shell command: store one witness's 16-byte link key, addressed by the same
+ * role word the dongle's own PROV command takes, so the two ends are typed
+ * alike rather than one by name and one by number.
+ */
+static int cmd_witkey(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t key[WITNESS_LINK_KEY_LEN];
+	char name[32];
+	unsigned int role;
+	size_t hex_len;
+
+	ARG_UNUSED(argc);
+
+	role = witness_role_of(argv[1]);
+	if (role == 0u) {
+		shell_error(sh, "role must be inside, outside or threshold");
+		return -EINVAL;
+	}
+
+	hex_len = strlen(argv[2]);
+	if (hex_len != 2u * WITNESS_LINK_KEY_LEN ||
+	    hex2bin(argv[2], hex_len, key, sizeof(key)) != sizeof(key)) {
+		shell_error(sh, "key must be exactly %u hex characters (%u bytes)",
+			    (unsigned int)(2u * WITNESS_LINK_KEY_LEN),
+			    (unsigned int)WITNESS_LINK_KEY_LEN);
+		return -EINVAL;
+	}
+
+	/* An all-zero key is what an uninitialised buffer and a mistyped
+	 * `openssl rand` both produce, and it would seal reports that anyone
+	 * could forge. Refuse before it reaches the store. */
+	if (all_zero(key, sizeof(key))) {
+		shell_error(sh, "refusing an all-zero key; generate one with "
+			    "`openssl rand -hex %u`", (unsigned int)WITNESS_LINK_KEY_LEN);
+		return -EINVAL;
+	}
+
+	/* Spelled here, and split so the record name appears as its own literal:
+	 * tests/tooling/port_purity_check.sh reads it out of this file and
+	 * matches it against PORTING.md, which is the only check there is that
+	 * the writer and witness_link.c's reader still agree. */
+	(void)snprintf(name, sizeof(name), "uwl/wit/k" "/%u", role);
+
+	int rc = settings_subsys_init();
+
+	if (rc != 0) {
+		shell_error(sh, "settings init rc=%d; nothing stored", rc);
+		return rc;
+	}
+	rc = settings_save_one(name, key, sizeof(key));
+	if (rc != 0) {
+		shell_error(sh, "storing %s rc=%d", name, rc);
+		return rc;
+	}
+
+	shell_print(sh, "stored the %s witness link key. Provision that dongle with the "
+		    "same bytes, then flash the Thread image WITHOUT --erase.",
+		    s_witness_roles[role]);
+	return 0;
+}
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_HEAP_PROBE)
 /* Run this straight after an `import`: the commit path does a software P-256
  * derive, which is the reader's heaviest single crypto step, and the peak is
@@ -240,6 +343,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      "`export yes`.", cmd_export, 2, 0),
 	SHELL_CMD_ARG(erase, NULL, "Erase identity and trust anchors: `erase yes`.", cmd_erase, 2,
 		      0),
+	SHELL_CMD_ARG(witkey, NULL, "Enroll a BLE witness: `witkey <inside|outside|threshold> "
+		      "<hex32>`.", cmd_witkey, 3, 0),
 	SHELL_COND_CMD(CONFIG_ULTRAWIDELOCK_HEAP_PROBE, heap, NULL,
 		       "Peak mbedTLS heap use since boot.", cmd_heap),
 	SHELL_SUBCMD_SET_END);

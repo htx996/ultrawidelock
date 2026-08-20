@@ -66,11 +66,16 @@ make witness-prov-help      # prints the PROV line and what each field is
 Three secrets, and the difference between them matters:
 
 - **link key** — one per dongle, also stored on the lock. Seals that
-  witness's reports.
+  witness's reports. The lock's copy goes in on the reader image, which is
+  the one with a console (`ultrawidelock witkey inside <hex32>`); reflash the
+  Thread image with `make flash`, never `flash-erase`, or the keys go with it.
+  See docs/inside-latch.md section 6.1.
 - **group key** — the same on both dongles and NOT on the lock. Labels
   advertisers so the two dongles can be compared without the lock ever
   learning an address.
-- **Thread dataset** — your existing network, from `ot-ctl dataset active -x`.
+- **Thread dataset** — your existing network. Get it from the lock, which is
+  already joined: `overlays/thread-dataset-dump.conf` + SW2. See
+  docs/inside-latch.md section 6.
 
 Generate keys with `openssl rand -hex 16`.
 

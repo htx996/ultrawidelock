@@ -38,10 +38,30 @@ witness-prov-help:
 	  '  group-key    16 bytes, THE SAME on every dongle and NOT on the lock.' \
 	  '               Labels advertisers so inside and outside can be compared.' \
 	  '  dataset      the Thread active operational dataset TLVs, hex.' \
-	  '               `ot-ctl dataset active -x` on any node of your network.' \
+	  '               From the lock itself, which is already on the network:' \
+	  '               build with overlays/thread-dataset-dump.conf appended to' \
+	  '               the WHOLE default CDK_CONF list (read its header first),' \
+	  '               flash, and press SW2 to open the commissioning window.' \
+	  '               The dataset prints between two markers on the log.' \
+	  '               `ot-ctl dataset active -x` also works if you have a node' \
+	  '               with a CLI; an Apple border router does not give you one.' \
 	  '' \
 	  'Then SHOW to confirm, and power-cycle. Steady state needs no host:' \
 	  'solid LED = attached and reporting, slow blink = provisioned but not' \
 	  'attached, fast blink = not provisioned.' \
 	  '' \
-	  'Generate keys with:  openssl rand -hex 16'
+	  'Generate keys with:  openssl rand -hex 16' \
+	  '' \
+	  'THE LOCK NEEDS THE SAME LINK KEYS, and not on the image that uses' \
+	  'them: the Thread build sets CONFIG_SHELL=n, so it has no console.' \
+	  'Enroll on the reader image, then reflash WITHOUT erasing:' \
+	  '' \
+	  '  make reader && make flash CDK_BUILD=build/cdk-reader' \
+	  '  # hold SW2 through reset, then on the USB console:' \
+	  '  ultrawidelock witkey inside  <that dongle'"'"'s link key>' \
+	  '  ultrawidelock witkey outside <that dongle'"'"'s link key>' \
+	  '' \
+	  '  make build LATCH=1 && make flash LATCH=1     # NOT flash-erase' \
+	  '' \
+	  'flash-erase takes the witness keys with everything else. See' \
+	  'docs/inside-latch.md section 6.1.'
