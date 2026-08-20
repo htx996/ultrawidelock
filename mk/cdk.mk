@@ -149,6 +149,16 @@ CDK_CIRDIAG_WINDOWS := $(if $(CIRDIAG_WINDOWS),-DCONFIG_ULTRAWIDELOCK_CIRDIAG_CA
 # CONFIG_LOG_DEFAULT_LEVEL says. Diagnosis only, never shipped, and it may not
 # fit -- see apps/dwm3001cdk-lock/overlay-otlog.conf. Last in the list so nothing undoes it.
 #
+# CLIENT=1 adds the Matter client role: this lock opens ANOTHER Matter lock
+# when the UWB gate fires. Not in any default, because it is the one option here
+# that changes what the product IS rather than how it was built, and because it
+# costs the OpenThread DNS client. A release image needs it explicitly:
+#
+#   make release RELEASE_KEY=<path> CLIENT=1
+#
+# Ordered after overlay-release.conf, like SMP, so nothing it sets can be
+# undone. See apps/dwm3001cdk-lock/overlay-client.conf and docs/matter-binding.md.
+#
 # The LTO default is resolved HERE rather than assigned with `LTO ?= 1`, because
 # make variables are global across the includes: `?=` would decide the other
 # ports' default too, and mk/nrf5340dk.mk resolves the same LTO variable for
@@ -157,7 +167,7 @@ CDK_CIRDIAG_WINDOWS := $(if $(CIRDIAG_WINDOWS),-DCONFIG_ULTRAWIDELOCK_CIRDIAG_CA
 # are on today, each behind its own walk-up on its own hardware.
 LTO_SET  := $(filter-out undefined,$(origin LTO))
 CDK_LTO  := $(filter-out 0 n no off N NO OFF,$(if $(LTO_SET),$(LTO),1))
-CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)
+CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(CLIENT),;overlay-client.conf)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)
 
 # One-command real-board optimization lane. The Python driver owns the
 # interactive lifecycle so Enter can end RTT capture and the local HTTP server
