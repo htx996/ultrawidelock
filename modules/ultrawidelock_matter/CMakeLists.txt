@@ -29,6 +29,16 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
     ${SRC}/matter_fabric.c
     ${SRC}/matter_case.c)
 
+  # The CASE initiator, and nothing else, rides with the client build.
+  #
+  # A separate file behind its own symbol rather than more of matter_case.c,
+  # because the point of the option is that an image without it is byte for
+  # byte the image that existed before it -- and a preprocessor guard inside a
+  # compiled file cannot promise that as plainly as not compiling the file.
+  if(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
+    zephyr_library_sources(${SRC}/matter_case_client.c)
+  endif()
+
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
   # The DoorLockAlarm event, and nothing else, rides with the anchor build.

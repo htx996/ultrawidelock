@@ -21,3 +21,20 @@ config ULTRAWIDELOCK_MATTER
 
 	  Off by default; every stage lands behind it before anything depends
 	  on it.
+
+config ULTRAWIDELOCK_MATTER_CLIENT
+	bool "Matter client: start CASE and send commands to another node"
+	depends on ULTRAWIDELOCK_MATTER
+	default n
+	help
+	  Compile the CASE INITIATOR: the half of the handshake this node needs
+	  before it can send a command to another node on the fabric, rather
+	  than only answer one.
+
+	  This is what lets the lock unlock a SECOND lock directly when the UWB
+	  gate fires -- the Matter binding pattern, with no hub automation in
+	  the path. The node stays a full Door Lock server either way; the
+	  client role is additive.
+
+	  Off, not one byte of it is compiled: the sources live in their own
+	  file, guarded in the CMakeLists rather than inside the code.
