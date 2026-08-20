@@ -282,11 +282,24 @@ else
 	done
 	ui_clear
 	# Replay only what needs eyes: the FAIL rows of any failing suite.
+	#
+	# A suite can exit non-zero while printing none of these words -- the purity
+	# gate says "unrenamed:" and "check-purity: N line(s) still name ...", which
+	# no pattern here anticipated. That printed the suite's name and nothing
+	# else, so CI reported which gate failed and never why. When the filter
+	# finds nothing, show the tail instead: a wrong guess about the wording must
+	# degrade to too much output, never to none.
 	for i in $(seq 0 $((n - 1))); do
 		IFS='|' read -r _ _ failed _ rc <"${METAS[i]}"
 		if [[ "$rc" != 0 || "$failed" != 0 ]]; then
 			printf '\n== %s ==\n' "$(suite_label "${NAMES[i]}")"
-			grep -E '^[[:space:]]+FAIL[[:space:]]|RESULT: FAIL|error|Error' "${OUTS[i]}" | head -40 || true
+			hits="$(grep -E '^[[:space:]]+FAIL[[:space:]]|RESULT: FAIL|error|Error' "${OUTS[i]}" | head -40 || true)"
+			if [[ -n "$hits" ]]; then
+				printf '%s\n' "$hits"
+			else
+				printf '  (no FAIL row; exit %s. last 30 lines:)\n' "$rc"
+				tail -30 "${OUTS[i]}" || true
+			fi
 		fi
 	done
 fi
