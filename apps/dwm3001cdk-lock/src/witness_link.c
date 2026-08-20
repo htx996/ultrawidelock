@@ -132,14 +132,6 @@ static void nonce_send(void)
 		body[1 + i] = (uint8_t)(s_nonce >> (56 - 8 * i));
 	}
 
-	msg = otUdpNewMessage(ot, NULL);
-	if (msg == NULL) {
-		return;
-	}
-	if (otMessageAppend(msg, body, sizeof(body)) != OT_ERROR_NONE) {
-		otMessageFree(msg);
-		return;
-	}
 	memset(&info, 0, sizeof(info));
 	/* Mesh-local all-nodes: the witnesses are on this network and nothing
 	 * outside it can act on a challenge anyway. */
@@ -147,9 +139,24 @@ static void nonce_send(void)
 	info.mPeerAddr.mFields.m8[1] = 0x03u;
 	info.mPeerAddr.mFields.m8[15] = 0x01u;
 	info.mPeerPort = WITNESS_PORT;
-	if (otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
-		otMessageFree(msg); /* takes ownership on success only */
+
+	/*
+	 * The OpenThread API lock, and it is not optional. This runs on the main
+	 * thread; OT's own thread is concurrently servicing the radio through
+	 * MPSL. Every other caller in this tree takes the lock for exactly this
+	 * reason (matter_thread_port.c does it around every call). Callbacks are
+	 * the exception -- udp_rx() below already runs with the lock held and
+	 * must not take it again.
+	 */
+	openthread_mutex_lock();
+	msg = otUdpNewMessage(ot, NULL);
+	if (msg != NULL) {
+		if (otMessageAppend(msg, body, sizeof(body)) != OT_ERROR_NONE ||
+		    otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
+			otMessageFree(msg); /* send takes ownership on success only */
+		}
 	}
+	openthread_mutex_unlock();
 }
 
 static bool unseal(struct witness_slot *w, const uint8_t *in, size_t in_len, uint8_t *out,
@@ -361,6 +368,19 @@ void witness_link_init(void)
 	ultrawidelock_witness_pick_init(&s_pick, NULL);
 	nonce_roll(k_uptime_get());
 
+	/*
+	 * Load the keys. Registering the handler above does NOT read anything --
+	 * a static handler only says who to call, and something has to ask. This
+	 * line was missing, so every enrolled key sat in flash unread and the
+	 * lock reported "0 enrolled" with the keys right there; the latch's own
+	 * load two files over made the omission easy to miss.
+	 *
+	 * Not settings_load(): the whole store includes the Matter fabric, whose
+	 * handlers have already run by now, and re-running them is neither free
+	 * nor obviously safe.
+	 */
+	(void)settings_load_subtree("uwl/wit");
+
 	for (size_t i = 0; i < WITNESS_MAX; i++) {
 		if (s_wit[i].provisioned) {
 			provisioned++;
@@ -377,12 +397,15 @@ void witness_link_init(void)
 	}
 	memset(&bind_addr, 0, sizeof(bind_addr));
 	bind_addr.mPort = WITNESS_PORT;
+	openthread_mutex_lock();
 	if (otUdpOpen(ot, &s_sock, udp_rx, NULL) == OT_ERROR_NONE &&
 	    otUdpBind(ot, &s_sock, &bind_addr, OT_NETIF_THREAD) == OT_ERROR_NONE) {
+		openthread_mutex_unlock();
 		s_open = true;
 		LOG_INF("witness link on UDP %u (%u enrolled)", (unsigned)WITNESS_PORT,
 			provisioned);
 	} else {
+		openthread_mutex_unlock();
 		LOG_ERR("witness link could not bind UDP %u", (unsigned)WITNESS_PORT);
 	}
 }
