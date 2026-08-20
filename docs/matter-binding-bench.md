@@ -62,10 +62,12 @@ diagnosis:
 | `UnlockDoor out: endpoint n` | the command is on the air | the peer's ACL. `UNSUPPORTED_ACCESS` is the expected answer to a missing entry |
 | `the bound lock UNLOCKED` | it worked | stop reading |
 
-## The four things most likely to be wrong
+## The two things most likely to be wrong
 
-Ranked. The first two are known deviations, the last two were found by reading
-the driver adversarially and have never been observed.
+Ranked, and both are deliberate deviations rather than oversights. Two further
+faults were found by reading the driver against this list and have since been
+fixed; they are described at the end so that a capture showing their signature
+is recognised rather than re-diagnosed.
 
 ### 1. The Sigma1 source node id
 
@@ -92,29 +94,39 @@ TimedRequest is not resent; the whole attempt times out after
 **Signature:** intermittent success that correlates with mesh quality, and
 retries that always restart from `resolving` rather than resuming.
 
-### 3. A retransmitted StatusReport cannot be answered
+## Two faults already fixed, and their signatures
 
-`s_handshake` is cleared the moment the peer's StatusReport is handled, and
-`matter_client_owns_exchange()` is gated on it. So if **our acknowledgement of
-that StatusReport is lost**, the peer's retransmission has nowhere to route: it
-is a Secure Channel message that is neither Sigma1 nor Sigma3, so it falls into
-the unsecured drop.
+Listed so that a capture showing one of these is read as a regression rather
+than diagnosed from scratch.
 
-**Signature:** `CASE ESTABLISHED` on our side, the peer still retransmitting,
-and the invoke failing against a session the peer is tearing down. Intermittent
-by nature, so it presents as "works sometimes", which is the hardest shape to
-diagnose. If you see the peer complain about an unacknowledged StatusReport
-while we claim success, this is it.
+### A retransmitted StatusReport with nowhere to go
 
-### 4. A stale fabric pointer
+The peer sets R on the StatusReport that ends CASE and retransmits until
+acknowledged. This node acknowledges once and never repeats it, so a lost
+acknowledgement used to leave the retransmission unroutable: the handshake flag
+had already cleared, and a Secure Channel message that is neither Sigma1 nor
+Sigma3 falls into the unsecured drop.
 
-`s_fabric` points into the fabric table and is not cleared when a session is
-dropped. The Sigma1 path only re-chooses a target `if (s_fabric == NULL)`, so
-after a RemoveFabric the zeroed slot is reused rather than re-validated.
+The handshake exchange now lingers for `CLIENT_HS_LINGER_MS` after it succeeds
+and answers a repeat with another acknowledgement and no change of state.
 
-**Signature:** only after removing an administrator without rebooting. A Sigma1
-built from a zeroed key, refused by everything, with the log naming a fabric
-that is no longer there.
+**Signature if it returns:** `CASE ESTABLISHED` here, the peer still
+retransmitting, and the invoke failing against a session the peer is tearing
+down. Intermittent, so it presents as "works sometimes".
+
+### A fabric pointer outliving its fabric
+
+`s_fabric` points into the fabric table, and a RemoveFabric that zeroes the slot
+left it addressing valid memory describing nothing. The Sigma1 path tested it
+for NULL, which a cleared slot is not.
+
+It is tested for liveness now, by comparing the pointer against a fresh lookup
+by index, and an attempt whose administrator has gone is dropped rather than
+signed with a zeroed key.
+
+**Signature if it returns:** only after removing an administrator without
+rebooting. A Sigma1 refused by everything, with the log naming a fabric that is
+no longer there.
 
 ## What to capture
 

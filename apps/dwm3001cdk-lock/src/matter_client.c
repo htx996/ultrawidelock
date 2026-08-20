@@ -77,6 +77,22 @@ LOG_MODULE_DECLARE(matter_ble, CONFIG_ULTRAWIDELOCK_MATTER_BLE_LOG_LEVEL);
  */
 #define CLIENT_TIMED_MS 2000u
 
+/**
+ * How long the handshake's exchange stays answerable after it has succeeded.
+ *
+ * The peer sets R on the StatusReport that ends CASE, so it retransmits until
+ * acknowledged. This node sends that acknowledgement once and does not repeat
+ * it. Letting the exchange go the instant the report is handled means the
+ * retransmission -- a Secure Channel message that is neither Sigma1 nor Sigma3
+ * -- routes to nobody and is dropped, and the peer spends its whole MRP
+ * schedule talking to a node that has stopped listening while this one is
+ * already sending on the session.
+ *
+ * So the exchange lingers, long enough to cover a peer's retransmits, and
+ * answers a repeat with another acknowledgement and no change of state.
+ */
+#define CLIENT_HS_LINGER_MS 3000u
+
 /** Where the two-message invoke has got to. The state machine has no opinion
  * on this: DO_INVOKE is one action, and this is what it costs to perform. */
 enum invoke_step {
@@ -126,6 +142,9 @@ static uint16_t s_hs_exchange;
 static uint16_t s_exchange_id;
 /** True from a Sigma1 leaving until the handshake ends, either way. */
 static bool s_handshake;
+/** Deadline until which a SUCCEEDED handshake still answers on its exchange;
+ * 0 when there is nothing to answer for. See CLIENT_HS_LINGER_MS. */
+static uint32_t s_hs_linger_until;
 /** The unsecured message counter, randomised once; see send_sigma2()'s note. */
 static uint32_t s_counter;
 
@@ -219,11 +238,27 @@ static bool choose_target(void)
 	return false;
 }
 
+/**
+ * Is the fabric this attempt was chosen for still one this node holds?
+ *
+ * s_fabric points INTO s_info->fabrics[], so a RemoveFabric that zeroes the
+ * slot leaves it pointing at valid memory describing nothing. Comparing the
+ * pointer against a fresh lookup by index catches that: a cleared slot has
+ * index 0 and matches nothing, and a slot reused by a DIFFERENT administrator
+ * returns a different address than the one this attempt chose.
+ */
+static bool fabric_still_held(void)
+{
+	return s_fabric != NULL && fabric_of(s_fabric->index) == s_fabric &&
+	       s_fabric->noc_len != 0u;
+}
+
 /** Forget the session and the handshake's secrets, in that order. */
 static void drop_session(void)
 {
 	s_session = false;
 	s_handshake = false;
+	s_hs_linger_until = 0u;
 	s_invoke_step = (uint8_t)INVOKE_IDLE;
 	memset(&s_x, 0, sizeof(s_x));
 	memset(s_eph_priv, 0, sizeof(s_eph_priv));
@@ -306,6 +341,9 @@ static bool send_sigma1(void)
 	if (!s_peer.valid || s_fabric == NULL) {
 		return false;
 	}
+	/* A new handshake owns the exchange from here; whatever the last one was
+	 * still answering for is finished. */
+	s_hs_linger_until = 0u;
 	if (ultrawidelock_ec_p256_keygen(s_eph_priv, s_eph_pub) != 0 ||
 	    ultrawidelock_random(random, sizeof(random)) != 0 ||
 	    ultrawidelock_random((uint8_t *)&s_local_session, sizeof(s_local_session)) != 0 ||
@@ -661,6 +699,20 @@ static void poll_work_fn(struct k_work *w)
 	}
 
 	/*
+	 * The administrator this attempt belongs to may have been removed since
+	 * it started. Everything below would otherwise carry on with a zeroed
+	 * key: a Sigma1 signed with nothing, or worse, an unlock sent on behalf
+	 * of somebody this node was told to forget.
+	 */
+	if (s_fabric != NULL && !fabric_still_held()) {
+		LOG_INF("the bound lock's administrator is gone; dropping the attempt");
+		s_fabric = NULL;
+		if (s_session || s_handshake) {
+			drop_session();
+		}
+	}
+
+	/*
 	 * An interaction in flight is not something to poll around. The state
 	 * machine still says DO_INVOKE -- the want is not cleared until the peer
 	 * answers -- so acting on it here would send a second TimedRequest into
@@ -689,7 +741,9 @@ static void poll_work_fn(struct k_work *w)
 		break;
 
 	case MATTER_CLIENT_DO_SIGMA1:
-		if (s_fabric == NULL && !choose_target()) {
+		/* Liveness rather than NULL: a pointer into a slot that has been
+		 * cleared is not null and is not usable either. */
+		if (!fabric_still_held() && !choose_target()) {
 			matter_client_sm_failed(&s_sm, t);
 			break;
 		}
@@ -754,10 +808,17 @@ bool matter_client_owns_session(uint16_t session_id)
 
 bool matter_client_owns_exchange(uint16_t exchange_id)
 {
-	/* Only while a handshake is actually outstanding. An exchange id this
-	 * node used minutes ago is not its business any more, and claiming it
-	 * would swallow a message meant for the responder. */
-	return s_handshake && exchange_id == s_hs_exchange;
+	/* Only while a handshake is outstanding, or briefly after one succeeded
+	 * so the peer's retransmitted StatusReport still has somewhere to go. An
+	 * exchange id this node used minutes ago is not its business any more,
+	 * and claiming it would swallow a message meant for the responder. */
+	if (exchange_id != s_hs_exchange) {
+		return false;
+	}
+	if (s_handshake) {
+		return true;
+	}
+	return s_hs_linger_until != 0u && (int32_t)(now_ms() - s_hs_linger_until) < 0;
 }
 
 size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
@@ -789,7 +850,23 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 		 * message of the handshake. matter_sc_status_report()'s own
 		 * format: general code first, little-endian, and 0 is success.
 		 */
-		bool ok = s_session && payload_len >= 2u && payload[0] == 0u && payload[1] == 0u;
+		bool ok;
+
+		if (!s_handshake) {
+			/*
+			 * A retransmission of the report that already ended this
+			 * handshake: the peer never got the acknowledgement.
+			 * Acknowledge it again and change NOTHING -- the session
+			 * is up, the interaction may already be in flight, and
+			 * running establishment twice would restart it.
+			 */
+			out = frame_headers(MATTER_SC_OP_ACK, false, true, mh->message_counter,
+					    reply, cap);
+			ultrawidelock_mutex_unlock(&s_lock);
+			return out;
+		}
+
+		ok = s_session && payload_len >= 2u && payload[0] == 0u && payload[1] == 0u;
 
 		if (ok) {
 			LOG_INF("CASE ESTABLISHED as initiator: session 0x%04x",
@@ -806,6 +883,13 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 			out = frame_headers(MATTER_SC_OP_ACK, false, true, mh->message_counter,
 					    reply, cap);
 			s_handshake = false;
+			s_hs_linger_until = t + CLIENT_HS_LINGER_MS;
+			if (s_hs_linger_until == 0u) {
+				/* 0 is the "nothing to answer for" value, so the
+				 * one tick in 2^32 that lands on it borrows the
+				 * next. */
+				s_hs_linger_until = 1u;
+			}
 		} else {
 			LOG_WRN("the bound lock refused the handshake");
 			drop_session();
