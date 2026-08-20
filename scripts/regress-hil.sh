@@ -82,8 +82,14 @@ command -v probe-rs >/dev/null 2>&1 ||
 	die "probe-rs not installed -- the reader cannot be flashed or watched"
 probe-rs list >"$ART/probes.log" 2>&1 ||
 	die "probe-rs found no debug probe (see $ART/probes.log)"
-bash "$REPO_ROOT/scripts/check-signing-key.sh" >"$ART/key.log" 2>&1 ||
-	die "no signing key -- run 'make dfu-key' (see $ART/key.log)"
+# The gate validates one configured key and takes its path, so the path comes
+# from the Makefile rather than being spelled a second time here: SIGN_KEY has a
+# legacy fallback, and a copy of that logic would drift the day it moves again.
+KEY="$(make --no-print-directory print-sign-key 2>/dev/null)"
+[ -n "$KEY" ] && [ -f "$KEY" ] ||
+	die "no signing key at ${KEY:-<unset>} -- run 'make dfu-key'"
+bash "$REPO_ROOT/scripts/check-signing-key.sh" "$KEY" >"$ART/key.log" 2>&1 ||
+	die "signing key rejected (see $ART/key.log)"
 
 # ---- build -------------------------------------------------------------------
 if [ "$SKIP_BUILD" = 0 ]; then

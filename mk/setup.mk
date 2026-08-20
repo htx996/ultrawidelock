@@ -1,7 +1,7 @@
 # mk/setup.mk — getting a machine ready: host gate tools, then the NCS toolchain
 # and the fetched west workspace both Zephyr ports build against.
 
-.PHONY: tools bootstrap dfu-key
+.PHONY: tools bootstrap dfu-key print-sign-key
 
 ##@ Setup
 ## tools: what the host suites need, what this machine has
@@ -27,3 +27,10 @@ dfu-key:
 	fi || { printf '  cannot generate a key  ·  need openssl, or python3 with the cryptography module\n' >&2; exit 1; }; \
 	chmod 600 '$(SIGN_KEY)'; \
 	printf '  generated  ·  %s\n  Gitignored. Back it up wherever your other secrets live.\n' '$(SIGN_KEY)'
+
+# Where this checkout's key would be, for scripts that must check it before they
+# touch a board. Bare path on stdout, no decoration: it is read, not displayed.
+# Undocumented in `make help` on purpose -- SIGN_KEY has a legacy fallback, and
+# this exists so a caller cannot get that resolution subtly wrong.
+print-sign-key:
+	@printf '%s\n' '$(SIGN_KEY)'
