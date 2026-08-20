@@ -56,12 +56,12 @@ config_key = _cmp.config_key
 # headroom, which is large enough not to trip on ordinary work and small enough
 # that spending the rest takes a conversation.
 #
-# The caps are sized as a share of what is left rather than picked round, and on
-# the shipping image the binding region is FLASH (16,356 B free) and not RAM
-# (9,836 B free) -- the reverse of the debug build, because the 8 KB RTT ring
-# RELEASE gives up is RAM. An 8,192 B flash cap would have let one pull request
-# spend half the remaining flash, so it is 4,096 B: about a quarter of the
-# headroom, matching what 2,048 B is to RAM.
+# The caps are explicit review thresholds rather than values derived from the
+# latest image. At the 2026-08-16 shipping measurement, FLASH has 36,304 B free
+# and RAM has 10,332 B free. RELEASE gives up the 8 KB debug RTT ring, so the
+# relative constraint changes between configurations. The fixed 4,096 B flash
+# and 2,048 B RAM caps ensure a single change cannot silently consume a large
+# share of either remaining margin.
 DEFAULT_GATE = {
     "ram_free_floor": 4096,
     "flash_free_floor": 8192,

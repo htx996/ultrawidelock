@@ -305,7 +305,7 @@ CDK_RUN = cd $(REPO_ROOT)/workspace && $(CDK_WEST)
 
 # ---- size ---------------------------------------------------------------------
 # RAM is the scarcest thing on this board and the easiest to spend by accident:
-# the Matter image runs at ~95% of the nRF52833's 128 KB, so a new static buffer
+# the shipping Matter image runs above 92% of the nRF52833's 128 KB, so a new static buffer
 # is a decision rather than a detail. These two targets make that visible and
 # then enforce it. Measurement and judgement are deliberately separate programs:
 # `cdk-size` only ever reports, `cdk-size-check` is the only one that can fail.

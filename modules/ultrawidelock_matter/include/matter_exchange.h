@@ -50,6 +50,14 @@ extern "C" {
  */
 #define MATTER_EXCHANGE_HEADER_MAX (MATTER_MSG_HEADER_MAX + MATTER_PROTO_HEADER_MAX)
 
+/*
+ * Exact-response replay for small, state-changing commissioning commands.
+ * CommissioningComplete, AddNOC and RemoveFabric responses fit below this
+ * bound. Large reports use their normal subscription/MRP path and fall back to
+ * a standalone acknowledgement when no bounded replay is available.
+ */
+#define MATTER_EXCHANGE_REPLAY_MAX 192u
+
 /**
  * Protocol 0x0001. Everything after commissioning's Secure Channel phase.
  */
@@ -173,6 +181,11 @@ struct matter_exchange {
 	 */
 	uint32_t ack_counter;
 	bool ack_pending;
+	/** Exact last bounded response, keyed by the peer counter it acknowledged. */
+	uint8_t replay[MATTER_EXCHANGE_REPLAY_MAX];
+	uint16_t replay_len;
+	uint32_t replay_peer_counter;
+	uint32_t replay_out_counter;
 };
 
 /**
@@ -428,6 +441,14 @@ int matter_exchange_send(struct matter_exchange *x, uint16_t protocol_id, uint8_
  */
 int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size_t cap,
 				   size_t *out_len);
+
+/**
+ * Replay the exact response cached for the duplicate request currently owed an
+ * acknowledgement. Reusing the original ciphertext and message counter is
+ * required; framing a new response would be a new MRP message, not a retry.
+ */
+int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
+			   size_t *out_len);
 
 /** Secure Channel MsgType 0x10 (Constants.h). Not a PASE opcode. */
 #define MATTER_SC_OP_ACK 0x10u

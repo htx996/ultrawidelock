@@ -687,7 +687,7 @@ def markdown(report):
             f"**{fmt(reg['free'])}** | {reg['pct']}% |\n"
         )
     out.append(
-        "\nFree bytes, not percentages: this image runs at ~95% of a 128 KB part, "
+        "\nFree bytes, not percentages: this image runs above 92% of a 128 KB part, "
         "where a few hundred bytes moves the percentage by less than a point.\n"
     )
     return "".join(out)

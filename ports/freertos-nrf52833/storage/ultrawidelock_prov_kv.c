@@ -194,12 +194,9 @@ int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
 /**
  * Forget the stored identity and every trust anchor.
  *
- * This deletes one key and not the store, because OpenThread's settings live in
- * the same two pages and its SRP client key must outlive a factory reset: the
- * SRP host name is the factory EUI-64, name ownership on the border router is
- * first-come-first-served by key, and a new key asking for the same name is
- * refused until the old lease expires, up to 14 days of being attached to
- * Thread but unreachable on it.
+ * This deletes one key and not the store, because OpenThread's settings and
+ * persistent SRP key share the same four physical pages. Credential reset must
+ * not silently turn into Thread or SRP identity reset.
  */
 static int prov_erase_locked(void)
 {

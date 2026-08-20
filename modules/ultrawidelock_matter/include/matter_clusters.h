@@ -648,6 +648,7 @@ struct matter_lock_event {
 #define MATTER_COMMISSIONING_VALUE_OUTSIDE_RANGE 1u
 #define MATTER_COMMISSIONING_INVALID_AUTH        2u
 #define MATTER_COMMISSIONING_NO_FAIL_SAFE        3u
+#define MATTER_COMMISSIONING_BUSY_WITH_OTHER     4u
 
 /* NetworkCommissioning attributes (MTRClusterConstants.h:1165-1169). */
 #define MATTER_ATTR_NC_MAX_NETWORKS           0x0000u
@@ -670,6 +671,7 @@ struct matter_lock_event {
 /* NetworkCommissioningStatusEnum, the values this node returns. */
 #define MATTER_NC_STATUS_SUCCESS                 0x00u
 #define MATTER_NC_STATUS_OUT_OF_RANGE            0x01u
+#define MATTER_NC_STATUS_BOUNDS_EXCEEDED          0x02u
 #define MATTER_NC_STATUS_NETWORK_ID_NOT_FOUND    0x03u
 #define MATTER_NC_STATUS_OTHER_CONNECTION_FAILUR 0x09u
 
@@ -720,18 +722,68 @@ struct matter_lock_event {
  * operational key, and a node that advertises one answers the second AddNOC
  * with TABLE_FULL and is never adopted.
  *
- * Three, because two means Apple Home fills the table and NO other ecosystem
- * can ever be added. Measured on hardware: a controller got through ten
- * commissioning stages -- attestation, DAC chain, CSR, NOC generation -- and
- * was refused at AddTrustedRootCertificate with RESOURCE_EXHAUSTED, which is
- * the correct answer to a full table and a useless one to be stuck at.
- *
- * The spec's floor is five. Each entry is 488 B of RAM (sizeof(struct
- * matter_fabric), measured, not estimated) and this part has 128 KB in total,
- * so the number is a budget decision rather than a protocol one. Raising it
- * again costs 488 B of RAM and 488 B of the 8 KB settings partition.
+ * Five is the Matter floor and leaves two spare administrators after the two
+ * Apple Home identities and one Home Assistant identity observed on hardware.
+ * Failed attempts do not consume one of these slots: they are attempt-owned
+ * until CommissioningComplete durably promotes them.
  */
-#define MATTER_SUPPORTED_FABRICS 3u
+#define MATTER_SUPPORTED_FABRICS 5u
+
+/** One byte is enough for the five physical fabric-slot ownership bits. */
+#define MATTER_FABRIC_SLOT_BIT(slot) ((uint8_t)(1u << (slot)))
+
+/** Durable mutations the portable cluster asks the owning port to commit. */
+enum matter_fabric_store_operation {
+	MATTER_FABRIC_STORE_COMMIT_ATTEMPT = 1,
+	MATTER_FABRIC_STORE_REMOVE = 2,
+	MATTER_FABRIC_STORE_ACL = 3,
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * The binding table, which is node-wide rather than per-slot: one
+	 * table holds every fabric's entries and is scoped inside itself.
+	 * The slot argument is unused.
+	 */
+	MATTER_FABRIC_STORE_BINDING = 4,
+#endif
+};
+
+struct matter_device_info;
+
+/**
+ * Port-owned operations that cannot live in the OS-neutral cluster module.
+ *
+ * The store callback is a durability boundary. It returns only after the
+ * requested mutation is on stable storage. The cluster emits no success
+ * response and changes no committed RAM state when it fails.
+ */
+struct matter_commissioning_hooks {
+	int (*failsafe_arm)(void *ctx, uint16_t expiry_s);
+	void (*failsafe_cancel)(void *ctx);
+	int (*fabric_store)(void *ctx, const struct matter_device_info *info,
+			    enum matter_fabric_store_operation operation, uint8_t slot,
+			    const uint8_t *value, size_t value_len);
+	void *ctx;
+};
+
+/** State owned by one ArmFailSafe lifetime. Never persisted. */
+struct matter_commissioning_attempt {
+	bool active;
+	/** Physical fabrics[] slots created by this attempt. */
+	uint8_t owned_slots;
+	/** A validated candidate dataset was supplied during this attempt. */
+	bool have_thread_candidate;
+	/** The candidate was applied to OpenThread and must be undone on abort. */
+	bool thread_applied;
+	uint8_t thread_dataset[MATTER_THREAD_DATASET_MAX];
+	size_t thread_dataset_len;
+	uint8_t thread_xpanid[MATTER_THREAD_XPANID_LEN];
+};
+
+/** Access-control data belongs to one fabric, never to the node globally. */
+struct matter_fabric_acl {
+	uint8_t data[MATTER_ACL_MAX];
+	size_t len;
+};
 
 /*
  * NodeOperationalCertStatusEnum, the verdicts this node actually returns
@@ -798,8 +850,8 @@ struct matter_device_info {
 	 * attribute and improvises without it -- observed on hardware as an
 	 * unrequested LockDoor a few seconds after every UnlockDoor. The node
 	 * itself enforces nothing here yet: the value is reported and writable
-	 * so the controller owns the policy. NOT persisted yet; a reboot
-	 * returns it to 0.
+	 * so the controller owns the policy. The application persists it after
+	 * a successful write response.
 	 */
 	uint32_t auto_relock_time_s;
 	/**
@@ -808,7 +860,7 @@ struct matter_device_info {
 	 * The port initialises it to MATTER_APPROACH_DIRECTION_ALL, the same
 	 * default the CHIP builds declare in their metadata; zero is a value a
 	 * controller could legally write, so it cannot double as "never set".
-	 * NOT persisted yet; a reboot returns it to the default.
+	 * The application persists it after a successful write response.
 	 */
 	uint8_t approach_direction;
 	/**
@@ -934,24 +986,10 @@ struct matter_device_info {
 	 * yet, so false would promise a reappearance that never comes.
 	 */
 	bool supports_concurrent_connection;
-	/**
-	 * True once ArmFailSafe has been accepted and not yet expired.
-	 *
-	 * The application currently enforces rollback at the next commissioning
-	 * session boundary, not from an ExpiryLengthSeconds timer. The rollback is
-	 * real: fabric slots created after this flag was armed and their pending
-	 * operational key are wiped. A wall-clock expiry remains a port-level gap.
-	 */
-	bool failsafe_armed;
-	/**
-	 * Fabric slots that existed when the current fail-safe was armed.
-	 *
-	 * A later administrator commissions against an already working node. If
-	 * that attempt dies after AddNOC, only its newly added slots are
-	 * provisional; erasing the pre-existing slots would revoke every working
-	 * administrator because a newcomer disappeared mid-flow.
-	 */
-	uint8_t failsafe_fabric_mask;
+	/** The one in-flight fail-safe transaction. */
+	struct matter_commissioning_attempt attempt;
+	/** Port timer and durable-store implementation. */
+	const struct matter_commissioning_hooks *commissioning_hooks;
 	/**
 	 * The CommissioningErrorEnum the last GeneralCommissioning command
 	 * produced, held between running it and serialising its response --
@@ -999,8 +1037,12 @@ struct matter_device_info {
 	 * ---- operational identity ------------------------------------------
 	 */
 
-	/** The one fabric this node can hold. Empty until AddNOC succeeds. */
+	/** Fabric identities, including at most one provisional attempt-owned slot. */
 	struct matter_fabric fabrics[MATTER_SUPPORTED_FABRICS];
+	/** Physical slots whose identities are durable and authoritative. */
+	uint8_t committed_slots;
+	/** Fabric-scoped ACL data, indexed by the same physical slot. */
+	struct matter_fabric_acl fabric_acls[MATTER_SUPPORTED_FABRICS];
 	/**
 	 * The node's single intermediate-certificate slot, shared by every
 	 * fabric because at most one has ever needed it. See the note on
@@ -1012,11 +1054,10 @@ struct matter_device_info {
 	 * ---- the operational network ---------------------------------------
 	 *
 	 * The commissioner hands over a Thread operational dataset -- network
-	 * key, channel, PAN ids, the lot -- and expects the node to go and join
-	 * with it. This node stores it and cannot yet join, so ConnectNetwork
-	 * is answered with a real failure rather than a success it would not
-	 * back up. Storing it is still the point: the dataset is the thing
-	 * OpenThread needs, and there is no other way to obtain it.
+	 * key, channel, PAN ids, the lot -- and expects the node to join with
+	 * it. A candidate is staged until ConnectNetwork succeeds, then becomes
+	 * the durable dataset restored after reboot. Later administrators may
+	 * name the same Extended PAN ID but cannot replace these credentials.
 	 */
 	uint8_t thread_dataset[MATTER_THREAD_DATASET_MAX];
 	size_t thread_dataset_len;
@@ -1027,39 +1068,8 @@ struct matter_device_info {
 	bool thread_started;
 	/** NetworkCommissioningStatusEnum from the last network command. */
 	uint8_t last_network_status;
-	/**
-	 * True once a commissioner has finished, which is what makes everything
-	 * above permanent. Until then the fail-safe owns it all.
-	 */
-	bool commissioning_complete;
-	/**
-	 * True once a CASE session is running, which is the one precondition
-	 * CommissioningComplete has.
-	 *
-	 * The spec will not accept that command over anything else
-	 * (general-commissioning-cluster.cpp:548-556 answers
-	 * kInvalidAuthentication), and the reason is not ceremony: the command
-	 * asserts the commissioner can reach this node operationally, and only
-	 * a CASE session is evidence of that. The port sets it; this module has
-	 * no way to see a session.
-	 */
-	bool case_established;
-
-	/*
-	 * ---- access control -----------------------------------------------
-	 *
-	 * The commissioner's last act is writing itself an ACL entry granting
-	 * Administer over CASE. Stored as the TLV that arrived, because the
-	 * only thing this node does with it is hand it back on a read.
-	 *
-	 * RECORDED, NOT ENFORCED. Nothing consults this before serving a
-	 * request; every peer that completes CASE is already trusted with
-	 * everything. Storing it is what makes the commissioner's write
-	 * truthful, and enforcing it is a separate piece of work that this
-	 * comment exists so nobody assumes is done.
-	 */
-	uint8_t acl[MATTER_ACL_MAX];
-	size_t acl_len;
+	/** Operational node id of the CASE peer serving the current request. */
+	uint64_t accessing_node_id;
 
 	/**
 	 * The NodeOperationalCertStatusEnum the last AddNOC produced, held for
@@ -1193,15 +1203,8 @@ size_t matter_clusters_event_count(const struct matter_device_info *info);
  * went wrong. The caller decides when: this port rolls the transaction back at
  * the beginning of the next commissioning session.
  *
- * Fabric slots that existed when ArmFailSafe ran survive. Only slots added by
- * the unfinished transaction are wiped. Once CommissioningComplete disarms the
- * fail-safe, this function does nothing.
- *
- * The THREAD attachment is deliberately kept. Strictly the fail-safe owns the
- * network config too, but the commissioner re-sends the identical dataset on
- * the next attempt, and staying attached turns the following attach from two
- * seconds into none. Nothing secret is retained that the next commissioner
- * would not immediately re-supply.
+ * Only slots and network changes owned by the current attempt are undone.
+ * Earlier committed fabrics and their Thread network are restored unchanged.
  */
 void matter_clusters_failsafe_expire(struct matter_device_info *info);
 

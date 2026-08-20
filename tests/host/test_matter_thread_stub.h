@@ -17,12 +17,14 @@
 extern uint8_t g_thread_last_dataset[512];
 extern size_t g_thread_last_len;
 extern int g_thread_start_calls;
+extern int g_thread_clear_calls;
 extern int g_thread_wait_calls;
 /** The last timeout matter_thread_wait_attached() was asked to honour. */
 extern uint32_t g_thread_last_timeout_ms;
 
 /** Make the next matter_thread_start() refuse the dataset. */
 extern int g_thread_start_fail;
+extern int g_thread_clear_fail;
 /** Make the next matter_thread_wait_attached() report an attach. */
 extern int g_thread_attached;
 

@@ -68,13 +68,15 @@ extern "C" {
 #define MATTER_IM_STATUS_SUCCESS               0x00u /* line 31 */
 #define MATTER_IM_STATUS_FAILURE               0x01u /* line 32 */
 /**
- * The peer knows the command and will not let THIS node run it (line 34).
+ * The peer knows the command and will not let this node run it (line 34).
  *
- * Here because the client direction needs to name it: it is what a bound lock
- * answers when its access control list has no entry for this node, and it is
- * the single most likely way a binding fails once everything else is right.
- * Reported as itself rather than as a generic failure, because the fix is
- * specific and the log line is the only place it can be named.
+ * Both directions need it. As a server this node answers it when the
+ * accessing fabric's access control list grants too little for the request.
+ * As a client it is what a bound lock answers when ITS list has no entry for
+ * this node, and it is the single most likely way a binding fails once
+ * everything else is right. Reported as itself rather than as a generic
+ * failure, because the fix is specific and the log line is the only place it
+ * can be named.
  */
 #define MATTER_IM_STATUS_UNSUPPORTED_ACCESS    0x7Eu
 #define MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT  0x7Fu /* line 35 */
@@ -337,7 +339,8 @@ typedef uint8_t (*matter_im_status_fn)(void *ctx, uint16_t endpoint, uint32_t cl
  *          latches them and the encoder reports them once at the end.
  */
 typedef void (*matter_im_value_fn)(void *ctx, uint16_t endpoint, uint32_t cluster,
-				   uint32_t attribute, struct matter_tlv_writer *w,
+				   uint32_t attribute, bool fabric_filtered,
+				   struct matter_tlv_writer *w,
 				   matter_tlv_tag_t tag);
 
 /**

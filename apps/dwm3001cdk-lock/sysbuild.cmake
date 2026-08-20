@@ -11,7 +11,7 @@
 #
 # Why this matters more than it looks: the lock re-asserts in SystemInit() on
 # every boot, and the only exit is `nrfjprog --recover`, which mass-erases flash
-# AND UICR. On this board that destroys settings_storage at 0x7e000 -- the Matter
+# AND UICR. On this board that destroys settings_storage at 0x7c000 -- the Matter
 # fabrics, the trust anchors, and the reader private key that every iPhone key
 # was provisioned against. Not a brick; a permanent loss of the board's identity.
 if(SB_CONFIG_APPROTECT_LOCK OR SB_CONFIG_SECURE_APPROTECT_LOCK)

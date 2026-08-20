@@ -43,6 +43,15 @@ extern "C" {
 int matter_thread_start(const uint8_t *dataset, size_t len);
 
 /**
+ * Detach and discard the active Thread dataset.
+ *
+ * Used only to roll back a first commissioning attempt which applied its
+ * candidate network and then expired. A multi-admin attempt never calls this:
+ * its candidate must match the already committed network.
+ */
+int matter_thread_clear(void);
+
+/**
  * Whether this node is ALREADY attached to the network @p xpanid names.
  *
  * Exists for one caller: AddOrUpdateThreadNetwork, which a second administrator

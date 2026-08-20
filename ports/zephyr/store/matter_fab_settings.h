@@ -23,7 +23,9 @@
  *
  * @return 0, or a negative errno from the settings backend.
  */
-int matter_fab_store(const struct matter_device_info *info);
+int matter_fab_commit(const struct matter_device_info *info,
+		      enum matter_fabric_store_operation operation, uint8_t slot,
+		      const uint8_t *value, size_t value_len);
 
 /**
  * Read it back into @p info.

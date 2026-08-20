@@ -14,10 +14,9 @@ void settingsfake_reset(void);
 /**
  * Fail the Nth settings_save_one() from now, and every one after it.
  *
- * This is what makes a TORN WRITE reproducible on the host: matter_fab_store()
- * writes seven keys in sequence and a reset between any two of them is exactly
- * "the first N succeeded". Power loss is otherwise untestable without pulling
- * the board's power at a chosen instruction.
+ * This makes a torn multi-record commit reproducible on the host: a reset
+ * between prerequisite records and the final per-slot authority record is
+ * exactly "the first N succeeded".
  *
  * @param n how many saves still succeed. 0 fails the very next one. A negative
  *          value disables the injection.
@@ -32,6 +31,9 @@ int settingsfake_delete_count(void);
 
 /** True when @p name currently holds a value. */
 bool settingsfake_has(const char *name);
+
+/** Flip one stored payload byte without updating its checksum. */
+bool settingsfake_corrupt(const char *name);
 
 /** Number of keys currently stored. */
 int settingsfake_key_count(void);

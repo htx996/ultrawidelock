@@ -1,10 +1,9 @@
 # The DWM3001CDK lock image.
 #
-# The application is still a skeleton: it brings the kernel up and proves the
-# tick runs. What it is for right now is the link, because the binding
-# constraint on this port is the 512 KB flash and 128 KB RAM budget and the
-# Zephyr oracle already overflows 128 KB by 1,752 bytes with the same feature
-# set. Every layer added below the application gets measured here as it lands.
+# The binding constraint on this port is the 512 KB flash and 128 KB RAM budget.
+# The current Zephyr production oracle fits at 120,740 B of RAM; the FreeRTOS
+# image is still measured independently because its task and storage layout is
+# different. Every layer added below the application gets measured here.
 
 cmake_minimum_required(VERSION 3.20)
 

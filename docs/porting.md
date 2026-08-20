@@ -12,6 +12,12 @@ hardware-validated end to end and the source-stack default has a dedicated firmw
 build and protocol host tests and awaits the full phone checklist. A third port,
 ESP32-S3 on ESP-IDF, lives in [`ports/esp32/`](../ports/esp32/).
 
+This chapter covers the UWB/RTOS seam. A complete Matter/credential lock must also
+meet the cross-port five-fabric, Thread-dataset, selective-removal, SRP, and
+last-fabric cleanup rules in [`PORTING.md`](../PORTING.md#matterhome-key-multi-admin-contract).
+Those are externally visible behavior contracts even when an ESP32 or nRF5340
+delegates its implementation to CHIP.
+
 ## 1. The contract
 
 Everything the ranging engine needs from a platform is the two headers in

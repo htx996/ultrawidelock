@@ -309,6 +309,23 @@ void test_matter_binding(void)
 		memset(&info, 0, sizeof(info));
 		matter_clusters_init(&srv, &info);
 		info.vendor_id = 0xFFF1u;
+		/*
+		 * Two administrators, each the CASE admin subject its own AddNOC
+		 * named. Writing a binding needs Administer, so without this the
+		 * cluster refuses every write below on privilege and the fabric
+		 * scoping these cases exist to test is never reached.
+		 */
+		info.fabrics[0].index = FABRIC_A;
+		info.fabrics[0].fabric_id = FABRIC_A;
+		info.fabrics[0].node_id = FABRIC_A;
+		info.fabrics[0].case_admin_subject = FABRIC_A;
+		info.fabrics[1].index = FABRIC_B;
+		info.fabrics[1].fabric_id = FABRIC_B;
+		info.fabrics[1].node_id = FABRIC_B;
+		info.fabrics[1].case_admin_subject = FABRIC_B;
+		info.committed_slots =
+			MATTER_FABRIC_SLOT_BIT(0u) | MATTER_FABRIC_SLOT_BIT(1u);
+		info.accessing_node_id = FABRIC_A;
 
 		T_OK("the lock endpoint carries it",
 		     srv.has_cluster(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING));
@@ -342,15 +359,16 @@ void test_matter_binding(void)
 
 		matter_tlv_writer_init(&w, buf, sizeof(buf));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
-			  MATTER_ATTR_BINDING_LIST, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_BINDING_LIST, true, &w, MATTER_TLV_ANON);
 		T_EQ("the read encodes", matter_tlv_writer_finish(&w, &len), MATTER_OK);
 		T_EQ("and hands that fabric its one entry", (int)count_array(buf, len), 1);
 
 		/* The other administrator sees an empty list, not this one's. */
 		info.accessing_fabric_index = FABRIC_B;
+		info.accessing_node_id = FABRIC_B;
 		matter_tlv_writer_init(&w, buf, sizeof(buf));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_BINDING,
-			  MATTER_ATTR_BINDING_LIST, &w, MATTER_TLV_ANON);
+			  MATTER_ATTR_BINDING_LIST, true, &w, MATTER_TLV_ANON);
 		T_EQ("a second administrator's read encodes", matter_tlv_writer_finish(&w, &len),
 		     MATTER_OK);
 		T_EQ("and enumerates nothing of the first's", (int)count_array(buf, len), 0);
@@ -385,6 +403,7 @@ void test_matter_binding(void)
 		 */
 		info.vendor_id = 0u;
 		info.accessing_fabric_index = FABRIC_A;
+		info.accessing_node_id = FABRIC_A;
 		info.binding.pin_len = 0u;
 		path.attribute = MATTER_ATTR_BINDING_PIN(0u);
 		len = write_list(buf, sizeof(buf), nodes, endpoints, clusters, 1u);

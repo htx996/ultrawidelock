@@ -298,8 +298,9 @@ config ULTRAWIDELOCK_MATTER_CLEAR_ON_BOOT
 	depends on ULTRAWIDELOCK_MATTER_BLE
 	default n
 	help
-	  Deletes the `mfab/*` settings keys before they are read, so the board
-	  comes up with no fabric and advertises commissionable.
+	  Atomically advances the `mf2` identity epoch before it is read, so the
+	  board comes up with no fabric and advertises commissionable. With no
+	  administering fabric, the Home Key identity is cleared too.
 
 	  The other half of a factory reset, and why this pair is still worth
 	  preferring over `west flash --erase`: together they clear everything a

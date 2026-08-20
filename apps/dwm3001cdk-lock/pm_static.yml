@@ -8,31 +8,30 @@
 # and the one partition whose address MUST NOT MOVE is settings_storage --
 # it holds the Matter fabrics, the trust anchors and the reader private key, and
 # a board is reflashed with plain `west flash`, never `--erase`, precisely so
-# that 0x7e000 survives the update. An address that drifts because MCUboot grew
+# that 0x7c000 survives the update. An address that drifts because MCUboot grew
 # by a sector would silently orphan all of it. So it is pinned.
 #
 # EVERY NUMBER BELOW IS MEASURED, not budgeted. Sources, all at this commit:
 #
-#   MCUboot           29,360 B   sysbuild image, build/cdk-matter/mcuboot
-#                                (29,328 B standalone; PM integration adds 32 B)
-#   application      405,296 B   linker FLASH region, build/cdk-matter/dwm3001cdk-lock
-#   app signed       405,960 B   dwm3001cdk-lock/zephyr/zephyr.signed.bin -- the raw
-#                                image plus 664 B of MCUboot header and
+#   MCUboot           32,896 B   sysbuild image, build/cdk-matter/mcuboot
+#   application      397,360 B   linker FLASH region, build/cdk-matter/dwm3001cdk-lock
+#   app signed       398,023 B   dwm3001cdk-lock/zephyr/zephyr.signed.bin -- the raw
+#                                image plus 663 B of MCUboot header and
 #                                ECDSA-P256 TLVs. Read off the file, not derived.
 #                                (The TLV block varies a byte or two run to run:
 #                                DER strips leading zeros from r and s.)
 #
 # ---------------------------------------------------------------------------
-#  0x00000  mcuboot            40,960 B   29,360 used, 11,600 free
+#  0x00000  mcuboot            40,960 B   32,896 used,  8,064 free
 #  0x0a000  mcuboot_pad           512 B   image header
-#  0x0a200  app               433,664 B   409,536 linked (94.44%)
-#  0x74000  patch_staging      40,960 B   one OTA delta patch
-#  0x7e000  settings_storage    8,192 B   UNCHANGED from the pre-MCUboot map
-#  0x80000  end                           40,960 + 512 + 433,664 + 40,960 +
-#                                         8,192 = 524,288, the part exactly
+#  0x0a200  app               433,664 B   397,360 linked (91.63%)
+#  0x74000  patch_staging      32,768 B   one OTA delta patch
+#  0x7c000  settings_storage   16,384 B   four NVS sectors
+#  0x80000  end                           40,960 + 512 + 433,664 + 32,768 +
+#                                         16,384 = 524,288, the part exactly
 # ---------------------------------------------------------------------------
 #
-# WHY MCUBOOT GREW FROM 32,768 B, AND WHY THE APP GAVE UP 40,960 B TO A PATCH.
+# WHY MCUBOOT GREW FROM 32,768 B, AND WHY THE APP GAVE UP 32,768 B TO A PATCH.
 # Both are the BLE OTA path. This board cannot
 # do a conventional over-the-air update and the arithmetic is not close: two
 # full slots want 844 KB of a 512 KB part, and an LZMA-compressed secondary
@@ -40,7 +39,7 @@
 # jedec,spi-nor node in the board DTS. What fits is a DELTA: measured between
 # two adjacent LTO builds of this image, an in-place patch is 10,906 B.
 #
-#   patch_staging  40,960 B   one patch and its control pages; nothing else
+#   patch_staging  32,768 B   one patch and its control pages; nothing else
 #                             may live here, because MCUboot erases the whole
 #                             partition after a successful apply. Sized by
 #                             measurement -- see the note on the partition.
@@ -48,20 +47,18 @@
 #                             which run in the bootloader because the
 #                             application cannot rewrite the flash it is
 #                             executing from. MEASURED: the applier costs
-#                             3,176 B (29,380 -> 32,556), so the partition
-#                             ends at 79.48% with 8,404 B still free. The
+#                             3,176 B in the original measurement. The current
+#                             image ends at 80.31% with 8,064 B still free. The
 #                             grant is four sectors rather than one because
 #                             0x8000 would have left 212 B, and a bootloader
 #                             with 212 B of margin is one commit from an
 #                             overflow in the image that has to still work
 #                             when the application does not.
 #
-# The application still has room: 433,664 - 409,536 = 24,128 B, of which
+# The application still has room: 433,664 - 397,360 = 36,304 B, of which
 # detools wants ~8 KB as forward-shift slack INSIDE this partition (it shifts
-# the old image forward to patch backwards over it). That leaves ~16 KB. The
-# image grew about 4 KB across the whole session that built this update path,
-# so that is months of headroom rather than weeks -- but it IS the number to
-# watch, because the app and the staging partition are now competing for the
+# the old image forward to patch backwards over it). That leaves ~28 KB. It is
+# still the number to watch, because the app and the staging partition are competing for the
 # same bytes. Both remain build-time constraints: an image that outgrows its
 # partition fails `west build`, it does not ship.
 #
@@ -77,7 +74,8 @@
 # 29,360 B and nothing was going to be added to it. The delta applier changes
 # that: detools plus heatshrink plus the glue is ~7 KB and it has to live in the
 # bootloader, because an application cannot rewrite the flash it is executing
-# from. 0x8000 left 3,408 B, which does not hold it. 0xA000 leaves 11,600 B.
+# from. 0x8000 left 3,408 B in that first measurement, which did not hold it.
+# The current 32,896 B MCUboot image leaves 8,064 B in 0xA000.
 #
 # Left to itself PM gives mcuboot 48 KB (0xC000), which measured 59.73% used
 # while the application sat at 95.32% of what was left. That is still the reason
@@ -88,7 +86,7 @@
 #
 # HOW TO CHECK THIS FILE IS STILL TRUE
 #   west build -d <build> -t partition_manager_report
-#   diff <(cat <build>/partitions.yml) — settings_storage must read 0x7e000/0x2000
+#   diff <(cat <build>/partitions.yml) — settings_storage must read 0x7c000/0x4000
 #
 # NOTHING HERE MAY LOCK APPROTECT, and no partition change makes that safe:
 # `nrfjprog --recover` erases UICR too, so it takes settings_storage with it and
@@ -165,8 +163,8 @@ mcuboot_primary:
 # detools drives that counter itself through its step_set/step_get callbacks
 # (detools.c:1559 skips any step already recorded complete).
 #
-# 40,960 B, and it was 32,768 B until a MEASUREMENT moved it. Patch size is
-# driven by how far code SHIFTS, not by how much of it changed:
+# 32,768 B. Patch size is driven by how far code SHIFTS, not by how much of it
+# changed:
 #
 #   build timestamp only, no code change      7,632 B
 #   fifty-two bytes of new code              17,335 B
@@ -176,24 +174,28 @@ mcuboot_primary:
 # 24,576 B budget for a change that is barely visible in a diff, so a real
 # feature would not have fitted and the patch builder would have refused it.
 #
-# The usable budget is this size less the two control pages: 32,768 B.
+# The usable budget is this size less the two control pages: 24,576 B.
 #
-# GROWING IT AGAIN IS EXPENSIVE. A partition move is a flash map change, and
+# GROWING IT IS EXPENSIVE. A partition move is a flash map change, and
 # a flash map change is the one thing an over-the-air update cannot deliver:
 # it needs a cable on every board that already exists. This was done while
 # exactly one board existed. Decide it early or not at all.
 patch_staging:
   address: 0x74000
-  end_address: 0x7e000
+  end_address: 0x7c000
   region: flash_primary
-  size: 0xa000
+  size: 0x8000
   placement:
     align:
       start: 0x1000
     before:
       - settings_storage
 
-# DO NOT MOVE. The reader identity and the Matter fabrics live here, and
+# CLEAN BREAK FROM v0.3.0. This release moves settings from 0x7e000 to 0x7c000
+# and changes the custom Matter schema to mf2. Existing Matter fabrics and
+# Home Key identity is intentionally not migrated and must be paired
+# again. After that one-time break, do not move this partition: the reader
+# identity and the Matter fabrics live here, and
 # `west flash` without --erase is what preserves them across an update --
 # MEASURED: merged.hex spans 0x0..0x75274 and so stops 36,236 B short of this
 # partition.
@@ -206,15 +208,15 @@ patch_staging:
 # captures the Matter fabrics that `ultrawidelock export` never did:
 #
 #   JLinkExe -device nRF52833_xxAA -if SWD -speed 4000 -autoconnect 1 \
-#     -CommanderScript <(printf 'savebin s.bin 0x7E000 0x2000\nexit\n')
+#     -CommanderScript <(printf 'savebin s.bin 0x7C000 0x4000\nexit\n')
 #
-# Then check the result is 8,192 B and not all 0xFF before trusting it: an
+# Then check the result is 16,384 B and not all 0xFF before trusting it: an
 # erased page saves silently and looks exactly like a backup.
 settings_storage:
-  address: 0x7e000
+  address: 0x7c000
   end_address: 0x80000
   region: flash_primary
-  size: 0x2000
+  size: 0x4000
   placement:
     align:
       start: 0x1000

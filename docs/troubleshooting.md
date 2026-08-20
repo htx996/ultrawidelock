@@ -55,18 +55,43 @@ A `make flash` that reports "Timed out waiting for response from worker" after
 the reset. Check with a read before reflashing.
 
 **Apple Home sits on "Adding to Home" and never finishes.** If the board was
-factory-erased, this used to be OpenThread's SRP client: name ownership is
-first-come by key, the erase destroyed the key but not the name, and the border
-router refused the re-registration for as long as the old lease ran, up to 14
-days. Commit `f7d3160` fixed it by storing a name suffix beside the key so both
-die in the same erase. If you are on an older image, that is the symptom.
+factory-erased, old images could lose the OpenThread SRP client key while the
+border router retained its name lease. The current image persists the SRP key
+and name identity together, keeps asynchronous removal objects alive until
+OpenThread returns them, and retries a duplicate service name. Capture the RTT
+log before restarting the border router; a restart is now a diagnostic fallback,
+not the expected repair.
+
+**Apple Home works, but Home Assistant loses the lock after sharing it.** This
+is usually two Thread networks, not a Matter fabric problem. In the Home
+Assistant iOS Companion app, open **Settings > Devices & services > Thread >
+Configure**, send the Apple credentials to Home Assistant, refresh, and make
+that network preferred. Join Home Assistant's OpenThread Border Router to those
+credentials rather than commissioning the lock onto a second dataset. Then
+share the already-commissioned Apple accessory again. See the
+[DWM3001CDK multi-admin guide](../apps/dwm3001cdk-lock/README.md#apple-home-plus-home-assistant).
+
+**A Home Assistant sharing attempt failed.** Let the fail-safe expire before
+retrying. The current five-slot implementation marks new fabrics provisional
+and rolls back only the failed attempt, so it does not disturb Apple Home or
+consume a persistent slot. If the new controller already reached
+`CommissioningComplete`, remove that fabric from a surviving controller with
+Home Assistant's **Manage fabrics** action.
+
+**The lock reports a full fabric table.** Five committed fabrics are supported.
+Apple Home commonly accounts for two and Home Assistant one. Remove an unused
+controller through **Manage fabrics**; authenticated `RemoveFabric` tombstones
+only the target, revokes its sessions, ACL, subscriptions, and SRP service, and
+keeps the other controllers live. Use SW2 only if no administrator can reach the
+lock.
 
 **The lock works but the phone never approaches it.** The reader only advertises
 its Aliro service with the provisioned advertising parameters once it has an
 identity, and on the Matter image the identity is minted by commissioning. A
 `make flash-erase` takes the fabrics, the identity and the trust anchors with it,
-so the board has to be added to Home again. To clear only what a controller can
-see, hold **SW2 through reset** instead.
+so the board has to be added to Home again. To clear one controller, use its
+authenticated fabric-management UI. Holding **SW2 through reset** clears every
+Matter and Home Key identity and is the last-resort recovery.
 
 **The board refuses an over-the-air patch.** A delta is computed against the
 exact bytes the board is running, and only the build host keeps that record. A

@@ -14,9 +14,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The two pages the store owns, at the address the port reserves. */
-#define FAKE_FLASH_BASE 0x7e000u
-#define FAKE_FLASH_PAGES 2u
+/* Four physical pages form the store's two 8 KB logical pages. */
+#define FAKE_FLASH_BASE 0x7c000u
+#define FAKE_FLASH_PAGES 4u
 #define FAKE_FLASH_SIZE (FAKE_FLASH_PAGES * 4096u)
 
 /*

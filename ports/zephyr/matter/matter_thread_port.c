@@ -151,6 +151,31 @@ int matter_thread_start(const uint8_t *dataset, size_t len)
  * Whether this node is already attached to the network @p xpanid names.
  * See matter_thread.h for why this exists.
  */
+int matter_thread_clear(void)
+{
+	otInstance *ot = openthread_get_default_instance();
+	otOperationalDatasetTlvs empty = { 0 };
+	otError thread_err;
+	otError dataset_err;
+
+	if (ot == NULL) {
+		return MATTER_E_STATE;
+	}
+
+	/* Release SRP's references before disabling the interface it uses. */
+	matter_thread_advertise_reset();
+	openthread_mutex_lock();
+	thread_err = otThreadSetEnabled(ot, false);
+	dataset_err = otDatasetSetActiveTlvs(ot, &empty);
+	openthread_mutex_unlock();
+
+	if (thread_err != OT_ERROR_NONE || dataset_err != OT_ERROR_NONE) {
+		LOG_ERR("failed to clear Thread state (%d, %d)", thread_err, dataset_err);
+		return MATTER_E_STATE;
+	}
+	return MATTER_OK;
+}
+
 bool matter_thread_attached_to(const uint8_t *xpanid)
 {
 	otInstance *ot = openthread_get_default_instance();
@@ -1385,6 +1410,11 @@ int matter_thread_start(const uint8_t *dataset, size_t len)
  * Is this node already on that network? Always false; there is no Thread stack in this image, so
  * it is on no network at all.
  */
+int matter_thread_clear(void)
+{
+	return MATTER_E_STATE;
+}
+
 bool matter_thread_attached_to(const uint8_t *xpanid)
 {
 	ARG_UNUSED(xpanid);

@@ -140,6 +140,10 @@ void test_matter_exchange(void)
 
 	t_group("a retransmission is acknowledged but not acted on twice");
 	{
+		uint8_t first[sizeof(out)];
+		size_t first_len;
+		size_t replay_len = 0u;
+
 		matter_exchange_init(&x, SEED, true);
 		n = inbound_ok(msg, sizeof(msg), 0x20u, 7u, k_payload, sizeof(k_payload));
 		T_EQ("first time", matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)),
@@ -147,6 +151,8 @@ void test_matter_exchange(void)
 		T_EQ("reply",
 		     matter_exchange_reply(&x, 0x21u, NULL, 0u, out, sizeof(out), &out_len),
 		     MATTER_OK);
+		first_len = out_len;
+		memcpy(first, out, first_len);
 		T_OK("ack consumed", !x.ack_pending);
 
 		/* The peer did not hear the reply and sends the same message again. */
@@ -157,6 +163,36 @@ void test_matter_exchange(void)
 		 * that true forever. */
 		T_OK("but it is owed an acknowledgement again", x.ack_pending);
 		T_EQ("for the same counter", (long)x.ack_counter, 7L);
+		T_EQ("the exact response is replayed",
+		     matter_exchange_replay(&x, out, sizeof(out), &replay_len), MATTER_OK);
+		T_EQ("with the original length", (long)replay_len, (long)first_len);
+		T_OK("with the original wire bytes and counter",
+		     memcmp(out, first, first_len) == 0);
+		T_OK("the replay carries the acknowledgement", !x.ack_pending);
+		T_EQ("and cannot be emitted without another duplicate",
+		     matter_exchange_replay(&x, out, sizeof(out), &replay_len), MATTER_E_STATE);
+	}
+
+	t_group("an oversized response falls back to a standalone ack");
+	{
+		uint8_t large[MATTER_EXCHANGE_REPLAY_MAX];
+		size_t replay_len = 0u;
+
+		memset(large, 0xa5, sizeof(large));
+		matter_exchange_init(&x, SEED, true);
+		n = inbound_ok(msg, sizeof(msg), 0x20u, 8u, NULL, 0u);
+		T_EQ("first request", matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)),
+		     MATTER_OK);
+		T_EQ("large reply frames",
+		     matter_exchange_reply(&x, 0x21u, large, sizeof(large), out, sizeof(out),
+				       &out_len),
+		     MATTER_OK);
+		T_EQ("duplicate is suppressed",
+		     matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)), MATTER_E_DUP);
+		T_EQ("oversized reply was not cached",
+		     matter_exchange_replay(&x, out, sizeof(out), &replay_len), MATTER_E_STATE);
+		T_EQ("but the peer can still be acknowledged",
+		     matter_exchange_standalone_ack(&x, out, sizeof(out), &replay_len), MATTER_OK);
 	}
 
 	t_group("what this layer refuses");
