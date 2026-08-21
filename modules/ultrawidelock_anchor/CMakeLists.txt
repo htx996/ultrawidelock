@@ -26,7 +26,7 @@ if(CONFIG_ULTRAWIDELOCK_ANCHOR)
   # label core are witness-only and stay behind the witness gate, so an
   # anchor-only image compiles none of them. ULTRAWIDELOCK_ANCHOR alone must
   # still grow no image at all.
-  if(CONFIG_ULTRAWIDELOCK_WITNESS_CODEC OR CONFIG_ULTRAWIDELOCK_SEALED_LINK)
+  if(CONFIG_ULTRAWIDELOCK_WITNESS_CODEC OR CONFIG_ULTRAWIDELOCK_ANCHOR_MSG)
     zephyr_library_sources(${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_msg.c)
   endif()
   if(CONFIG_ULTRAWIDELOCK_WITNESS_CODEC)
@@ -42,4 +42,14 @@ if(CONFIG_ULTRAWIDELOCK_ANCHOR)
   # (ultrawidelock_zephyr_port) under that same gate.
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+endif()
+
+# The wire codec alone, for builds that are not ULTRAWIDELOCK_ANCHOR at all. The
+# satellite encodes a report and fuses nothing -- it has no geometry, no verdict
+# and no second distance to compare against -- so requiring the whole fusion
+# module to send its own measurement would be backwards.
+if(CONFIG_ULTRAWIDELOCK_ANCHOR_MSG AND NOT CONFIG_ULTRAWIDELOCK_ANCHOR)
+  zephyr_library_named(ultrawidelock_anchor_msg)
+  zephyr_library_sources(${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_msg.c)
+  zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
