@@ -1091,8 +1091,13 @@ int main(void)
 
 			if (sid != 0u && sid != tg_sid) {
 				tg_sid = sid;
-				tg_until = now + 8000;
-				LOG_INF("toggle window open (8 s)");
+				/* 20 s: the second anchor takes ~3-4 s to join the
+				 * new session before geometry exists at all, and a
+				 * measured 00:24 window expired at 8 s with the
+				 * commit still forming. The length costs nothing --
+				 * INSIDE refuses by verdict, never by timeout. */
+				tg_until = now + 20000;
+				LOG_INF("toggle window open");
 			}
 			if (!granted && tg_until != 0 && now < tg_until && session_now &&
 			    latch_cred != LATCH_CRED_NONE &&

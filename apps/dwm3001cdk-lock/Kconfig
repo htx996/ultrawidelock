@@ -151,7 +151,7 @@ config ULTRAWIDELOCK_BENCH_TOGGLE_UNLOCK
 	default n
 	help
 	  Every new UWB ranging session -- which is what the Wallet UWB toggle
-	  creates, and the first session after a flash -- opens an 8 s window in
+	  creates, and the first session after a flash -- opens a 20 s window in
 	  which a clean committed OUTSIDE from the side gate unlocks without any
 	  approach. Lets a stationary phone test the inside/outside rule by
 	  toggling: outside unlocks, inside or unknown refuses. BENCH ONLY: iOS
