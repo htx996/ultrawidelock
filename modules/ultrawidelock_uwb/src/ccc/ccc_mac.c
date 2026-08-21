@@ -327,17 +327,69 @@ struct ccc_hop_decision ccc_initiator_next_hop(const struct ccc_ran_params *p, u
  * was never called in production because this file's own consumer open-coded a
  * signed version to avoid it. */
 
+/**
+ * @brief The record for @p responder, found by its TAG rather than its position.
+ *
+ * CCC reports only the responders the initiator actually validated, in no
+ * guaranteed order, and tags each record with @c responder_index. Indexing the
+ * array by position is therefore wrong the moment the initiator omits or
+ * reorders one: a lone record tagged 1 -- exactly what a satellite gets when the
+ * initiator validated it and not the lock -- would be read as responder 0's
+ * timestamps and yield a confidently wrong distance.
+ *
+ * Fall back to position only when the tags cannot be trusted (out of range, or
+ * duplicated), which preserves the old behaviour for an initiator that does not
+ * populate them.
+ */
+static const struct ccc_responder_ts *fd_record_for(const struct ccc_final_data *fd,
+						    uint8_t responder)
+{
+	uint16_t seen = 0u;
+	uint8_t i;
+	bool tags_usable = true;
+
+	for (i = 0u; i < fd->num_responders; i++) {
+		uint8_t tag = fd->responders[i].responder_index;
+
+		if (tag >= CCC_MAX_RESPONDERS || (seen & (uint16_t)(1u << tag)) != 0u) {
+			tags_usable = false;
+			break;
+		}
+		seen |= (uint16_t)(1u << tag);
+	}
+
+	if (tags_usable) {
+		for (i = 0u; i < fd->num_responders; i++) {
+			if (fd->responders[i].responder_index == responder) {
+				return &fd->responders[i];
+			}
+		}
+		return NULL; /* tags are sound and this responder simply was not reported */
+	}
+	return (responder < fd->num_responders) ? &fd->responders[responder] : NULL;
+}
+
 int ccc_responder_ds_twr(const struct ccc_final_data *fd, uint8_t responder, uint32_t t_reply1,
 			 uint32_t t_round2, struct ds_twr *out)
 {
-	if (fd == NULL || out == NULL || responder >= fd->num_responders) {
+	const struct ccc_responder_ts *rec;
+
+	/* Bound against the protocol maximum, NOT against num_responders: a record
+	 * tagged 1 can legitimately arrive in a frame carrying one record, and the
+	 * old `responder >= fd->num_responders` test rejected precisely that case. */
+	if (fd == NULL || out == NULL || responder >= CCC_MAX_RESPONDERS ||
+	    fd->num_responders == 0u || fd->num_responders > CCC_MAX_RESPONDERS) {
 		return -EINVAL;
 	}
+	rec = fd_record_for(fd, responder);
+	if (rec == NULL) {
+		return -ENOENT;
+	}
 	/* From Final_Data: t_round1 = t4−t1, and t_reply2 = (t5−t1)−(t4−t1). */
-	out->t_round1 = fd->responders[responder].timestamp;
+	out->t_round1 = rec->timestamp;
 	out->t_reply1 = t_reply1;
 	out->t_round2 = t_round2;
-	out->t_reply2 = fd->ranging_ts_final_tx - fd->responders[responder].timestamp;
+	out->t_reply2 = fd->ranging_ts_final_tx - rec->timestamp;
 	return 0;
 }
 
