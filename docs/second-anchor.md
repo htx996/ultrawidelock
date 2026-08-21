@@ -154,6 +154,43 @@ Proven, each on a console this night:
   with ~3 ms arm margin, no `HPDWARN`, correct STS index. Receipt:
   `RESPTX r=0`, 16+ `RESP txdone`.
 
+## STAGE B PASSES — re-run 2026-08-21 06:25
+
+**The phone reports a second responder.** The 04:30 "answered no" below was our
+own defect, and everything from it down is kept only as the record of how a
+confident negative got built on a silent buffer drop.
+
+Receipts, one session, satellite transmitting `Response_1` in slot 3:
+
+| Signal | Result |
+|---|---|
+| `nresp=2` | 47 times, blocks 3 through 39 |
+| Records | `resp[0] idx=0 ts=127795319`, `resp[1] idx=1 ts=255590944` |
+| `SAT range`, satellite as responder 1 | 28 ranges, 57-63 cm cluster |
+| `DIST` | tof 119-129, d = 558-605 mm |
+| `SP0 OVERSIZE` | 0 — nothing dropped |
+
+The whole difference was one constant: `g_pp_stash` was 64 bytes and a
+two-record `Final_Data` is 65 on air, so every block where the phone reported
+BOTH responders was discarded by the size gate before the decode ran. A frame we
+delete is indistinguishable from a frame the initiator never sent, which is
+exactly the inference stage B made. Being precise about credit: the record
+selection fix (by tag rather than array position) did NOT unblock this -- with
+two in-order records, position indexing would have worked. It earns its place
+for the case where the initiator validates only responder 1.
+
+**This retires B' and B''.** Both anchors now measure in the SAME ranging round,
+which is what `ultrawidelock_fusion.h:63` requires -- zero pairing skew, against
+alternation's 192 ms and two-round's `O^k x T_Round`. No MAC Mode work, no
+second hopping sequence, no shared `Final_Data` hop state. Go to stage C.
+
+Lesson worth keeping: a discard path with no counter and no log is a defect
+generator, not a safety measure. The oversize path now counts and logs -- though
+only where `DIAGK` survives, so `CONFIG_ULTRAWIDELOCK_PRETTY_SHELL` still blinds
+the lock to its own drops. That wants a `LOG_WRN` before this ships.
+
+## The 04:30 run, kept as the record
+
 Answered no, but **only the observation is settled, not its cause.** The phone
 builds the grown round faithfully -- Final at POLL+3, `Final_Data` at POLL+4,
 key derivation in step -- and still emits `nresp=1` in every `Final_Data`.
@@ -185,6 +222,12 @@ shared derive error would agree with itself.
 
 Either way stage B' is the better route and does not wait on this: nothing the
 stage was built out of is wasted, and every component below it feeds B'.
+
+> SUPERSEDED by the 06:25 re-run above. B' and B'' below were both designed
+> around a limitation that does not exist. They are kept because the reasoning
+> in them is sound and the constraints they document -- especially the fusion
+> same-round rule -- still bind whatever is built next. The parity knobs remain
+> in the tree, inert at their defaults.
 
 ### B'. Block-parity alternation — the fallback built only from proven parts
 
