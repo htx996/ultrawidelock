@@ -150,10 +150,104 @@ static void test_replay(void)
 	T_OK("seen.null", !ultrawidelock_witness_seen_accept(NULL, &m));
 }
 
+/*
+ * WV4, the lock's session handoff. Tested harder than its size suggests because
+ * it is the one message the SATELLITE acts on: a decode that silently accepts a
+ * truncated or mis-versioned frame hands the radio a key it should not have.
+ */
+static struct ultrawidelock_join_msg base_join(void)
+{
+	struct ultrawidelock_join_msg j;
+	size_t i;
+
+	memset(&j, 0, sizeof(j));
+	j.ver = ULTRAWIDELOCK_JOIN_MSG_VER;
+	j.boot_id = 0xDEADBEEFu;
+	j.ctr = 42u;
+	for (i = 0; i < ULTRAWIDELOCK_JOIN_URSK_LEN; i++) {
+		j.ursk[i] = (uint8_t)(0xA0u + i);
+	}
+	for (i = 0; i < ULTRAWIDELOCK_JOIN_RCFG_LEN; i++) {
+		j.rcfg[i] = (uint8_t)(0x10u + i);
+	}
+	j.channel = 9u;
+	j.sync_code_index = 10u;
+	return j;
+}
+
+static void test_join(void)
+{
+	struct ultrawidelock_join_msg j = base_join();
+	struct ultrawidelock_join_msg out;
+	uint8_t buf[ULTRAWIDELOCK_JOIN_MSG_LEN + 4u];
+	size_t n;
+
+	t_group("join_msg: round trip");
+
+	n = ultrawidelock_join_msg_encode(&j, buf, sizeof(buf));
+	T_EQ("join.encode_len", (int)n, ULTRAWIDELOCK_JOIN_MSG_LEN);
+	T_OK("join.is_join", ultrawidelock_msg_is_join(buf, n));
+	T_OK("join.not_anchor", !ultrawidelock_msg_is_anchor(buf, n));
+
+	memset(&out, 0, sizeof(out));
+	T_OK("join.decode", ultrawidelock_join_msg_decode(buf, n, &out));
+	T_EQ("join.ver", out.ver, ULTRAWIDELOCK_JOIN_MSG_VER);
+	T_EQ("join.boot_id", (int)out.boot_id, (int)j.boot_id);
+	T_EQ("join.ctr", (int)out.ctr, (int)j.ctr);
+	T_EQ("join.channel", out.channel, j.channel);
+	T_EQ("join.sync_code", out.sync_code_index, j.sync_code_index);
+	T_OK("join.ursk", memcmp(out.ursk, j.ursk, ULTRAWIDELOCK_JOIN_URSK_LEN) == 0);
+	T_OK("join.rcfg", memcmp(out.rcfg, j.rcfg, ULTRAWIDELOCK_JOIN_RCFG_LEN) == 0);
+
+	t_group("join_msg: rejects");
+
+	/* Exact length, both directions: a handoff carrying a key must not be
+	 * decoded from a frame whose size the two sides disagree about. */
+	T_OK("join.short", !ultrawidelock_join_msg_decode(buf, ULTRAWIDELOCK_JOIN_MSG_LEN - 1u,
+							 &out));
+	T_OK("join.long", !ultrawidelock_join_msg_decode(buf, ULTRAWIDELOCK_JOIN_MSG_LEN + 1u,
+							&out));
+	buf[0] = ULTRAWIDELOCK_ANCHOR_MSG_VER;
+	T_OK("join.wrong_ver", !ultrawidelock_join_msg_decode(buf, ULTRAWIDELOCK_JOIN_MSG_LEN,
+							     &out));
+	T_OK("join.is_join_false", !ultrawidelock_msg_is_join(buf, ULTRAWIDELOCK_JOIN_MSG_LEN));
+	buf[0] = ULTRAWIDELOCK_JOIN_MSG_VER;
+
+	T_OK("join.null_buf", !ultrawidelock_join_msg_decode(NULL, ULTRAWIDELOCK_JOIN_MSG_LEN,
+							    &out));
+	T_OK("join.null_out", !ultrawidelock_join_msg_decode(buf, ULTRAWIDELOCK_JOIN_MSG_LEN,
+							    NULL));
+	T_EQ("join.encode_cap", (int)ultrawidelock_join_msg_encode(&j, buf,
+								   ULTRAWIDELOCK_JOIN_MSG_LEN - 1u),
+	     0);
+	T_EQ("join.encode_null", (int)ultrawidelock_join_msg_encode(NULL, buf, sizeof(buf)), 0);
+
+	t_group("join_msg: version namespace");
+
+	/* One version byte, one decoder. A WV3 report must never decode as a
+	 * handoff and vice versa, or the wrong consumer acts on it. */
+	{
+		struct ultrawidelock_anchor_msg a;
+		uint8_t abuf[ULTRAWIDELOCK_ANCHOR_MSG_LEN];
+		size_t an;
+
+		memset(&a, 0, sizeof(a));
+		a.ver = ULTRAWIDELOCK_ANCHOR_MSG_VER;
+		a.role = ULTRAWIDELOCK_WITNESS_ROLE_OUTSIDE;
+		a.ranging_block = 12u;
+		a.peer_mm = 1500;
+		an = ultrawidelock_anchor_msg_encode(&a, abuf, sizeof(abuf));
+		T_EQ("join.anchor_len", (int)an, ULTRAWIDELOCK_ANCHOR_MSG_LEN);
+		T_OK("join.anchor_not_join", !ultrawidelock_msg_is_join(abuf, an));
+		T_OK("join.anchor_no_decode", !ultrawidelock_join_msg_decode(abuf, an, &out));
+	}
+}
+
 void test_ultrawidelock_witness_msg(void)
 {
 	test_roundtrip();
 	test_reject();
 	test_find();
 	test_replay();
+	test_join();
 }

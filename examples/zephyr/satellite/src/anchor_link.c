@@ -63,6 +63,11 @@ static uint32_t s_ctr;
  * recorded one. Zero until one is heard; the lock only challenges while a
  * credential session is up. */
 static uint64_t s_echo_nonce;
+/* Where a surviving handoff goes, and the lock's replay state for that
+ * direction. Separate from anything the report path keeps: the two directions
+ * have independent senders, boot ids and counters. */
+static anchor_link_join_cb s_join_cb;
+static struct ultrawidelock_witness_seen s_lock_seen;
 
 /** Seal a payload: nonce ‖ ciphertext ‖ tag, exactly what the lock unseals. */
 static size_t seal(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t cap)
@@ -113,28 +118,103 @@ static size_t seal(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t 
  * not a command. Echoing the wrong one costs this report its standing; it
  * cannot make the lock do anything.
  */
+/** Unseal under the link key: the inverse of seal() above. */
+static bool unseal(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_len)
+{
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t key = PSA_KEY_ID_NULL;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN);
+	psa_status_t st;
+
+	if (in_len <= CCM_NONCE_LEN + CCM_TAG_LEN) {
+		return false;
+	}
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
+	psa_set_key_algorithm(&attr, alg);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, KEY_LEN * 8u);
+	if (psa_import_key(&attr, s_key, KEY_LEN, &key) != PSA_SUCCESS) {
+		return false;
+	}
+	st = psa_aead_decrypt(key, alg, in, CCM_NONCE_LEN, NULL, 0, in + CCM_NONCE_LEN,
+			      in_len - CCM_NONCE_LEN, out, out_cap, out_len);
+	(void)psa_destroy_key(key);
+	return st == PSA_SUCCESS;
+}
+
+/**
+ * Two different things arrive on this socket.
+ *
+ * A 9-byte CHALLENGE is unauthenticated on purpose -- a freshness beacon, not a
+ * command; echoing the wrong one costs a report its standing and nothing more.
+ * A sealed HANDOFF is the opposite: it carries a key and this board acts on it,
+ * so it must prove the link key and clear the replay window first.
+ */
 static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 {
-	uint8_t body[12];
+	uint8_t body[CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN];
+	uint8_t plain[ULTRAWIDELOCK_JOIN_MSG_LEN];
+	struct ultrawidelock_join_msg jm;
+	size_t plain_len = 0;
 	uint16_t len;
 
 	ARG_UNUSED(ctx);
 	ARG_UNUSED(info);
 
 	len = otMessageGetLength(msg) - otMessageGetOffset(msg);
-	if (len != 9u) {
-		return; /* not a challenge; the lock's reports are not for us */
+	if (len == 0u || len > sizeof(body)) {
+		return;
 	}
 	if (otMessageRead(msg, otMessageGetOffset(msg), body, len) != len) {
 		return;
 	}
-	if (body[0] != ULTRAWIDELOCK_WITNESS_MSG_VER) {
+
+	if (len == 9u && body[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
+		s_echo_nonce = 0u;
+		for (int i = 0; i < 8; i++) {
+			s_echo_nonce = (s_echo_nonce << 8) | (uint64_t)body[1 + i];
+		}
 		return;
 	}
-	s_echo_nonce = 0u;
-	for (int i = 0; i < 8; i++) {
-		s_echo_nonce = (s_echo_nonce << 8) | (uint64_t)body[1 + i];
+
+	/* Anything else is only interesting if it is sealed to us. Our own WV3
+	 * reports come back off the all-nodes address too and must not be
+	 * mistaken for input: they fail the length check below. */
+	if (!s_provisioned || s_join_cb == NULL) {
+		return;
 	}
+	if (len != CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN) {
+		return;
+	}
+	if (!unseal(body, len, plain, sizeof(plain), &plain_len)) {
+		return; /* not sealed under our key, or tampered with */
+	}
+	if (!ultrawidelock_join_msg_decode(plain, plain_len, &jm)) {
+		memset(plain, 0, sizeof(plain));
+		return;
+	}
+	memset(plain, 0, sizeof(plain));
+
+	/*
+	 * Replay window, shared with the report direction's implementation so
+	 * there is one notion of freshness on this link. A lock that reboots
+	 * gets a new boot_id and its counter may restart; without that a power
+	 * cut would lock the satellite out of every future session.
+	 */
+	if (!ultrawidelock_seen_accept_ctr(&s_lock_seen, jm.boot_id, jm.ctr)) {
+		LOG_WRN("handoff replayed or stale (ctr %u); ignored", (unsigned)jm.ctr);
+		memset(&jm, 0, sizeof(jm));
+		return;
+	}
+
+	s_join_cb(jm.ursk, jm.rcfg, jm.channel, jm.sync_code_index);
+	/* The URSK lives on inside the ranging engine; this copy must not. */
+	memset(&jm, 0, sizeof(jm));
+}
+
+void anchor_link_set_join_cb(anchor_link_join_cb cb)
+{
+	s_join_cb = cb;
 }
 
 void anchor_link_report(int32_t peer_mm, uint32_t ranging_block)

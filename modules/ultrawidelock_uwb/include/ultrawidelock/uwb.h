@@ -153,6 +153,32 @@ bool ultrawidelock_uwb_trusted_range_after_checked_cm(int32_t *cm_out, uint32_t 
  */
 void ultrawidelock_uwb_set_range_listener(void (*cb)(void));
 
+/** Everything a second anchor needs to join the round this lock just started. */
+struct ultrawidelock_uwb_handoff {
+	const uint8_t *ursk; /**< 32 bytes, valid only for the duration of the call */
+	size_t ursk_len;
+	const uint8_t *rcfg; /**< 17 bytes, same lifetime */
+	size_t rcfg_len;
+	uint8_t channel;
+	uint8_t sync_code_index;
+};
+
+/**
+ * Register a callback fired at credential session start with the join
+ * parameters (NULL to clear).
+ *
+ * Exists so the SEALED link can carry the handoff instead of a human relaying
+ * it: CONFIG_ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG prints the same payload to a
+ * debug console, which needs a laptop wired to both boards and puts the URSK in
+ * the clear on RTT. This module knows the parameters but nothing about
+ * transports, so it hands them over and the application decides.
+ *
+ * The pointers are borrowed for the duration of the call only -- copy what you
+ * keep. Runs on the credential thread before the radio starts, so a handoff can
+ * land before UWB_Time0; treat it as latency-sensitive and do not block.
+ */
+void ultrawidelock_uwb_set_handoff_listener(void (*cb)(const struct ultrawidelock_uwb_handoff *h));
+
 #ifdef __cplusplus
 }
 #endif

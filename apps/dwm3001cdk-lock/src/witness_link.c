@@ -42,6 +42,9 @@
 #include <psa/crypto.h>
 
 #include "side_feed.h"
+/* struct ultrawidelock_uwb_handoff, whose members the sealed handoff reads --
+ * the header only forward-declares it. */
+#include <ultrawidelock/uwb.h>
 #include "ultrawidelock_witness_msg.h"
 #include "ultrawidelock_witness_pick.h"
 
@@ -211,6 +214,150 @@ static bool unseal_key(const uint8_t *k, const uint8_t *in, size_t in_len, uint8
 	(void)psa_destroy_key(key);
 	return st == PSA_SUCCESS;
 }
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/*
+ * THE LOCK'S NONCE PREFIX, and the whole reason this constant exists.
+ *
+ * The anchor link key is ONE key used in BOTH directions: the satellite seals
+ * WV3 reports with it and the lock now seals WV4 handoffs with it. Under
+ * AES-CCM a repeated (key, nonce) pair is catastrophic -- it leaks the XOR of
+ * two plaintexts and forges the MAC -- so the two senders' nonce spaces must be
+ * provably disjoint, not merely unlikely to collide.
+ *
+ * They are disjoint in byte 0. The satellite writes its ROLE there
+ * (anchor_link.c seal()), and examples/zephyr/satellite/Kconfig constrains
+ * ULTRAWIDELOCK_ANCHOR_ROLE to `range 1 3`. 0xFF is outside that range and no
+ * conforming anchor can ever emit it, so no counter or boot id either side
+ * chooses can bring the two nonces together.
+ *
+ * If a role is ever widened past 3, this constant must move with it.
+ */
+#define HANDOFF_NONCE_ROLE 0xFFu
+
+/* Fresh per boot for the same reason the satellite's is: it makes a counter
+ * that legitimately restarts at zero distinguishable from a replay. */
+static uint32_t s_lock_boot_id;
+static uint32_t s_handoff_ctr;
+
+/** Seal under an explicit key: nonce ‖ ciphertext ‖ tag, what the peer unseals. */
+static size_t seal_key(const uint8_t *k, const uint8_t *nonce, const uint8_t *plain,
+		       size_t plain_len, uint8_t *out, size_t cap)
+{
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t key = PSA_KEY_ID_NULL;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN);
+	size_t ct_len = 0;
+	psa_status_t st;
+
+	if (cap < CCM_NONCE_LEN + plain_len + CCM_TAG_LEN) {
+		return 0;
+	}
+	memcpy(out, nonce, CCM_NONCE_LEN);
+
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+	psa_set_key_algorithm(&attr, alg);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, KEY_LEN * 8u);
+	if (psa_import_key(&attr, k, KEY_LEN, &key) != PSA_SUCCESS) {
+		return 0;
+	}
+	st = psa_aead_encrypt(key, alg, out, CCM_NONCE_LEN, NULL, 0, plain, plain_len,
+			      out + CCM_NONCE_LEN, cap - CCM_NONCE_LEN, &ct_len);
+	(void)psa_destroy_key(key);
+	if (st != PSA_SUCCESS) {
+		return 0;
+	}
+	return CCM_NONCE_LEN + ct_len;
+}
+
+void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
+{
+	struct ultrawidelock_join_msg jm;
+	uint8_t plain[ULTRAWIDELOCK_JOIN_MSG_LEN];
+	uint8_t sealed[CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN];
+	uint8_t nonce[CCM_NONCE_LEN];
+	otInstance *ot = openthread_get_default_instance();
+	otMessageInfo info;
+	otMessage *msg;
+	size_t plain_len;
+	size_t sealed_len;
+	uint32_t sent_ctr;
+
+	if (h == NULL || !s_open || ot == NULL || !s_anchor_provisioned) {
+		return;
+	}
+	if (h->ursk == NULL || h->ursk_len != ULTRAWIDELOCK_JOIN_URSK_LEN ||
+	    h->rcfg == NULL || h->rcfg_len != ULTRAWIDELOCK_JOIN_RCFG_LEN) {
+		/* A size the codec cannot carry means this build and the ranging
+		 * engine disagree about the wire format. Sending a truncated key
+		 * would put the satellite on a schedule nothing else is using. */
+		LOG_WRN("handoff not sent: ursk %u B rcfg %u B, expected %u/%u",
+			(unsigned)h->ursk_len, (unsigned)h->rcfg_len,
+			ULTRAWIDELOCK_JOIN_URSK_LEN, ULTRAWIDELOCK_JOIN_RCFG_LEN);
+		return;
+	}
+
+	memset(&jm, 0, sizeof(jm));
+	jm.ver = ULTRAWIDELOCK_JOIN_MSG_VER;
+	jm.boot_id = s_lock_boot_id;
+	jm.ctr = ++s_handoff_ctr; /* pre-increment: the nonce below must match */
+	memcpy(jm.ursk, h->ursk, ULTRAWIDELOCK_JOIN_URSK_LEN);
+	memcpy(jm.rcfg, h->rcfg, ULTRAWIDELOCK_JOIN_RCFG_LEN);
+	jm.channel = h->channel;
+	jm.sync_code_index = h->sync_code_index;
+
+	plain_len = ultrawidelock_join_msg_encode(&jm, plain, sizeof(plain));
+	if (plain_len == 0u) {
+		return;
+	}
+
+	memset(nonce, 0, sizeof(nonce));
+	nonce[0] = HANDOFF_NONCE_ROLE;
+	nonce[1] = (uint8_t)(s_lock_boot_id >> 24);
+	nonce[2] = (uint8_t)(s_lock_boot_id >> 16);
+	nonce[3] = (uint8_t)(s_lock_boot_id >> 8);
+	nonce[4] = (uint8_t)s_lock_boot_id;
+	nonce[5] = (uint8_t)(jm.ctr >> 24);
+	nonce[6] = (uint8_t)(jm.ctr >> 16);
+	nonce[7] = (uint8_t)(jm.ctr >> 8);
+	nonce[8] = (uint8_t)jm.ctr;
+
+	sealed_len = seal_key(s_anchor_key, nonce, plain, plain_len, sealed, sizeof(sealed));
+	sent_ctr = jm.ctr;
+	/* The URSK is in here; do not leave a copy on the stack for the rest of
+	 * the frame. */
+	memset(&jm, 0, sizeof(jm));
+	memset(plain, 0, sizeof(plain));
+	if (sealed_len == 0u) {
+		return;
+	}
+
+	memset(&info, 0, sizeof(info));
+	/* Mesh-local all-nodes, matching every other message on this link: the
+	 * lock is never told the satellite's address, so replacing the satellite
+	 * costs no re-provisioning. Only a key holder can read the handoff. */
+	info.mPeerAddr.mFields.m8[0] = 0xFFu;
+	info.mPeerAddr.mFields.m8[1] = 0x03u;
+	info.mPeerAddr.mFields.m8[15] = 0x01u;
+	info.mPeerPort = WITNESS_PORT;
+
+	/*
+	 * Called from the credential thread, not an OT callback, so the API lock
+	 * is ours to take -- same rule as nonce_send() above.
+	 */
+	openthread_mutex_lock();
+	msg = otUdpNewMessage(ot, NULL);
+	if (msg != NULL) {
+		if (otMessageAppend(msg, sealed, (uint16_t)sealed_len) != OT_ERROR_NONE ||
+		    otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
+			otMessageFree(msg); /* send takes ownership on success only */
+		}
+	}
+	openthread_mutex_unlock();
+	LOG_INF("handoff sent to the second anchor (ctr %u)", (unsigned)sent_ctr);
+}
+#endif /* CONFIG_ULTRAWIDELOCK_ANCHOR_LINK */
 
 /* Build one correlated window from the inside/outside pair and publish it.
  * Absent evidence is published as absent (INT16_MIN / zero counts) rather than
@@ -526,6 +673,16 @@ void witness_link_init(void)
 
 	ultrawidelock_witness_pick_init(&s_pick, NULL);
 	nonce_roll(k_uptime_get());
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	/* Never zero: the satellite reads a change of boot id as permission to
+	 * accept a counter that went backwards, and zero is what an
+	 * uninitialised one looks like. */
+	do {
+		s_lock_boot_id = sys_rand32_get();
+	} while (s_lock_boot_id == 0u);
+	s_handoff_ctr = 0u;
+#endif
 
 	/*
 	 * Load the keys. Registering the handler above does NOT read anything --

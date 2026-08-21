@@ -274,3 +274,67 @@ bool ultrawidelock_anchor_msg_decode(const uint8_t *buf, size_t len,
 	out->peer_mm = (int32_t)get_u32(p);
 	return true;
 }
+
+bool ultrawidelock_msg_is_join(const uint8_t *buf, size_t len)
+{
+	return buf != NULL && len >= 1u && buf[0] == ULTRAWIDELOCK_JOIN_MSG_VER;
+}
+
+size_t ultrawidelock_join_msg_encode(const struct ultrawidelock_join_msg *msg, uint8_t *buf,
+				     size_t cap)
+{
+	uint8_t *p;
+
+	if (msg == NULL || buf == NULL) {
+		return 0;
+	}
+	if (cap < ULTRAWIDELOCK_JOIN_MSG_LEN) {
+		return 0;
+	}
+
+	p = buf;
+	*p++ = ULTRAWIDELOCK_JOIN_MSG_VER;
+	put_u32(p, msg->boot_id);
+	p += 4;
+	put_u32(p, msg->ctr);
+	p += 4;
+	memcpy(p, msg->ursk, ULTRAWIDELOCK_JOIN_URSK_LEN);
+	p += ULTRAWIDELOCK_JOIN_URSK_LEN;
+	memcpy(p, msg->rcfg, ULTRAWIDELOCK_JOIN_RCFG_LEN);
+	p += ULTRAWIDELOCK_JOIN_RCFG_LEN;
+	*p++ = msg->channel;
+	*p = msg->sync_code_index;
+	return ULTRAWIDELOCK_JOIN_MSG_LEN;
+}
+
+bool ultrawidelock_join_msg_decode(const uint8_t *buf, size_t len,
+				   struct ultrawidelock_join_msg *out)
+{
+	const uint8_t *p;
+
+	if (buf == NULL || out == NULL) {
+		return false;
+	}
+	if (buf[0] != ULTRAWIDELOCK_JOIN_MSG_VER) {
+		return false;
+	}
+	/* Exact, for WV3's reason: a handoff that is the wrong length means the
+	 * two sides disagree about the format, and this one carries a key. */
+	if (len != ULTRAWIDELOCK_JOIN_MSG_LEN) {
+		return false;
+	}
+
+	p = buf;
+	out->ver = *p++;
+	out->boot_id = get_u32(p);
+	p += 4;
+	out->ctr = get_u32(p);
+	p += 4;
+	memcpy(out->ursk, p, ULTRAWIDELOCK_JOIN_URSK_LEN);
+	p += ULTRAWIDELOCK_JOIN_URSK_LEN;
+	memcpy(out->rcfg, p, ULTRAWIDELOCK_JOIN_RCFG_LEN);
+	p += ULTRAWIDELOCK_JOIN_RCFG_LEN;
+	out->channel = *p++;
+	out->sync_code_index = *p;
+	return true;
+}

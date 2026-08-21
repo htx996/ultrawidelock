@@ -78,6 +78,26 @@ void witness_link_tick(int64_t now_ms);
 /** True when at least one witness has reported inside the staleness bound. */
 bool witness_link_healthy(int64_t now_ms);
 
+/* defined(), not IS_ENABLED(): this header pulls in only stdbool/stdint, and
+ * IS_ENABLED needs zephyr/sys/util.h. An undefined macro in a #if is not an
+ * error the preprocessor reports kindly. */
+#if defined(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+struct ultrawidelock_uwb_handoff;
+
+/**
+ * Seal this session's join parameters to the second anchor.
+ *
+ * Register with ultrawidelock_uwb_set_handoff_listener() so it runs at
+ * credential session start. Replaces the bench arrangement where the lock
+ * printed the URSK on RTT and a host script typed it into the satellite --
+ * which is why a walk-up needed a laptop wired to both boards.
+ *
+ * Silent no-op until the anchor key is enrolled and Thread is up: a lock with
+ * no second anchor must behave exactly as it did before.
+ */
+void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

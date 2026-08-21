@@ -42,7 +42,9 @@ else
 SAT_EXTRA_CONF :=
 endif
 
-.PHONY: sat-build sat-flash sat-monitor
+SAT_BAUD ?= 115200
+
+.PHONY: sat-build sat-flash sat-monitor sat-term
 
 ##@ Satellite responder  ·  joins the phone's CCC round as responder 1 (stage B)
 ## sat-build: build the satellite  -> build/satellite-<board>
@@ -55,8 +57,26 @@ sat-flash:
 	$(CDK_PROBE_GUARD)
 	@$(CDK_RUN) flash -d $(SAT_BUILD) $(CDK_DEV_ID_ARG)
 
-## sat-monitor: RTT console  ·  the shell rides the DK's UART VCOM, not RTT
+## sat-monitor: RTT console  ·  survives a shell thread that has died
 sat-monitor:
 	$(CDK_PROBE_GUARD)
 	@probe-rs attach --chip $(SAT_CHIP) $(CDK_PROBE_ARG) \
 	  $(SAT_BUILD)/satellite/zephyr/zephyr.elf
+
+## sat-term: serial console  ·  live logs + typeable shell (tio, 115200 8N1)
+##   The Thread build runs a shell on BOTH the UART and RTT, so this and
+##   sat-monitor are alternatives rather than rivals: use this to type, and RTT
+##   when the question is why the board stopped answering this one.
+sat-term:
+	@command -v tio >/dev/null 2>&1 || { printf '  tio not found  ·  install: brew install tio\n' >&2; exit 1; }
+	@port='$(PORT)'; \
+	if [ -z "$$port" ]; then \
+	  port=$$(ls /dev/cu.usbmodem* 2>/dev/null | tail -1); \
+	fi; \
+	if [ -z "$$port" ]; then \
+	  printf '  no serial port found  ·  plug in the DK or pass PORT=/dev/cu.usbmodemXXXX\n' >&2; \
+	  exit 1; \
+	fi; \
+	logargs=; [ -n '$(LOG)' ] && logargs='-L --log-file $(LOG)'; \
+	printf '  tio %s  @ %s 8N1  ·  logs + shell (type help)  ·  ctrl-t q to quit\n' "$$port" '$(SAT_BAUD)'; \
+	exec tio -b $(SAT_BAUD) $$logargs "$$port"
