@@ -173,9 +173,72 @@ if [ "${1:-}" = "--self-test" ]; then
 	exit $?
 fi
 
+# ---- not running a suite whose inputs have not changed ----------------------
+# This is the gate people run most often, and running it twice over an unchanged
+# tree did the whole two minutes of work twice. A suite that passed, over a
+# working tree that has not changed by one byte since, will pass again; so its
+# result is remembered and replayed instead.
+#
+# WHAT THE FINGERPRINT COVERS, and why it is one value for every suite rather
+# than a per-suite list of inputs. A per-suite list is the tempting version and
+# the dangerous one: it is a hand-maintained claim about what a suite reads, and
+# the day it is wrong -- a suite grows a dependency and nobody updates the list
+# -- this cache reports a stale pass over changed code, which is the one failure
+# a test gate must never have. So the fingerprint is the whole working tree, and
+# a suite is skipped only when NOTHING in the repository changed.
+#
+# It is exact, not a heuristic, and it is cheap because it reads almost nothing:
+#   * HEAD, so any commit, rebase or branch switch is a different tree;
+#   * the porcelain status, so any path added, deleted, renamed or staged shows;
+#   * the content hash of each dirty or untracked file, so an edit that leaves
+#     the status line identical still changes the value.
+# Together those pin the working tree exactly. -z rather than the quoted default
+# because a path with a space in it quotes into a status line that stays byte-
+# identical while the file behind it changes, and that would be a missed edit.
+#
+# The one thing it does NOT cover is files git ignores -- build outputs, the
+# local signing key. No host suite reads those, and if that ever stops being
+# true the answer is to make the suite not read them, not to widen this.
+#
+# Anything unexpected -- no git, no HEAD, a path that will not hash -- lands on
+# a different fingerprint, which re-runs the suite. The failure direction is
+# always "run it again", never "skip it".
+CACHE_DIR="${ULTRAWIDELOCK_BUILD_ROOT:-$ROOT/build}/_sig/check"
+
+tree_fingerprint() {
+	{
+		git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo no-head
+		while IFS= read -r -d '' rec; do
+			printf '%s\n' "$rec"
+			p="${rec:3}"
+			[ -f "$ROOT/$p" ] && shasum -a 256 "$ROOT/$p"
+		done < <(git -C "$ROOT" status --porcelain=v1 -z --untracked-files=all 2>/dev/null)
+	} 2>/dev/null | shasum -a 256 | awk '{print $1}'
+}
+
+# Empty when the cache is off, so every comparison below misses and every suite
+# runs. CHECK_NO_CACHE=1 is that switch; `make ci` sets it, because what a pull
+# request is judged by has to be the work, not a memory of the work.
+FINGERPRINT=
+if [[ "${CHECK_NO_CACHE:-0}" != "1" ]]; then
+	FINGERPRINT="$(tree_fingerprint 2>/dev/null || true)"
+fi
+
 run_suite() { # <suite> <outfile> <metafile>
 	local s="$1" out="$2" meta="$3" cmd t0 t1 rc=0
 	cmd="$(suite_cmd "$s")"
+
+	# A remembered pass: same suite, same tree, and it was green. Replayed as a
+	# row of its own mark so the summary never claims work it did not do.
+	local rec=""
+	[ -n "$FINGERPRINT" ] && rec="$(cat "$CACHE_DIR/$s" 2>/dev/null || true)"
+	if [ -n "$rec" ] && [ "${rec%%|*}" = "$FINGERPRINT" ]; then
+		local cached="${rec#*|}"
+		printf '  (cached: unchanged since this suite last passed)\n' >"$out"
+		printf '%s|%s|%d|%d|cached\n' "$s" "$cached" 0 0 >"$meta"
+		return 0
+	fi
+
 	t0=$(date +%s)
 	if [[ "${SERIAL:-0}" == "1" ]]; then
 		printf '\n== %s ==\n' "$(suite_label "$s")"
@@ -187,7 +250,14 @@ run_suite() { # <suite> <outfile> <metafile>
 	fi
 	t1=$(date +%s)
 	read -r passed failed <<<"$(suite_counts "$out")"
-	printf '%s|%d|%d|%d|%d\n' "$s" "$passed" "$failed" "$((t1 - t0))" "$rc" >"$meta"
+	printf '%s|%d|%d|%d|%d|\n' "$s" "$passed" "$failed" "$((t1 - t0))" "$rc" >"$meta"
+
+	# Remembered only on a clean pass, and only with a fingerprint to remember
+	# it against. A failing suite records nothing, so the next run re-runs it.
+	if [ -n "$FINGERPRINT" ] && [ "$rc" = 0 ] && [ "$failed" = 0 ]; then
+		mkdir -p "$CACHE_DIR" 2>/dev/null &&
+			printf '%s|%d|%d\n' "$FINGERPRINT" "$passed" "$failed" >"$CACHE_DIR/$s" 2>/dev/null || true
+	fi
 }
 
 SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt twin ui bindhelper}"
@@ -207,6 +277,8 @@ ui_attach
 # non-interactive shell -- so ^C reaches this script and not the seven compilers
 # under it. Each one's process tree is ended explicitly, or interrupting
 # `make check` returns the prompt and leaves the machine busy for two minutes.
+MY_PGID="$(ps -o pgid= -p $$ | tr -d ' ')"
+
 kill_suites() {
 	local i s
 	for ((i = 0; i < ${#PIDS[@]}; i++)); do
@@ -218,9 +290,22 @@ kill_suites() {
 	# that child cannot escape is being the exact command this script started.
 	# Each match is killed as a tree of its own: a bare pkill would take the
 	# suite script out from over its compiler and orphan the expensive half.
-	local p
+	#
+	# Scoped to this runner's process group, because the command line is NOT
+	# unique to this run: every worktree of this repository starts the byte-
+	# identical `bash tests/shared/run.sh`, from the same relative path, so a
+	# sibling checkout finishing its own `make check` swept this one's suites
+	# out from under it. That surfaced as a suite killed mid-run and counted as
+	# a failure with no FAIL row to explain it -- a red gate caused by another
+	# directory entirely. A pgid cannot be confused that way: the suites are
+	# background children of this script and inherit it, nothing here calls
+	# setpgid, so an orphan keeps the group its parent had while another run's
+	# processes never share it.
+	local p pg
 	for s in $SEL; do
 		for p in $(pgrep -f "$(suite_cmd "$s")" 2>/dev/null || true); do
+			pg="$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')"
+			[ "$pg" = "$MY_PGID" ] || continue
 			ui_kill_tree "$p" || true
 		done
 	done
@@ -260,9 +345,12 @@ else
 			wait "${PIDS[i]}" || true
 			REAPED[i]=1
 			left=$((left - 1))
-			IFS='|' read -r _ passed failed secs rc <"${METAS[i]}"
+			IFS='|' read -r _ passed failed secs rc cached <"${METAS[i]}"
 			mark="+"
 			if [[ "$rc" != 0 || "$failed" != 0 ]]; then mark="x"; fi
+			# A replayed pass gets its own mark rather than the green one, so a
+			# glance at the run never mistakes a memory for a fresh result.
+			if [[ -n "${cached:-}" ]]; then mark="="; fi
 			ui_clear
 			printf '  %s %-22s %8d %8d %5ss\n' \
 				"$mark" "$(suite_label "${NAMES[i]}")" "$passed" "$failed" "$secs"
@@ -292,7 +380,7 @@ else
 	# finds nothing, show the tail instead: a wrong guess about the wording must
 	# degrade to too much output, never to none.
 	for i in $(seq 0 $((n - 1))); do
-		IFS='|' read -r _ _ failed _ rc <"${METAS[i]}"
+		IFS='|' read -r _ _ failed _ rc _ <"${METAS[i]}"
 		if [[ "$rc" != 0 || "$failed" != 0 ]]; then
 			printf '\n== %s ==\n' "$(suite_label "${NAMES[i]}")"
 			hits="$(grep -E '^[[:space:]]+FAIL[[:space:]]|RESULT: FAIL|error|Error' "${OUTS[i]}" | head -40 || true)"
@@ -309,9 +397,14 @@ fi
 printf '\n  %-24s %8s %8s %6s\n' "Suite" "Passed" "Failed" "Time"
 tp=0 tf=0 tt=0 bad=0
 for i in $(seq 0 $((n - 1))); do
-	IFS='|' read -r s passed failed secs rc <"${METAS[i]}"
+	# Six fields, not five. `read` puts every leftover field in its LAST
+	# variable, so reading a six-field line into five names lands "0|cached" in
+	# rc, which is not 0, which marks a replayed pass as a failure and takes
+	# the whole run red. The trailing name is what stops that.
+	IFS='|' read -r s passed failed secs rc cached <"${METAS[i]}"
 	mark="+"
 	if [[ "$rc" != 0 || "$failed" != 0 ]]; then mark="x" bad=1; fi
+	if [[ -n "${cached:-}" ]]; then mark="="; fi
 	tp=$((tp + passed)) tf=$((tf + failed))
 	[[ "$secs" -gt "$tt" ]] && tt=$secs
 	printf '  %s %-22s %8d %8d %5ss\n' "$mark" "$(suite_label "$s")" "$passed" "$failed" "$secs"

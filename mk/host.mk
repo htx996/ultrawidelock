@@ -29,6 +29,11 @@ cbmc:
 	@$(REPO_ROOT)/tests/host/cbmc.sh
 
 ## check: every host-side suite under one banner  ->  live rows + summary table
+##   A suite that passed over a working tree identical to this one is replayed
+##   rather than re-run, and its row is marked `=` instead of `+`. The
+##   fingerprint is the whole tree -- HEAD, the porcelain status and the content
+##   of every dirty or untracked file -- so a skip means nothing changed, not
+##   that a guess about the suite's inputs held. CHECK_NO_CACHE=1 runs the lot.
 check:
 	@$(REPO_ROOT)/scripts/test-runner.sh
 
@@ -55,7 +60,7 @@ ci:
 	  printf '\n  !! gitleaks not installed — SECRET SCAN SKIPPED\n'; \
 	  printf '     CI still runs it. install: brew install gitleaks\n\n'; \
 	fi
-	@$(MAKE) --no-print-directory check
+	@CHECK_NO_CACHE=1 $(MAKE) --no-print-directory check
 
 ## regress: everything a machine can check without hardware  ·  run before a push
 ##   `make ci` is what a pull request is judged by, and it deliberately builds no
