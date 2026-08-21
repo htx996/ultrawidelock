@@ -35,6 +35,19 @@ void anchor_link_init(void);
  */
 void anchor_link_report(int32_t peer_mm, uint32_t ranging_block);
 
+/**
+ * Join the lock's Thread network from a raw Active Operational Dataset.
+ *
+ * Mesh membership only -- this board joins no Matter fabric and needs none: a
+ * fabric governs who may invoke clusters, while sending UDP to a peer needs
+ * nothing but being on the same mesh. OpenThread persists the dataset, so a
+ * reflash without --erase keeps it.
+ */
+int anchor_link_set_dataset(const uint8_t *tlvs, size_t len);
+
+/** True once attached as child, router or leader. */
+bool anchor_link_attached(void);
+
 /** Store the link key (16 bytes) and persist it. */
 int anchor_link_set_key(const uint8_t *key, size_t len);
 
