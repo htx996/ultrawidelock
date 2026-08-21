@@ -169,11 +169,16 @@ static uint32_t g_final_round2;
 static bool g_final_round_valid;
 #endif
 
-/* SP0 frames discarded for exceeding the stash. Deliberately NOT behind the
- * bench-instrumentation ifdef: this counter being non-zero means we are deleting
- * frames the initiator did send, which is a correctness signal on every build,
- * not a diagnostic. */
-static volatile uint32_t g_dbg_sp0_oversize;
+/* Frames we DISCARD. Deliberately not behind the bench-instrumentation ifdef:
+ * either counter being non-zero means we are deleting frames the initiator did
+ * send, which is a correctness signal on every build, not a diagnostic. */
+static volatile uint32_t g_dbg_sp0_oversize; /* SP0 frame exceeded the stash */
+static volatile uint32_t g_dbg_fd_rejected;  /* Final_Data failed the length guard */
+
+/* Budget for the discard reports below. Loud enough that a drop can never go
+ * unnoticed, bounded so a persistent mismatch cannot saturate a 115200 console
+ * against the ~1.8 ms ranging-slot deadlines. */
+#define CCC_DISCARD_LOG_BUDGET 8u
 
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 /* Bench instrumentation, read over J-Link (no logging => no ISR/timing impact).
@@ -701,7 +706,11 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 	// CCC final message carrying credential authentication data (MAC, derived ranging state).
 	struct ccc_final_data fd;
 	uint8_t dudsk[CCC_DUDSK_LEN];
-	uint8_t plain[64];
+	/* Decrypted Final_Data payload: header + one record per responder. This was
+	 * a bare 64, which caps at six responders (18 + 7n <= 64), the same
+	 * buffer-behind-the-constant shape as the SP0 stash one layer up. Derived so
+	 * neither can fall behind CCC_MAX_RESPONDERS again. */
+	uint8_t plain[CCC_FINAL_DATA_HDR_LEN + (CCC_MAX_RESPONDERS * CCC_RESPONDER_LEN)];
 	bool lg = (g_fd_logged < 16u);
 	int rc;
 
@@ -713,6 +722,13 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 	}
 	if (mhr.payload_len > sizeof(plain) ||
 	    (uint16_t)(CCC_MHR_LEN + mhr.payload_len + CCC_SP0_MIC_LEN) > datalength) {
+		/* Also a discard, so also visible. This one was a bare return too. */
+		g_dbg_fd_rejected++;
+		if (g_dbg_fd_rejected <= CCC_DISCARD_LOG_BUDGET) {
+			ultrawidelock_printf("W: Final_Data rejected pl=%u cap=%u dl=%u (#%u)\n",
+				   (unsigned)mhr.payload_len, (unsigned)sizeof(plain),
+				   (unsigned)datalength, (unsigned)g_dbg_fd_rejected);
+		}
 		return;
 	}
 	/* Final_Data can be dispatched after the next block has changed the live
@@ -935,12 +951,18 @@ void ccc_shim_rx_try_prepoll(uint16_t datalength)
 		return; /* (the POLL event is gated out by the shim's await snapshot) */
 	}
 	if (datalength > sizeof(g_pp_stash)) {
-		/* Loud, always. This path silently ate two-responder Final_Datas for the
-		 * whole of stage B; a frame we discard must never again be mistakable for
-		 * a frame the initiator did not send. */
+		/* Loud, always, and through the FACADE PRINTER rather than DIAGK: pretty
+		 * builds compile DIAGK to nothing, which is precisely how this path ate
+		 * every two-responder Final_Data for a whole night without leaving a
+		 * mark, and how the phone got blamed for it. A discard nobody can see is
+		 * how a confident wrong verdict gets built. Same reasoning as the
+		 * Pre-POLL acceptance line further down. */
 		g_dbg_sp0_oversize++;
-		DIAGK("SP0 OVERSIZE len=%u cap=%u DROPPED\n", (unsigned)datalength,
-		      (unsigned)sizeof(g_pp_stash));
+		if (g_dbg_sp0_oversize <= CCC_DISCARD_LOG_BUDGET) {
+			ultrawidelock_printf("W: SP0 oversize len=%u cap=%u DROPPED (#%u)\n",
+				   (unsigned)datalength, (unsigned)sizeof(g_pp_stash),
+				   (unsigned)g_dbg_sp0_oversize);
+		}
 		return;
 	}
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
