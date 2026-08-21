@@ -580,10 +580,8 @@ int main(void)
 	uint32_t last_gen = ultrawidelock_uwb_range_generation();
 	/* The last range OBSERVED for departure, trusted or not; see the loop. */
 	uint32_t last_obs_gen = last_gen;
-	/* The second-anchor gate fuses a pair, so it needs ONE sample: a distance
-	 * and the ranging block it came from, captured together. -1 mm means no
-	 * trusted range has landed yet, which the gate reads as "no opinion". */
-	int32_t last_obs_mm = -1;
+	/* Block of the trusted range below, taken from the same latch as its
+	 * distance so the two always describe each other. */
 	uint32_t last_obs_block = 0u;
 	/* A third epoch, for the activity LED alone. The two above are consumed
 	 * at different moments on purpose -- that is what keeps a late-trusted
@@ -852,13 +850,15 @@ int main(void)
 			last_gen = gen;
 			last_obs_gen = gen;
 			present = true;
-			/* Keep the distance that block describes. Deliberately NOT
-			 * approach.last_cm at the gate below: the tracker has a second
-			 * writer -- the departure path feeds it UNVOUCHED ranges -- so its
-			 * value can be blocks newer than any block we labelled, and the
-			 * equality check would then pass while comparing two different
-			 * rounds. That is worse than no check at all. */
-			last_obs_mm = cm * 10;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
+			/* Remember our half of the pair, keyed by the block it was
+			 * measured in, so a peer report that took a block or two to
+			 * arrive still finds something to match. Deliberately NOT
+			 * approach.last_cm: the tracker has a second writer -- the
+			 * departure path feeds it UNVOUCHED ranges -- so its value can be
+			 * blocks newer than the label beside it. */
+			ultrawidelock_satellite_observe(&satellite, cm * 10, last_obs_block, now);
+#endif
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
 			/* Only ranges the integrity consensus vouches for are
@@ -910,8 +910,7 @@ int main(void)
 			 * fail-opens on UNKNOWN. Retained when ULTRAWIDELOCK_SIDE_GATE is
 			 * off so existing ANCHOR=1 behaviour stays unchanged.
 			 */
-			if (!ultrawidelock_satellite_may_predict(&satellite, last_obs_mm,
-								 last_obs_block, now)) {
+			if (!ultrawidelock_satellite_may_predict(&satellite, now)) {
 				LOG_INF("predict withheld: second anchor puts the phone outside");
 				break;
 			}

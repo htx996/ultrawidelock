@@ -29,6 +29,31 @@
 #define ULTRAWIDELOCK_SATELLITE_STALE_MS_DEFAULT 1500u
 
 /**
+ * How many of THIS node's recent measurements to keep, so a peer report that
+ * arrives a block or two late still has something of ours to pair with.
+ *
+ * Eight because that is the window the freshness gate already permits: 1500 ms
+ * of stale_ms against a 192 ms ranging block is 7.8 blocks, so a shorter ring
+ * would throw away pairs the staleness rule says are still good, and a longer
+ * one would hold samples that rule has already retired. At 16 bytes an entry
+ * the whole ring is 128 bytes.
+ *
+ * The alternative -- widening the block match instead of remembering -- is not
+ * available. One block of slack is 192 mm at 1.0 m/s and 269 mm at 1.4, against
+ * a tolerance of 90. That is the arithmetic that retired block-parity
+ * alternation, and it would destroy the very measurement this gate protects.
+ */
+#define ULTRAWIDELOCK_SATELLITE_RING 8u
+
+/** One of this node's own measurements, kept so a late report can find it. */
+struct ultrawidelock_satellite_sample {
+	uint32_t block; /**< initiator's ranging block this was measured in */
+	int32_t mm;     /**< this node's distance to the phone */
+	int64_t ms;     /**< when it was latched, on this node's clock */
+	bool have;
+};
+
+/**
  * Latest report from the second anchor, plus everything needed to judge it.
  * Caller-owned; this module allocates nothing and starts no threads.
  */
@@ -37,6 +62,9 @@ struct ultrawidelock_satellite {
 	int64_t last_ms;           /**< when the stored report arrived */
 	int32_t peer_mm;           /**< satellite's distance to the phone */
 	uint32_t peer_block;       /**< ranging block that distance was measured in */
+	/** This node's own recent measurements, newest at @c ring_next - 1. */
+	struct ultrawidelock_satellite_sample ring[ULTRAWIDELOCK_SATELLITE_RING];
+	uint8_t ring_next;
 	uint32_t stale_ms;         /**< older than this and peer_mm is ignored */
 	bool self_is_inside;       /**< true if THIS node is the inside anchor */
 	bool have;                 /**< false until the first report */
@@ -77,19 +105,32 @@ void ultrawidelock_satellite_report(struct ultrawidelock_satellite *s, int32_t p
 /**
  * Evaluate the side of the door, given this node's own distance to the phone.
  *
- * @param self_mm    This node's distance to the phone, millimetres.
- * @param self_block The ranging block THIS node measured @p self_mm in. Must
- *                   equal the stored report's block or there is no pair: the
- *                   same-round rule this module's contract states is enforced
- *                   here rather than left to the caller.
+ * The self distance is NOT a parameter: it is looked up in the ring by the
+ * stored report's block. Which measurement of ours to fuse is decided by the
+ * peer's report, not by the caller, so letting a caller pass one is how a pair
+ * from two different rounds gets assembled.
+ *
  * @return A verdict with `geometry_ok == false` and side UNKNOWN when there is
- *         no fresh report or the blocks disagree; otherwise
- *         ultrawidelock_fusion_eval()'s answer with the two distances placed
- *         according to `self_is_inside`.
+ *         no fresh report, or the ring holds nothing for that report's block;
+ *         otherwise ultrawidelock_fusion_eval()'s answer with the two distances
+ *         placed according to `self_is_inside`.
  */
 struct ultrawidelock_fusion_verdict
-ultrawidelock_satellite_verdict(const struct ultrawidelock_satellite *s, int32_t self_mm,
-				uint32_t self_block, int64_t now_ms);
+ultrawidelock_satellite_verdict(const struct ultrawidelock_satellite *s, int64_t now_ms);
+
+/**
+ * Record one of THIS node's measurements, so a later report can pair with it.
+ *
+ * @param self_mm    This node's distance to the phone, millimetres. Negative is
+ *                   ignored, matching ultrawidelock_satellite_report().
+ * @param self_block The ranging block it was measured in. Must come from the
+ *                   same latch as @p self_mm -- a block that does not describe
+ *                   the distance it is stored beside defeats the whole point,
+ *                   because the equality check then passes on a wrong pair.
+ * @param now_ms     Monotonic milliseconds on this node's clock.
+ */
+void ultrawidelock_satellite_observe(struct ultrawidelock_satellite *s, int32_t self_mm,
+				     uint32_t self_block, int64_t now_ms);
 
 /**
  * The one question the approach controller asks: may prediction proceed?
@@ -103,7 +144,6 @@ ultrawidelock_satellite_verdict(const struct ultrawidelock_satellite *s, int32_t
  * of a pair, not a suspicious one, and withholding on it would let a satellite
  * that merely fell a block behind look identical to one reporting an intruder.
  */
-bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s, int32_t self_mm,
-					 uint32_t self_block, int64_t now_ms);
+bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s, int64_t now_ms);
 
 #endif /* ULTRAWIDELOCK_SATELLITE_H */
