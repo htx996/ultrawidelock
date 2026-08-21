@@ -1,0 +1,37 @@
+/*
+ * DWM3001CDK satellite — board overlay.
+ *
+ * The DW3110 is already wired inside the DWM3001C module and &spi3 is enabled by
+ * the board with CS on P1.06; only the side-band GPIOs are ours to add. Values
+ * are identical to examples/zephyr/anchor/boards/decawave_dwm3001cdk.overlay,
+ * which is identical in turn to apps/dwm3001cdk-lock/boards/ — the copy that has
+ * been on hardware:
+ *   SCK P0.03 - MOSI P0.08 - MISO P0.29 - CS P1.06
+ *   IRQ P1.02 - RESETn P0.25 - WAKEUP P1.19
+ *
+ * Copied rather than #included, for the reason the anchor's copy gives: these
+ * apps have different lifetimes, and one silently inheriting another's pin map
+ * is how a wiring change reaches some of them and not the rest. The body below
+ * is byte-identical to the anchor's, so `diff` against that file is the audit.
+ *
+ * Only the SPI side is here, matching the satellite's nRF5340 overlay: this app
+ * drives no LEDs, no NFC and no buttons. Everything else the port needs is
+ * Kconfig (docs/second-anchor.md stage E).
+ */
+
+&spi3 {
+	dw3000: dw3000@0 {
+		compatible = "decawave,dw3000";
+		reg = <0>;
+		/* 8 MHz, matching the proven value on both boards. Raise only with
+		 * a DEV_ID read loop as evidence. */
+		spi-max-frequency = <8000000>;
+		reset-gpios  = <&gpio0 25 GPIO_ACTIVE_LOW>;
+		irq-gpios    = <&gpio1  2 GPIO_ACTIVE_HIGH>;
+		wakeup-gpios = <&gpio1 19 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&gpio1 {
+	status = "okay";
+};
