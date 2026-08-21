@@ -160,4 +160,126 @@ bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s
  */
 int32_t ultrawidelock_satellite_peer_mm(const struct ultrawidelock_satellite *s, int64_t now_ms);
 
+/* ── more than one satellite ─────────────────────────────────────────────── */
+
+/**
+ * How many satellite roles a lock can ingest at once.
+ *
+ * THREE, and the number is not free: it is `range 1 3` on
+ * ULTRAWIDELOCK_ANCHOR_ROLE (examples/zephyr/satellite/Kconfig), it is enum
+ * ultrawidelock_witness_role, and it is what makes 0xFF safe as the lock's own
+ * nonce prefix on the sealed link (HANDOFF_NONCE_ROLE, witness_link.c). Those
+ * four have to move together or the AES-CCM nonce spaces stop being disjoint,
+ * so widening this alone is not a widening -- it is a hole.
+ *
+ * Deliberately NOT CONFIG_ULTRAWIDELOCK_WITNESS_MAX, which looks like the same
+ * number and is not: that one is `range 2 4` and counts the retired BLE witness
+ * slots, so indexing this array with it would either waste a slot or run off
+ * the end of a role that has nowhere to live.
+ */
+#define ULTRAWIDELOCK_SATELLITE_MAX_ROLES 3u
+
+/**
+ * Every satellite the lock listens to, one slot per role.
+ *
+ * ONE DEPLOYED SATELLITE IS THE CASE THIS SHIPS FOR, and with one reporter
+ * every function below reduces exactly to the single-peer function it wraps.
+ * The array exists so that a second and third board is a role Kconfig plus a
+ * key rather than a patch to this file: without it, two satellites sharing the
+ * lock's single struct overwrite each other's distance between blocks, and the
+ * fusion then reads role 1's measurement as if role 2 had made it -- which does
+ * not fail any test, it silently inverts the side verdict.
+ *
+ * Each slot keeps its OWN copy of this node's sample ring, which is the same
+ * data three times over (about 470 B of the lock's .bss at three roles). Bought
+ * deliberately: sharing one ring would mean reaching into struct
+ * ultrawidelock_satellite from here, and that struct's pairing rule -- the
+ * report chooses which of our samples it pairs with -- is the part of this
+ * module that has been on hardware. Slots stay independent so nothing about
+ * one peer's freshness can reach another's.
+ */
+struct ultrawidelock_satellite_set {
+	struct ultrawidelock_satellite peer[ULTRAWIDELOCK_SATELLITE_MAX_ROLES];
+};
+
+/**
+ * Initialise every slot.
+ *
+ * @param cfg  Array of ULTRAWIDELOCK_SATELLITE_MAX_ROLES geometry configs, one
+ *             per role, index 0 = role 1. PER ROLE because baseline_mm is the
+ *             distance from THIS node to THAT satellite, and two satellites are
+ *             not in the same place; a shared baseline would size every
+ *             triangle test for one of them and mis-size it for the other.
+ *             NULL, or a slot with baseline_mm <= 0, is a role that is not
+ *             installed -- and absence is already how this module spells "no
+ *             satellite", so an uninstalled role permits prediction rather than
+ *             withholding on it.
+ * @param stale_ms       0 selects ULTRAWIDELOCK_SATELLITE_STALE_MS_DEFAULT.
+ * @param self_is_inside Whether THIS node is the inside anchor. One value for
+ *                       the whole set: it describes where this board is screwed,
+ *                       which cannot depend on who is reporting.
+ */
+void ultrawidelock_satellite_set_init(struct ultrawidelock_satellite_set *set,
+				      const struct ultrawidelock_fusion_cfg *cfg,
+				      uint32_t stale_ms, bool self_is_inside);
+
+/**
+ * Store a report, from the role that sent it.
+ *
+ * @param role 1..ULTRAWIDELOCK_SATELLITE_MAX_ROLES. Anything else is dropped
+ *             rather than clamped: a role outside the range is a peer this lock
+ *             cannot have a disjoint nonce space with, so the safe reading of
+ *             it is "not one of mine".
+ */
+void ultrawidelock_satellite_set_report(struct ultrawidelock_satellite_set *set, uint8_t role,
+					int32_t peer_mm, uint32_t peer_block, int64_t now_ms);
+
+/** Record one of THIS node's measurements into every slot. */
+void ultrawidelock_satellite_set_observe(struct ultrawidelock_satellite_set *set, int32_t self_mm,
+					 uint32_t self_block, int64_t now_ms);
+
+/**
+ * The set's side verdict.
+ *
+ * Roles that produced no same-block pair are silent, exactly as a single quiet
+ * satellite is. Of those that did speak:
+ *   - a role inside its dead band ABSTAINS: it has a good pair and no opinion,
+ *     which is ordinary for an anchor the phone is on the bisector of. It
+ *     neither decides nor vetoes;
+ *   - roles agreeing on a side: that verdict, from the lowest-numbered one, so
+ *     a one-satellite install returns precisely what it returns today;
+ *   - two roles naming opposite sides: {UNKNOWN, geometry_ok = false}. Two
+ *     correctly mounted anchors looking at one phone cannot reach opposite
+ *     answers, so a disagreement is a mounting error, a wrong baseline or a
+ *     forged report -- and none of those should be resolved by a majority vote
+ *     among devices one of which is lying.
+ *
+ * With one satellite these rules collapse to the single-peer function: the one
+ * role decides, abstains or stays silent, and there is nobody to disagree with.
+ */
+struct ultrawidelock_fusion_verdict
+ultrawidelock_satellite_set_verdict(const struct ultrawidelock_satellite_set *set, int64_t now_ms);
+
+/**
+ * Whether prediction may proceed, over the whole set.
+ *
+ * The AND of the per-role answers: one satellite with real evidence that the
+ * phone is outside withholds, whatever the others do or do not say. Absence
+ * still permits, per rule 2 -- so a set with nothing installed, nothing fresh
+ * or nothing paired is today's single-anchor behaviour, unchanged.
+ */
+bool ultrawidelock_satellite_set_may_predict(const struct ultrawidelock_satellite_set *set,
+					     int64_t now_ms);
+
+/**
+ * A fresh peer distance, for the health mask and the log line.
+ *
+ * The lowest-numbered role holding one; -1 when no role does. One number
+ * because its consumer is one feature field (uwb_peer_mm), and the lowest role
+ * rather than the nearest so the value does not hop between boards while the
+ * phone walks.
+ */
+int32_t ultrawidelock_satellite_set_peer_mm(const struct ultrawidelock_satellite_set *set,
+					    int64_t now_ms);
+
 #endif /* ULTRAWIDELOCK_SATELLITE_H */

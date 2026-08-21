@@ -49,9 +49,17 @@ extern "C" {
  * hands over what it said. @p ranging_block travels with @p peer_mm because a
  * distance without the round it was measured in cannot be paired with ours.
  *
+ * @p role is WHICH SATELLITE SAID IT (enum ultrawidelock_witness_role, 1..3),
+ * and it is a parameter rather than an assumption because more than one
+ * satellite can report into the same ranging block. It was dropped here once,
+ * when only one board existed: with two, both distances then landed in one
+ * slot, and the fusion read whichever arrived last as though the other board
+ * had measured it. That inverts a side verdict without failing anything.
+ *
  * Runs on the OpenThread receive path. Keep it to a store.
  */
-typedef void (*witness_link_anchor_cb)(int32_t peer_mm, uint32_t ranging_block, int64_t now_ms);
+typedef void (*witness_link_anchor_cb)(uint8_t role, int32_t peer_mm, uint32_t ranging_block,
+				       int64_t now_ms);
 
 /** Register the WV3 sink (NULL to clear). Call before witness_link_init(). */
 void witness_link_set_anchor_cb(witness_link_anchor_cb cb);

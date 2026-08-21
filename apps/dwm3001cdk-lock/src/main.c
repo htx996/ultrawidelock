@@ -149,21 +149,27 @@ static struct k_sem s_range_sig;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 /* The fusion state lives in main()'s frame; the transport callback needs a way
  * to reach it without the transport knowing what it is. */
-static struct ultrawidelock_satellite *s_satellite;
+static struct ultrawidelock_satellite_set *s_satellite;
 
 /**
  * A sealed, replay-checked distance from the second anchor.
  *
- * Stores only. The pairing decision is not taken here and must not be: which of
- * OUR measurements this one belongs with is settled by its ranging block when
- * the verdict is asked for, against the ring of recent samples -- so a report
- * that took a block or two to arrive still finds its partner instead of being
- * matched against whatever we happen to hold right now.
+ * Stores only, into THAT ROLE'S slot. The pairing decision is not taken here
+ * and must not be: which of OUR measurements this one belongs with is settled
+ * by its ranging block when the verdict is asked for, against the ring of
+ * recent samples -- so a report that took a block or two to arrive still finds
+ * its partner instead of being matched against whatever we happen to hold right
+ * now.
+ *
+ * Routing on the role is what lets two satellites report into the same block.
+ * One deployed satellite is the shipping case and takes the same path it always
+ * did; the roles it does not use stay absent, and absence permits.
  */
-static void on_anchor_report(int32_t peer_mm, uint32_t ranging_block, int64_t now_ms)
+static void on_anchor_report(uint8_t role, int32_t peer_mm, uint32_t ranging_block, int64_t now_ms)
 {
 	if (s_satellite != NULL) {
-		ultrawidelock_satellite_report(s_satellite, peer_mm, ranging_block, now_ms);
+		ultrawidelock_satellite_set_report(s_satellite, role, peer_mm, ranging_block,
+						   now_ms);
 	}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_PAIR_LOG)
 	/*
@@ -176,7 +182,8 @@ static void on_anchor_report(int32_t peer_mm, uint32_t ranging_block, int64_t no
 	 * unpaired report and a report that never arrived are the same silence
 	 * otherwise, and they have completely different causes.
 	 */
-	LOG_INF("anchor report blk=%u mm=%d", (unsigned)ranging_block, (int)peer_mm);
+	LOG_INF("anchor role=%u report blk=%u mm=%d", (unsigned)role, (unsigned)ranging_block,
+		(int)peer_mm);
 #endif
 }
 #endif
@@ -504,15 +511,33 @@ int main(void)
 	 * state rather than a gap: with no report the verdict is UNKNOWN, UNKNOWN
 	 * permits prediction, and the door behaves exactly as it does today.
 	 */
-	static struct ultrawidelock_satellite satellite;
-	const struct ultrawidelock_fusion_cfg fusion_cfg = {
-		.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM,
-		.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
-		.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+	static struct ultrawidelock_satellite_set satellite;
+	/* One geometry per role: the baseline is the distance to THAT satellite,
+	 * and the tolerances are properties of the ranging, so they are shared.
+	 * Roles 2 and 3 default to a zero baseline, which this tree already reads
+	 * as "no satellite mounted" -- so a one-satellite lock is configured
+	 * exactly as it is today and behaves exactly as it does today. */
+	const struct ultrawidelock_fusion_cfg fusion_cfg[ULTRAWIDELOCK_SATELLITE_MAX_ROLES] = {
+		{
+			.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM,
+			.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
+			.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+		},
+		{
+			.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM,
+			.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
+			.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+		},
+		{
+			.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_3_MM,
+			.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
+			.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+		},
 	};
 
-	ultrawidelock_satellite_init(&satellite, &fusion_cfg, CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
-			   IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SELF_INSIDE));
+	ultrawidelock_satellite_set_init(&satellite, fusion_cfg,
+					 CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
+					 IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SELF_INSIDE));
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 	/* Before witness_link_init(), so no datagram can arrive with the sink
 	 * still unset. */
@@ -922,7 +947,7 @@ int main(void)
 			 * approach.last_cm: the tracker has a second writer -- the
 			 * departure path feeds it UNVOUCHED ranges -- so its value can be
 			 * blocks newer than the label beside it. */
-			ultrawidelock_satellite_observe(&satellite, cm * 10, last_obs_block, now);
+			ultrawidelock_satellite_set_observe(&satellite, cm * 10, last_obs_block, now);
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
 			/*
@@ -944,7 +969,7 @@ int main(void)
 			 */
 			{
 				struct ultrawidelock_fusion_verdict fv =
-					ultrawidelock_satellite_verdict(&satellite, now);
+					ultrawidelock_satellite_set_verdict(&satellite, now);
 				struct ultrawidelock_side_features sf;
 				static uint32_t side_seq;
 
@@ -961,7 +986,7 @@ int main(void)
 				sf.ble_rssi_inside_dbm = INT16_MIN;
 				sf.ble_rssi_outside_dbm = INT16_MIN;
 				sf.ble_rssi_threshold_dbm = INT16_MIN;
-				sf.uwb_peer_mm = ultrawidelock_satellite_peer_mm(&satellite, now);
+				sf.uwb_peer_mm = ultrawidelock_satellite_set_peer_mm(&satellite, now);
 				sf.fusion_side = fv.geometry_ok ? (uint8_t)fv.side
 								: ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN;
 				/* Flat, not a function of delta_mm: the dead band and
@@ -1033,7 +1058,7 @@ int main(void)
 			 * fail-opens on UNKNOWN. Retained when ULTRAWIDELOCK_SIDE_GATE is
 			 * off so existing ANCHOR=1 behaviour stays unchanged.
 			 */
-			if (!ultrawidelock_satellite_may_predict(&satellite, now)) {
+			if (!ultrawidelock_satellite_set_may_predict(&satellite, now)) {
 				LOG_INF("predict withheld: second anchor puts the phone outside");
 				break;
 			}

@@ -280,6 +280,36 @@ config ULTRAWIDELOCK_ANCHOR_BASELINE_MM
 	  dead band, move the anchors further apart rather than shrinking the
 	  band.
 
+config ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM
+	int "Distance to the satellite in role 2, millimetres (0 = not installed)"
+	default 0
+	range 0 10000
+	help
+	  The same measurement as ULTRAWIDELOCK_ANCHOR_BASELINE_MM, for a SECOND
+	  satellite. Per role because the baseline is the distance from this node
+	  to THAT board, and two boards are not in the same place: one value
+	  shared between them sizes every triangle test for one and mis-sizes it
+	  for the other, which reads as a satellite under attack rather than as a
+	  number nobody set.
+
+	  0 means no satellite is mounted in this role, which is the default and
+	  the shipping case -- one lock, one satellite. A zero baseline is
+	  already how this tree spells "no satellite" (ultrawidelock_satellite.c
+	  fresh()), so an uninstalled role permits prediction exactly as a quiet
+	  one does; it does not withhold.
+
+	  ULTRAWIDELOCK_ANCHOR_BASELINE_MM stays the role-1 value, unrenamed, so
+	  a one-satellite deployment keeps the setting it already has.
+
+config ULTRAWIDELOCK_ANCHOR_BASELINE_3_MM
+	int "Distance to the satellite in role 3, millimetres (0 = not installed)"
+	default 0
+	range 0 10000
+	help
+	  Role 3 (threshold) baseline. See ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM;
+	  3 is the ceiling, set by ULTRAWIDELOCK_ANCHOR_ROLE's `range 1 3` and by
+	  the sealed link's nonce split, not by this file.
+
 config ULTRAWIDELOCK_ANCHOR_TOL_MM
 	int "Triangle-inequality tolerance, millimetres"
 	default 90

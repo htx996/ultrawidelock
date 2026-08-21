@@ -190,3 +190,137 @@ bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s
 	v = ultrawidelock_satellite_verdict(s, now_ms);
 	return ultrawidelock_fusion_may_predict(&v);
 }
+
+/* ── more than one satellite ─────────────────────────────────────────────── */
+
+void ultrawidelock_satellite_set_init(struct ultrawidelock_satellite_set *set,
+				      const struct ultrawidelock_fusion_cfg *cfg,
+				      uint32_t stale_ms, bool self_is_inside)
+{
+	if (set == NULL) {
+		return;
+	}
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		/* A NULL cfg initialises every slot with a zero baseline, which
+		 * fresh() already reads as absence rather than as evidence --
+		 * the same fail-back an unconfigured single satellite gets. */
+		ultrawidelock_satellite_init(&set->peer[i], cfg != NULL ? &cfg[i] : NULL, stale_ms,
+					     self_is_inside);
+	}
+}
+
+void ultrawidelock_satellite_set_report(struct ultrawidelock_satellite_set *set, uint8_t role,
+					int32_t peer_mm, uint32_t peer_block, int64_t now_ms)
+{
+	if (set == NULL || role < 1u || role > ULTRAWIDELOCK_SATELLITE_MAX_ROLES) {
+		return;
+	}
+	ultrawidelock_satellite_report(&set->peer[role - 1u], peer_mm, peer_block, now_ms);
+}
+
+void ultrawidelock_satellite_set_observe(struct ultrawidelock_satellite_set *set, int32_t self_mm,
+					 uint32_t self_block, int64_t now_ms)
+{
+	if (set == NULL) {
+		return;
+	}
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		ultrawidelock_satellite_observe(&set->peer[i], self_mm, self_block, now_ms);
+	}
+}
+
+struct ultrawidelock_fusion_verdict
+ultrawidelock_satellite_set_verdict(const struct ultrawidelock_satellite_set *set, int64_t now_ms)
+{
+	struct ultrawidelock_fusion_verdict none = {ULTRAWIDELOCK_SIDE_UNKNOWN, false, 0};
+	struct ultrawidelock_fusion_verdict definite = {ULTRAWIDELOCK_SIDE_UNKNOWN, false, 0};
+	struct ultrawidelock_fusion_verdict abstain = {ULTRAWIDELOCK_SIDE_UNKNOWN, false, 0};
+	bool have_definite = false;
+	bool have_abstain = false;
+
+	if (set == NULL) {
+		return none;
+	}
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		struct ultrawidelock_fusion_verdict v =
+			ultrawidelock_satellite_verdict(&set->peer[i], now_ms);
+
+		/*
+		 * Silent roles are skipped, not counted as a dissenting UNKNOWN.
+		 * An uninstalled role and a quiet one are both absence, and
+		 * absence that could veto would make adding a third slot change
+		 * the answer for a door that was working.
+		 */
+		if (!v.geometry_ok) {
+			continue;
+		}
+		/*
+		 * A role INSIDE its dead band abstains rather than dissents. It
+		 * has a good pair and no opinion, which is the ordinary state of
+		 * an anchor the phone happens to be on the bisector of -- and
+		 * two anchors do not share a bisector, so with a second
+		 * satellite installed this is a normal reading, not a fault.
+		 * Counting it as a disagreement would make two satellites refuse
+		 * where one would have decided.
+		 */
+		if (v.side == ULTRAWIDELOCK_SIDE_UNKNOWN) {
+			if (!have_abstain) {
+				abstain = v;
+				have_abstain = true;
+			}
+			continue;
+		}
+		if (!have_definite) {
+			definite = v;
+			have_definite = true;
+			continue;
+		}
+		if (v.side != definite.side) {
+			/*
+			 * Two anchors watching one phone cannot both be right
+			 * about opposite sides. Fail closed, in the shape a
+			 * failed triangle already uses: UNKNOWN with geometry_ok
+			 * false, which the side gate refuses on.
+			 */
+			return none;
+		}
+	}
+	if (have_definite) {
+		return definite;
+	}
+	/* Every speaking role abstained: report the abstention rather than
+	 * absence, because {UNKNOWN, geometry_ok = true} is what a single
+	 * satellite in its dead band returns today and the callers separate
+	 * those two states. */
+	return have_abstain ? abstain : none;
+}
+
+bool ultrawidelock_satellite_set_may_predict(const struct ultrawidelock_satellite_set *set,
+					     int64_t now_ms)
+{
+	if (set == NULL) {
+		return true;
+	}
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		if (!ultrawidelock_satellite_may_predict(&set->peer[i], now_ms)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+int32_t ultrawidelock_satellite_set_peer_mm(const struct ultrawidelock_satellite_set *set,
+					    int64_t now_ms)
+{
+	if (set == NULL) {
+		return -1;
+	}
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		int32_t mm = ultrawidelock_satellite_peer_mm(&set->peer[i], now_ms);
+
+		if (mm >= 0) {
+			return mm;
+		}
+	}
+	return -1;
+}

@@ -45,6 +45,13 @@
 /* struct ultrawidelock_uwb_handoff, whose members the sealed handoff reads --
  * the header only forward-declares it. */
 #include <ultrawidelock/uwb.h>
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/* For ULTRAWIDELOCK_SATELLITE_MAX_ROLES, which sizes the per-role replay
+ * windows below. Guarded because this module's include directory only exists
+ * under CONFIG_ULTRAWIDELOCK_ANCHOR, and a sealed-link build without the fusion
+ * layer -- the witness-only configuration -- compiles this file too. */
+#include "ultrawidelock_satellite.h"
+#endif
 #include "ultrawidelock_witness_msg.h"
 #include "ultrawidelock_witness_pick.h"
 
@@ -95,7 +102,25 @@ static witness_link_anchor_cb s_anchor_cb;
  * the witness path would tie a live device class to a retired one. */
 static uint8_t s_anchor_key[KEY_LEN];
 static bool s_anchor_provisioned;
-static struct ultrawidelock_witness_seen s_anchor_seen;
+/*
+ * ONE REPLAY WINDOW PER ROLE, and the array is the whole point of it.
+ *
+ * This was a single window while only one satellite existed, and a single
+ * window does not merely mix two satellites up -- it stops rejecting anything.
+ * ultrawidelock_seen_accept_ctr() compares counters only when the boot_id
+ * matches, and two satellites have different boot ids, so alternating reports
+ * each reset the window for the other and every counter is accepted, replays
+ * included. What a replayed report can then DO is still bounded by the pairing
+ * rule downstream -- it has to name a ranging block this node measured inside
+ * stale_ms -- but that is the fusion's guard doing the replay window's job, and
+ * only for as long as those two rules keep agreeing.
+ *
+ * Indexed by role, which is inside the seal, so an attacker cannot choose the
+ * slot. Sized by the anchor role ceiling rather than WITNESS_MAX -- see
+ * ULTRAWIDELOCK_SATELLITE_MAX_ROLES for why those two numbers are not the same
+ * number.
+ */
+static struct ultrawidelock_witness_seen s_anchor_seen[ULTRAWIDELOCK_SATELLITE_MAX_ROLES];
 #endif
 static bool s_session;
 
@@ -582,13 +607,29 @@ opened:
 		if (!s_anchor_provisioned) {
 			return;
 		}
-		if (!ultrawidelock_seen_accept_ctr(&s_anchor_seen, am.boot_id, am.ctr)) {
+		/*
+		 * Range-check before it indexes anything. The role is sealed, so
+		 * this is not an attacker's choice, but it is still a number off
+		 * the wire and it selects an array slot two lines down.
+		 *
+		 * Dropped rather than clamped to a valid role: a satellite
+		 * outside 1..3 has no disjoint nonce space with this lock
+		 * (HANDOFF_NONCE_ROLE above), so it is not a peer this link can
+		 * safely have, and folding it onto role 1 would give it role 1's
+		 * replay window.
+		 */
+		if (am.role < 1u || am.role > ULTRAWIDELOCK_SATELLITE_MAX_ROLES) {
+			LOG_WRN("anchor role=%u out of range", (unsigned)am.role);
+			return;
+		}
+		if (!ultrawidelock_seen_accept_ctr(&s_anchor_seen[am.role - 1u], am.boot_id,
+						   am.ctr)) {
 			LOG_WRN("anchor role=%u replay (ctr=%u)", (unsigned)am.role,
 				(unsigned)am.ctr);
 			return;
 		}
 		if (s_anchor_cb != NULL) {
-			s_anchor_cb(am.peer_mm, am.ranging_block, now);
+			s_anchor_cb(am.role, am.peer_mm, am.ranging_block, now);
 		}
 		return;
 	}
