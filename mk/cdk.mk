@@ -167,7 +167,16 @@ CDK_CIRDIAG_WINDOWS := $(if $(CIRDIAG_WINDOWS),-DCONFIG_ULTRAWIDELOCK_CIRDIAG_CA
 # are on today, each behind its own walk-up on its own hardware.
 LTO_SET  := $(filter-out undefined,$(origin LTO))
 CDK_LTO  := $(filter-out 0 n no off N NO OFF,$(if $(LTO_SET),$(LTO),1))
-CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(CLIENT),;overlay-client.conf)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)
+# CLIENT=1 WITHOUT RELEASE=1 needs room made for it, and this is where.
+# overlay-release.conf already buys that room by dropping the global log level;
+# a debug image cannot take the same lever without silencing the client it was
+# built to watch, so overlay-client-debug.conf trims by module instead. Applied
+# automatically because the alternative is not a smaller image, it is a link
+# that overflows FLASH by about 5,300 B -- a failure that reads as a broken tree
+# rather than a budget. Ordered after overlay-client.conf so it is trimming a
+# configuration that already exists.
+CDK_CLIENT_DEBUG := $(if $(CLIENT),$(if $(RELEASE),,;overlay-client-debug.conf))
+CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(CLIENT),;overlay-client.conf)$(CDK_CLIENT_DEBUG)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)
 
 # One-command real-board optimization lane. The Python driver owns the
 # interactive lifecycle so Enter can end RTT capture and the local HTTP server
@@ -238,10 +247,35 @@ CDK_SIGN := -DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE='"$(CDK_KEY)"'
 # ULTRAWIDELOCK_DFU_KEY is the IMAGE-signing key, deliberately. The application checks a
 # staged update against its public half, so one secret authorises both what the
 # bootloader will boot and what the radio will accept, and they cannot drift.
+#
+# THE RECEIVER IS OFF IN A DEBUG CLIENT IMAGE, and only there. That image does
+# not otherwise fit: see overlay-client-debug.conf for the arithmetic and for
+# what it already gave up in log strings before reaching for this.
+#
+# Off HERE and not in the overlay, because this is a command-line -D. Zephyr
+# merges those last, through extra_kconfig_options.conf, so a `=n` in a .conf
+# file would be silently overridden by the `=y` on this line and the image would
+# still not fit -- with nothing in the log to say why.
+#
+# The module and the key stay on the line regardless. Dropping $(CDK_DFU)
+# wholesale is the documented trap (see cirdiag below): it builds an image with
+# no ultrawidelock_dfu module at all, which is a different image from the one
+# being characterised.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO: make the debug image ROOMIER than the
+# release one. The partition map is untouched -- patch_staging stays reserved
+# and unused -- so the debug build keeps a budget no larger than the release
+# build's, and stays the tighter of the two. That is the property worth
+# protecting: a debug image with headroom to spare is one that fills up with
+# experiments and then discovers, at release time, that the shipping profile has
+# not fitted for weeks. The one blind spot it creates is narrow and worth
+# stating: growth INSIDE the DFU receiver itself is no longer visible from a
+# debug build, only from a release one.
+CDK_DFU_RX := $(if $(CLIENT),$(if $(RELEASE),y,n),y)
 CDK_DFU  := -DEXTRA_ZEPHYR_MODULES='$(REPO_ROOT)/modules/ultrawidelock_dfu' \
             -DULTRAWIDELOCK_DFU_KEY='$(CDK_KEY)' \
             -Dmcuboot_CONFIG_ULTRAWIDELOCK_DFU_APPLIER=y \
-            -DCONFIG_ULTRAWIDELOCK_DFU_RECEIVER=y
+            -DCONFIG_ULTRAWIDELOCK_DFU_RECEIVER=$(CDK_DFU_RX)
 
 # DFU_LOG=1 makes the bootloader narrate what it does with a staged patch.
 #

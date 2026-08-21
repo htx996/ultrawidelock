@@ -56,7 +56,7 @@
 #include "ultrawidelock_port.h"
 #include "ultrawidelock_prim.h"
 
-LOG_MODULE_DECLARE(matter_ble, CONFIG_ULTRAWIDELOCK_MATTER_BLE_LOG_LEVEL);
+LOG_MODULE_REGISTER(matter_client, CONFIG_ULTRAWIDELOCK_MATTER_CLIENT_LOG_LEVEL);
 
 /**
  * Enough for the two messages this node ORIGINATES rather than replies with.
