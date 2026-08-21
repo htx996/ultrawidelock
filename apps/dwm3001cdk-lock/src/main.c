@@ -310,6 +310,21 @@ static void factory_reset_if_requested(void)
  * prediction or threshold crossing, relocks on departure or abort, and exits with an error code if
  * reader startup fails.
  */
+/* How long the departure fallback holds an open bolt through the iOS
+ * phase-deadline flap before treating the dead session as a walk-away. Only
+ * entered when the controller was fed a range inside relock_cm moments before
+ * the session died -- a phone the evidence puts AT the door (measured
+ * 2026-08-21: flap at 16 cm, reconnect 4.2 s later; the immediate relock shut
+ * the bolt under the owner's hand). Departures don't look like that: the far
+ * tiers relock on ranges, not on the session. 10 s covers the observed
+ * reconnect with margin while bounding how long a real walk-away that never
+ * reconnects can leave the bolt open.
+ *
+ * Outside the latch guard: the departure fallback is in every image, latch or
+ * not, so the constants it reads have to be too. */
+#define SESSION_FLAP_HOLD_MS 10000
+#define SESSION_FLAP_FEED_FRESH_MS 3000
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 /*
  * The inside veto. The side gate classifies each window; this decides what a
@@ -345,18 +360,6 @@ static bool s_latch_dirty;
  * clear_windows as the session flapped, and with the phone then at the
  * door no run could restart beyond clear_min_mm -- why=0x10 for good). */
 #define LATCH_SESSION_CARRY_MS 30000
-
-/* How long the departure fallback holds an open bolt through that same iOS
- * phase-deadline flap before treating the dead session as a walk-away. Only
- * entered when the controller was fed a range inside relock_cm moments before
- * the session died -- a phone the evidence puts AT the door (measured
- * 2026-08-21: flap at 16 cm, reconnect 4.2 s later; the immediate relock shut
- * the bolt under the owner's hand). Departures don't look like that: the far
- * tiers relock on ranges, not on the session. 10 s covers the observed
- * reconnect with margin while bounding how long a real walk-away that never
- * reconnects can leave the bolt open. */
-#define SESSION_FLAP_HOLD_MS 10000
-#define SESSION_FLAP_FEED_FRESH_MS 3000
 
 static uint32_t latch_cred_id(void)
 {
