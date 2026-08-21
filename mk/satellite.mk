@@ -1,4 +1,9 @@
-# mk/satellite.mk — the stage-B satellite responder (docs/second-anchor.md).
+# mk/satellite.mk — the second UWB anchor (docs/second-anchor.md).
+#
+# The other half of the inside/outside product: this board measures its own
+# distance to the phone in the same ranging block the lock does, and returns it
+# over the sealed Thread link. Lives in apps/nrf5340dk-satellite because it is a
+# product front end, not a sample.
 #
 # One application, developed on the nRF5340 DK + DWM3000EVB, ported to a second
 # DWM3001CDK later by changing SAT_BOARD (stage E). Reuses mk/cdk.mk's
@@ -6,7 +11,7 @@
 # the same reason: two debug probes on one machine enumerate in a different
 # order twenty minutes apart.
 
-SAT_APP   := $(REPO_ROOT)/examples/zephyr/satellite
+SAT_APP   := $(REPO_ROOT)/apps/nrf5340dk-satellite
 SAT_BOARD ?= nrf5340dk/nrf5340/cpuapp
 
 # Flattened board string, same as mk/anchor.mk: slashes would bury the build

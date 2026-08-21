@@ -598,6 +598,7 @@ BUILD_FILES=(
 	CMakeLists.txt
 	apps/dwm3001cdk-lock/CMakeLists.txt
 	apps/esp32-matter-lock/CMakeLists.txt
+	apps/nrf5340dk-satellite/CMakeLists.txt
 	examples/zephyr/anchor/CMakeLists.txt
 	examples/zephyr/nrf5340dk-initiator/CMakeLists.txt
 	examples/esp32/*/CMakeLists.txt

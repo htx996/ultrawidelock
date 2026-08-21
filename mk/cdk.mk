@@ -79,6 +79,7 @@ CDK_READER_BUILD   ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-reader
 CDK_SELFTEST_BUILD ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-selftest
 CDK_CIRDIAG_BUILD  ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-cirdiag
 CDK_MLGATE_BUILD   ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-mlgate
+CDK_ANCHORLINK_BUILD ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-anchorlink$(if $(BENCH),-bench)
 # Split out only so `monitor` can be pointed at an ELF without moving what the
 # flash targets write. Same directory by default, which is the whole point.
 CDK_RTT_BUILD      ?= $(CDK_BUILD)
@@ -101,6 +102,7 @@ override CDK_READER_BUILD   := $(abspath $(CDK_READER_BUILD))
 override CDK_SELFTEST_BUILD := $(abspath $(CDK_SELFTEST_BUILD))
 override CDK_CIRDIAG_BUILD  := $(abspath $(CDK_CIRDIAG_BUILD))
 override CDK_MLGATE_BUILD   := $(abspath $(CDK_MLGATE_BUILD))
+override CDK_ANCHORLINK_BUILD := $(abspath $(CDK_ANCHORLINK_BUILD))
 override CDK_RTT_BUILD      := $(abspath $(CDK_RTT_BUILD))
 
 # PRISTINE=1 forces a from-scratch build. `-p auto` re-runs CMake when the board
@@ -158,6 +160,14 @@ CDK_CIRDIAG_WINDOWS := $(if $(CIRDIAG_WINDOWS),-DCONFIG_ULTRAWIDELOCK_CIRDIAG_CA
 LTO_SET  := $(filter-out undefined,$(origin LTO))
 CDK_LTO  := $(filter-out 0 n no off N NO OFF,$(if $(LTO_SET),$(LTO),1))
 CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)$(if $(LATCH),;overlay-latch.conf)
+
+# The lock half of the two-anchor product (`make anchorlink`). Spelled out
+# rather than layered onto CDK_CONF because two of these are not the caller's
+# to choose: the WV3 consumer lives inside witness_link.c's WV2 one, so the
+# latch overlay is mandatory, and the round has to advertise two responders or
+# the satellite has no slot to answer in. BENCH=1 appends this desk's
+# calibration LAST, where it can override the shipping defaults above it.
+CDK_ANCHORLINK_CONF := overlay-thread.conf;overlay-latch.conf;overlays/bench-2resp.conf;overlay-anchorlink.conf$(if $(BENCH),;overlays/bench-anchorlink.conf)$(if $(CDK_LTO),;overlay-lto.conf)
 
 # One-command real-board optimization lane. The Python driver owns the
 # interactive lifecycle so Enter can end RTT capture and the local HTTP server
@@ -322,7 +332,7 @@ CDK_SIZE_REPORTS  ?= 1
 CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_SIZE_JSON)' \
                      $(if $(filter-out 0 n no off N NO OFF,$(CDK_SIZE_REPORTS)),--reports --run-prefix '$(CDK_WEST)')
 
-.PHONY: build rebuild instrument reader selftest cirdiag flash flash-erase monitor monitor-rtt dfu release \
+.PHONY: build rebuild instrument reader selftest cirdiag mlgate anchorlink flash flash-erase monitor monitor-rtt dfu release \
         cdk-size cdk-size-check cdk-size-baseline \
         dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
@@ -402,6 +412,20 @@ mlgate:
 	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
 	  --from-config $(CDK_MLGATE_BUILD)/$(CDK_IMAGE)/zephyr/.config
+
+## anchorlink: the lock half of the two-anchor inside/outside pair  ·  BENCH=1 for the desk
+#   The other half is `make sat-build SAT_THREAD=1` (apps/nrf5340dk-satellite).
+#   Flash this with `make flash CDK_BUILD=build/cdk-anchorlink` and NEVER
+#   flash-erase: the anchor key enrolled from the reader image lives in the
+#   settings partition a full erase takes with it.
+anchorlink:
+	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
+	  -d $(CDK_ANCHORLINK_BUILD) $(CDK_APP) \
+	  -- -DEXTRA_CONF_FILE="$(CDK_ANCHORLINK_CONF)" \
+	     -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
+	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
+	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
+	  --from-config $(CDK_ANCHORLINK_BUILD)/$(CDK_IMAGE)/zephyr/.config
 
 
 ## flash: flash the DWM3001CDK over its on-board J-Link OB

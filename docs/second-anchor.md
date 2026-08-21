@@ -32,7 +32,7 @@ developed on the DK and lands on the CDK by changing `ANCHOR_BOARD`.
 | Two-distance side-of-door + triangle gate | `ultrawidelock_fusion` | built, tested |
 | Freshness gate, fail-safe rules | `ultrawidelock_satellite` | built, tested, wired into the lock's PREDICT arm |
 | Anchor-to-anchor DS-TWR on these two boards | `examples/zephyr/anchor` (stage A) | run and calibrated 2026-08-21 |
-| CRED ranging engine as a standalone app, no Matter workspace | `examples/zephyr/satellite` (stage B) | built 129 KB, joins a live session from air |
+| CRED ranging engine as a standalone app, no Matter workspace | `apps/nrf5340dk-satellite` (stage B) | built 129 KB, joins a live session from air |
 | Full CRED-tier ranging engine on nRF5340+DWM3000EVB | `apps/nrf5340dk-lock` | built (it is a whole lock) |
 | Phone builds the `N_Resp = 2` layout | `ULTRAWIDELOCK_NUM_RESPONDERS`, protocol-research.md §7 | measured 2026-07-17; slot layout only, see stage B |
 | Sealed lock↔peer link over Thread UDP | `witness_link.c` pattern | built for witnesses, reusable |
@@ -407,7 +407,7 @@ lock       32 anchor reports, 19 paired on (session, block)
 
 ONE KEY, TWO DIRECTIONS, so the CCM nonce spaces have to be disjoint by
 construction rather than by luck. The satellite writes its role in nonce byte 0
-and `examples/zephyr/satellite/Kconfig` bounds that to `range 1 3`; the lock
+and `apps/nrf5340dk-satellite/Kconfig` bounds that to `range 1 3`; the lock
 writes 0xFF. If a role is ever widened past 3, `HANDOFF_NONCE_ROLE` in
 `witness_link.c` must move with it.
 

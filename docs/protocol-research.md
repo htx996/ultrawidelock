@@ -291,7 +291,7 @@ Source: commits `9106aed` (the probe) and `2da85c4` (collapsed onto the
 ### Bench check: a real `Response_1`, and what CCC v4 requires (2026-08-21)
 
 The 2026-07-17 probe left one thing open: no second anchor had ever transmitted. On
-2026-08-21 one did. A satellite (`examples/zephyr/satellite`, nRF5340 DK + DWM3000EVB)
+2026-08-21 one did. A satellite (`apps/nrf5340dk-satellite`, nRF5340 DK + DWM3000EVB)
 holding the session URSK joined from the air alone, decoded Pre-POLL, POLL and Final at
 `cper=0`, and transmitted `Response_1` in slot 3 every round with about 3 ms of arm margin
 and no HPDWARN. The phone's `Final_Data` still reported `nresp=1`. A control run with the
