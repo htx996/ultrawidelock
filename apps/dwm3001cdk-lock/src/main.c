@@ -547,6 +547,18 @@ int main(void)
 
 	ultrawidelock_side_defaults(&side_cfg);
 	side_cfg.rssi_outside_margin_db = CONFIG_ULTRAWIDELOCK_SIDE_OUTSIDE_MARGIN_DB;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	/*
+	 * Quorum follows the anchors this build actually has. The default is the
+	 * BLE witness pair, and with the witnesses retired that is a mask nothing
+	 * can ever satisfy -- the gate then withholds every passive unlock for a
+	 * reason that has nothing to do with where the phone is. Requiring the two
+	 * UWB anchors instead keeps the rule identical in shape: two independent
+	 * anchors, both healthy, or no decision.
+	 */
+	side_cfg.quorum_mask = (uint8_t)(ULTRAWIDELOCK_SIDE_ANCHOR_PRIMARY_UWB |
+					 ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE);
+#endif
 	ultrawidelock_side_filter_init(&side_filt, &side_cfg);
 	{
 		/* Boot: no witnesses yet => UNKNOWN + quorum fail (fail-closed). */
@@ -911,6 +923,64 @@ int main(void)
 			 * departure path feeds it UNVOUCHED ranges -- so its value can be
 			 * blocks newer than the label beside it. */
 			ultrawidelock_satellite_observe(&satellite, cm * 10, last_obs_block, now);
+#endif
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
+			/*
+			 * Drive the side gate from the two UWB anchors.
+			 *
+			 * Here rather than beside the RTT feed below because a
+			 * window must be one PAIR of same-round distances, and this
+			 * is the only place a fresh trusted range and the block it
+			 * belongs to are both in hand. Fed once per accepted latch,
+			 * so agree_windows counts real rounds: three of them span
+			 * ~576 ms at a 192 ms block, the same span the range trust
+			 * layer already uses.
+			 *
+			 * Everything that could withhold stays withheld. The
+			 * verdict is UNKNOWN unless a peer report for THIS block
+			 * arrived and cleared the triangle gate, and an UNKNOWN
+			 * with no peer distance leaves the satellite bit out of
+			 * anchor_health_mask, which fails quorum on its own.
+			 */
+			{
+				struct ultrawidelock_fusion_verdict fv =
+					ultrawidelock_satellite_verdict(&satellite, now);
+				struct ultrawidelock_side_features sf;
+				static uint32_t side_seq;
+
+				memset(&sf, 0, sizeof(sf));
+				sf.now_ms = now;
+				sf.obs_session_id = ultrawidelock_uwb_session_id();
+				if (sf.obs_session_id == 0u) {
+					sf.obs_session_id = 1u;
+				}
+				sf.seq = ++side_seq;
+				sf.uwb_range_mm = cm * 10;
+				sf.uwb_vel_mm_s = INT32_MIN;
+				sf.uwb_range_var_mm = -1;
+				sf.ble_rssi_inside_dbm = INT16_MIN;
+				sf.ble_rssi_outside_dbm = INT16_MIN;
+				sf.ble_rssi_threshold_dbm = INT16_MIN;
+				sf.uwb_peer_mm = ultrawidelock_satellite_peer_mm(&satellite, now);
+				sf.fusion_side = fv.geometry_ok ? (uint8_t)fv.side
+								: ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN;
+				/* Flat, not a function of delta_mm: the dead band and
+				 * the triangle gate have already decided this pair is
+				 * good enough, and inventing a confidence curve here
+				 * would be a second opinion with no measurement behind
+				 * it. */
+				sf.fusion_conf = (sf.fusion_side == ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN)
+							 ? 0u
+							 : 70u;
+				sf.classifier_ver = side_cfg.classifier_ver;
+				sf.calibration_ver = side_cfg.calibration_ver;
+				side_dec = ultrawidelock_side_filter_feed(&side_filt, &sf);
+				side_feed_ms = now;
+				LOG_INF("side uwb: side=%u conf=%u flags=0x%02x self=%d peer=%d d=%d",
+					(unsigned)side_dec.side, side_dec.confidence, side_dec.flags,
+					(int)sf.uwb_range_mm, (int)sf.uwb_peer_mm,
+					(int)fv.delta_mm);
+			}
 #endif
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)

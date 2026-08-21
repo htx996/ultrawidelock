@@ -360,8 +360,117 @@ static void test_log_roundtrip(void)
 	T_OK("bad_crc", ultrawidelock_side_log_check(&rec) != 0);
 }
 
+/*
+ * Two-anchor fusion as the polarity source, which is what drives the gate now
+ * that the BLE witnesses are retired. The safety-relevant cases are the ones
+ * where evidence is MISSING or CONTRADICTORY, so they get the most attention:
+ * an absent fusion must not become permission.
+ */
+static struct ultrawidelock_side_features fusion_feat(uint8_t side)
+{
+	struct ultrawidelock_side_features f;
+
+	memset(&f, 0, sizeof(f));
+	f.obs_session_id = 0xF00U;
+	f.seq = 1;
+	f.now_ms = 10000;
+	f.uwb_range_mm = 900;
+	f.uwb_vel_mm_s = -400;
+	f.uwb_range_var_mm = 20;
+	/* No BLE at all: the retired-witness world. */
+	f.ble_rssi_inside_dbm = INT16_MIN;
+	f.ble_rssi_outside_dbm = INT16_MIN;
+	f.ble_rssi_threshold_dbm = INT16_MIN;
+	f.uwb_peer_mm = 1400;
+	f.fusion_side = side;
+	f.fusion_conf = (side == ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN) ? 0u : 70u;
+	f.classifier_ver = 1;
+	f.calibration_ver = 1;
+	f.anchor_health_mask = (uint8_t)(ULTRAWIDELOCK_SIDE_ANCHOR_PRIMARY_UWB |
+					 ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE);
+	return f;
+}
+
+static void test_fusion_polarity(void)
+{
+	struct ultrawidelock_side_cfg cfg;
+	struct ultrawidelock_side_features f;
+	struct ultrawidelock_side_raw r;
+
+	t_group("side: fusion polarity with no BLE");
+
+	ultrawidelock_side_defaults(&cfg);
+	cfg.quorum_mask = (uint8_t)(ULTRAWIDELOCK_SIDE_ANCHOR_PRIMARY_UWB |
+				    ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE);
+
+	f = fusion_feat(ULTRAWIDELOCK_SIDE_LABEL_OUTSIDE);
+	r = ultrawidelock_side_classify_raw(&cfg, &f);
+	T_EQ("fusion.outside", r.side, ULTRAWIDELOCK_SIDE_LABEL_OUTSIDE);
+	T_OK("fusion.outside_conf", r.confidence > 0);
+	T_OK("fusion.sat_bit",
+	     (r.contrib_mask & ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE) != 0);
+
+	f = fusion_feat(ULTRAWIDELOCK_SIDE_LABEL_INSIDE);
+	r = ultrawidelock_side_classify_raw(&cfg, &f);
+	T_EQ("fusion.inside", r.side, ULTRAWIDELOCK_SIDE_LABEL_INSIDE);
+
+	t_group("side: absent fusion is never permission");
+
+	/* The whole point of the gate. No fusion, no BLE -> no side, and the
+	 * confidence must not carry over from a previous opinion. */
+	f = fusion_feat(ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN);
+	r = ultrawidelock_side_classify_raw(&cfg, &f);
+	T_EQ("fusion.absent_unknown", r.side, ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN);
+	T_EQ("fusion.absent_conf", r.confidence, 0);
+
+	/* A peer distance that never paired: the satellite bit is still set (we
+	 * DID hear from it) but polarity is absent, so still no side. */
+	f = fusion_feat(ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN);
+	f.uwb_peer_mm = 1400;
+	r = ultrawidelock_side_classify_raw(&cfg, &f);
+	T_EQ("fusion.unpaired_unknown", r.side, ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN);
+
+	t_group("side: fusion loses quorum when the satellite is silent");
+
+	f = fusion_feat(ULTRAWIDELOCK_SIDE_LABEL_OUTSIDE);
+	f.uwb_peer_mm = -1;
+	f.anchor_health_mask = ULTRAWIDELOCK_SIDE_ANCHOR_PRIMARY_UWB;
+	{
+		struct ultrawidelock_side_filter filt;
+		struct ultrawidelock_side_decision d;
+
+		ultrawidelock_side_filter_init(&filt, &cfg);
+		d = ultrawidelock_side_filter_feed(&filt, &f);
+		T_OK("fusion.quorum_fail",
+		     (d.flags & ULTRAWIDELOCK_SIDE_F_QUORUM_FAIL) != 0);
+		T_OK("fusion.quorum_no_unlock",
+		     !ultrawidelock_side_may_passive_unlock(&d, &cfg));
+	}
+
+	t_group("side: fusion and BLE contradicting means UNKNOWN");
+
+	/* Both sources present and disagreeing must not resolve to either one.
+	 * BLE says OUTSIDE (outside stronger than inside); fusion says INSIDE. */
+	f = fusion_feat(ULTRAWIDELOCK_SIDE_LABEL_INSIDE);
+	f.ble_rssi_inside_dbm = -70;
+	f.ble_rssi_outside_dbm = -55;
+	f.ble_pkts_inside = 8;
+	f.ble_pkts_outside = 8;
+	f.anchor_health_mask |= (uint8_t)(ULTRAWIDELOCK_SIDE_ANCHOR_BLE_INSIDE |
+					  ULTRAWIDELOCK_SIDE_ANCHOR_BLE_OUTSIDE);
+	r = ultrawidelock_side_classify_raw(&cfg, &f);
+	T_EQ("fusion.contradict", r.side, ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN);
+	T_EQ("fusion.contradict_conf", r.confidence, 0);
+
+	/* Agreeing is not a contradiction: both say OUTSIDE. */
+	f.fusion_side = ULTRAWIDELOCK_SIDE_LABEL_OUTSIDE;
+	r = ultrawidelock_side_classify_raw(&cfg, &f);
+	T_EQ("fusion.agree", r.side, ULTRAWIDELOCK_SIDE_LABEL_OUTSIDE);
+}
+
 void test_ultrawidelock_side(void)
 {
+	test_fusion_polarity();
 	test_raw_differential();
 	test_policy_fail_closed();
 	test_temporal_no_spike_flip();

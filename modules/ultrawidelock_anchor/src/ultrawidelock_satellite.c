@@ -158,6 +158,16 @@ ultrawidelock_satellite_verdict(const struct ultrawidelock_satellite *s, int64_t
 	return ultrawidelock_fusion_eval(&s->cfg, s->peer_mm, self_mm);
 }
 
+int32_t ultrawidelock_satellite_peer_mm(const struct ultrawidelock_satellite *s, int64_t now_ms)
+{
+	/* Same freshness test the verdict applies, so a caller cannot see a
+	 * distance the verdict has already discarded as too old. */
+	if (!fresh(s, now_ms)) {
+		return -1;
+	}
+	return s->peer_mm;
+}
+
 bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s, int64_t now_ms)
 {
 	struct ultrawidelock_fusion_verdict v;
