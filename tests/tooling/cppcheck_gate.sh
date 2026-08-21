@@ -114,6 +114,33 @@ for d in include modules/*/include; do
 	[ -d "$d" ] && inc_args+=("-I$d")
 done
 
+# ---- how long the scan takes -----------------------------------------------
+# Two flags, neither of which changes a single finding, and together they are
+# the difference between this gate being the reason `make check` takes minutes
+# and it being noise. It is the suite people wait on, so this is worth the ink.
+#
+# -j: cppcheck analyses one file at a time by default, which on this tree is
+# about twenty seconds of a single core while scripts/test-runner.sh has the
+# other seven idle -- the fast suites have all landed by then. The job count is
+# the machine's, not a constant, so a laptop and a CI runner each use what they
+# have. Only `unusedFunction` is incompatible with -j, and --enable above asks
+# for warning and portability, so nothing is lost by turning it on.
+#
+# --cppcheck-build-dir: cppcheck's own incremental cache. It keys the stored
+# analysis on the file AFTER preprocessing, so editing a header re-checks every
+# source that includes it and a stale pass is not a way this can fail -- the
+# same reason it is safe to leave on in CI. An unchanged tree re-scans in about
+# a second instead of twenty.
+#
+# It lives under the repo's one build root with everything else generated, so
+# `make clean` takes it and no scan output is left anywhere else in the tree.
+# Created here rather than by the caller: cppcheck does not create the directory
+# and treats a missing one as a hard error, which would turn the cache into a
+# way for the gate to stop working.
+CPPCHECK_JOBS="${CPPCHECK_JOBS:-$( (getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu) 2>/dev/null || echo 4)}"
+CPPCHECK_CACHE="${ULTRAWIDELOCK_BUILD_ROOT:-$PWD/build}/host/cppcheck"
+mkdir -p "$CPPCHECK_CACHE" 2>/dev/null || CPPCHECK_CACHE=
+
 # The exemptions, all of them, in one place. Two rounds of red CI decided both
 # the form and the location, so both are worth stating.
 #
@@ -168,7 +195,14 @@ run_cppcheck() { # <extra args...> -- prints findings, returns cppcheck's status
 	for i in "${IGNORES[@]}"; do
 		ig_args+=("-i$i")
 	done
+	# See the CPPCHECK_JOBS / CPPCHECK_CACHE block above for why these are on.
+	# Both are appended as arrays so an unusable cache directory drops the flag
+	# rather than passing an empty path, and the self-test runs through exactly
+	# the flags the real scan does.
+	local fast_args=(-j "$CPPCHECK_JOBS")
+	[ -n "$CPPCHECK_CACHE" ] && fast_args+=("--cppcheck-build-dir=$CPPCHECK_CACHE")
 	cppcheck \
+		"${fast_args[@]}" \
 		--enable=warning,portability \
 		--suppress=preprocessorErrorDirective:modules/ultrawidelock_ml/src/ultrawidelock_ml_feat.c \
 		--suppress=objectIndex:modules/ultrawidelock_cred/src/ultrawidelock_hash.c \
