@@ -18,13 +18,43 @@ the path it stops in, not whether a door opens.
 | | | Why |
 |---|---|---|
 | 1x DWM3001CDK | the initiator | the thing under test |
-| 1x peer lock | any Matter DoorLock server | a Nuki, an Aqara U200, or `apps/esp32-matter-lock` |
+| 1x peer lock | any Matter DoorLock server **on Thread** | `apps/nrf5340dk-lock`, a Nuki, or an Aqara U200 |
 | 1x Thread Border Router | an Apple TV, a HomePod, or an OTBR | **mandatory.** This node runs no SRP server, so nothing resolves without one |
 | a second controller | Home Assistant, or `chip-tool` | Apple Home alone cannot do this |
 
-No nRF5340DK is involved. Use the in-repo ESP32 peer before a commercial lock:
-a Nuki gives you a silent drop and no way to tell a rejection from a lost
-packet, while the ESP32 can be instrumented at both ends at once, which is the
+**The peer has to be a Thread node.** The client resolves out of the Thread
+network's SRP registrations (`_matter._tcp.default.service.arpa.`, in
+`ports/zephyr/matter/matter_dns_port.c`), and a Wi-Fi Matter device advertises
+over mDNS on the LAN and never appears there. Nothing lets you skip past the
+lookup: a binding carries a node id, and `matter_thread_resolve()` is the only
+way in.
+
+That rules out an ESP32-S3, which has no 802.15.4 radio at all. It also catches
+`apps/esp32-matter-lock` on every target including the C6: nothing in this repo
+sets `CONFIG_ENABLE_MATTER_OVER_THREAD` or `CONFIG_OPENTHREAD_ENABLED`, so that
+app builds as a Wi-Fi node unless you turn Thread on yourself and confirm it in
+`build/esp32-matter-lock-<target>/sdkconfig`.
+
+`apps/nrf5340dk-lock` needs none of that, because it is Matter over Thread
+already. Build it plain: `HA=1` layers the LockOperation credential overlay for
+the automation path and has nothing to do with a binding. It does not demand a
+PIN either (`mRequirePINForRemoteOperation{ false }`), so a first run can leave
+the vendor PIN attribute alone. Its devicetree always layers
+`dw3000-nfc.overlay`, so with no DWM3000EVB attached expect
+`ultrawidelock_uwb_adapter_create_reader failed` in its log; the Matter half is
+the half that matters here, and `make nrf-term` printing a pairing code is the
+check that it came up.
+
+One trap on the way: `make nrf-build` refuses with `integration patch set
+changed or HA mode differs` when the west workspace carries a different patch
+set than this tree expects. A worktree whose `workspace` is a symlink to the
+main checkout shares that state, so bootstrapping for one retargets it for all
+of them. `ULTRAWIDELOCK_WS=<path>` is read by both `scripts/bootstrap.sh` and
+`apps/nrf5340dk-lock/build.sh` and gives a worktree its own workspace instead.
+
+Prefer any in-repo peer to a commercial lock on the first run: a Nuki gives you
+a silent drop and no way to tell a rejection from a lost packet, while a board
+you built yourself can be instrumented at both ends at once, which is the
 entire point of a first run.
 
 ## Stage 0: build and flash
@@ -42,7 +72,7 @@ Two profiles carry the client, and for bringup you want the first:
 
 | build | client log level | fits by | what it is for |
 |---|---|---|---|
-| `make build CLIENT=1` | DBG | 1,929 B | the bench. Reads back why a bound lock did or did not open. |
+| `make build CLIENT=1` | DBG | 1,385 B | the bench. Reads back why a bound lock did or did not open. |
 | `make build CLIENT=1 RELEASE=1 SMP=1` | ERR (global level 1) | 8,288 B | what ships. mcumgr, DFU, signed. |
 
 The debug profile only fits because `overlay-client-debug.conf` applies

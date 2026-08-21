@@ -149,8 +149,13 @@ Measured on the `thread+release+smp+lto` image, client off against client on:
 
 | | off | on | delta | free after |
 |---|---:|---:|---:|---:|
-| flash | 400,332 | 414,628 | **+14,296** | 19,036 |
-| RAM | 114,792 | 117,352 | **+2,560** | 13,720 |
+| flash | 406,712 | 423,640 | **+16,928** | 8,288 |
+| RAM | 117,928 | 122,856 | **+4,928** | 8,216 |
+
+Flash free is measured against the 431,928 B slot MCUboot will sign, not the
+433,664 B linker region, which reports 10,024 B and would pass an image that
+cannot ship. 8,288 B clears the size gate's 8,192 B floor by 96 B, which is why
+the client build is the one to watch when anything grows.
 
 About 4 KB of the flash is OpenThread's DNS client, which a default build does
 not carry; the rest is the CASE initiator, the Interaction Model's outbound
@@ -164,10 +169,12 @@ Four limits, stated because none of them is visible from the outside:
 - **One target per unlock.** The table holds four and the first bound DoorLock
   target that resolves is the one that gets the command. Two locks bound means
   one of them opens.
-- **No MRP retransmission on the client's own messages.** A dropped Sigma1 or
-  invoke is caught by a five-second step timeout and retried as a whole
-  attempt, not by the reliable-messaging layer. The peer's messages *are*
-  acknowledged.
+- **The handshake retransmits, the interaction does not.** A dropped Sigma1 or
+  Sigma3 is resent on an MRP timer. Past `CASE ESTABLISHED` it is not: those
+  messages are sealed by `matter_exchange`, whose counters the client does not
+  own, so a lost invoke costs the whole attempt and the retry restarts from the
+  resolve rather than resuming. The peer's messages *are* acknowledged
+  throughout.
 - **A granted unlock expires after 8 seconds.** It is not retried until it
   succeeds; see the last row of the table below for why.
 - **The binding survives a reboot, and dies with its fabric.** It is stored in
