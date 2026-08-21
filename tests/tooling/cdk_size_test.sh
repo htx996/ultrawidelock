@@ -216,6 +216,74 @@ expect_exit 3 "$?" "a config mismatch outranks a floor violation"
 $CMP --baseline "$TMP/base.json" --current "$TMP/nope.json" >/dev/null 2>&1
 expect_exit 2 "$?" "a missing report is refused, not passed"
 
+# THE SIGNING BUDGET. The FLASH region is not the ceiling: the slot also holds
+# the image header, the signature TLVs and the boot trailer, and imgtool refuses
+# at sign time when the total does not fit. On this board that gap is 1,735 B,
+# so gating on the region passed images that could not ship -- MEASURED, when a
+# debug client image linked with room to spare and then would not sign.
+#
+# Flash used is held equal to the baseline in both cases below so the delta cap
+# cannot fire: what is under test is which ceiling the floor is measured from,
+# and a case that could fail for two reasons pins neither.
+mkflash() {
+	python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+out, flash_used, signing_free = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+ram_used, ram_size, flash_size = 124564, 131072, 433664
+flash = {"origin": 0xA200, "size": flash_size, "used": flash_used,
+         "free": flash_size - flash_used,
+         "pct": round(100 * flash_used / flash_size, 2)}
+# Absent for a report built without signed artifacts, which is why the gate has
+# to keep working without it.
+if signing_free:
+    budget = flash_used + int(signing_free)
+    flash["signing"] = {"size": budget, "used": flash_used,
+                        "free": int(signing_free),
+                        "pct": round(100 * flash_used / budget, 2)}
+json.dump({
+    "commit": "0" * 40,
+    "config": {
+        "board": "decawave_dwm3001cdk", "image": "firmware",
+        "extra_conf_file": "overlay-thread.conf;overlay-lto.conf",
+        "ncs_version": "3.3.0", "zephyr_version": "4.3.99",
+        "toolchain": "sha256:aaaa",
+        "kconfig": {"CONFIG_LTO": "y"},
+    },
+    "regions": {
+        "RAM": {"origin": 0x20000000, "size": ram_size, "used": ram_used,
+                "free": ram_size - ram_used,
+                "pct": round(100 * ram_used / ram_size, 2)},
+        "FLASH": flash,
+    },
+    "symbols": {"some_symbol": 128},
+    "gate": {"ram_free_floor": 4096, "flash_free_floor": 8192,
+             "ram_delta_cap": 2048, "flash_delta_cap": 8192},
+}, open(out, "w"))
+PY
+}
+
+# 23,024 B free in the region, comfortably over the 8,192 B floor -- and 4,000 B
+# free in the slot that actually has to hold it. The region figure must not be
+# the one that decides.
+mkflash "$TMP/unsignable.json" 410640 4000
+$CMP --baseline "$TMP/base.json" --current "$TMP/unsignable.json" >/dev/null 2>&1
+expect_exit 1 "$?" "an image that clears the region but not the slot is blocked"
+
+# And it must say which ceiling it used, or the next person re-measures the
+# wrong one: the number in the message is 4,000, not 23,024.
+$CMP --baseline "$TMP/base.json" --current "$TMP/unsignable.json" \
+	>"$TMP/unsignable.out" 2>&1
+grep -q "4,000 B free against what MCUboot accepts" "$TMP/unsignable.out"
+expect_exit 0 "$?" "the refusal names the ceiling it measured from"
+
+# Same image, no signed artifacts to measure: every baseline recorded before the
+# signing budget existed looks like this, as does every report above. Falling
+# back to the region keeps the gate available rather than making it stricter
+# than it can justify.
+mkflash "$TMP/nosign.json" 410640 ""
+$CMP --baseline "$TMP/base.json" --current "$TMP/nosign.json" >/dev/null 2>&1
+expect_exit 0 "$?" "a report without a signing budget falls back to the region"
+
 printf '\n── cdk size · one baseline file, one entry per configuration\n'
 
 # The shipping image (SMP=1 RELEASE=1, what `make release` builds) and the debug
