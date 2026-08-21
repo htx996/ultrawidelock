@@ -35,6 +35,14 @@ UNIT_SRCS=(
 	# where it stands describes the behaviour all three are supposed to have,
 	# without moving anything yet.
 	"$ROOT/apps/dwm3001cdk-lock-freertos/src/grant.c"
+	# App-layer for the same reason, and a sharper one. Everything the Matter
+	# client needs is a pure function in modules/ultrawidelock_matter and is tested
+	# there; this file is the part that SEQUENCES them, owns the one session
+	# and holds the clock. That sequencing is where its two known bugs were,
+	# neither of which any module test could have caught. It builds here
+	# because it asks the portable layers for the clock, the deferred work and
+	# the lock -- see tests/host/matterfake/ for the radio underneath it.
+	"$ROOT/apps/dwm3001cdk-lock/src/matter_client.c"
 	"$ROOT/modules/ultrawidelock_cred_stack/src/advertising_core.c"
 	"$ROOT/modules/ultrawidelock_cred_stack/src/protocol/ble_message.c"
 	"$ROOT/modules/ultrawidelock_cred_stack/src/protocol/ble_timeout.c"
@@ -165,6 +173,7 @@ TEST_SRCS=(
 	"$HOST/fr_replay.c"
 	"$HOST/test_ultrawidelock_ml.c"
 	"$HOST/test_ultrawidelock_port.c"
+	"$HOST/test_matter_client.c"
 )
 
 SHIM_SRCS=(
@@ -174,6 +183,7 @@ SHIM_SRCS=(
 	"$HOST/spakefake/spakefake.c"
 	# The host OSAL/flash backends double as the test fakes (ultrawidelock_osal.h).
 	"$ROOT/tests/host/port/osal_host.c"
+	"$ROOT/tests/host/matterfake/thread_host.c"
 	"$ROOT/tests/host/port/flash_host.c"
 )
 
@@ -206,6 +216,8 @@ INCS=(
 	-I"$ROOT/modules/ultrawidelock_dw3000/include"
 	# grant.h, still in the FreeRTOS app tree. See the note on UNIT_SRCS.
 	-I"$ROOT/apps/dwm3001cdk-lock-freertos/src"
+	# matter_client.h, in the Zephyr app tree. Same arrangement.
+	-I"$ROOT/apps/dwm3001cdk-lock/src"
 )
 
 # The credential path is Kconfig-gated in-tree; the normal build has it on.

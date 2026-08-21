@@ -105,6 +105,8 @@ void test_matter_case_client(void);
 void test_matter_client_sm(void);
 void test_matter_im_client(void);
 void test_matter_binding(void);
+/** The file that sequences the Matter client: order, ownership, failure. */
+void test_matter_client(void);
 void test_matter_clusters(void);
 void test_ultrawidelock_ml(void);
 void test_ultrawidelock_port(void);
