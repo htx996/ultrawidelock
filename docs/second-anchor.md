@@ -383,23 +383,40 @@ paired with the lock's own measurement of the SAME ranging block: what
 `pairjoin.py` did offline after the common-mode test, the lock now does on-board
 and live.
 
-THE MAC IS OUT OF THE RETURN PATH ONLY, and the distinction matters. Two links
-run in opposite directions and only one of them is finished:
+BOTH DIRECTIONS ARE ON THE SEALED LINK — 2026-08-21 11:08. Neither half needs a
+host any more:
 
-| Direction | Carries | Transport now |
+| Direction | Carries | Transport |
 |---|---|---|
-| satellite → lock | the measured distance + block | **sealed Thread UDP, on-board** |
-| lock → satellite | the session URSK, per session | **still the Mac** |
+| satellite → lock | the measured distance + block | sealed Thread UDP (WV3) |
+| lock → satellite | the session join parameters | sealed Thread UDP (WV4) |
 
-`modules/ultrawidelock_uwb/src/ccc/cherry_ccc_shim.c:314` logs `SAT-HANDOFF: sat join
-<ursk> ...` on RTT and a host script replays it into the satellite's shell. So a
-walk-up today still needs a laptop attached to both boards, and the URSK crosses
-in plaintext over a debug transport. Stage C removed the laptop from the half
-that decides; the half that keys the satellite is untouched and is the harder
-problem, because the URSK is derived per session inside the credential exchange
-and the satellite has no way to derive it independently.
+The handoff replaced a chain that was RTT print → host script → shell paste, so
+a walk-up needed a debugger on both boards and the URSK crossed in the clear on
+a debug transport. `CONFIG_ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG` still prints
+that line and is still bench-only; nothing depends on it now.
 
-Until that is solved this is a bench result, not a product one.
+Receipts, one walk-up with the injector provably not running:
+
+```
+lock       handoff sent to the second anchor (ctr 1)
+satellite  SAT joined from the sealed link sid=0x672da12d ch=9 code=9
+lock       32 anchor reports, 19 paired on (session, block)
+           median lock − anchor −30 mm, IQR −70..+20, sigma 61 mm
+```
+
+ONE KEY, TWO DIRECTIONS, so the CCM nonce spaces have to be disjoint by
+construction rather than by luck. The satellite writes its role in nonce byte 0
+and `examples/zephyr/satellite/Kconfig` bounds that to `range 1 3`; the lock
+writes 0xFF. If a role is ever widened past 3, `HANDOFF_NONCE_ROLE` in
+`witness_link.c` must move with it.
+
+OPEN, and NOT to be read as settled from one run: the satellite joined
+mid-approach, and `nresp=1` was 22 of 51 frames (57%) against 90% on the
+script-relayed run before it. The handoff fires at session start and Thread
+delivery costs some tens of ms, so it may systematically cost the first blocks
+— or this may be ordinary variation between two walk-ups of different lengths.
+One sample cannot tell those apart. Measure it before optimising it.
 
 | | |
 |---|---|
