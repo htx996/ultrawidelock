@@ -169,6 +169,12 @@ static uint32_t g_final_round2;
 static bool g_final_round_valid;
 #endif
 
+/* SP0 frames discarded for exceeding the stash. Deliberately NOT behind the
+ * bench-instrumentation ifdef: this counter being non-zero means we are deleting
+ * frames the initiator did send, which is a correctness signal on every build,
+ * not a diagnostic. */
+static volatile uint32_t g_dbg_sp0_oversize;
+
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 /* Bench instrumentation, read over J-Link (no logging => no ISR/timing impact).
  * Diagnoses the DS-TWR capture/consume pairing on the single-core CDK. */
@@ -304,9 +310,27 @@ static bool mhr_context_ok(const struct ccc_mhr_fields *mhr)
 	return true;
 }
 
+/**
+ * @brief Largest SP0 frame the shim will accept, DERIVED rather than guessed.
+ *
+ * MHR + Final_Data header + one record per responder + MIC + the two FCS bytes
+ * the driver counts in @c datalength (confirmed on air: a one-record Final_Data
+ * reads 58 = 23+18+7+8+2, not 56).
+ *
+ * This was a bare 64. A two-record Final_Data is 65, so it was discarded one
+ * byte over by the size gate below -- silently, with no counter and no log,
+ * before final_data_decode ever ran. On the bench that is indistinguishable
+ * from an initiator declining to send Final_Data once Response_1 goes out,
+ * which is exactly the observation stage B was built on. Sizing it from the
+ * constants stops the buffer falling behind CCC_MAX_RESPONDERS again.
+ */
+#define CCC_SP0_STASH_LEN                                                                          \
+	(CCC_MHR_LEN + CCC_FINAL_DATA_HDR_LEN + (CCC_MAX_RESPONDERS * CCC_RESPONDER_LEN) +          \
+	 CCC_SP0_MIC_LEN + 2u)
+
 /** @brief Pre-POLL frame stashed at RX for a DEFERRED decode: the ~2 ms decrypt+derive must not run
  * between the Pre-POLL and the POLL. */
-static uint8_t g_pp_stash[64];
+static uint8_t g_pp_stash[CCC_SP0_STASH_LEN];
 static uint16_t g_pp_stash_len;
 static bool g_pp_pending;
 
@@ -907,8 +931,17 @@ void ccc_shim_rx_try_prepoll(uint16_t datalength)
 	 * in dispatch order, so a host replay drives the identical entry point. */
 	fr_capture_ev((uint8_t)FR_EP_TRY_PREPOLL, 0u, datalength);
 
-	if (!ccc_shim_active() || datalength == 0u || datalength > sizeof(g_pp_stash)) {
+	if (!ccc_shim_active() || datalength == 0u) {
 		return; /* (the POLL event is gated out by the shim's await snapshot) */
+	}
+	if (datalength > sizeof(g_pp_stash)) {
+		/* Loud, always. This path silently ate two-responder Final_Datas for the
+		 * whole of stage B; a frame we discard must never again be mistakable for
+		 * a frame the initiator did not send. */
+		g_dbg_sp0_oversize++;
+		DIAGK("SP0 OVERSIZE len=%u cap=%u DROPPED\n", (unsigned)datalength,
+		      (unsigned)sizeof(g_pp_stash));
+		return;
 	}
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 	g_dbg_try_prepoll_n++;
