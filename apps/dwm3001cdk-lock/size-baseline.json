@@ -4,7 +4,7 @@
   "baselines": {
     "thread+lto": {
       "schema": 1,
-      "commit": "10cc3f77bbe46d9f9bd53cce93089b05136ecd4f",
+      "commit": "d89b309413c43fb9126e4ee4300e95ca635507f7",
       "config": {
         "board": "decawave_dwm3001cdk",
         "image": "dwm3001cdk-lock",
@@ -32,7 +32,17 @@
           "pct": 97.62,
           "used_by_sections": 415568,
           "load_images": 7756,
-          "padding": 8
+          "padding": 8,
+          "signing": {
+            "slot": 434176,
+            "trailer": 1584,
+            "align": 4,
+            "image_overhead": 663,
+            "budget": 431929,
+            "used": 423332,
+            "free": 8597,
+            "pct": 98.01
+          }
         },
         "RAM": {
           "origin": 536870912,
@@ -1621,7 +1631,7 @@
     },
     "thread+release+smp+lto": {
       "schema": 1,
-      "commit": "10cc3f77bbe46d9f9bd53cce93089b05136ecd4f",
+      "commit": "d89b309413c43fb9126e4ee4300e95ca635507f7",
       "config": {
         "board": "decawave_dwm3001cdk",
         "image": "dwm3001cdk-lock",
@@ -1649,7 +1659,17 @@
           "pct": 93.79,
           "used_by_sections": 398756,
           "load_images": 7948,
-          "padding": 8
+          "padding": 8,
+          "signing": {
+            "slot": 434176,
+            "trailer": 1584,
+            "align": 4,
+            "image_overhead": 664,
+            "budget": 431928,
+            "used": 406712,
+            "free": 25216,
+            "pct": 94.16
+          }
         },
         "RAM": {
           "origin": 536870912,
@@ -1701,7 +1721,7 @@
         ".last_section": 4
       },
       "artifact": {
-        "merged_hex_bytes": 1212184,
+        "merged_hex_bytes": 1212180,
         "partitions": {
           "app": {
             "address": 41472,
@@ -1752,7 +1772,7 @@
             "size": 131072
           }
         },
-        "signed_hex_bytes": 1120408
+        "signed_hex_bytes": 1120404
       },
       "symbol_floor": 64,
       "symbols": {
@@ -3257,7 +3277,7 @@
     },
     "thread+release+smp+lto+client": {
       "schema": 1,
-      "commit": "10cc3f77bbe46d9f9bd53cce93089b05136ecd4f",
+      "commit": "d89b309413c43fb9126e4ee4300e95ca635507f7",
       "config": {
         "board": "decawave_dwm3001cdk",
         "image": "dwm3001cdk-lock",
@@ -3280,33 +3300,43 @@
         "FLASH": {
           "origin": 41472,
           "size": 433664,
-          "used": 422604,
-          "free": 11060,
-          "pct": 97.45,
-          "used_by_sections": 413012,
-          "load_images": 9588,
-          "padding": 4
+          "used": 423640,
+          "free": 10024,
+          "pct": 97.69,
+          "used_by_sections": 414104,
+          "load_images": 9540,
+          "padding": -4,
+          "signing": {
+            "slot": 434176,
+            "trailer": 1584,
+            "align": 4,
+            "image_overhead": 664,
+            "budget": 431928,
+            "used": 423640,
+            "free": 8288,
+            "pct": 98.08
+          }
         },
         "RAM": {
           "origin": 536870912,
           "size": 131072,
-          "used": 122600,
-          "free": 8472,
-          "pct": 93.54,
-          "used_by_sections": 122547,
+          "used": 122856,
+          "free": 8216,
+          "pct": 93.73,
+          "used_by_sections": 122807,
           "load_images": 0,
-          "padding": 53
+          "padding": 49
         }
       },
       "sections": {
-        "text": 380156,
-        "bss": 62303,
+        "text": 381228,
+        "bss": 62611,
         "noinit": 49448,
-        "rodata": 30896,
-        "datas": 8536,
+        "rodata": 30908,
+        "datas": 8488,
         "_RTT_SECTION_NAME": 1208,
         "net_buf_pool_area": 624,
-        "log_const_area": 480,
+        "log_const_area": 488,
         "device_area": 392,
         "initlevel": 304,
         "rom_start": 256,
@@ -3337,7 +3367,7 @@
         ".last_section": 4
       },
       "artifact": {
-        "merged_hex_bytes": 1255910,
+        "merged_hex_bytes": 1258750,
         "partitions": {
           "app": {
             "address": 41472,
@@ -3388,7 +3418,7 @@
             "size": 131072
           }
         },
-        "signed_hex_bytes": 1164134
+        "signed_hex_bytes": 1166974
       },
       "symbol_floor": 64,
       "symbols": {
@@ -3418,8 +3448,8 @@
         "_ZN2ot12TimerMilliInINS_3Mle3MleEXadL_ZNS2_17HandleAttachTimerEvEEE11HandleTimerERNS_5TimerE": 780,
         "_ZN2ot12TimerMilliInINS_3Mle3MleEXadL_ZNS2_26HandleDelayedResponseTimerEvEEE11HandleTimerERNS_5TimerE": 176,
         "_ZN2ot12TimerMilliInINS_3Mle3MleEXadL_ZNS2_30HandleMessageTransmissionTimerEvEEE11HandleTimerERNS_5TimerE": 172,
-        "_ZN2ot12TimerMilliInINS_3Srp6ClientEXadL_ZNS2_11HandleTimerEvEEE11HandleTimerERNS_5TimerE": 508,
-        "_ZN2ot12TimerMilliInINS_5Utils10PingSenderEXadL_ZNS2_11HandleTimerEvEEE11HandleTimerERNS_5TimerE": 340,
+        "_ZN2ot12TimerMilliInINS_3Srp6ClientEXadL_ZNS2_11HandleTimerEvEEE11HandleTimerERNS_5TimerE": 516,
+        "_ZN2ot12TimerMilliInINS_5Utils10PingSenderEXadL_ZNS2_11HandleTimerEvEEE11HandleTimerERNS_5TimerE": 348,
         "_ZN2ot12TimerMilliInINS_5Utils5SlaacEXadL_ZNS2_11HandleTimerEvEEE11HandleTimerERNS_5TimerE": 92,
         "_ZN2ot12TrickleTimer11HandleTimerERNS_5TimerE": 116,
         "_ZN2ot12TrickleTimer16StartNewIntervalEv": 70,
@@ -3453,11 +3483,11 @@
         "_ZN2ot3Dns6Client16PopulateResponseERNS1_8ResponseERNS_7MessageERKS4_": 188,
         "_ZN2ot3Dns6Client26ResolveHostAddressIfNeededERNS_7MessageERKS2_": 192,
         "_ZN2ot3Dns6Client32ReplaceWithSeparateSrvTxtQueriesERNS_7MessageE": 214,
-        "_ZN2ot3Dns6Client9SendQueryERNS_7MessageERNS1_9QueryInfoEb": 384,
+        "_ZN2ot3Dns6Client9SendQueryERNS_7MessageERNS1_9QueryInfoEb": 392,
         "_ZN2ot3Ip63Ip610PassToHostERNS_8OwnedPtrINS_7MessageEEERKNS0_6HeaderEhbNS3_9OwnershipE": 608,
         "_ZN2ot3Ip63Ip612AddMplOptionERNS_7MessageERNS0_6HeaderE": 188,
         "_ZN2ot3Ip63Ip612SendDatagramERNS_7MessageERNS0_11MessageInfoEh": 596,
-        "_ZN2ot3Ip63Ip614HandleDatagramENS_8OwnedPtrINS_7MessageEEEb": 2398,
+        "_ZN2ot3Ip63Ip614HandleDatagramENS_8OwnedPtrINS_7MessageEEEb": 2406,
         "_ZN2ot3Ip63Udp4BindERNS1_12SocketHandleERKNS0_8SockAddrENS0_15NetifIdentifierE": 114,
         "_ZN2ot3Ip63Udp6SendToERNS1_12SocketHandleERNS_7MessageERKNS0_11MessageInfoE": 230,
         "_ZN2ot3Ip63Udp6Socket5CloseEv": 92,
@@ -3491,8 +3521,8 @@
         "_ZN2ot3Mac7RxFrame20ProcessReceiveAesCcmERKNS0_10ExtAddressERKNS0_11KeyMaterialE": 238,
         "_ZN2ot3Mac7TxFrame21ProcessTransmitAesCcmERKNS0_10ExtAddressE": 226,
         "_ZN2ot3Mle3Mle12SendAnnounceEhRKNS_3Ip67AddressENS1_12AnnounceModeE": 160,
-        "_ZN2ot3Mle3Mle13NewMleMessageENS1_7CommandE": 150,
-        "_ZN2ot3Mle3Mle13SetStateChildEt": 288,
+        "_ZN2ot3Mle3Mle13NewMleMessageENS1_7CommandE": 160,
+        "_ZN2ot3Mle3Mle13SetStateChildEt": 296,
         "_ZN2ot3Mle3Mle14BecomeDetachedEv": 72,
         "_ZN2ot3Mle3Mle16HandleLeaderDataERNS1_6RxInfoE": 376,
         "_ZN2ot3Mle3Mle16SetStateDetachedEv": 88,
@@ -3686,6 +3716,7 @@
         "alloc_chunk": 114,
         "apply_provisioned_adv_params": 140,
         "approach": 232,
+        "arm_retransmit": 160,
         "async_start": 90,
         "att_chan_read": 292,
         "att_create_rsp_pdu": 80,
@@ -3712,7 +3743,7 @@
         "attr_smp_bt_svc": 80,
         "attr_status": 244,
         "attr_ultrawidelock_svc": 100,
-        "attr_value": 2488,
+        "attr_value": 2508,
         "attr_write": 1082,
         "base_point": 64,
         "begin_at": 132,
@@ -3790,7 +3821,7 @@
         "bus_fault": 200,
         "c1_write": 880,
         "cad_mark": 80,
-        "case_drop_fabric": 172,
+        "case_drop_fabric": 180,
         "case_status_report": 176,
         "cb": 96,
         "cbc_mac_update": 164,
@@ -3810,7 +3841,7 @@
         "cert_verify": 252,
         "chan_send": 208,
         "cherry_session_start": 400,
-        "choose_target": 296,
+        "choose_target": 252,
         "clear_identity": 84,
         "clk_init": 80,
         "clkstarted_handle": 76,
@@ -3863,7 +3894,7 @@
         "dly_rx_all_ongoing_abort": 68,
         "dly_rx_result_notify": 132,
         "dly_ts_release": 70,
-        "drop_session": 88,
+        "drop_session": 128,
         "dw3000_hw_isr_work_handler": 68,
         "dw3000_hw_wakeup": 108,
         "dw3000_isr_wq": 160,
@@ -3941,6 +3972,7 @@
         "gpio_pin_interrupt_configure_dt": 144,
         "gpiote_input_configure": 372,
         "handle_event_common": 72,
+        "handle_sigma2": 2212,
         "handlers": 216,
         "has_cluster": 76,
         "hci_cmd_done": 236,
@@ -4044,25 +4076,23 @@
         "matter_attest_sign_with_challenge": 84,
         "matter_binding_forget_fabric": 128,
         "matter_ble_init": 76,
-        "matter_case_client_sigma2_decode": 268,
         "matter_case_destination_id": 174,
-        "matter_case_sigma1_decode": 282,
         "matter_cert_parse": 336,
         "matter_client_sm_failed": 64,
         "matter_clusters_failsafe_expire": 158,
         "matter_clusters_record_lock_operation": 140,
         "matter_commission_ble_tx_complete": 100,
-        "matter_commission_init": 2444,
+        "matter_commission_init": 2600,
         "matter_crypto_seal": 184,
         "matter_derive_session_keys": 140,
         "matter_exchange_ack_initiator": 188,
-        "matter_exchange_promote": 86,
         "matter_exchange_recv_in_place": 626,
         "matter_fabric_compressed_id": 96,
         "matter_fabric_instance_name": 104,
         "matter_im_read_pool_find": 68,
         "matter_im_status_response_decode": 124,
         "matter_im_status_response_encode": 96,
+        "matter_mrp_backoff_ms": 140,
         "matter_msg_header_decode": 162,
         "matter_msg_header_encode": 152,
         "matter_proto_header_decode": 122,
@@ -4071,8 +4101,8 @@
         "matter_spake2p_N": 65,
         "matter_thread_attached_to": 68,
         "matter_thread_clear": 356,
-        "matter_thread_on_datagram_owned": 7336,
-        "matter_thread_send_to": 228,
+        "matter_thread_on_datagram_owned": 5928,
+        "matter_thread_send_to": 236,
         "matter_thread_start": 796,
         "matter_tlv_end_container": 72,
         "matter_tlv_exit": 80,
@@ -4109,6 +4139,7 @@
         "net_buf_data_s_coc_tx_pool": 1046,
         "net_buf_data_s_dfu_rx_pool": 267,
         "net_buf_data_sync_evt_pool": 258,
+        "next_wake_ms": 120,
         "notify_cb": 264,
         "notify_core": 136,
         "notify_lock_state": 468,
@@ -4267,11 +4298,11 @@
         "on_connected": 88,
         "on_data": 118,
         "on_disconnected": 340,
-        "on_message_owned": 2216,
+        "on_message_owned": 2324,
         "on_preconditions_approved": 74,
         "on_resolved": 64,
         "on_rx_prestarted_timeout": 88,
-        "on_secure": 4120,
+        "on_secure": 4144,
         "on_ultrawidelock_lock_state": 76,
         "on_ultrawidelock_reader_config": 80,
         "opcred_command": 1590,
@@ -4307,7 +4338,7 @@
         "pinctrl_apply_state": 948,
         "plain_text_data_get": 68,
         "pm_flash_map": 112,
-        "poll_work_fn": 1764,
+        "poll_work_fn": 1988,
         "pred_abort": 64,
         "prepoll_apply_phy": 1044,
         "prepoll_decode": 992,
@@ -4421,6 +4452,7 @@
         "s_reads": 720,
         "s_rebuild": 768,
         "s_regs": 660,
+        "s_rtx": 212,
         "s_rx": 188,
         "s_rx_buf": 1024,
         "s_scratch": 1024,
@@ -4770,14 +4802,14 @@
         "tx_notify_process": 96,
         "tx_processor": 988,
         "tx_publish": 176,
-        "tx_thread_finish": 352,
+        "tx_thread_finish": 280,
         "tx_thread_reap_expired": 120,
         "tx_thread_reap_schedule_owned": 132,
         "tx_thread_retry": 184,
         "tx_timeslot_started_callback": 88,
         "uart_nrfx_init": 424,
         "uart_nrfx_poll_out": 120,
-        "udp_reply_send": 196,
+        "udp_reply_send": 200,
         "udp_rx": 148,
         "ull_adjust_tx_power": 384,
         "ull_aon_read": 68,
@@ -4910,20 +4942,20 @@
         "zcbor_map_decode_bulk": 392
       },
       "reports": {
-        "ram": 122559,
-        "rom": 422576,
+        "ram": 122819,
+        "rom": 423620,
         "error": null
       },
       "crosscheck": {
         "ram": {
-          "regions": 122600,
-          "ram_report": 122559,
-          "delta": 41
+          "regions": 122856,
+          "ram_report": 122819,
+          "delta": 37
         },
         "rom": {
-          "regions": 422604,
-          "rom_report": 422576,
-          "delta": 28
+          "regions": 423640,
+          "rom_report": 423620,
+          "delta": 20
         }
       },
       "gate": {
