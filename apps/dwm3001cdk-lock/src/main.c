@@ -1209,6 +1209,15 @@ int main(void)
 				tg_until = now + 20000;
 				LOG_INF("toggle window open");
 			}
+			/* A committed INSIDE also refreshes the window: stepping
+			 * back out is the third stationary case the bench needs
+			 * decided, and without this it had no unlock path at
+			 * all until iOS recycled the session (~30 s). While
+			 * INSIDE holds, the gate below refuses anyway; the
+			 * refresh only matters once the verdict flips. */
+			if (side_dec.side == ULTRAWIDELOCK_SIDE_LABEL_INSIDE) {
+				tg_until = now + 20000;
+			}
 			if (!granted && tg_until != 0 && now < tg_until && session_now &&
 			    latch_cred != LATCH_CRED_NONE &&
 			    ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)) {
