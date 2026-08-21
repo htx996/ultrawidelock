@@ -192,3 +192,76 @@ bool ultrawidelock_witness_seen_accept(struct ultrawidelock_witness_seen *seen,
 	seen->have = true;
 	return true;
 }
+
+/* ── WV3: the second anchor's report ─────────────────────────────────────── */
+
+bool ultrawidelock_msg_is_anchor(const uint8_t *buf, size_t len)
+{
+	return buf != NULL && len >= 1u && buf[0] == ULTRAWIDELOCK_ANCHOR_MSG_VER;
+}
+
+size_t ultrawidelock_anchor_msg_encode(const struct ultrawidelock_anchor_msg *msg, uint8_t *buf,
+				       size_t cap)
+{
+	uint8_t *p;
+
+	if (msg == NULL || buf == NULL) {
+		return 0;
+	}
+	if (!role_known(msg->role)) {
+		return 0;
+	}
+	if (cap < ULTRAWIDELOCK_ANCHOR_MSG_LEN) {
+		return 0;
+	}
+
+	p = buf;
+	*p++ = ULTRAWIDELOCK_ANCHOR_MSG_VER;
+	*p++ = msg->role;
+	put_u32(p, msg->boot_id);
+	p += 4;
+	put_u32(p, msg->ctr);
+	p += 4;
+	put_u64(p, msg->echo_nonce);
+	p += 8;
+	put_u16(p, msg->ranging_block);
+	p += 2;
+	put_u32(p, (uint32_t)msg->peer_mm);
+	return ULTRAWIDELOCK_ANCHOR_MSG_LEN;
+}
+
+bool ultrawidelock_anchor_msg_decode(const uint8_t *buf, size_t len,
+				     struct ultrawidelock_anchor_msg *out)
+{
+	const uint8_t *p;
+
+	if (buf == NULL || out == NULL) {
+		return false;
+	}
+	if (buf[0] != ULTRAWIDELOCK_ANCHOR_MSG_VER) {
+		return false;
+	}
+	/* Exact, not "at least": a WV3 report is fixed width, so a length that
+	 * disagrees means the sender and this decoder disagree about the format,
+	 * and guessing which of them is right is how a wrong distance gets fused. */
+	if (len != ULTRAWIDELOCK_ANCHOR_MSG_LEN) {
+		return false;
+	}
+	if (!role_known(buf[1])) {
+		return false;
+	}
+
+	p = buf;
+	out->ver = *p++;
+	out->role = *p++;
+	out->boot_id = get_u32(p);
+	p += 4;
+	out->ctr = get_u32(p);
+	p += 4;
+	out->echo_nonce = get_u64(p);
+	p += 8;
+	out->ranging_block = get_u16(p);
+	p += 2;
+	out->peer_mm = (int32_t)get_u32(p);
+	return true;
+}

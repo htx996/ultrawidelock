@@ -198,6 +198,72 @@ struct ultrawidelock_witness_seen {
 bool ultrawidelock_witness_seen_accept(struct ultrawidelock_witness_seen *seen,
 				       const struct ultrawidelock_witness_msg *msg);
 
+/* ── WV3: the second anchor's report ─────────────────────────────────────── */
+
+/**
+ * A second UWB anchor's own measured distance to the phone, carried on the same
+ * sealed link, socket and key store as the WV2 witness reports. It lives beside
+ * WV2 because the leading version byte is ONE namespace and only one decoder
+ * may own it.
+ *
+ * The first 18 bytes mean exactly what they mean in WV2 -- ver, role, boot_id,
+ * ctr, echo_nonce -- and that is deliberate: the link's replay window and
+ * challenge-echo check read precisely those fields, so an anchor inherits both
+ * without a second implementation of either.
+ *
+ * The tail is what a BLE witness could never supply: a real distance, and the
+ * ranging BLOCK it was measured in.
+ */
+#define ULTRAWIDELOCK_ANCHOR_MSG_VER 3u
+
+/** ver, role, boot_id, ctr, echo_nonce, ranging_block, peer_mm. */
+#define ULTRAWIDELOCK_ANCHOR_MSG_LEN 24u
+
+/** One decoded anchor report. Caller-owned; the codec allocates nothing. */
+struct ultrawidelock_anchor_msg {
+	uint8_t ver;
+	uint8_t role; /**< enum ultrawidelock_witness_role: which side this anchor is on */
+	uint32_t boot_id;
+	uint32_t ctr;
+	uint64_t echo_nonce;
+	/**
+	 * The initiator's own block index this distance was measured in.
+	 *
+	 * This is the timebase alignment ultrawidelock_satellite.h says stage C
+	 * owes, and it is better than the ns-grade time transfer that phrasing
+	 * implies. Pairing two anchors does not need a shared clock; it needs to
+	 * know the two readings describe the same instant. The block index is a
+	 * shared EXACT integer both anchors read off the initiator's frames, so
+	 * equality is decidable rather than estimated, and a matched pair is
+	 * same-round by construction instead of by the caller's good intentions.
+	 */
+	uint16_t ranging_block;
+	/**
+	 * Distance from this anchor to the phone, millimetres. Transported
+	 * faithfully including implausible values: validation belongs to the
+	 * consumer, so that a decode fault cannot disguise itself as a link that
+	 * merely went stale.
+	 */
+	int32_t peer_mm;
+};
+
+/** @return bytes written (ULTRAWIDELOCK_ANCHOR_MSG_LEN), or 0 if malformed or @p cap too small. */
+size_t ultrawidelock_anchor_msg_encode(const struct ultrawidelock_anchor_msg *msg, uint8_t *buf,
+				       size_t cap);
+
+/** @return true on a well-formed WV3 report of exactly the expected length. */
+bool ultrawidelock_anchor_msg_decode(const uint8_t *buf, size_t len,
+				     struct ultrawidelock_anchor_msg *out);
+
+/**
+ * Which report is this, without committing to decoding it?
+ *
+ * The link demultiplexes on the version byte before choosing a decoder, so it
+ * needs this much and no more from a buffer that has been unsealed but not yet
+ * parsed.
+ */
+bool ultrawidelock_msg_is_anchor(const uint8_t *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif
