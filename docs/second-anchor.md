@@ -394,12 +394,30 @@ Deferred until the board exists; nothing above depends on it.
 
 ## Risks
 
-- Stage B's acceptance question is CLOSED, negative (2026-08-21): a stock
-  iPhone will not report a second responder. The live risk moved to stage B',
-  where it is smaller and lives in our own code -- the K-consecutive trust
-  layer over silent blocks, and whether the phone tolerates an alternating
-  range. TDoA remains behind B' and is still strictly harder: it needs
-  ns-grade cross-anchor time transfer for a worse measurement.
+- Stage B's acceptance question is CLOSED, POSITIVE (2026-08-21 06:25): a stock
+  iPhone does report a second responder, `nresp=2` across 47 frames. The earlier
+  negative in this same list was our own 64-byte stash discarding the 65-byte
+  two-record frame. B', B'' and TDoA are all retired by it.
+- The live risk is now in stage C, and it is pairing rather than acceptance.
+  Two anchors only mean something together if their distances describe the SAME
+  ranging block, which is why the report carries one and the verdict enforces
+  equality. One block of slack is 192 mm at 1.0 m/s against `tol_mm` 90, so the
+  temptation to widen the match when reports arrive late must be refused -- that
+  is the same arithmetic that killed B'.
+- Deciding on ONE stored range means a report that arrives even one block late
+  has nothing to match. `stale_ms` 1500 already permits 7.8 blocks, so a short
+  ring of `(block, mm)` is the shape that fits the window we allow.
+- The satellite's distance is not trust-gated. Ours passes
+  `FIRA_RANGE_TRUST_K` = 3 consecutive agreeing blocks; nothing equivalent
+  guards the peer's. It fails safe -- a bad peer reading withholds, so the door
+  stays shut -- but that is a usability failure that will get blamed on fusion
+  rather than on the missing gate.
+- Level shifts between conditions (2026-08-21, four tight clusters hundreds of
+  mm apart at one nominal distance) matter less here than first feared: the
+  verdict reads `sign(d_inside - d_outside)`, so a COMMON-MODE shift cancels
+  exactly and only a differential one hurts. Stage C is the instrument that
+  separates the two, since a same-round pair on one phone has never been taken.
+  It becomes a hard gate at stage D, where the verdict starts moving a bolt.
 - `N_Resp` is baked into key derivation, so lock and satellite builds must
   agree and the setting applies from session establishment — a mid-session
   change desyncs every derived key (known, documented at the knob).
