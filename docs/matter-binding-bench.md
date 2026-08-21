@@ -112,42 +112,79 @@ diagnosis:
 | `UnlockDoor out: endpoint n` | the command is on the air | the peer's ACL. `UNSUPPORTED_ACCESS` is the expected answer to a missing entry |
 | `the bound lock UNLOCKED` | it worked | stop reading |
 
-## The two things most likely to be wrong
+## What is most likely to be wrong
 
-Ranked, and both are deliberate deviations rather than oversights. Two further
-faults were found by reading the driver against this list and have since been
-fixed; they are described at the end so that a capture showing their signature
-is recognised rather than re-diagnosed.
+Ranked. Both of the deviations this list used to lead with have since been
+settled: one was checked against CHIP's own source and is not a blocker, the
+other has been implemented. What remains is thinner than it was, which is the
+point of having looked.
 
-### 1. The Sigma1 source node id
+### 1. Nothing here has ever met a real peer
+
+The honest top entry. Every stage below Stage 2 is exercised only against a
+host double, and the CASE initiator has never had a cryptographically valid
+Sigma2 put in front of it by another implementation. The parts that are tested
+are tested well; they have simply never been wrong in company.
+
+**Signature:** anything. This is the entry that says the first run is an
+experiment, not a verification.
+
+### 2. An outstanding DNS-SD query blocks the next attempt
+
+`matter_thread_resolve()` refuses a second query while one is outstanding, and
+nothing in the client can cancel one. So an attempt that times out after
+`MATTER_CLIENT_STEP_MS` can leave a query behind that stops the NEXT attempt
+from even starting. How long that lasts is OpenThread's business, not this
+node's, which is why it cannot be pinned down off hardware.
+
+**Signature:** the first walk-up produces `resolving`, and a second walk-up a
+few seconds later produces nothing at all -- no log line, no datagram. It comes
+back on its own once the query completes.
+
+**Covered by a test** (`a query still outstanding blocks the next attempt`), so
+the behaviour is known and bounded rather than surprising; what is unknown is
+the duration on a real mesh.
+
+### 3. The Sigma1 source node id -- checked, and NOT a blocker
 
 This node puts its **operational** node id in the message header's source field
-rather than a random ephemeral one. That is deliberate and documented in
-`matter_client.c`, and it is the single place the implementation knowingly
-differs from what CHIP does.
+rather than a random ephemeral one, which is a real deviation from what CHIP
+does. It was ranked first here until it was checked against CHIP's source, and
+it does not survive that check as a failure mode:
 
-**Signature:** `Sigma1 out` repeating on the backoff schedule with no `Sigma2`
-ever. A peer that validates the source against its fabric table before checking
-the destination identifier drops it without answering, so it looks exactly like
-the packet never arrived.
+- CHIP generates its ephemeral initiator node id as a random 64-bit value
+  **constrained to the operational node id range**
+  (`SessionManager::CreateUnauthenticatedSession`), so the value this node sends
+  is indistinguishable in form from the value CHIP sends.
+- The responder uses it as an opaque key to find or allocate an unauthenticated
+  session (`SessionManager::OnMessageReceived` -> `FindOrAllocateResponder`) and
+  validates nothing about it beyond its presence.
 
-**How to tell it apart from a lost packet:** the peer's console. If the ESP32
-logs a received datagram and no Sigma2, it is a rejection. If it logs nothing,
-it is routing.
+So a CHIP-based peer will not reject a Sigma1 over this. What the deviation
+does cost is **privacy**: the value is stable rather than per-session, so any
+passive Thread observer can link every handshake this node makes to one
+identity. Worth fixing eventually; not worth suspecting on the bench.
 
-### 2. No retransmit on the outbound path
+### 4. Retransmission -- now implemented for the handshake
 
-MRP is not wired on anything this node originates. A dropped Sigma1 or
-TimedRequest is not resent; the whole attempt times out after
-`MATTER_CLIENT_STEP_MS` and starts again.
+A dropped Sigma1 or Sigma3 is resent on an MRP timer rather than costing the
+whole `MATTER_CLIENT_STEP_MS`. The first resend lands at roughly four times
+`MATTER_MRP_IDLE_INTERVAL_MS`, because the deadline carries MRP's margin and
+backoff multipliers.
 
-**Signature:** intermittent success that correlates with mesh quality, and
-retries that always restart from `resolving` rather than resuming.
+The **interaction** past the session is still not covered: those messages are
+sealed by `matter_exchange`, whose counters `matter_client.c` does not own.
 
-## Two faults already fixed, and their signatures
+**Signature of the remaining gap:** intermittent failure after
+`CASE ESTABLISHED`, correlating with mesh quality, where the retry restarts
+from `resolving` rather than resuming the invoke.
+
+## Faults already fixed, and their signatures
 
 Listed so that a capture showing one of these is read as a regression rather
-than diagnosed from scratch.
+than diagnosed from scratch. The first two were found by reading the driver;
+the last three by putting it under test, which is the argument for having done
+so -- none of them were reachable from a test of the modules underneath.
 
 ### A retransmitted StatusReport with nowhere to go
 
@@ -170,13 +207,51 @@ down. Intermittent, so it presents as "works sometimes".
 left it addressing valid memory describing nothing. The Sigma1 path tested it
 for NULL, which a cleared slot is not.
 
-It is tested for liveness now, by comparing the pointer against a fresh lookup
-by index, and an attempt whose administrator has gone is dropped rather than
-signed with a zeroed key.
+It is tested for liveness now -- a fresh lookup by index, the slot still
+committed, AND the fabric id unchanged -- and an attempt whose administrator has
+gone is dropped rather than signed with a zeroed key. The fabric id matters
+because a slot is an array position: an administrator removed and another
+commissioned into the same position gives back the very same pointer with the
+same index, describing somebody else. The check is also made on the inbound
+path, which runs from the receive callback and therefore ahead of the poll that
+would otherwise notice.
 
 **Signature if it returns:** only after removing an administrator without
 rebooting. A Sigma1 refused by everything, with the log naming a fabric that is
-no longer there.
+no longer there. In the reused-slot form: an unlock sent on behalf of an
+administrator that was removed, which is the worst outcome on this page.
+
+### A handshake the schedule had given up on, still holding its exchange
+
+`matter_client_sm_poll()` leaves the Sigma1 state on its own deadline and says
+nothing to anybody, because it has no clock and no opinion about what its caller
+is holding. Nothing cleared the client's handshake flag, so an abandoned attempt
+kept its ephemeral private key and its transcript in RAM indefinitely, kept its
+exchange id claimed against every inbound unsecured message, and would open a
+Sigma2 that arrived long afterwards as though somebody were still waiting.
+
+**Signature if it returns:** `CASE ESTABLISHED` appearing with no walk-up behind
+it, minutes after a failed attempt. Also a Sigma1 addressed to THIS node being
+silently dropped, because the client is still claiming an exchange id it should
+have released.
+
+### The retransmit timer dropped by any inbound message
+
+Introduced and caught in the same sitting, and worth recording because the shape
+recurs: the retransmission deadline was folded into the timer in the poll only,
+while two other paths re-arm the same timer when a datagram arrives. Any inbound
+message that did not acknowledge the outstanding one therefore re-armed from the
+schedule alone and silently cancelled the pending resend.
+
+**Signature if it returns:** resends that happen when the peer is silent and
+stop the moment it says anything at all.
+
+### `matter_client_init()` that did not initialise
+
+Init set up the lock and the pointers and left the session, handshake and
+handshake-linger state exactly as the previous run had them. Harmless on target,
+where it runs once, and fatal to any attempt to reason about the file's starting
+state.
 
 ## What to capture
 

@@ -46,6 +46,7 @@
 #include "matter_fabric.h"
 #include "matter_im.h"
 #include "matter_im_client.h"
+#include "matter_mrp.h"
 #include "matter_pase_sm.h"
 #include "matter_thread.h"
 #include "matter_tlv.h"
@@ -114,6 +115,9 @@ static bool s_session;
 
 /** Who this attempt is for, chosen from the binding table when it starts. */
 static const struct matter_fabric *s_fabric;
+/** The fabric id s_fabric carried when this attempt chose it; see
+ * fabric_still_held(), which cannot tell a reused slot from its address. */
+static uint64_t s_fabric_id;
 static uint64_t s_peer_node;
 static uint16_t s_peer_endpoint;
 static struct matter_thread_peer s_peer;
@@ -154,6 +158,25 @@ static uint32_t s_invoke_ms;
 static uint8_t s_tx[CLIENT_TX_MAX];
 
 /*
+ * Retransmission, for the half of this exchange the node ORIGINATES.
+ *
+ * matter_mrp.h explains why the responder side arms no timer, and names the
+ * condition that would change it: something which must arrive PROMPTLY and is
+ * not a reply. A Sigma1 sent because a person is standing at the door is
+ * exactly that. Without it a single dropped datagram costs the whole
+ * MATTER_CLIENT_STEP_MS -- five seconds out of a want worth eight -- so one
+ * loss very nearly spends the budget and two certainly do.
+ *
+ * The UNSECURED handshake only. Past the session the interaction is sealed by
+ * matter_exchange, whose message counters this file does not own; a loss there
+ * falls in a much shorter window, and the peer retransmits its own half of it
+ * regardless.
+ */
+static struct matter_mrp s_mrp;
+static uint8_t s_rtx[CLIENT_TX_MAX];
+static size_t s_rtx_len;
+
+/*
  * The resolve answer, handed over WITHOUT the lock.
  *
  * matter_thread_resolve()'s callback runs on OpenThread's thread with its API
@@ -188,6 +211,30 @@ static void poll_at(uint32_t delay_ms)
 		return;
 	}
 	(void)ultrawidelock_dwork_reschedule(&s_poll_work, (int32_t)delay_ms);
+}
+
+/**
+ * How long until this file next needs the CPU.
+ *
+ * The schedule's own deadline, or the handshake's next retransmission,
+ * whichever comes first. EVERY place that re-arms the poll has to use this:
+ * arming from the schedule alone silently drops a pending resend, and the
+ * places that re-arm are the inbound paths -- which is exactly where a message
+ * that did NOT acknowledge the outstanding one arrives.
+ */
+static uint32_t next_wake_ms(uint32_t now)
+{
+	uint32_t next = matter_client_sm_next_ms(&s_sm, now);
+	uint32_t due;
+
+	if (s_handshake && matter_mrp_next_deadline(&s_mrp, &due)) {
+		uint32_t in_ms = (int32_t)(due - now) > 0 ? (uint32_t)(due - now) : 0u;
+
+		if (in_ms < next) {
+			next = in_ms;
+		}
+	}
+	return next;
 }
 
 /* ---- the peer this attempt is for ------------------------------------------ */
@@ -238,6 +285,7 @@ static bool choose_target(void)
 			continue;
 		}
 		s_fabric = f;
+		s_fabric_id = f->fabric_id;
 		s_peer_node = t->node_id;
 		s_peer_endpoint = t->has_endpoint ? t->endpoint : 1u;
 		return true;
@@ -249,15 +297,45 @@ static bool choose_target(void)
  * Is the fabric this attempt was chosen for still one this node holds?
  *
  * s_fabric points INTO s_info->fabrics[], so a RemoveFabric that zeroes the
- * slot leaves it pointing at valid memory describing nothing. Comparing the
- * pointer against a fresh lookup by index catches that: a cleared slot has
- * index 0 and matches nothing, and a slot reused by a DIFFERENT administrator
- * returns a different address than the one this attempt chose.
+ * slot leaves it pointing at valid memory describing nothing. Looking the index
+ * up again catches that: a cleared slot has index 0 and matches nothing.
+ *
+ * The fabric id is checked as well, and the address is NOT enough on its own.
+ * A slot is an array position, so an administrator removed and another one
+ * commissioned into the same position gives back the very same pointer, with
+ * the same index, describing somebody else entirely. Address alone would call
+ * that "still held" and go on to unlock a door on behalf of an administrator
+ * this node was told to forget.
  */
 static bool fabric_still_held(void)
 {
 	return s_fabric != NULL && fabric_of(s_fabric->index) == s_fabric &&
-	       s_fabric->noc_len != 0u;
+	       s_fabric->noc_len != 0u && s_fabric->fabric_id == s_fabric_id;
+}
+
+/**
+ * Keep @p msg as the message awaiting an acknowledgement, and time its resend.
+ *
+ * Called after EVERY transmission including the first, which is what grows the
+ * backoff -- see matter_mrp_arm().
+ */
+static void arm_retransmit(const uint8_t *msg, size_t len, uint32_t counter, uint32_t now)
+{
+	uint8_t jitter = 0u;
+
+	if (len == 0u || len > sizeof(s_rtx)) {
+		/* Nothing that will not fit is worth half-keeping: the step
+		 * deadline still covers the message, one whole attempt at a
+		 * time, which is what happened before any of this existed. */
+		s_rtx_len = 0u;
+		return;
+	}
+	if (msg != s_rtx) {
+		memcpy(s_rtx, msg, len);
+	}
+	s_rtx_len = len;
+	(void)ultrawidelock_random(&jitter, sizeof(jitter));
+	(void)matter_mrp_arm(&s_mrp, counter, now, jitter);
 }
 
 /** Forget the session and the handshake's secrets, in that order. */
@@ -270,6 +348,8 @@ static void drop_session(void)
 	memset(&s_x, 0, sizeof(s_x));
 	memset(s_eph_priv, 0, sizeof(s_eph_priv));
 	memset(s_shared, 0, sizeof(s_shared));
+	matter_mrp_init(&s_mrp, MATTER_MRP_IDLE_INTERVAL_MS);
+	s_rtx_len = 0u;
 	matter_client_sm_session_lost(&s_sm);
 }
 
@@ -351,6 +431,8 @@ static bool send_sigma1(void)
 	/* A new handshake owns the exchange from here; whatever the last one was
 	 * still answering for is finished. */
 	s_hs_linger_until = 0u;
+	matter_mrp_init(&s_mrp, MATTER_MRP_IDLE_INTERVAL_MS);
+	s_rtx_len = 0u;
 	if (ultrawidelock_ec_p256_keygen(s_eph_priv, s_eph_pub) != 0 ||
 	    ultrawidelock_random(random, sizeof(random)) != 0 ||
 	    ultrawidelock_random((uint8_t *)&s_local_session, sizeof(s_local_session)) != 0 ||
@@ -400,6 +482,7 @@ static bool send_sigma1(void)
 		return false;
 	}
 	s_handshake = true;
+	arm_retransmit(s_tx, hdr + payload, s_counter, now_ms());
 	LOG_INF("Sigma1 out to node 0x%08x%08x, session 0x%04x",
 		(unsigned int)(s_peer_node >> 32), (unsigned int)s_peer_node,
 		(unsigned int)s_local_session);
@@ -793,13 +876,43 @@ static void poll_work_fn(struct ultrawidelock_dwork *w)
 	 * That last one is the expensive case -- it would install a session for
 	 * an unlock nobody asked for any more.
 	 */
+	/*
+	 * The handshake's retransmit. Only while one is outstanding: past the
+	 * session the interaction is matter_exchange's, and a timer still armed
+	 * from the handshake would resend a Sigma3 into an established session.
+	 */
+	if (s_handshake) {
+		uint32_t counter = 0u;
+
+		switch (matter_mrp_poll(&s_mrp, t, &counter)) {
+		case MATTER_MRP_RETRANSMIT:
+			if (s_rtx_len != 0u &&
+			    matter_thread_send_to(&s_peer, s_rtx, s_rtx_len) == MATTER_OK) {
+				LOG_INF("handshake message resent");
+				arm_retransmit(s_rtx, s_rtx_len, counter, t);
+			}
+			break;
+
+		case MATTER_MRP_GIVE_UP:
+			LOG_WRN("the bound lock never acknowledged the handshake");
+			drop_session();
+			matter_client_sm_failed(&s_sm, t);
+			break;
+
+		case MATTER_MRP_SEND_ACK:
+		case MATTER_MRP_IDLE:
+		default:
+			break;
+		}
+	}
+
 	if (s_handshake && s_sm.state != (uint8_t)MATTER_CLIENT_SIGMA1 &&
 	    s_sm.state != (uint8_t)MATTER_CLIENT_SIGMA3) {
 		LOG_INF("the bound lock never answered the handshake");
 		drop_session();
 	}
 
-	next = matter_client_sm_next_ms(&s_sm, now_ms());
+	next = next_wake_ms(now_ms());
 	ultrawidelock_mutex_unlock(&s_lock);
 	poll_at(next);
 }
@@ -819,6 +932,7 @@ void matter_client_init(struct matter_device_info *info)
 	 */
 	drop_session();
 	s_fabric = NULL;
+	s_fabric_id = 0u;
 	s_peer_node = 0u;
 	s_peer_endpoint = 0u;
 	s_peer.valid = false;
@@ -897,10 +1011,22 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 		return 0u;
 	}
 
+	/*
+	 * Every answer the peer sends acknowledges what it is answering, so this
+	 * is where a retransmit timer is nearly always cancelled -- a standalone
+	 * ack is the rare case, not the normal one.
+	 */
+	if ((ph->exchange_flags & MATTER_EX_FLAG_A) != 0u) {
+		(void)matter_mrp_on_ack(&s_mrp, ph->ack_counter);
+	}
+
 	if (ph->opcode == MATTER_OP_CASE_SIGMA2) {
 		matter_client_sm_sigma2(&s_sm, t);
 		out = handle_sigma2(payload, payload_len, mh, reply, cap);
 		if (out > 0u) {
+			/* The Sigma3 is handed back for the transport to send,
+			 * so this is the only place that can time it. */
+			arm_retransmit(reply, out, s_counter, t);
 			matter_client_sm_sent(&s_sm, t);
 		} else {
 			drop_session();
@@ -959,7 +1085,7 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 		}
 	}
 
-	next = matter_client_sm_next_ms(&s_sm, now_ms());
+	next = next_wake_ms(now_ms());
 	ultrawidelock_mutex_unlock(&s_lock);
 	poll_at(next);
 	return out;
@@ -1058,7 +1184,7 @@ size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t 
 		}
 	}
 
-	next = matter_client_sm_next_ms(&s_sm, now_ms());
+	next = next_wake_ms(now_ms());
 	ultrawidelock_mutex_unlock(&s_lock);
 	poll_at(next);
 	return out;

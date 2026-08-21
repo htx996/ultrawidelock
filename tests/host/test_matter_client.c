@@ -29,6 +29,8 @@
 #include "matter_case.h"
 #include "matter_client_sm.h"
 #include "matter_clusters.h"
+#include "matter_exchange.h"
+#include "matter_mrp.h"
 #include "matter_msg.h"
 #include "matter_tlv.h"
 #include "ultrawidelock_osal.h"
@@ -154,6 +156,40 @@ static uint8_t opcode_of(const struct matterfake_tx *tx)
 		return 0xFFu;
 	}
 	return ph.opcode;
+}
+
+/** The message counter in datagram @p tx, or 0 when it will not decode. */
+static uint32_t counter_of(const struct matterfake_tx *tx)
+{
+	struct matter_msg_header mh;
+	size_t mh_len = 0u;
+
+	if (tx == NULL || matter_msg_header_decode(tx->buf, tx->len, &mh, &mh_len) != MATTER_OK) {
+		return 0u;
+	}
+	return mh.message_counter;
+}
+
+/** Hand the client a bare acknowledgement for @p counter on exchange @p x. */
+static void deliver_ack(uint16_t x, uint32_t counter)
+{
+	struct matter_msg_header mh;
+	struct matter_proto_header ph;
+	uint8_t payload[4] = {0};
+	uint8_t reply[256];
+
+	memset(&mh, 0, sizeof(mh));
+	mh.session_id = MATTER_SESSION_ID_UNSECURED;
+	mh.message_counter = 0x1000u;
+
+	memset(&ph, 0, sizeof(ph));
+	ph.exchange_flags = MATTER_EX_FLAG_A;
+	ph.ack_counter = counter;
+	ph.opcode = MATTER_SC_OP_ACK;
+	ph.exchange_id = x;
+	ph.protocol_id = MATTER_PROTOCOL_SECURE_CHANNEL;
+
+	(void)matter_client_on_unsecured(payload, 0u, &mh, &ph, reply, sizeof(reply));
 }
 
 /** Drive a fresh client to the point where its Sigma1 has gone out. */
@@ -304,16 +340,23 @@ void test_matter_client(void)
 
 	t_group("a slot reused by a DIFFERENT administrator is not the same fabric");
 	{
-		T_OK("a Sigma1 is out", reach_sigma1(&info));
+		uint16_t x;
 
-		/* Same slot, same index, different administrator: the identity
-		 * check is by address AND liveness, not by index alone. */
+		T_OK("a Sigma1 is out", reach_sigma1(&info));
+		x = exchange_of(matterfake_last_tx());
+
+		/*
+		 * The same array position, still live, still index 1, but a
+		 * different administrator -- which is what RemoveFabric
+		 * followed by a fresh AddNOC leaves behind. The pointer is
+		 * unchanged, so identity cannot come from the address.
+		 */
 		info.fabrics[0].fabric_id = 0x9999999999999999ull;
 		info.fabrics[0].node_id = 0x00CAFE0000000001ull;
 
 		tick(MATTER_CLIENT_STEP_MS + 1u);
-		T_OK("the attempt does not silently continue on the new one",
-		     matterfake_tx_count() <= 2u);
+		T_OK("the attempt is dropped rather than inherited",
+		     !matter_client_owns_exchange(x));
 	}
 
 	t_group("a socket that is down does not wedge the client");
@@ -409,6 +452,70 @@ void test_matter_client(void)
 		tick(1u);
 		T_EQ("the stale answer does not produce a Sigma1", (long)matterfake_tx_count(),
 		     0L);
+	}
+
+	/*
+	 * Retransmission. The point is the GRANULARITY: without it a dropped
+	 * Sigma1 costs the whole MATTER_CLIENT_STEP_MS out of a want worth
+	 * MATTER_CLIENT_WANT_TTL_MS, so one loss nearly spends the budget.
+	 */
+	t_group("a Sigma1 nobody answers is resent inside the same attempt");
+	{
+		const struct matterfake_tx *first;
+		const struct matterfake_tx *again;
+		uint8_t saved[1024];
+		size_t saved_len;
+
+		T_OK("a Sigma1 is out", reach_sigma1(&info));
+		first = matterfake_last_tx();
+		T_OK("recorded", first != NULL);
+		saved_len = first->len;
+		memcpy(saved, first->buf, saved_len);
+
+		/*
+		 * Past the first resend deadline and still inside the step that
+		 * would otherwise be the only retry. Not one interval: the
+		 * deadline carries MRP's margin and backoff multipliers, so the
+		 * first resend lands around four times the bare interval.
+		 */
+		tick(MATTER_CLIENT_STEP_MS - 100u);
+		T_OK("it was sent again", matterfake_tx_count() >= 2u);
+
+		again = matterfake_last_tx();
+		T_OK("byte for byte the same message",
+		     again != NULL && again->len == saved_len &&
+			     memcmp(again->buf, saved, saved_len) == 0);
+		T_OK("and well before the step deadline would have retried",
+		     ultrawidelock_osal_host_now_ms() < (int64_t)MATTER_CLIENT_STEP_MS);
+	}
+
+	t_group("an acknowledgement stops the resending");
+	{
+		uint16_t x;
+		uint32_t c;
+
+		T_OK("a Sigma1 is out", reach_sigma1(&info));
+		x = exchange_of(matterfake_last_tx());
+		c = counter_of(matterfake_last_tx());
+		T_OK("its counter decodes", c != 0u);
+
+		deliver_ack(x, c);
+		tick(MATTER_CLIENT_STEP_MS - 100u);
+		T_EQ("nothing was resent", (long)matterfake_tx_count(), 1L);
+	}
+
+	t_group("an acknowledgement for something else does not stop it");
+	{
+		uint16_t x;
+		uint32_t c;
+
+		T_OK("a Sigma1 is out", reach_sigma1(&info));
+		x = exchange_of(matterfake_last_tx());
+		c = counter_of(matterfake_last_tx());
+
+		deliver_ack(x, c + 1u);
+		tick(MATTER_CLIENT_STEP_MS - 100u);
+		T_OK("the resend still happened", matterfake_tx_count() >= 2u);
 	}
 
 	t_group("nothing here dereferences a NULL");

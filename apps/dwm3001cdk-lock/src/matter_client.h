@@ -16,13 +16,17 @@
  *   this file         resolve, Sigma1, Sigma3, TimedRequest, InvokeRequest
  *   matter_commission.c  routes the answers back in through the two hooks below
  *
- * WHAT IT DELIBERATELY DOES NOT DO: retransmit. MRP runs on the sessions this
- * node RESPONDS on, through matter_exchange, and none of it is wired up on the
- * client's outbound path. A Sigma1 or an invoke that is dropped by the network
- * is caught by MATTER_CLIENT_STEP_MS and retried as a whole attempt instead.
- * That is coarser than MRP and it is the right trade here: the thing being
- * retried is worth sending for about eight seconds (matter_client_sm.h), which
- * is shorter than a full MRP schedule anyway.
+ * RETRANSMISSION, and how far it goes. The HANDSHAKE is covered: a Sigma1 or
+ * Sigma3 that goes unacknowledged is resent on an MRP timer, because a dropped
+ * datagram there would otherwise cost the whole MATTER_CLIENT_STEP_MS out of a
+ * want worth about eight seconds (matter_client_sm.h) -- one loss nearly spends
+ * the budget, and two certainly do.
+ *
+ * The INTERACTION is not. Once the session exists its messages are sealed by
+ * matter_exchange, whose message counters this file does not own, so there is
+ * nothing here to arm a timer against. A loss there falls inside a much shorter
+ * window and the peer retransmits its own half regardless; the step deadline
+ * still catches the rest, one whole attempt at a time.
  */
 #pragma once
 
