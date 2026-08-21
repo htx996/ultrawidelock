@@ -388,6 +388,69 @@ Source: `ccc-v4.txt`, the CCC Digital Key Technical Specification v4.0.0 (CCC-TS
 locally. Line numbers index that text extraction, not the PDF's pages. Quotes above were
 re-read at those lines rather than copied from notes.
 
+### The stage B verdict is not safe: a 64-byte stash drops the two-record Final_Data
+
+Found 2026-08-21 by reading `scottjg/ultrawidelock` at branch `wip`, which is a fork of this
+tree that built the same two-responder round on one reader with two radios. Its commit
+`af95ec3f` reports, as an aside:
+
+> "the Pre-POLL stash was 64 bytes and a two-record Final_Data is 65 on the air. Every one of
+> them was received cleanly and then dropped by a size gate, one byte over, which on the bench
+> looked exactly like the phone refusing to send Final_Data once Response_1 went out."
+
+**This tree has the same defect, and the arithmetic checks out against our own constants.**
+`ccc_shim_rx.c:309` declares `static uint8_t g_pp_stash[64]`, and `ccc_shim_rx.c:910` drops
+any frame larger than it *before* the Final_Data ever reaches `final_data_decode()`:
+
+    if (!ccc_shim_active() || datalength == 0u || datalength > sizeof(g_pp_stash)) {
+            return;
+
+An SP0 Final_Data on the air is `CCC_MHR_LEN` + `CCC_FINAL_DATA_HDR_LEN` +
+`n * CCC_RESPONDER_LEN` + `CCC_SP0_MIC_LEN` + 2 bytes of FCS, which the driver counts in
+`datalength`. From `ccc_mac.h:21,25,27` and `ccc_kdf.h:48` those are 23, 18, 7 and 8:
+
+| Records | Size | Against a 64-byte stash |
+|---|---|---|
+| 1 (the validated 1:1 baseline) | 23 + 18 + 7 + 8 + 2 = **58** | fits, always has |
+| 2 (a dual-responder round) | 23 + 18 + 14 + 8 + 2 = **65** | **dropped, one byte over** |
+
+So the one frame that would prove the phone validated a second responder is the one frame this
+tree cannot receive, and it fails silently -- no counter, no log line, an early `return`.
+
+**The host suite cannot catch it.** `tests/host/test_prepoll_round.c:101` sets
+`fd.num_responders = 1u`, so every Final_Data the suite has ever built is the 58-byte one; the
+gate is unreachable from the tests. The fork reports its fixture was also short the two FCS
+bytes the driver counts, which is why several thousand host checks passed over this on both
+sides.
+
+**What this does to the stage B verdict above.** It does not overturn it -- our bench did
+decode `Final_Data` frames reporting `nresp=1`, and a dropped frame would have produced no
+`Final_Data` at all rather than a one-record one, so the two observations are not the same
+event. What it removes is the verdict's safety. A block in which the phone *did* validate both
+responders would have been discarded without trace, and the run cannot distinguish "the phone
+never validated the satellite" from "the phone validated it in some blocks and we deleted the
+evidence." The control run's session failing at the phase deadline is the observation most
+consistent with frames going missing. Stage B has to be re-run with the stash enlarged before
+its conclusion means anything.
+
+**The fork's bench is direct counter-evidence, at second hand.** Commit `65c00313` reports two
+DWM3000EVBs about 25 cm apart on an ESP32-C6 both ranging the same block, with 58 ranges on the
+primary and 661 on Responder_1 over one capture. If that holds, a phone does report a second
+responder's record and this whole line of investigation was chasing our own buffer. Not
+verified here: different phone, different silicon, different port, and the 58-versus-661
+inversion is itself unexplained -- a secondary that out-ranges the primary eleven to one wants
+an explanation before the number is leaned on.
+
+**A second defect in the same area, also from the fork.** `ccc_responder_ds_twr()`
+(`ccc_mac.c:330-342`) selects the phone's record by *array position*, `fd->responders[l]`,
+guarded by `l >= fd->num_responders`. CCC obliges the initiator to report only the responders
+it validated, in no guaranteed order, and each record carries its own `responder_index` tag
+(`ccc_mac.h:73`). If the phone validates only responder 1, it sends one record tagged 1, and
+this tree reads it as responder 0's -- attributing the satellite's timestamp to the lock. The
+fork's `fd_record_for()` searches by tag, validates that the tags are in range and unique, and
+falls back to position only when they are not, which is the behaviour the 1:1 baseline always
+had. That function is worth taking whether or not the rest of the fork's architecture is.
+
 ### The estimator's error budget: what can and cannot move a CCC distance (2026-08-21)
 
 Block-parity alternation (`second-anchor.md` stage B') produced the first authenticated
@@ -481,15 +544,25 @@ median. What remains genuinely uncompensated on the CCC path is the RF delay bet
 chip's timestamp reference plane and the antenna, at both ends. The clean run below bounds
 it: under 25 mm, and if anything negative rather than positive.
 
-**The clean measurement: there is nothing to calibrate.** The experiment this section
-originally proposed -- tape the phone at a known distance and read *medians only*, the median
-being robust to the tail -- was run at a 2.0 m tape. Three completed sessions, stationary
-samples only, read **1975 / 1989 / 1980 mm**, IQR 10-23 mm. That is a mean of 1981.3 mm, 18.7
-mm short of the tape, or 4 ticks, or 0.93%. It is also tighter than the 20.5 mm sigma stage A
-measured on the dedicated anchor bench, where both ends are our own boards. No fixed offset,
-no scale error, and the 18.7 mm is smaller than the placement error of taping a phone to a
-wall. The whole calibration thread is closed: the CCC responder path needs no correction term
-at all, which is what the predicted-versus-measured argument above predicts.
+**Precision is excellent; accuracy is conditional and not yet established.** The experiment
+this section originally proposed -- tape the phone at a known distance and read *medians only*,
+the median being robust to the tail -- was run at a nominal 2.0 m. It produced four internally
+tight clusters that sit hundreds of millimetres apart:
+
+| Sessions | Medians (mm) | IQR (mm) | Offset from 2.0 m | Stated condition |
+|---|---|---|---|---|
+| s10-s12 | 1975 / 1989 / 1980 | 10-23 | -20 mm | phone handheld |
+| s13-s16 | 1576 / 1581 / 1576 / 1576 | 14-33 | -420 mm | not established |
+| s17-s18 | 2134 / 2130 | 19 | +130 mm | operator's body in the path |
+
+Within a cluster the spread is ~15 mm, tighter than the 20.5 mm sigma stage A measured on the
+dedicated anchor bench where both ends are our own boards. Between clusters something
+uncontrolled moves the level by up to 420 mm, and it has not been identified. So: the
+instrument is precise, the -20 mm of the first cluster shows no fixed offset and no scale
+error *for that condition*, and none of these is the CCC path's accuracy as such. The
+calibration thread stays closed -- no correction term is owed, which is what the
+predicted-versus-measured argument above independently predicts -- but "nothing to calibrate"
+is a statement about one condition among at least three.
 
 **The tail was placement, not first-path physics.** This section previously argued that
 leading-edge detection explained the right tail, on the grounds that first-path error is
@@ -507,14 +580,25 @@ offset that was briefly believed and is now retracted. Both this session and the
 published numbers derived from in-flight reads before the rule existed; treat any figure in
 the repo dated before 2026-08-21 that came from a live session as suspect.
 
-**Unresolved: occlusion sensitivity.** Late in the clean run the distance shifted tightly from
-~1980 mm to 1576/1581 mm after a person sat down between the DK and the phone. This is *not*
-recorded here as an occlusion penalty, because it is equally consistent with the phone simply
-being 400 mm closer once they sat; the two explanations are confounded and the run cannot
-separate them. It needs a controlled test -- same taped phone position, body moved in and out
-of the line -- and it matters more than it looks, because a body between the phone and one of
-two anchors is the *normal* case at a door, and stage B'' puts both anchors in the same block
-on the assumption that what differs between them is geometry.
+**Unresolved: what moves the level, occlusion included.** An earlier draft of this section
+attributed the -420 mm cluster to a person sitting between the DK and the phone. That is
+withdrawn: the operator has since stated the geometry never moved and that their body is in
+the path during the *+130 mm* cluster, not the -420 one. So the body-in-path group, on the
+only condition anyone has stated, reads long rather than short, and the -420 cluster has no
+established cause at all.
+
+Two attributions have now been made and withdrawn on this run -- a fixed offset, then an
+occlusion penalty -- each for the same reason: the conditions changed between clusters and
+were only established afterwards. The methodological point is the durable one, and it is the
+handheld phone that defeated the run, because a handheld phone moves with the person and body
+position is never independent of phone position.
+
+The controlled version: phone resting on a fixed surface rather than handheld, taped distance,
+two sessions differing only by a body stepping into the line, operator recording which is
+which. This gates stage B'' rather than being a curiosity. Two rounds per block read the
+difference between two anchors as geometry, and at a door one anchor sits behind a person
+nearly every time; if a body moves a range by even a fraction of what these clusters move,
+that assumption needs a number before anything is built on it. It does not have one.
 
 **Still unverified.** Whether two boards built at `NUM_RESPONDERS=1` / `RESPONDER_INDEX=0`
 and sharing one session's keys derive byte-identical per-block and per-slot material has not
