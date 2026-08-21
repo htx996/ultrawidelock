@@ -346,6 +346,18 @@ static bool s_latch_dirty;
  * door no run could restart beyond clear_min_mm -- why=0x10 for good). */
 #define LATCH_SESSION_CARRY_MS 30000
 
+/* How long the departure fallback holds an open bolt through that same iOS
+ * phase-deadline flap before treating the dead session as a walk-away. Only
+ * entered when the controller was fed a range inside relock_cm moments before
+ * the session died -- a phone the evidence puts AT the door (measured
+ * 2026-08-21: flap at 16 cm, reconnect 4.2 s later; the immediate relock shut
+ * the bolt under the owner's hand). Departures don't look like that: the far
+ * tiers relock on ranges, not on the session. 10 s covers the observed
+ * reconnect with margin while bounding how long a real walk-away that never
+ * reconnects can leave the bolt open. */
+#define SESSION_FLAP_HOLD_MS 10000
+#define SESSION_FLAP_FEED_FRESH_MS 3000
+
 static uint32_t latch_cred_id(void)
 {
 	uint8_t cred_pub[65];
@@ -1167,7 +1179,24 @@ int main(void)
 		/* Departure: the peer's credential session ended (walked away / phone pocketed). iOS
 		 * ranging silence alone does NOT mean departed (a still phone stops ranging too),
 		 * so gate on the session, not on range age. Tell Wallet Secured once and reset. */
-		if (present && !ultrawidelock_reader_session_active()) {
+		/* One hold per flap, judged on the evidence at the moment the
+		 * session died: feeds stop with the session, so the freshness
+		 * test would fail on every later tick of the same flap if it
+		 * were re-judged. A session that comes back clears the hold. */
+		static int64_t flap_hold_ms;
+		bool sess_gone = present && !ultrawidelock_reader_session_active();
+
+		if (!sess_gone) {
+			flap_hold_ms = 0;
+		} else if (flap_hold_ms == 0 && granted && approach.last_feed_ms != 0 &&
+			   approach.last_cm < approach.cfg.relock_cm &&
+			   (now - approach.last_feed_ms) <= SESSION_FLAP_FEED_FRESH_MS) {
+			flap_hold_ms = now;
+			LOG_WRN("session died with the phone fed at %d cm; holding the bolt %d ms",
+				approach.last_cm, SESSION_FLAP_HOLD_MS);
+		}
+		if (sess_gone && (flap_hold_ms == 0 || (now - flap_hold_ms) > SESSION_FLAP_HOLD_MS)) {
+			flap_hold_ms = 0;
 			/*
 			 * Reaching here with the bolt still open means the silence
 			 * relock in ultrawidelock_approach_tick() did NOT fire, and this is
