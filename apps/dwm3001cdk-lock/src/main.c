@@ -1073,6 +1073,43 @@ int main(void)
 		}
 
 		ml_feed_vote_trace(&approach, now);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_BENCH_TOGGLE_UNLOCK)
+		/*
+		 * Bench-only: a NEW ranging session opens a short window in which
+		 * a clean committed OUTSIDE unlocks with no approach at all. The
+		 * Wallet UWB toggle (and the first session after a flash) is what
+		 * creates a new session, so on the bench this is "toggle asks the
+		 * geometry": outside unlocks, inside or unknown refuses. Kept off
+		 * a mounted door because iOS ALSO recreates sessions on its own,
+		 * and an owner resting outside must not have the bolt follow
+		 * every session churn.
+		 */
+		{
+			static uint32_t tg_sid;
+			static int64_t tg_until;
+			uint32_t sid = ultrawidelock_uwb_session_id();
+
+			if (sid != 0u && sid != tg_sid) {
+				tg_sid = sid;
+				tg_until = now + 8000;
+				LOG_INF("toggle window open (8 s)");
+			}
+			if (!granted && tg_until != 0 && now < tg_until && session_now &&
+			    latch_cred != LATCH_CRED_NONE &&
+			    ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)) {
+				tg_until = 0;
+				LOG_INF("toggle unlock (conf=%u)", side_dec.confidence);
+				ultrawidelock_reader_notify_unlock(true);
+				status_led_signal(STATUS_LED_UNLOCKED, true);
+				granted = true;
+				/* Hand the open bolt to the controller so its range
+				 * departure and silence tiers relock it, same as any
+				 * other grant. */
+				approach.locked = false;
+				latch_note_opened(latch_cred, now);
+			}
+		}
+#endif
 		if (act == ULTRAWIDELOCK_APPROACH_UNLOCK_PREDICT ||
 		    act == ULTRAWIDELOCK_APPROACH_UNLOCK_THRESHOLD) {
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_NEAR_DWELL);
