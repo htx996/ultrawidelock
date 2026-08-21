@@ -186,13 +186,35 @@ ultrawidelock_side_classify_raw(const struct ultrawidelock_side_cfg *cfg,
 	}
 
 	/*
-	 * Secondary UWB peer range is recorded in the contrib mask when present,
-	 * but polarity still comes from differential BLE (or an explicitly
-	 * configured fusion caller). Guessing which millimetre is "inside"
-	 * from the primary lock alone is how INSIDE→OUTSIDE errors start.
+	 * Secondary UWB peer range is recorded in the contrib mask when present.
+	 * Polarity comes from differential BLE, or from the fusion caller below.
+	 * What is still refused is guessing which millimetre is "inside" from the
+	 * primary lock ALONE -- that is how INSIDE→OUTSIDE errors start, and no
+	 * amount of range on one anchor fixes it.
 	 */
 	if (feat->uwb_peer_mm >= 0) {
 		mask |= ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE;
+	}
+
+	/*
+	 * Two-anchor fusion polarity, when the caller has it.
+	 *
+	 * Taken as a real side rather than a hint because it is a differential
+	 * between two anchors whose mounting the fusion layer knows, which is the
+	 * same shape of evidence as differential BLE. It is applied FIRST so the
+	 * BLE block below sees it as an already-held opinion and its existing
+	 * disagreement checks (raw.side already OUTSIDE / already INSIDE) fire
+	 * against it unchanged -- the two sources contradicting each other must
+	 * mean UNKNOWN, and that logic is better reused than re-derived.
+	 *
+	 * A caller with no fusion, a stale one, or one whose triangle gate failed
+	 * passes UNKNOWN and nothing here changes.
+	 */
+	if (feat->fusion_side == ULTRAWIDELOCK_SIDE_LABEL_OUTSIDE ||
+	    feat->fusion_side == ULTRAWIDELOCK_SIDE_LABEL_INSIDE ||
+	    feat->fusion_side == ULTRAWIDELOCK_SIDE_LABEL_THRESHOLD) {
+		raw.side = (enum ultrawidelock_side_label)feat->fusion_side;
+		conf = feat->fusion_conf > 100u ? 100u : feat->fusion_conf;
 	}
 
 	if (have_in && have_out) {

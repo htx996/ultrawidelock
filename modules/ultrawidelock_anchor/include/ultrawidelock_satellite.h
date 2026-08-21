@@ -146,4 +146,18 @@ void ultrawidelock_satellite_observe(struct ultrawidelock_satellite *s, int32_t 
  */
 bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s, int64_t now_ms);
 
+/**
+ * The second anchor's own distance, if a fresh one is held.
+ *
+ * For callers that must report WHAT WAS MEASURED alongside the verdict --
+ * a health mask, a log line, a feature vector. It is deliberately not part of
+ * the verdict: a distance that exists but could not be paired is exactly the
+ * state an operator needs to see, and folding it into UNKNOWN hides it.
+ *
+ * @return millimetres, or -1 when there is no report or it is older than
+ *         @c stale_ms. Never a stale value: a caller cannot tell one from a
+ *         live one, and this feeds a gate.
+ */
+int32_t ultrawidelock_satellite_peer_mm(const struct ultrawidelock_satellite *s, int64_t now_ms);
+
 #endif /* ULTRAWIDELOCK_SATELLITE_H */
