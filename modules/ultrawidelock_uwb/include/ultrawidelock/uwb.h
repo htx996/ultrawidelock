@@ -109,6 +109,16 @@ bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out
  */
 bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_out);
 
+/**
+ * The live UWB session id, or 0 when no session is up.
+ *
+ * Needed alongside the ranging block whenever two anchors' captures are
+ * compared: the block is the INITIATOR's counter and it RESTARTS every session,
+ * so block alone is not a key. Joining on it produced a confident 940 mm
+ * reading out of two unrelated moments before that was noticed.
+ */
+uint32_t ultrawidelock_uwb_session_id(void);
+
 /** Monotonic accepted-range epoch for post-challenge freshness checkpoints. */
 uint32_t ultrawidelock_uwb_range_generation(void);
 

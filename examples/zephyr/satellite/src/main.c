@@ -23,6 +23,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 #include <psa/crypto.h>
 
@@ -128,6 +129,8 @@ static int cmd_sat_stop(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+LOG_MODULE_REGISTER(sat, LOG_LEVEL_INF);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sat_cmds,
 	SHELL_CMD_ARG(join, NULL, "join <ursk-hex64> <rcfg-hex34> <channel> <sync-code>",
 		      cmd_sat_join, 5, 0),
@@ -156,6 +159,27 @@ int main(void)
 		int32_t cm;
 
 		if (gen != last_gen && ultrawidelock_uwb_last_range_cm(&cm)) {
+			uint32_t blk = 0u;
+
+			/* Same line the lock prints, so the two captures can be
+			 * JOINED ON BLOCK afterwards and subtracted at an instant
+			 * where the true difference is known. Deliberately here in
+			 * the main loop and not in the ranging callback: the
+			 * per-frame trace is throttled per BOOT, so it stops after
+			 * the first few blocks and never overlaps the other
+			 * anchor's capture. This one prints for every range. */
+			if (ultrawidelock_uwb_trusted_range_block_cm(&cm, &blk)) {
+				/* LOG_INF, not printk. The shell's serial backend
+				 * installs itself as the printk hook, so printk
+				 * lands on the UART it shares with the prompt --
+				 * which shreds the line -- regardless of what
+				 * zephyr,console is set to. The logging subsystem
+				 * has its own backend, so this reaches RTT intact
+				 * while `sat join` keeps arriving on the UART. */
+				LOG_INF("pair sid=%08x blk=%u mm=%d",
+					(unsigned)ultrawidelock_uwb_session_id(),
+					(unsigned)blk, (int)(cm * 10));
+			}
 			last_gen = gen;
 			printk("SAT range %d cm (gen %u)\n", (int)cm, (unsigned)gen);
 		}

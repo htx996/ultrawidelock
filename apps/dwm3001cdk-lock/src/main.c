@@ -850,6 +850,15 @@ int main(void)
 			last_gen = gen;
 			last_obs_gen = gen;
 			present = true;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_PAIR_LOG)
+			/* On the MAIN THREAD, not the ranging callback: the per-frame
+			 * trace is forced off above precisely because synchronous
+			 * printing there pushes the delayed Response TX past its slot.
+			 * Here the round is long finished. */
+			LOG_INF("pair sid=%08x blk=%u mm=%d",
+				(unsigned)ultrawidelock_uwb_session_id(),
+				(unsigned)last_obs_block, (int)(cm * 10));
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
 			/* Remember our half of the pair, keyed by the block it was
 			 * measured in, so a peer report that took a block or two to
