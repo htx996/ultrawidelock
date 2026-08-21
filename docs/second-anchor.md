@@ -446,14 +446,26 @@ needs a controlled inside/outside walk rather than a single approach.
    mesh up. Verified: after a bare reset with nothing typed, the satellite logs
    `stored dataset found; bringing the mesh up (rc 0)` and reaches role 2.
 
-DIAGNOSTIC LESSON, worth more than any of the three. Faults 1 and 2 both
-present as "the console stopped answering", and so does a wedged UART — and the
-DK's UART0 really does carry hardware flow control the host could not keep
-asserted (pinctrl claims RTS on P0.19, CTS on P0.21). Three independent causes,
-one symptom. The UART was blamed twice before the crash dump was ever seen,
-because on that backend the dump goes to a console that cannot transmit. Moving
-the shell to RTT is what made the failure legible; the flow-control finding is
-real but was never what stopped the run.
+DIAGNOSTIC LESSON, worth more than any of the three, and it includes a wrong
+answer that stood for hours.
+
+Faults 1 and 2 both present as "the console stopped answering". The UART was
+blamed twice before the crash dump was ever seen, because on that backend the
+Zephyr fatal-error dump goes to a console whose thread has just died. Moving the
+shell to RTT is what made the failure legible.
+
+An earlier version of this section named a third cause — hardware flow control
+on the DK's UART0, RTS on P0.19 and CTS on P0.21 per pinctrl. **That was wrong,
+and it is worth recording as wrong.** Flow control is OFF on this board at both
+ends: the board DTS sets no `hw-flow-control` on `&uart0`, so the driver runs
+`NRF_UARTE_HWFC_DISABLED` and the UARTE ignores CTS entirely. All pinctrl leaves
+behind is RTS driven high once at init and never lowered, which is harmless when
+nothing reads it. Board TX was never gated.
+
+The pinctrl pins were real, so the story was plausible, and nobody grepped the
+DTS for the property that actually enables the feature. Pins being routed is not
+evidence a feature is on. Two independent causes, one symptom, and a third that
+was never a cause at all.
 
 ### D. Feed the latch, retire the priming walk
 
