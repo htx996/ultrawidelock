@@ -168,6 +168,53 @@ static int cmd_sat_key(const struct shell *sh, size_t argc, char **argv)
 }
 #endif
 
+#if defined(CONFIG_OPENTHREAD)
+/* The lock's Active Operational Dataset, as raw TLV hex. Mesh membership only:
+ * this board joins no Matter fabric and does not need one to send UDP. */
+static int cmd_sat_dataset(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t tlvs[254];
+	size_t hex_len;
+	size_t n;
+	int rc;
+
+	ARG_UNUSED(argc);
+
+	hex_len = strlen(argv[1]);
+	if ((hex_len % 2u) != 0u || hex_len / 2u > sizeof(tlvs)) {
+		shell_error(sh, "dataset must be an even number of hex chars, <= %u bytes",
+			    (unsigned)sizeof(tlvs));
+		return -EINVAL;
+	}
+	n = hex2bin(argv[1], hex_len, tlvs, sizeof(tlvs));
+	if (n != hex_len / 2u) {
+		shell_error(sh, "not hex");
+		return -EINVAL;
+	}
+	rc = anchor_link_set_dataset(tlvs, n);
+	if (rc != 0) {
+		shell_error(sh, "dataset rejected rc=%d", rc);
+		return rc;
+	}
+	shell_print(sh, "dataset set (%u B); attaching", (unsigned)n);
+	return 0;
+}
+
+/* One line, because three separate things have to be true before a single
+ * report can reach the lock and they fail in ways that look identical. */
+static int cmd_sat_link(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	shell_print(sh, "key %s | thread %s | socket %s",
+		    anchor_link_ready() ? "yes" : "NO",
+		    anchor_link_attached() ? "attached" : "NOT attached",
+		    anchor_link_ready() ? "open" : "check");
+	return 0;
+}
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sat_cmds,
 	SHELL_CMD_ARG(join, NULL, "join <ursk-hex64> <rcfg-hex34> <channel> <sync-code>",
 		      cmd_sat_join, 5, 0),
@@ -175,6 +222,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sat_cmds,
 #if defined(CONFIG_OPENTHREAD)
 	SHELL_CMD_ARG(key, NULL, "set the sealed-link key: `key <hex32>` (same bytes as the "
 		      "lock's `anckey`)", cmd_sat_key, 2, 0),
+	SHELL_CMD_ARG(dataset, NULL, "join the lock's Thread network: `dataset <tlv-hex>`",
+		      cmd_sat_dataset, 2, 0),
+	SHELL_CMD_ARG(link, NULL, "sealed-link status", cmd_sat_link, 1, 0),
 #endif
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(sat, &sat_cmds, "satellite responder (stage B)", NULL);

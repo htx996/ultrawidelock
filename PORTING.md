@@ -108,6 +108,8 @@ length-checks those where they are written.
 | zephyr | key | `wit/lk` | 64 | `examples/zephyr/ble-witness/src/main.c` |
 | zephyr | key | `wit/gk` | 64 | `examples/zephyr/ble-witness/src/main.c` |
 | zephyr | key | `wit/ds` | 64 | `examples/zephyr/ble-witness/src/main.c` |
+| zephyr | subtree | `sat` | 64 | `examples/zephyr/satellite/src/anchor_link.c` |
+| zephyr | key | `sat/lk` | 64 | `examples/zephyr/satellite/src/anchor_link.c` |
 
 <!-- storage-names:end -->
 

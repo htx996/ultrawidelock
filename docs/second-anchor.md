@@ -376,6 +376,67 @@ Pass: with the phone demonstrably outside, the lock logs
 "predict withheld: second anchor puts the phone outside"; with the phone
 inside or the satellite off, behaviour is bit-for-bit today's.
 
+## STAGE C TRANSPORT PASSES — 2026-08-21 10:29
+
+A sealed distance measured by the satellite reached the lock over the air and
+paired with the lock's own measurement of the SAME ranging block. The Mac is
+out of the loop: what `pairjoin.py` did offline after the common-mode test, the
+lock now does on-board and live.
+
+| | |
+|---|---|
+| anchor reports received | 145 |
+| lock's own ranges | 168 |
+| joined on (session, block) | **129** |
+| median lock − anchor | **160 mm** |
+| IQR | 110 .. 200 mm |
+| sigma, core 117/129 | **68 mm** |
+| unseal / replay rejections | **0** |
+| satellite nresp=2 vs nresp=1 | 219 vs 23 (90%) |
+
+Two sessions, `0c307d45` and `3c2e66bc`. Adjacent blocks read:
+
+```
+blk=127  anchor 1870   lock 2050
+blk=128  anchor 1870   lock 2050
+blk=129  anchor 1880   lock 2040
+```
+
+The 160 mm has the same install-constant character as the −200 mm the
+common-mode test found; the sign differs only because the approach came from the
+other side. Not the same measurement, so do NOT read the two as a drift.
+
+STILL OPEN: this proves the TRANSPORT, not the decision. Nothing yet logs a
+fusion verdict, so "the pair arrived" is established and "the pair means
+outside" is not. That is what the pass criterion above still asks for, and it
+needs a controlled inside/outside walk rather than a single approach.
+
+### Three defects this run found, none of them the transport
+
+1. **OpenThread mutex deadlock.** `thread_bring_up()` held the OT mutex across
+   `openthread_run()`, which takes it itself —
+   `ports/zephyr/matter/matter_thread_port.c:136` already spells the rule out.
+   The shell thread wedged and the console went silent mid-command.
+2. **Shell stack overflow.** `sat dataset` blew the default 2 KB stack:
+   `ZEPHYR FATAL ERROR 2: Stack overflow ... Current thread: shell_rtt`. A
+   254-byte handler buffer, a ~255-byte `otOperationalDatasetTlvs` under it, and
+   the OpenThread start path on top. Now `CONFIG_SHELL_STACK_SIZE=8192`.
+3. **The stored dataset was inert.** `CONFIG_OPENTHREAD_MANUAL_START=y` and
+   nothing called `otThreadSetEnabled()`, so a persisted dataset started
+   nothing and `sat dataset` would have needed retyping after every reset.
+   `anchor_link_init()` now checks `otDatasetIsCommissioned()` and brings the
+   mesh up. Verified: after a bare reset with nothing typed, the satellite logs
+   `stored dataset found; bringing the mesh up (rc 0)` and reaches role 2.
+
+DIAGNOSTIC LESSON, worth more than any of the three. Faults 1 and 2 both
+present as "the console stopped answering", and so does a wedged UART — and the
+DK's UART0 really does carry hardware flow control the host could not keep
+asserted (pinctrl claims RTS on P0.19, CTS on P0.21). Three independent causes,
+one symptom. The UART was blamed twice before the crash dump was ever seen,
+because on that backend the dump goes to a console that cannot transmit. Moving
+the shell to RTT is what made the failure legible; the flow-control finding is
+real but was never what stopped the run.
+
 ### D. Feed the latch, retire the priming walk
 
 Fresh fusion verdicts become the latch's INSIDE/OUTSIDE windows directly:
@@ -391,6 +452,40 @@ out with the phone left inside.
 
 Board-string port of the satellite app, DK returns to being a bench tool.
 Deferred until the board exists; nothing above depends on it.
+
+## The transport is not settled: BLE probably beats Thread
+
+Recorded 2026-08-21, deliberately, because the current answer is INHERITED
+rather than chosen. The satellite reports over Thread only because
+`witness_link` already existed for the retired BLE dongles, and the pipe was
+there. Nothing about a UWB anchor argues for it.
+
+The case against Thread is one line: **Thread has no per-node revocation.**
+Every node shares one network key, so "stop trusting the satellite" means
+re-keying the entire mesh -- and since the commissioner owns that dataset, that
+plausibly means re-commissioning the Thread network and everything on it.
+Putting a second board on the home mesh is close to one-way.
+
+BLE does not have that problem. A bond is per device; unpair one and nothing
+else is touched. It also needs no dataset, so no bench-only dataset tooling goes
+anywhere near a shipping path, and the satellite could drop OpenThread entirely.
+Latency is better, not worse: a 7.5-30 ms connection interval against a
+multicast that has to be inside the 8-block pairing ring.
+
+What is NOT a difference: the DW3110 is a separate radio on SPI, so UWB never
+contends with BLE or 802.15.4 for the air. The contention is CPU and interrupt
+time on the lock's single core -- the same constraint that forces the per-frame
+trace off before ranging starts. The lock already runs BLE and Thread
+concurrently under MPSL, so a second BLE connection is more of an existing load
+rather than a new class of it. Whether it costs measurable arm margin is a
+MEASUREMENT, not a guess; the equivalent question about OpenThread turned out to
+cost nothing.
+
+Cost to switch: a GATT characteristic or L2CAP CoC carrying the same sealed WV3
+payload. The codec, the seal, the replay window and the block pairing are all
+transport-independent and would not change -- only what carries the bytes.
+
+Thread stays as the fallback if BLE scheduling ever does hurt the margin.
 
 ## Risks
 

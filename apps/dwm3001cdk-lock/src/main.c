@@ -165,6 +165,19 @@ static void on_anchor_report(int32_t peer_mm, uint32_t ranging_block, int64_t no
 	if (s_satellite != NULL) {
 		ultrawidelock_satellite_report(s_satellite, peer_mm, ranging_block, now_ms);
 	}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_PAIR_LOG)
+	/*
+	 * Runs on the OpenThread RX thread, not the ranging callback, so the
+	 * synchronous-print hazard that forces the per-frame trace off does not
+	 * apply here. RTT is in no-block-skip mode besides: a full buffer costs
+	 * this line, never the caller's timing.
+	 *
+	 * Logged at the sink rather than left to the pairing code because an
+	 * unpaired report and a report that never arrived are the same silence
+	 * otherwise, and they have completely different causes.
+	 */
+	LOG_INF("anchor report blk=%u mm=%d", (unsigned)ranging_block, (int)peer_mm);
+#endif
 }
 #endif
 

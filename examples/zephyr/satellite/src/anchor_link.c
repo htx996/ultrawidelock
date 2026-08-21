@@ -27,7 +27,11 @@
 #include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
 
+#include <openthread/dataset.h>
+#include <openthread/instance.h>
+#include <openthread/ip6.h>
 #include <openthread/message.h>
+#include <openthread/thread.h>
 #include <openthread/udp.h>
 #include <zephyr/net/openthread.h>
 
@@ -192,6 +196,101 @@ void anchor_link_report(int32_t peer_mm, uint32_t ranging_block)
 	}
 }
 
+/**
+ * Bring the mesh up on an instance that already holds a dataset.
+ *
+ * Split out because it is needed twice for different reasons: once when the
+ * dataset is typed in, and once at every boot after that. CONFIG_OPENTHREAD_
+ * MANUAL_START means nothing starts Thread on its own here, so without the
+ * second call the stored dataset is inert and `sat dataset` would have to be
+ * retyped after every reset.
+ *
+ * MUST BE CALLED WITH THE OPENTHREAD MUTEX RELEASED. openthread_run() takes it
+ * itself -- the same rule ports/zephyr/matter/matter_thread_port.c:136 spells
+ * out. Calling otIp6SetEnabled()/otThreadSetEnabled() under the lock instead
+ * deadlocks the caller, and on the shell thread that is indistinguishable from
+ * a dead console: the command never returns, the prompt never comes back, and
+ * the board looks bricked until it is reset. Cost an hour on 2026-08-21, twice,
+ * because the same silence also has a plausible transport explanation.
+ */
+static int thread_bring_up(void)
+{
+	return openthread_run();
+}
+
+/* Role transitions on the log, because the shell is not always reachable and an
+ * anchor that never attaches looks exactly like one that attached and had
+ * nothing to say. */
+static void role_changed(otChangedFlags flags, void *ctx)
+{
+	ARG_UNUSED(ctx);
+
+	if ((flags & OT_CHANGED_THREAD_ROLE) == 0u) {
+		return;
+	}
+	LOG_INF("thread role now %d (2=child 3=router 4=leader)",
+		(int)otThreadGetDeviceRole(openthread_get_default_instance()));
+}
+
+int anchor_link_set_dataset(const uint8_t *tlvs, size_t len)
+{
+	otInstance *ot = openthread_get_default_instance();
+	otOperationalDatasetTlvs ds;
+	otError err;
+
+	if (tlvs == NULL || len == 0u || len > sizeof(ds.mTlvs)) {
+		return -EINVAL;
+	}
+	if (ot == NULL) {
+		return -ENODEV;
+	}
+
+	memset(&ds, 0, sizeof(ds));
+	memcpy(ds.mTlvs, tlvs, len);
+	ds.mLength = (uint8_t)len;
+
+	/*
+	 * The satellite joins the SAME Thread network the lock is on. It is not
+	 * a Matter device and joins no fabric: a fabric governs who may invoke
+	 * clusters, and this board only needs IPv6 to a peer on the mesh, which
+	 * mesh membership alone provides.
+	 *
+	 * The dataset is typed in rather than commissioned because there is no
+	 * commissioner here to talk to, and it is persisted by OpenThread itself
+	 * so a reflash without --erase keeps it.
+	 */
+	openthread_mutex_lock();
+	err = otDatasetSetActiveTlvs(ot, &ds);
+	openthread_mutex_unlock();
+
+	if (err != OT_ERROR_NONE) {
+		LOG_WRN("dataset rejected (ot err %d)", (int)err);
+		return -EIO;
+	}
+	/* Outside the lock. See thread_bring_up(). */
+	if (thread_bring_up() != 0) {
+		LOG_WRN("dataset stored but OpenThread refused to start");
+		return -EIO;
+	}
+	LOG_INF("dataset accepted (%u B); attaching", (unsigned)len);
+	return 0;
+}
+
+bool anchor_link_attached(void)
+{
+	otInstance *ot = openthread_get_default_instance();
+	otDeviceRole role;
+
+	if (ot == NULL) {
+		return false;
+	}
+	openthread_mutex_lock();
+	role = otThreadGetDeviceRole(ot);
+	openthread_mutex_unlock();
+	return role == OT_DEVICE_ROLE_CHILD || role == OT_DEVICE_ROLE_ROUTER ||
+	       role == OT_DEVICE_ROLE_LEADER;
+}
+
 static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
 			       void *cb_arg)
 {
@@ -231,6 +330,7 @@ bool anchor_link_ready(void)
 void anchor_link_init(void)
 {
 	otInstance *ot;
+	bool commissioned;
 
 	(void)settings_subsys_init();
 	(void)settings_load_subtree("sat");
@@ -255,7 +355,25 @@ void anchor_link_init(void)
 		addr.mPort = ANCHOR_PORT;
 		s_open = (otUdpBind(ot, &s_sock, &addr, OT_NETIF_THREAD) == OT_ERROR_NONE);
 	}
+	(void)otSetStateChangedCallback(ot, role_changed, NULL);
+	commissioned = otDatasetIsCommissioned(ot);
 	openthread_mutex_unlock();
+
+	/*
+	 * A dataset typed in on an earlier boot is persisted by OpenThread but
+	 * does not start anything: CONFIG_OPENTHREAD_MANUAL_START leaves the
+	 * stack down until something asks. Ask here, so the mesh comes back by
+	 * itself after a reset or a reflash and the dataset is typed in exactly
+	 * once in this board's life.
+	 *
+	 * Outside the lock, which is released just above. See thread_bring_up().
+	 */
+	if (commissioned) {
+		LOG_INF("stored dataset found; bringing the mesh up (rc %d)",
+			thread_bring_up());
+	} else {
+		LOG_WRN("no Thread dataset; run `sat dataset <tlv-hex>`");
+	}
 
 	if (!s_open) {
 		LOG_WRN("anchor link socket did not open");
