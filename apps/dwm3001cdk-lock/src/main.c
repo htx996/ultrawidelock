@@ -580,6 +580,11 @@ int main(void)
 	uint32_t last_gen = ultrawidelock_uwb_range_generation();
 	/* The last range OBSERVED for departure, trusted or not; see the loop. */
 	uint32_t last_obs_gen = last_gen;
+	/* The second-anchor gate fuses a pair, so it needs ONE sample: a distance
+	 * and the ranging block it came from, captured together. -1 mm means no
+	 * trusted range has landed yet, which the gate reads as "no opinion". */
+	int32_t last_obs_mm = -1;
+	uint32_t last_obs_block = 0u;
 	/* A third epoch, for the activity LED alone. The two above are consumed
 	 * at different moments on purpose -- that is what keeps a late-trusted
 	 * latch from being counted twice and what stops the silence clock being
@@ -843,10 +848,17 @@ int main(void)
 		 * advances only on an accepted latch), mirroring the ESP lock's per-wake feed. A
 		 * stale latch -- iOS stops ranging once the phone holds still -- keeps the old
 		 * generation, so it drives a tick, not a fresh approach sample. */
-		if (gen != last_gen && ultrawidelock_uwb_trusted_range_cm(&cm)) {
+		if (gen != last_gen && ultrawidelock_uwb_trusted_range_block_cm(&cm, &last_obs_block)) {
 			last_gen = gen;
 			last_obs_gen = gen;
 			present = true;
+			/* Keep the distance that block describes. Deliberately NOT
+			 * approach.last_cm at the gate below: the tracker has a second
+			 * writer -- the departure path feeds it UNVOUCHED ranges -- so its
+			 * value can be blocks newer than any block we labelled, and the
+			 * equality check would then pass while comparing two different
+			 * rounds. That is worse than no check at all. */
+			last_obs_mm = cm * 10;
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
 			/* Only ranges the integrity consensus vouches for are
@@ -898,7 +910,8 @@ int main(void)
 			 * fail-opens on UNKNOWN. Retained when ULTRAWIDELOCK_SIDE_GATE is
 			 * off so existing ANCHOR=1 behaviour stays unchanged.
 			 */
-			if (!ultrawidelock_satellite_may_predict(&satellite, approach.last_cm * 10, now)) {
+			if (!ultrawidelock_satellite_may_predict(&satellite, last_obs_mm,
+								 last_obs_block, now)) {
 				LOG_INF("predict withheld: second anchor puts the phone outside");
 				break;
 			}

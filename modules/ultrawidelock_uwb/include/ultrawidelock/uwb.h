@@ -87,6 +87,28 @@ bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out);
  */
 bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out);
 
+/**
+ * A trusted range AND the initiator's ranging block it was measured in, from
+ * ONE latch.
+ *
+ * For pairing this node's distance against a SECOND ANCHOR's. Two anchors
+ * fusing a side-of-door verdict must be describing the same instant, and the
+ * block index is how that is decided: both read the same integer off the
+ * initiator's own frames, so equality is exact rather than estimated. Age
+ * cannot substitute -- a staleness window wide enough to be useful is many
+ * blocks wide, and a phone moves a long way in that.
+ *
+ * Both out-params come from one call for a reason. Reading the distance and the
+ * block through separate accessors lets a latch land between them, producing a
+ * block that does not describe the distance it travels with -- and a label that
+ * is checked but wrong is worse than no label, because the check passes and
+ * nobody looks further. For the same reason the caller must fuse THIS distance,
+ * not one taken from a tracker with its own update rules.
+ *
+ * @return false when no trusted range exists, leaving both out-params untouched.
+ */
+bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_out);
+
 /** Monotonic accepted-range epoch for post-challenge freshness checkpoints. */
 uint32_t ultrawidelock_uwb_range_generation(void);
 

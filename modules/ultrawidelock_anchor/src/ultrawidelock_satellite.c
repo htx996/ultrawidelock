@@ -27,12 +27,13 @@ void ultrawidelock_satellite_init(struct ultrawidelock_satellite *s,
 }
 
 void ultrawidelock_satellite_report(struct ultrawidelock_satellite *s, int32_t peer_mm,
-				    int64_t now_ms)
+				    uint32_t peer_block, int64_t now_ms)
 {
 	if (s == NULL || peer_mm < 0) {
 		return;
 	}
 	s->peer_mm = peer_mm;
+	s->peer_block = peer_block;
 	s->last_ms = now_ms;
 	s->have = true;
 }
@@ -69,11 +70,28 @@ static bool fresh(const struct ultrawidelock_satellite *s, int64_t now_ms)
 
 struct ultrawidelock_fusion_verdict
 ultrawidelock_satellite_verdict(const struct ultrawidelock_satellite *s, int32_t self_mm,
-				int64_t now_ms)
+				uint32_t self_block, int64_t now_ms)
 {
 	struct ultrawidelock_fusion_verdict none = {ULTRAWIDELOCK_SIDE_UNKNOWN, false, 0};
 
 	if (!fresh(s, now_ms) || self_mm < 0) {
+		return none;
+	}
+	/*
+	 * ultrawidelock_fusion.h states the two distances MUST come from the same
+	 * ranging round, and until now nothing could hold a caller to it: the only
+	 * guard was stale_ms, which at 1500 ms against a 192 ms block admits pairs
+	 * almost eight blocks apart. A moving phone travels a long way in eight
+	 * blocks, so that window was wide enough to manufacture a geometrically
+	 * impossible pair out of two perfectly good measurements.
+	 *
+	 * Block equality settles it exactly. Both anchors read the same block index
+	 * off the initiator's own frames, so this is an integer comparison rather
+	 * than an estimate, and a pair that passes is same-round by construction.
+	 * stale_ms stays as a backstop against a stalled link, not as the primary
+	 * guard it was never strong enough to be.
+	 */
+	if (s->peer_block != self_block) {
 		return none;
 	}
 	/*
@@ -88,7 +106,7 @@ ultrawidelock_satellite_verdict(const struct ultrawidelock_satellite *s, int32_t
 }
 
 bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s, int32_t self_mm,
-					 int64_t now_ms)
+					 uint32_t self_block, int64_t now_ms)
 {
 	struct ultrawidelock_fusion_verdict v;
 
@@ -96,6 +114,17 @@ bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s
 	if (!fresh(s, now_ms) || self_mm < 0) {
 		return true;
 	}
-	v = ultrawidelock_satellite_verdict(s, self_mm, now_ms);
+	/*
+	 * Tested HERE and not inferred from the verdict, because a mismatch and a
+	 * failed triangle both surface as {UNKNOWN, geometry_ok=false} and they
+	 * must not share a fate. A block mismatch is not a pair at all, so it is
+	 * evidence for nothing and degrades to single-anchor behaviour. A failed
+	 * triangle IS a pair, one no phone position could have produced, and the
+	 * header owes a false to exactly that case.
+	 */
+	if (s->peer_block != self_block) {
+		return true;
+	}
+	v = ultrawidelock_satellite_verdict(s, self_mm, self_block, now_ms);
 	return ultrawidelock_fusion_may_predict(&v);
 }

@@ -186,6 +186,17 @@ bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out
 #endif
 }
 
+bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_out)
+{
+#if defined(CONFIG_ULTRAWIDELOCK_CRED)
+	/* One call, so the block and the distance are from the same latch. */
+	return fira_session_last_range(cm_out, NULL, NULL, block_out, NULL) &&
+	       fira_session_range_trusted();
+#else
+	return fira_session_last_range(cm_out, NULL, NULL, block_out, NULL);
+#endif
+}
+
 uint32_t ultrawidelock_uwb_range_generation(void)
 {
 #if defined(CONFIG_ULTRAWIDELOCK_CRED)
