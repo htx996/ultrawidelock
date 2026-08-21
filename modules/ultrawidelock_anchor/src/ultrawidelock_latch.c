@@ -279,7 +279,19 @@ bool ultrawidelock_latch_may_passive_unlock(const struct ultrawidelock_latch *l,
 		if (!have_opp) {
 			why |= ULTRAWIDELOCK_LATCH_R_NO_OPPORTUNITY;
 		}
-		if ((now_ms - r->confirmed_inside_ms) < (int64_t)l->cfg.entry_dwell_ms) {
+		/*
+		 * A confirmed-inside stamp in the future is a clock that reset,
+		 * not a recent entry: now_ms is uptime, and the record outlives
+		 * the reboot that zeroed it. Without the sign test the dwell
+		 * then vetoes for ever, because every negative difference
+		 * compares below entry_dwell_ms -- the same "report from the
+		 * future" case ultrawidelock_satellite.c already rejects, and a
+		 * veto that can never lift is the unmeasurable latch this
+		 * header warns about rather than a safe one.
+		 */
+		const int64_t since_inside = now_ms - r->confirmed_inside_ms;
+
+		if (since_inside >= 0 && since_inside < (int64_t)l->cfg.entry_dwell_ms) {
 			why |= ULTRAWIDELOCK_LATCH_R_DWELL;
 		}
 	}
