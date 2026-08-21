@@ -30,14 +30,32 @@ entire point of a first run.
 ## Stage 0: build and flash
 
 ```
-make build CLIENT=1 RELEASE=1 SMP=1
+make build CLIENT=1          # bench: the client at DBG, no DFU receiver
 make flash
 make monitor
 ```
 
 `CLIENT=1` is the part that matters. Without it none of the client code is
-compiled and the lock behaves exactly as it does today. For a signed image,
-`make release RELEASE_KEY=<path> CLIENT=1`.
+compiled and the lock behaves exactly as it does today.
+
+Two profiles carry the client, and for bringup you want the first:
+
+| build | client log level | fits by | what it is for |
+|---|---|---|---|
+| `make build CLIENT=1` | DBG | 1,929 B | the bench. Reads back why a bound lock did or did not open. |
+| `make build CLIENT=1 RELEASE=1 SMP=1` | ERR (global level 1) | 8,288 B | what ships. mcumgr, DFU, signed. |
+
+The debug profile only fits because `overlay-client-debug.conf` applies
+automatically to `CLIENT=1` without `RELEASE=1`: it silences the credential,
+DFU and radio log modules and drops the DFU receiver, which a board on a desk
+does not need. Read that file before adding to it -- it says which log symbols
+exist, and setting one that does not aborts the CMake configure.
+
+Neither profile has much room. If either stops linking or stops signing, that
+is the size gate doing its job, not a broken tree: run `make cdk-size` and read
+the `<- the one that ships` line, which is the only ceiling that counts.
+
+For a signed image, `make release RELEASE_KEY=<path> CLIENT=1`.
 
 Leave `make monitor` running for the whole session. The RTT log is the only
 diagnostic there is.
