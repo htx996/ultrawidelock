@@ -121,9 +121,9 @@ point of having looked.
 
 ### 1. Nothing here has ever met a real peer
 
-The honest top entry. Every stage below Stage 2 is exercised only against a
-host double, and the CASE initiator has never had a cryptographically valid
-Sigma2 put in front of it by another implementation. The parts that are tested
+The honest top entry. Everything this node does from Stage 3 onwards has been
+exercised only against a host double, and the CASE initiator has never had a
+cryptographically valid Sigma2 put in front of it by another implementation. The parts that are tested
 are tested well; they have simply never been wrong in company.
 
 **Signature:** anything. This is the entry that says the first run is an
