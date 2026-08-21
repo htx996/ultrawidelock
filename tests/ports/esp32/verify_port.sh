@@ -82,7 +82,31 @@ check "partition table"  "[ -f '$BUILD/partition_table/partition-table.bin' ]"
 echo "2. CCC STS seam (modules/ultrawidelock_uwb/include/uwb_seam.h)"
 # Each helper must be defined (T) in some object, else the seam has no engine
 # behind it and the CCC STS is never programmed.
-seamdef() { find "$BUILD" -name '*.obj' -exec nm {} \; 2>/dev/null | grep -qE " T $1$"; }
+# The symbol table is read ONCE and the four checks below query the string.
+#
+# It was a full walk of the build tree per check, spawning one nm per object
+# file -- four scans, thousands of processes, and the slowest thing in
+# `make check` by a distance: this suite is the last row to land and this was
+# most of it. `-exec nm {} +` hands nm as many files as a command line holds
+# instead of one, and hoisting the result out of the function stops the other
+# three checks from repeating the walk at all.
+#
+# nm labels each file with a `path:` header when given several at once. That
+# only adds lines between the symbols; every symbol line keeps the ` T name`
+# shape these greps match, so what the checks see is unchanged.
+#
+# The lookup is a here-string, NOT `printf ... | grep -q`. This file runs under
+# `set -o pipefail`, and `grep -q` exits the moment it matches: that closes the
+# pipe under the producer, which dies of SIGPIPE (141), which pipefail hands
+# back as the pipeline's status. The check would then report FAIL on a symbol it
+# had just found -- all four of these did, and only because the match succeeded
+# early. A here-string gives grep the text with no pipeline to break.
+_SEAM_SYMS=
+seam_syms_load() {
+	[ -n "$_SEAM_SYMS" ] ||
+		_SEAM_SYMS="$(find "$BUILD" -name '*.obj' -exec nm {} + 2>/dev/null || true)"
+}
+seamdef() { seam_syms_load; grep -qE " T $1\$" <<<"$_SEAM_SYMS"; }
 check "def ultrawidelock_uwb_arm_rx"        "seamdef ultrawidelock_uwb_arm_rx"
 check "def ultrawidelock_uwb_set_sts_iv"    "seamdef ultrawidelock_uwb_set_sts_iv"
 check "def ultrawidelock_uwb_set_callbacks" "seamdef ultrawidelock_uwb_set_callbacks"

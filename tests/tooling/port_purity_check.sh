@@ -106,6 +106,14 @@ KERNEL_RE='(^|[^_[:alnum:]])(k_(work|sem|thread|timer|fifo|msleep|sleep|usleep|b
 # comment.
 COMMENT_LINE_RE='^[0-9]+:[[:space:]]*(\*|//|/\*)'
 
+# The same filter for `grep -nH` output, which prefixes every hit with its path.
+# A separate constant rather than a looser shared one: COMMENT_LINE_RE is also
+# the seam gate's filter and its self-test's, both of which match against bare
+# `line:text`, and widening the anchor for them would let a line whose CODE
+# contains a colon and a comment marker pass as prose. Paths in this tree carry
+# no colon, so `[^:]*:` is exactly the added prefix and nothing else.
+COMMENT_LINE_H_RE='^[^:]*:[0-9]+:[[:space:]]*(\*|//|/\*)'
+
 # Permanent exemptions — see the header for why each is not a hole. Declared as
 # plain paths, once, and compiled into the match regex below: the scan skips
 # them and the staleness check re-proves each one is still needed, so the list
@@ -181,18 +189,34 @@ file_hits() {
 scan() {
 	local findings=0 stale=0 f hits
 
+	# The exemptions are applied first and the survivors are grepped in ONE
+	# pass, rather than three processes per file across all of modules/. The
+	# reported order is unchanged: repo_files already hands these back in
+	# LC_ALL=C order, so sorting the combined hits by path and then numerically
+	# by line reproduces file-by-file, line-by-line exactly as the per-file
+	# `sort -t: -k1,1n -u` did.
+	local scan_files=()
 	while IFS= read -r f; do
 		[[ $f =~ $PERMANENT_RE ]] && continue
 		if in_ratchet "$f"; then
 			continue
 		fi
-		hits=$(file_hits "$f")
-		[ -n "$hits" ] || continue
-		while IFS= read -r hit; do
-			printf '%s  %s:%s%s\n' "$R" "$f" "$hit" "$Z"
-			findings=$((findings + 1))
-		done <<<"$hits"
+		scan_files+=("$f")
 	done < <(scan_paths)
+
+	if [ ${#scan_files[@]} -gt 0 ]; then
+		while IFS= read -r hit; do
+			[ -n "$hit" ] || continue
+			printf '%s  %s%s\n' "$R" "$hit" "$Z"
+			findings=$((findings + 1))
+		done < <(
+			{
+				grep -nHE "$INCLUDE_RE" "${scan_files[@]}" || true
+				grep -nHE "$KERNEL_RE" "${scan_files[@]}" |
+					grep -vE "$COMMENT_LINE_H_RE" || true
+			} | LC_ALL=C sort -t: -k1,1 -k2,2n -u
+		)
+	fi
 
 	# A ratchet entry that no longer trips the ban is finished work that forgot
 	# to shrink the list — or a moved file leaving a hole. Either way: fail.
@@ -266,11 +290,19 @@ tree_sources() { # <dir>... -> the tracked C/C++ sources under them
 }
 
 os_findings() { # <banned-re> <dir>... -> file:line:text per offence
+	# One grep over every file, not a grep and a sed per file. grep already
+	# prints `file:line:text` when it is handed more than one path, which is
+	# exactly what the per-file sed was reconstructing -- and -H asks for that
+	# prefix unconditionally, so a tree that happens to hold a single source
+	# formats the same as one that holds forty. Same output, two processes
+	# instead of two per file; on this tree that is most of the gate's system
+	# time, which was larger than the time it spent matching.
 	local re="$1" f
+	local files=()
 	shift
-	while IFS= read -r f; do
-		grep -nE "$re" "$f" | sed "s|^|$f:|" || true
-	done < <(tree_sources "$@")
+	while IFS= read -r f; do files+=("$f"); done < <(tree_sources "$@")
+	[ ${#files[@]} -eq 0 ] && return 0
+	grep -nHE "$re" "${files[@]}" || true
 }
 
 check_port_os() {
@@ -552,12 +584,25 @@ check_private_headers() {
 	# loop ends, so one per file across these 387 sources exhausts a stock
 	# 256-descriptor limit partway through and the check dies mid-scan.
 	while IFS= read -r h; do sources+=("$h"); done < <(boundary_sources)
-	for f in "${sources[@]}"; do
-		hits=$(grep -nE "${INC_RE}[^>\"]+[>\"]" "$f" || true)
-		[ -n "$hits" ] || continue
+	# ONE grep over all 387 sources instead of one per source. That is the
+	# single most expensive thing this gate did: the matching itself is
+	# nothing, and spawning a process per file was the larger half of the
+	# gate's runtime and nearly all of its system time. -H makes grep prefix
+	# every hit with its path, so each line arrives as `file:line:text` and the
+	# loop below reads the filename from the hit rather than from the loop
+	# variable it no longer has. The hits stay in grep's argument order, which
+	# is boundary_sources' order, so findings are reported exactly as before.
+	local hitlines=""
+	if [ ${#sources[@]} -gt 0 ]; then
+		hitlines=$(grep -nHE "${INC_RE}[^>\"]+[>\"]" "${sources[@]}" || true)
+	fi
+	if [ -n "$hitlines" ]; then
+		local rest
 		while IFS= read -r hit; do
 			[ -n "$hit" ] || continue
 			n=$((n + 1))
+			f=${hit%%:*}
+			rest=${hit#*:}
 			# Shell-native, and called without a command substitution: this
 			# runs once per include in the tree, and a subshell per include
 			# exhausts the shell's heap on a tree this size (it aborts around
@@ -568,10 +613,10 @@ check_private_headers() {
 			private_header_target "$f" "$inc" "${private[@]}" >/dev/null || continue
 			target=$PHT_TARGET
 			printf '%s  private header include: %s:%s -> %s%s\n' \
-				"$R" "$f" "${hit%%:*}" "$target" "$Z" >&2
+				"$R" "$f" "${rest%%:*}" "$target" "$Z" >&2
 			fails=$((fails + 1))
-		done <<<"$hits"
-	done
+		done <<<"$hitlines"
+	fi
 	if [ "$fails" -gt 0 ]; then
 		printf '%scheck-purity: %d production include(s) cross a module private boundary%s\n' \
 			"$R" "$fails" "$Z" >&2
