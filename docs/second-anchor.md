@@ -154,20 +154,37 @@ Proven, each on a console this night:
   with ~3 ms arm margin, no `HPDWARN`, correct STS index. Receipt:
   `RESPTX r=0`, 16+ `RESP txdone`.
 
-Answered no: **the phone does not report a second responder.** It builds the
-grown round faithfully -- Final at POLL+3, `Final_Data` at POLL+4, key
-derivation in step -- and still emits `nresp=1` in every `Final_Data`. The
-discriminator was the slot-3 probe (`overlays/bench-2resp-idx1.conf`): the
-LOCK's own radio, the one the phone has granted on for weeks, answered from
-slot 3 and got `tx123` responses, zero records, and a session that FAILED at
-the phase deadline. The transmitter is not the variable; the slot is.
-Confirmed twice, and close-range RF was ruled out separately.
+Answered no, but **only the observation is settled, not its cause.** The phone
+builds the grown round faithfully -- Final at POLL+3, `Final_Data` at POLL+4,
+key derivation in step -- and still emits `nresp=1` in every `Final_Data`.
+Confirmed twice; close-range RF was ruled out separately.
 
-VERDICT: a stock iPhone honors `N_Resp = 2` as slot LAYOUT only -- its
-receive-and-report path is single-responder. Stage B as specified cannot
-pass, and the `nresp=2` pass criterion in the satellite README is unreachable
-on stock phone firmware. Nothing the stage was built out of is wasted: every
-component below it is proven and feeds stage B'.
+The slot-3 probe (`overlays/bench-2resp-idx1.conf`) put the LOCK's own radio,
+the one the phone has granted on for weeks, in slot 3: `tx123` responses, zero
+records, a session that FAILED at the phase deadline. That controls for the
+RADIO but not for the CODE. Both boards share one index-1 offset path and one
+STS derive, so a systematic defect there fails identically on both, and the
+probe cannot separate "the phone ignores slot 3" from "our slot-3 frame fails
+the phone's validation". Calling it a phone limitation was a step too far.
+
+What IS established: the phone committed to the `N_Resp = 2` round rather than
+silently falling back. Its own Final decoded at POLL+3 with `cper=0` under
+N=2 derivation and its `Final_Data` at POLL+4, so both its key schedule and its
+slot layout used `Number_Responder_Nodes = 2`. CCC v4 obliges an initiator to
+report every responder whose response it VALIDATED and gives it no field in
+which to declare itself single-responder, so `nresp=1` is spec-legal only if
+validation failed. The round arithmetic itself checks out against CCC v4
+Table 20-2 (Response_l at POLL+1+l / STS+1+l, Final at POLL+N+1, `Final_Data`
+at POLL+N+2), so the layout is not the defect.
+
+MISSING CONTROL, cheap and not yet run: have the second board STS-verify the
+first board's `Response_1` with the session keys it already holds. Fails => our
+bug, and stage B is recoverable. Verifies => narrows to a phone policy choice,
+though not conclusively, since both boards run the same `ccc_kdf.c` and a
+shared derive error would agree with itself.
+
+Either way stage B' is the better route and does not wait on this: nothing the
+stage was built out of is wasted, and every component below it feeds B'.
 
 ### B'. Block-parity alternation — the fallback built only from proven parts
 
@@ -180,11 +197,30 @@ authenticated DS-TWR distance to the credential, on its own half of the
 blocks, at half the previous rate.
 
 Every phone behaviour this depends on was watched on the bench all night.
-The two unproven pieces are both in our own firmware:
+CCC v4 covers the mechanism directly: a responder is explicitly permitted to
+stay silent in its dedicated response slot, with no retry counter and no round
+abort, and the choice of which responders take part in any given round is left
+to the initiator side. Alternation is one responder per round, which is the
+sanctioned model -- better spec footing than B, which put a second anchor into
+a slot the enrolled responder device is the normative occupant of.
 
-1. **The lock's K-consecutive trust layer must tolerate its silent blocks.**
-   Either K counts only the blocks the lock owns, or the window doubles.
-   Cheap to check in the module tests before any board is flashed.
+1. **RESOLVED: the trust layer tolerates the silent blocks.** `g_range_trust`
+   advances and resets only inside the accepted-latch path of
+   `fira_session_set_ccc_range_cm()` (`fira_session.c:189-211`), never on a
+   block tick or timer, and the run's continuity test is a distance delta, not
+   a block-index gap. A silent block produces no latch at all, so it cannot
+   clear the run -- it only halves the rate. At K=3 and a 192 ms block, trust
+   arrives about 1152 ms after session start instead of 576 ms, worst case
+   (the anchor whose parity misses block 0). `overlays/bench-uwb-k2.conf`
+   is on the shelf if that half second matters.
+
+   The fail-closed chain behind it: no Response TX means `resp_tx_done` never
+   runs, so `g_await_final` stays false, so the Final handler never latches a
+   capture, so `Final_Data` finds no fresh round and computes no distance. A
+   silent block yields no range rather than a stale-timestamp one. On the
+   nRF5340 satellite this requires `CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT=y`:
+   its default live-recompute path hardcodes `have_round = true` and would pair
+   a stale t3 with this round's t2/t6, latching garbage every second block.
 2. **The phone must not mind its range alternating between two nearby
    anchors.** Per block the measured distance steps by up to the install
    baseline. Nothing in the round rejects a range, but a phone-side filter
@@ -192,6 +228,97 @@ The two unproven pieces are both in our own firmware:
 
 Pass: with both nodes alternating, the phone's session survives 40+ blocks
 with `cper=0`, and each node's range tracks a tape measure on its own blocks.
+
+### B''. Two rounds per block — Aliro's own mechanism for this exact question
+
+Found 2026-08-21 while reading the specs against the bench result. Aliro 1.0
+§12.1.1 (`aliro-1.0.txt` l.9571-9582) defines a mechanism aimed precisely at
+the question this plan exists to answer, and it is not the multi-responder
+route:
+
+> "Two ranging rounds per ranging block enable 'in front of' and 'behind the
+> Reader' detection by the Reader. [...] A Reader MAY optionally support two
+> ranging rounds per ranging block while **a User Device SHALL support two
+> ranging rounds per ranging block.** [...] the responder-device SHALL be
+> responsible for mapping responders (at the responder-device) to the
+> appropriate ranging rounds."
+
+Two rounds sit at a session-constant non-zero offset `O^k`, chosen by the
+Reader at setup and signalled in the MAC Mode attribute (ID 15, l.7589-7600),
+running two hopping sequences related by `f_i = h_i + O^k` (l.9585-9591). The
+lock takes round 1, the satellite round 2. Details in protocol-research.md §11.
+
+Why this outranks B' on all three axes B' was chosen for:
+
+| | B' alternation | B'' two rounds |
+|---|---|---|
+| Phone obligation | none; it only ever reserved a slot | "User Device SHALL support" |
+| Pairing skew | one whole block, 192 ms | `O^k x T_Round`, inside one block |
+| Rate per anchor | halved | unchanged |
+
+The specific hazard (l.9709-9736): if *either* Final_Data goes unheard, the
+responder-device unconditionally assumes a hop and sets both `Hop_Flag` to 1.
+Two physical units must therefore share Final_Data reception state, not merely
+the URSK, or they compute different next-round indices and desynchronise. That
+is a real coupling B' does not have, and it is the thing to design first.
+
+Unproven here, and the reason this is a stage rather than a decision: nothing
+in this tree implements MAC Mode or a second round today, and the phone's
+mandatory support is a spec statement, not a bench measurement. It deserves the
+same one-evening probe stage B got.
+
+### Constraints the tree imposes on any alternating scheme
+
+These came out of reading the round engine and the fusion layer on 2026-08-21.
+They apply to B'; the first applies to B'' too, in weakened form.
+
+1. **Alternation breaks the one contract `ultrawidelock_fusion_eval` states.**
+   `ultrawidelock_fusion.h:63` -- "The two distances MUST be from the same
+   round." B' guarantees they never are. Because the anchors are mounted across
+   the door plane, the approach axis IS the baseline axis, so `adiff` tends to
+   `baseline_mm` for an approaching phone and the only headroom before the
+   triangle gate at `ultrawidelock_fusion.c:39` trips is `tol_mm`: 90 by default
+   (`ultrawidelock_anchor/Kconfig:253`), 62 at the stage A calibrated value.
+
+   One 192 ms block at 1.4 m/s is 269 mm of radial motion -- 3.0x the default
+   headroom, 4.3x the calibrated one. Even a 0.5 m/s shuffle gives 96 mm, still
+   over 90. So `geometry_ok` goes false on roughly half the blocks, the half
+   whose parity ordering inflates `adiff`, and `ultrawidelock_fusion.c:66` makes
+   `may_predict` return false on `!geometry_ok`. It fails CLOSED -- predictive
+   unlock suppressed on approach, not an unsafe grant -- and the bias flips sign
+   every block, so the verdict chatters rather than settling.
+
+   `stale_ms` will not catch it: 1500 ms default
+   (`ultrawidelock_anchor/Kconfig:275`) against a 192 ms skew, so the mispaired
+   sample looks fresh and authoritative. Nothing tests it either --
+   `tests/host/test_ultrawidelock_fusion.c` covers staleness, swapped anchors
+   and negative rejection, but never a moving phone with skewed samples.
+
+   Worth noting the skew is not wholly new: `main.c:901` already pairs
+   `approach.last_cm * 10` against whatever report is stored, bounded only by
+   `stale_ms`. B' converts that from incidental to structural and
+   parity-correlated. B'' shrinks it to `O^k x T_Round` but does not remove it.
+
+2. **`far_silence_ms` is sized for a full-rate feed.** 750 ms
+   (`ultrawidelock_approach.c:318`, enforced at `:897-905`) against a 384 ms
+   alternating cadence is 2x margin. One dropped block puts it at 576 ms, two at
+   768 ms, and it relocks mid-approach. Size this before flashing anything.
+
+3. **Skip at the TX call site, and leave `tr` non-zero.** The narrowest place is
+   the single `tx_response_sp3()` call at `ccc_shim_rx.c:1791`; guard it and let
+   `tr` keep its `-1` initialiser. Do NOT make `tx_response_sp3` return 0, and
+   do NOT skip inside `resp_tx_done`. On a skipped block the deferred Pre-POLL
+   decode's only home is `if (tr != 0 && g_pp_pending)` at `:1857-1860`; if it
+   does not run, `g_warm_index` never advances and the
+   `g_warm_index != g_armed_index` guard at `:1861` suppresses the NEXT block's
+   POLL arm -- a one-block skip becomes two, and the stride learn at `:570`
+   doubles.
+
+4. **Key the parity off `g_armed_index`.** It is phone-derived and committed at
+   `:1864` with no local accumulation, so it is identical on both boards for the
+   same block. Not `g_session_block`: it is written in the deferred decode and
+   still holds block N-1 at the decision point. Not `g_poll_stride`: it is
+   learned, and goes to 192 across a missed Pre-POLL.
 
 ### C. Report path and the owed timebase
 
