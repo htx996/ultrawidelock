@@ -962,6 +962,18 @@ int main(void)
 				sf.ble_rssi_outside_dbm = INT16_MIN;
 				sf.ble_rssi_threshold_dbm = INT16_MIN;
 				sf.uwb_peer_mm = ultrawidelock_satellite_peer_mm(&satellite, now);
+				/* The filter checks quorum against THIS mask, not
+				 * against the evidence fields themselves; leaving it
+				 * zero fails quorum on every sample regardless of what
+				 * was measured. */
+				if (sf.uwb_range_mm >= 0) {
+					sf.anchor_health_mask |=
+						ULTRAWIDELOCK_SIDE_ANCHOR_PRIMARY_UWB;
+				}
+				if (sf.uwb_peer_mm >= 0) {
+					sf.anchor_health_mask |=
+						ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE;
+				}
 				sf.fusion_side = fv.geometry_ok ? (uint8_t)fv.side
 								: ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN;
 				/* Flat, not a function of delta_mm: the dead band and
@@ -980,6 +992,26 @@ int main(void)
 					(unsigned)side_dec.side, side_dec.confidence, side_dec.flags,
 					(int)sf.uwb_range_mm, (int)sf.uwb_peer_mm,
 					(int)fv.delta_mm);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+				/*
+				 * Same accounting the BLE feed does, because the
+				 * latch counts WINDOWS and does not care which
+				 * evidence produced one. Without this an image
+				 * with no BLE witnesses never advances the run at
+				 * all, and the latch refuses for ever on
+				 * ULTRAWIDELOCK_LATCH_R_WINDOWS however long the
+				 * phone stands outside.
+				 */
+				ultrawidelock_latch_note_window(
+					&s_latch, latch_cred,
+					ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)
+						? side_dec.side
+						: (side_dec.side ==
+							   ULTRAWIDELOCK_SIDE_LABEL_INSIDE
+							   ? ULTRAWIDELOCK_SIDE_LABEL_INSIDE
+							   : ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN),
+					sf.uwb_range_mm, now);
+#endif
 			}
 #endif
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
