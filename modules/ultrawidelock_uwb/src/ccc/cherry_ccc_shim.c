@@ -290,6 +290,32 @@ enum cherry_err cherry_session_start(struct cherry_session *session)
 		rcfg[0], rcfg[1], rcfg[2], rcfg[3], rcfg[12], rcfg[13], rcfg[14], rcfg[15],
 		rcfg[16]);
 
+#if defined(CONFIG_ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG)
+	/* Bench-only (see the Kconfig help): the exact `sat join` line the satellite
+	 * responder's shell accepts. Everything it needs beyond the URSK is inside
+	 * rcfg[] plus the PHY pair. Printed before the radio start so the handoff
+	 * can land before UWB_Time0; pre-poll recovery makes a late paste cost one
+	 * block, not the session. */
+	{
+		static const char hx[] = "0123456789abcdef";
+		char ursk_hex[2 * SHIM_URSK_LEN + 1];
+		char rcfg_hex[2 * sizeof(rcfg) + 1];
+
+		for (size_t i = 0; i < SHIM_URSK_LEN; i++) {
+			ursk_hex[2 * i] = hx[s->ursk[i] >> 4];
+			ursk_hex[2 * i + 1] = hx[s->ursk[i] & 0xfu];
+		}
+		ursk_hex[2 * SHIM_URSK_LEN] = '\0';
+		for (size_t i = 0; i < sizeof(rcfg); i++) {
+			rcfg_hex[2 * i] = hx[rcfg[i] >> 4];
+			rcfg_hex[2 * i + 1] = hx[rcfg[i] & 0xfu];
+		}
+		rcfg_hex[2 * sizeof(rcfg)] = '\0';
+		LOG_INF("SAT-HANDOFF: sat join %s %s %u %u", ursk_hex, rcfg_hex,
+			c->channel, c->sync_code_index);
+	}
+#endif
+
 	rc = ultrawidelock_uwb_start_cred(&fcfg);
 	if (rc != 0) {
 		LOG_ERR("ultrawidelock_uwb_start_cred rc=%d", rc);

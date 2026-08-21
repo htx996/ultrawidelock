@@ -310,6 +310,35 @@ static uint8_t g_pp_stash[64];
 static uint16_t g_pp_stash_len;
 static bool g_pp_pending;
 
+/**
+ * @brief Whether THIS anchor answers the block whose POLL is being handled.
+ *
+ * Only meaningful on the POLL path, and only there: it reads state that is
+ * exactly one block behind. In steady state this block's Pre-POLL is stashed
+ * but NOT yet decoded (the ~2 ms decrypt+derive is deferred past the Response
+ * TX arm, see ccc_shim_rx_try_prepoll), so @c g_session_block still holds the
+ * PREVIOUS block's index and this block's parity is one more than it.
+ *
+ * Both anchors run this identical code against the identical air input, so they
+ * always reach opposite verdicts and never share a slot. The @c g_pp_pending
+ * requirement is what keeps that true across the seam: on a cold bootstrap
+ * block the decode runs inline instead, leaving the counter current rather than
+ * one behind, and an anchor that joins mid-session would otherwise compute its
+ * parity off a differently-aged counter than its partner. An anchor that cannot
+ * place itself in the alternation stays silent, which costs one block; guessing
+ * would risk transmitting in the same slot as its partner.
+ */
+static inline bool ccc_block_is_ours(void)
+{
+#if ULTRAWIDELOCK_BLOCK_PARITY < 0
+	return true;
+#else
+	return g_have_session_block && g_pp_pending &&
+	       (unsigned)((g_session_block + 1u) & 1u) ==
+		       (unsigned)ULTRAWIDELOCK_BLOCK_PARITY;
+#endif
+}
+
 #if CCC_RX_LOCK_SWEEP
 /** @brief Lock/search state for the phase-locked (o,K) tracker. */
 static bool g_locked;         /**< True once a candidate cleared CPER. */
@@ -576,13 +605,14 @@ static void prepoll_decode(const uint8_t *frame, uint16_t datalength)
 	if (g_poll_stride != 0u) {
 		uint32_t widx = g_poll_sts_index + g_poll_stride;
 
-		/* Warm the POLL (widx), Response_0 (widx+1) AND Final — same round, same dURSK,
+		/* Warm the POLL (widx), our Response AND Final — same round, same dURSK,
 		 * only STS-V advances — so no leg runs a KDF. */
 		/* EXPERIMENT-2RESP: the phone's Final RFRAME sits ULTRAWIDELOCK_FINAL_SLOT_OFFSET
-		 * slots past the POLL (n=1 -> widx+2, n=2 -> widx+3; responder 1's silent
-		 * slot is widx+2). Response_0 stays at widx+1 (we are responder 0). */
+		 * slots past the POLL (n=1 -> widx+2, n=2 -> widx+3). Responder l's
+		 * Response_l sits at widx+1+l: the lock is 0, the satellite is 1. */
 		if (ccc_shim_sts_for_index(widx, g_warm_dursk, g_warm_sts_v) == 0 &&
-		    ccc_shim_sts_for_index(widx + 1u, g_warm_resp_dursk, g_warm_resp_sts_v) == 0 &&
+		    ccc_shim_sts_for_index(widx + 1u + ULTRAWIDELOCK_RESPONDER_INDEX,
+					   g_warm_resp_dursk, g_warm_resp_sts_v) == 0 &&
 		    ccc_shim_sts_for_index(widx + ULTRAWIDELOCK_FINAL_SLOT_OFFSET, g_warm_final_dursk,
 					   g_warm_final_sts_v) == 0) {
 			g_warm_index = widx;
@@ -786,7 +816,7 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 			g_dbg_have_round++;
 		}
 #endif
-		if (have_round && ccc_responder_ds_twr(&fd, 0u, t_reply1, t_round2, &tw) == 0) {
+		if (have_round && ccc_responder_ds_twr(&fd, ULTRAWIDELOCK_RESPONDER_INDEX, t_reply1, t_round2, &tw) == 0) {
 			/* Signed, because near zero the numerator goes slightly negative and
 			 * an unsigned divide would wrap it into a kilometre. This used to be
 			 * open-coded here to dodge exactly that in ccc_ds_twr_tof(); the
@@ -1480,8 +1510,9 @@ static int tx_response_sp3(uint32_t poll_ip, uint32_t resp_idx)
 #endif
 	dwt_configurestsloadiv(); /* reset the HW STS counter to our V */
 	/* STS mode stays SP3/ND (the POLL arm set it) — the Response is the same RFRAME. */
-	dx = poll_ip +
-	     CCC_RESP_SLOT_HI32; /* RMARKER = POLL + one negotiated slot, antenna-compensated */
+	/* RMARKER = POLL + (1 + responder index) negotiated slots, antenna-compensated. */
+	dx = poll_ip + CCC_RESP_SLOT_HI32 +
+	     (uint32_t)ULTRAWIDELOCK_RESPONDER_INDEX * CCC_SLOT_NOMINAL_HI32;
 	dwt_setdelayedtrxtime(dx);
 	dwt_writetxdata(sizeof(g_resp_payload), g_resp_payload, 0u);
 	dwt_writetxfctrl(sizeof(g_resp_payload) + 2u, 0u, 1u); /* +FCS; ranging=1 (STS) */
@@ -1563,7 +1594,7 @@ static void resp_tx_done(const dwt_cb_data_t *cb)
 
 	if (g_resp_txn < 16u) {
 		DIAGK("RESP txdone #%u idx=%08x\n", (unsigned)g_resp_txn,
-		      (unsigned)(g_armed_index + 1u));
+		      (unsigned)(g_armed_index + 1u + ULTRAWIDELOCK_RESPONDER_INDEX));
 		g_resp_txn++;
 	}
 #if defined(ESP_PLATFORM)
@@ -1778,15 +1809,29 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 		int16_t stsq = 0;
 		int qret = 0;
 		int tr = -1;
+		bool ours;
 
 		g_await_poll = false;
+		/* Evaluate ONCE, here: ccc_block_is_ours() reads g_pp_pending, which
+		 * resp_tx_done clears as soon as the Response TX completes, so a second
+		 * call further down would not agree with the one that made the decision. */
+		ours = ccc_block_is_ours();
 		/* Time-critical FIRST: arm Response_0's delayed TX before the stsq read and
 		 * ultrawidelock_printf. cper=0 => real POLL, so delayed-TX Response_0 (index+1); else return
-		 * to the SP0 listen. */
-		if (cper == 0u && ip != 0u) {
+		 * to the SP0 listen.
+		 *
+		 * Under block-parity alternation the partner anchor owns the other blocks.
+		 * Leaving tr = -1 on theirs falls through to exactly the path a non-POLL
+		 * takes, and the whole ranging leg fails closed behind it: no Response TX
+		 * means resp_tx_done never runs, so g_await_final stays false, so the Final
+		 * handler never latches a capture, so Final_Data finds no fresh round and
+		 * computes no distance. A silent block therefore produces no range at all
+		 * rather than a stale-timestamp one, which is what keeps the layer-4 trust
+		 * run intact across it. */
+		if (cper == 0u && ip != 0u && ours) {
 			g_poll_ip_for_final = ip; /* round anchor for the Final RX arm (TXDONE) */
 			g_t_poll_rx = ip40;       /* t2: responder POLL RX */
-			tr = tx_response_sp3(ip, g_armed_index + 1u);
+			tr = tx_response_sp3(ip, g_armed_index + 1u + ULTRAWIDELOCK_RESPONDER_INDEX);
 #if defined(ESP_PLATFORM)
 			/* ESP32: the TX-done callback (resp_tx_done) dispatches too late and too
 			 * jittery (~2-16 ms) to arm the Final RFRAME, which sits only ~2 ms after
@@ -1846,7 +1891,10 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 			      "dec=%dus\n",
 			      (unsigned)st, cper, d, d / 250, (int)stsq, qret,
 			      (unsigned)g_armed_index,
-			      (cper == 0u && ip != 0u) ? ((tr == 0) ? "armed" : "FAIL") : "-",
+			      (cper != 0u || ip == 0u) ? "-"
+			      : !ours                  ? "skip" /* partner anchor's block */
+			      : (tr == 0)              ? "armed"
+						       : "FAIL",
 			      (int)(g_ccc_dbg_decode / 250u));
 		}
 
