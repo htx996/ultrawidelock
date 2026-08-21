@@ -298,6 +298,90 @@ _PART_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*$")
 _PART_VAL = re.compile(r"^  (address|size|end_address|region):\s*(\S+)\s*$")
 
 
+# ---- the ceiling the linker does NOT enforce ---------------------------------
+#
+# The FLASH region in the map is the `app` partition, and an image that fits it
+# can still fail to ship. MCUboot's slot has to hold three things the linker
+# never sees: the image header, the signature TLVs imgtool appends, and the boot
+# TRAILER it reserves at the end of the slot. imgtool checks the total at sign
+# time and refuses:
+#
+#   Error: Image size (0x69ecf) + trailer (0x630) exceeds requested size 0x6a000
+#
+# MEASURED 2026-08-21 on the debug client image, which is how this was found: it
+# linked with 456 B "free" against the map and then would not sign. On this
+# configuration the linker's figure is optimistic by 1,735 B, so a report that
+# quotes only the region tells every reader they have about 1.7 KB more than
+# they can actually spend.
+#
+# THE TRAILER IS DERIVED, NOT GUESSED. imgtool computes it in image.py, and for
+# a slot that is not --overwrite-only it is
+#
+#   max_sectors * 3 * align  +  MAX_ALIGN * 4  +  magic
+#
+# with imgtool's own defaults of 128 sectors, MAX_ALIGN 8 and a 16 B magic. At
+# the --align 4 this board signs with, that is 1536 + 32 + 16 = 1,584 = 0x630 --
+# exactly the number imgtool reported above. The build passes neither
+# --max-sectors nor --overwrite-only, so the defaults are what apply.
+IMGTOOL_MAX_ALIGN = 8
+IMGTOOL_MAGIC = 16
+IMGTOOL_DEFAULT_MAX_SECTORS = 128
+
+
+def imgtool_trailer(align, max_sectors=IMGTOOL_DEFAULT_MAX_SECTORS):
+    """Bytes imgtool reserves at the end of the slot for the boot trailer."""
+    return max_sectors * 3 * align + IMGTOOL_MAX_ALIGN * 4 + IMGTOOL_MAGIC
+
+
+def sign_align(build):
+    """The --align imgtool is invoked with, read from the generated build rules.
+
+    Read rather than assumed because it scales the trailer by 384x. Falls back
+    to 4, the write-block size of this part's internal flash; a wrong fallback
+    would show up as a budget that disagrees with a real signing failure.
+    """
+    for rel in ("build.ninja", os.path.join("zephyr", "build.ninja")):
+        path = os.path.join(build, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", errors="replace") as fh:
+            m = re.search(r"imgtool[^\n]*?--align\s+(\d+)", fh.read())
+        if m:
+            return int(m.group(1))
+    return 4
+
+
+def signing_budget(imgdir, parts, align):
+    """What the FLASH region may actually hold, once MCUboot has its share.
+
+    The per-image overhead (header + TLVs) is MEASURED off the two artifacts
+    rather than modelled: the TLV block varies by a byte or two between runs
+    because DER strips leading zeros from r and s, and a model would have to
+    round that up and stay wrong forever.
+
+    Returns None when there is nothing to measure, so a report from a tree that
+    has not been signed still renders -- it just cannot show this.
+    """
+    slot = (parts.get("mcuboot_primary") or {}).get("size")
+    raw = os.path.join(imgdir, "zephyr.bin")
+    signed = os.path.join(imgdir, "zephyr.signed.bin")
+    if not slot or not os.path.isfile(raw) or not os.path.isfile(signed):
+        return None
+    overhead = os.path.getsize(signed) - os.path.getsize(raw)
+    if overhead < 0:
+        return None
+    trailer = imgtool_trailer(align)
+    return {
+        "slot": slot,
+        "trailer": trailer,
+        "align": align,
+        # image header + signature TLVs, measured off this build's artifacts
+        "image_overhead": overhead,
+        # what the linker region may hold before imgtool refuses to sign
+        "budget": slot - trailer - overhead,
+    }
+
+
 def read_partitions(path):
     parts = {}
     if not os.path.isfile(path):
@@ -517,6 +601,9 @@ def build_report(args):
     seg_used = account_segments(elf, regions)
     sec_used, sec_stored, sec_detail = account_sections(elf, regions)
 
+    parts = read_partitions(os.path.join(build, "partitions.yml"))
+    budget = signing_budget(imgdir, parts, sign_align(build))
+
     out_regions = {}
     for name, reg in regions.items():
         used = seg_used[name]
@@ -534,8 +621,20 @@ def build_report(args):
             "load_images": sec_stored[name],
             "padding": used - sec_used[name] - sec_stored[name],
         }
+        # FLASH alone has a second, lower ceiling that the linker cannot see.
+        # `free` above is what the map allows; `signing.free` is what imgtool
+        # allows, and it is the one that decides whether an image ships. Kept as
+        # a nested block rather than replacing `free`, so the two numbers can be
+        # printed side by side -- the gap between them is the whole point.
+        if name == "FLASH" and budget is not None:
+            b = dict(budget)
+            b["used"] = used
+            b["free"] = budget["budget"] - used
+            b["pct"] = (
+                round(100.0 * used / budget["budget"], 2) if budget["budget"] else None
+            )
+            out_regions[name]["signing"] = b
 
-    parts = read_partitions(os.path.join(build, "partitions.yml"))
     merged = os.path.join(build, "merged.hex")
     artifact = {
         "merged_hex_bytes": os.path.getsize(merged) if os.path.isfile(merged) else None,
@@ -619,6 +718,17 @@ def print_table(report, stream):
         stream.write(
             f"    {name:<10} {fmt(reg['size']):>10}  {fmt(reg['used']):>10}"
             f"  {fmt(reg['free']):>10}   {reg['pct']:>6.2f}%\n"
+        )
+    sign = (report["regions"].get("FLASH") or {}).get("signing")
+    if sign:
+        stream.write(
+            "\n    what MCUboot will actually accept, which is lower than the region:\n"
+            f"    slot {fmt(sign['slot']):>10}"
+            f"  - trailer {fmt(sign['trailer']):>6}"
+            f"  - hdr/TLV {fmt(sign['image_overhead']):>5}"
+            f"  = budget {fmt(sign['budget']):>10}\n"
+            f"    FLASH      {fmt(sign['budget']):>10}  {fmt(sign['used']):>10}"
+            f"  {fmt(sign['free']):>10}   {sign['pct']:>6.2f}%   <- the one that ships\n"
         )
     stream.write("\n    cross-check against the `size -A` view (sum of allocated sections):\n")
     for name, reg in report["regions"].items():
