@@ -500,6 +500,211 @@ out with the phone left inside.
 Board-string port of the satellite app, DK returns to being a bench tool.
 Deferred until the board exists; nothing above depends on it.
 
+#### The port is done in software — 2026-08-21
+
+Deployed target: **one DWM3001CDK lock, one DWM3001CDK satellite**, DK retired
+to the bench. Hardware bring-up waits for the board; everything below was
+verified by build and host tests alone.
+
+It was a board string, as the anchor example promised. The app C did not change:
+`examples/zephyr/satellite/src/` has no board `#ifdef` and no `dwt_*`, and
+`anchor_link.c` already stamped `CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE` into every
+report. What the port needed was three files and one real bug.
+
+| Piece | What it took |
+|---|---|
+| Pin map | `boards/decawave_dwm3001cdk.overlay`, copied from the anchor bench's, body byte-identical |
+| Thread radio | `overlay-thread.conf` is board-neutral again; `CONFIG_NRF_802154_SER_HOST` and the net-core sysbuild image moved to `overlay-thread-nrf5340.conf`, layered by `mk/satellite.mk` for the DK only |
+| Size gate | `make sat-size` / `sat-size-check` / `sat-size-baseline`, one baseline per board+Thread variant |
+
+Measured from the linker's own region report, first green builds:
+
+| Image | Flash | RAM |
+|---|---|---|
+| CDK, no Thread | 116,256 B of 504 KB (22.53%) | 68,160 B of 128 KB (52.00%) |
+| CDK, Thread | 272,160 B of 504 KB (52.73%) | 108,032 B of 128 KB (82.42%) |
+| DK, Thread (unchanged) | 256,336 B of 1008 KB (24.83%) | 119,096 B of 448 KB (25.96%) |
+
+Both CDK rows are committed as baselines --
+`examples/zephyr/satellite/size-baseline-decawave_dwm3001cdk.json` and
+`-thread.json`, one per variant because the four builds are four different
+images -- and `make sat-size-check SAT_BOARD=decawave_dwm3001cdk SAT_THREAD=1`
+is what fails on a regression against them.
+
+RAM was the risk and it is not the binding one: the CDK Thread satellite has
+23,040 B free, against a lock on the same part that ships at 84.70%. The obvious
+reclamation is `CONFIG_MBEDTLS_HEAP_SIZE=16384` in `prj.conf` -- the lock
+measured a 228 B peak on its own PSA path and now runs 1024. NOT TRIMMED HERE,
+because this board's PSA workload is the CCC key ladder rather than the lock's,
+and the number that settles it is a heap peak read off hardware. Measure it at
+bring-up, then cut; the whole point of the baseline above is that the cut can
+then be shown to be free.
+
+#### The one-satellite assumption that was really there
+
+The audit was owed on the lock's ingest, and it found two faults, one of them a
+security fault rather than a functional one. Both are fixed; neither changes
+anything for a lock with one satellite.
+
+1. **Replay protection was disabled outright by a second satellite.**
+   `witness_link.c` kept ONE `struct ultrawidelock_witness_seen` for every
+   anchor. `ultrawidelock_seen_accept_ctr()` compares counters only when the
+   boot id matches, and two satellites have different boot ids -- so alternating
+   reports each reset the window for the other and every counter was accepted,
+   including a captured one replayed between two genuine reports. Now one window
+   per role, indexed by the role inside the seal.
+
+2. **A second satellite's distance was fused as if the first had measured it.**
+   The anchor callback dropped `am.role`, so both boards' distances landed in
+   one `struct ultrawidelock_satellite`. Nothing fails: the side verdict simply
+   inverts. The callback now carries the role, and
+   `ultrawidelock_satellite_set` holds one slot per role.
+
+The fold across roles is fail-safe and, with one satellite, is exactly the
+single-peer behaviour: silent roles are absent and absent permits; a role in its
+dead band abstains rather than vetoes; roles naming opposite sides return
+`{UNKNOWN, geometry_ok = false}` rather than voting; `may_predict` is the AND,
+so one satellite with real evidence withholds whatever the others say.
+
+What holding three roles costs the lock, MEASURED by building this branch and
+HEAD side by side in the anchor-link bench config (`LATCH=1 SIDE=1`,
+`bench-2resp` + `bench-anchorlink` + LTO):
+
+| | HEAD | this branch | delta |
+|---|---|---|---|
+| FLASH | 430,488 B (99.27%) | 430,728 B (99.32%) | **+240 B** |
+| RAM | 120,808 B (92.17%) | 121,256 B (92.51%) | **+448 B** |
+
+The RAM is where the three slots live: `struct ultrawidelock_satellite_set` is
+720 B of `.bss` against the single peer's 240, and the per-role replay windows
+36 B against 12. Most of it is this node's sample ring kept three times over.
+Sharing one ring would save ~380 B and would mean reaching into the pairing
+rule that has been on hardware, which is not a trade worth making with 9,816 B
+free.
+
+**That bench image is at 99.3% of flash with or without this change** -- 2,936 B
+free here, 3,176 B at HEAD. The tightness is pre-existing and is the next thing
+that will bite; it is why the build fails outright without `overlay-lto.conf`.
+
+#### Can the real Matter lock carry this? Yes, at RELEASE
+
+Measured on the shipping DWM3001CDK image -- `make build`, so Matter over
+Thread, BLE, the reader and LTO, which `CDK_LTO` defaults on (`mk/cdk.mk:159`):
+
+All four cells, because three of them invite the wrong comparison:
+
+| flash / RAM | debug default | `RELEASE=1` |
+|---|---|---|
+| **without** second anchor | 417,956 B (96.38%) / 118,376 B (90.31%) | 393,872 B (90.82%) / 111,080 B (84.75%) |
+| **with** second anchor | 430,728 B (99.32%) / 121,256 B (92.51%) | 405,752 B (93.56%) / 113,960 B (86.94%) |
+
+Read the COLUMNS for what the feature costs and the ROWS for what the release
+profile costs. The feature is +12,772 B of flash at debug and +11,880 B at
+release -- the same ~12 KB either way -- and +2,880 B of RAM in both. The
+release profile is worth ~24 KB of flash and 7,296 B of RAM in both rows.
+
+The two axes are independent, and mixing them flatters the result: a release
+image carrying the second anchor (93.56%) does read smaller than the debug image
+without it (96.38%), but that comparison credits the feature with a saving that
+has nothing to do with it. Adding the second anchor never buys headroom. The
+question "does it fit" is answered in a column, not a diagonal -- and it does
+fit, with 27,912 B of flash spare at release.
+
+And `RELEASE=1` is not free, it is on-board debugging given up:
+`overlay-release.conf` cuts the RTT up-buffer from 8,376 B to 1,024 (which is
+where nearly all of its RAM saving comes from), sets `INIT_STACKS=n`, and drops
+every wrn/inf/dbg format string. That file's own header says not to flash it to
+a board being brought up, and stage E is bring-up -- so the bench checklist
+above runs on the DEBUG default, which is also what every size figure in this
+document was measured against. `RELEASE=1` is a decision for after the boards
+are working, not a way to make the feature fit.
+
+**Why 12,772 B, when the geometry is about 1 KB?** Because `ANCHOR_LINK` cannot
+be built on its own yet, and the chain that forces the rest is all in Kconfig:
+`bench-anchorlink.conf` requires `overlay-latch.conf` (witness_link.c still
+holds the WV2 consumer inline), `overlay-latch.conf` sets `ANCHOR` +
+`SIDE_GATE` + `INSIDE_LATCH` + `WITNESS_LINK_OT` together, and `INSIDE_LATCH`
+depends on `SIDE_GATE` and selects `WITNESS_CODEC`. 3,254 lines of C get newly
+compiled and only 395 of them -- `fusion.c` and `satellite.c` -- are the second
+anchor. The rest is the sealed transport (OpenThread UDP, PSA AES-CCM both
+directions, replay windows, key settings, the WV4 handoff), the side classifier
+and temporal filter, the inside latch, AND the retired BLE-witness receive path
+with its advertiser picker.
+
+`ULTRAWIDELOCK_ANCHOR_LINK`'s own help already books this as a deferral. Now
+that the satellite replaces the dongles, carving the WV2 consumer and the picker
+out of witness_link.c is dead-code removal rather than a feature cut, and it is
+where the flash is. Deliberately not bundled here: it is a refactor of a
+security-sensitive file and wants its own change.
+
+`make build` -- the shipping default -- is unaffected:
+`CONFIG_ULTRAWIDELOCK_ANCHOR is not set` there, so
+`ultrawidelock_satellite.c` is not compiled at all
+(`modules/ultrawidelock_anchor/CMakeLists.txt` gates the whole library on it)
+and every changed region in `main.c` and `witness_link.c` is inside an
+`IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR*)` guard.
+
+Geometry is per role now (`ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM`, `_3_MM`,
+default 0 = not installed), because the baseline is the distance from the lock
+to THAT board and two boards are not in the same place. Role 1 keeps
+`ULTRAWIDELOCK_ANCHOR_BASELINE_MM` unrenamed, so a one-satellite deployment
+keeps the setting it already has.
+
+Three is the ceiling and it is not a free number: it is `range 1 3` on
+`ULTRAWIDELOCK_ANCHOR_ROLE`, it is `enum ultrawidelock_witness_role`, and it is
+what makes `0xFF` safe as the lock's own nonce prefix for the WV4 handoff. Those
+move together or the AES-CCM nonce spaces stop being disjoint.
+
+The WV4 handoff needed nothing: it goes to mesh-local all-nodes sealed under the
+one anchor key, so it already reaches every satellite, and the satellites' nonce
+spaces are disjoint because each writes its own role into nonce byte 0.
+
+#### Bench checklist, for when the boards arrive
+
+Nothing here has been run on hardware. Stage E is not passed until it is.
+
+1. **Flash.** `make sat-build SAT_BOARD=decawave_dwm3001cdk SAT_THREAD=1`, then
+   `make sat-flash SAT_BOARD=decawave_dwm3001cdk SAT_THREAD=1`. The chip for
+   `probe-rs` is **nRF52833_xxAA** (`mk/satellite.mk` picks it from the board;
+   attaching with the DK's target reads like a dead board). Two probes on one
+   machine enumerate in a different order twenty minutes apart -- pass
+   `PROBE=` rather than trusting the order.
+   **Never `--erase` a provisioned board**: the link key lives in settings.
+2. **First light on the UART, radio off.** `make sat-term`, confirm the shell
+   answers, before any Thread dataset goes in. This is the wire that separates a
+   protocol failure from radio coexistence, and it is why the plain build exists.
+3. **Per-unit provisioning**, one board at a time, and write down which unit got
+   which:
+   - **role** -- build-time, `CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE`. A MOUNTING
+     FACT. Backwards it fails no test and inverts the side verdict. One
+     satellite = role 2 (outside).
+   - **link key** -- the anchor key, shared with the lock (`uwl/anc`), which is
+     safe across satellites only because the role is in the nonce.
+   - **Thread dataset** -- `sat dataset <tlvs>`, 226 characters; the RX rings on
+     both transports are sized for it.
+4. **Baseline.** Measure lock-to-satellite centre-to-centre and set
+   `CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM` from the tape, not from the
+   default. Every triangle test is relative to it.
+5. **Heap peak.** With `CONFIG_ULTRAWIDELOCK_HEAP_PROBE`, read the mbedTLS peak
+   after a full join, then decide the `MBEDTLS_HEAP_SIZE` trim against the
+   committed size baseline.
+6. **Re-baseline the size** once the config is final:
+   `make sat-size-baseline SAT_BOARD=decawave_dwm3001cdk SAT_THREAD=1`.
+
+**Stage E passes when:** the nRF5340 DK is unplugged and out of the deployment,
+and one CDK satellite reports distances the lock pairs into the same ranging
+block (`anchor role=2 report blk=... mm=...` beside the lock's own `pair
+sid=... blk=...` for that block), with a walk-up grant and a correct withhold
+from the inside.
+
+**Adding satellite 2 and 3 later** is provisioning, not a patch: a free role in
+1..3, its own place in the lock's `k/<role>`-style enrolment (the anchor key is
+shared, the role keeps the nonces apart), the Thread dataset, and the matching
+`ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM` / `_3_MM`. The lock's ingest already holds
+three roles and is host-tested for two and three reporting in one block. The
+lock does need a rebuild for the new baseline value, since it is Kconfig; it
+does not need a code change.
+
 ## The transport is not settled: BLE probably beats Thread
 
 Recorded 2026-08-21, deliberately, because the current answer is INHERITED
