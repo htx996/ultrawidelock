@@ -47,7 +47,7 @@ CDK_PROBE ?= $(PROBE_RS_PROBE)
 # line before the first one runs, so a cache written by line 1 is invisible
 # to line 2 (measured on the macOS GNU make this repo is driven by).
 CDK_PROBE_CACHE ?= $(if $(wildcard $(LEGACY_CDK_KEY_DIR)/cdk-probe),$(LEGACY_CDK_KEY_DIR)/cdk-probe,$(CDK_KEY_DIR)/cdk-probe)
-CDK_PROBE_GOALS := flash flash-erase monitor ota-window
+CDK_PROBE_GOALS := flash flash-erase monitor monitor-rtt ota-window
 ifeq ($(strip $(CDK_PROBE)),)
 ifneq ($(filter $(CDK_PROBE_GOALS),$(MAKECMDGOALS)),)
 CDK_PROBE := $(shell '$(REPO_ROOT)/scripts/cdk-find-probe.sh' '$(CDK_PROBE_CACHE)')
@@ -322,7 +322,7 @@ CDK_SIZE_REPORTS  ?= 1
 CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_SIZE_JSON)' \
                      $(if $(filter-out 0 n no off N NO OFF,$(CDK_SIZE_REPORTS)),--reports --run-prefix '$(CDK_WEST)')
 
-.PHONY: build rebuild instrument reader selftest cirdiag flash flash-erase monitor dfu release \
+.PHONY: build rebuild instrument reader selftest cirdiag flash flash-erase monitor monitor-rtt dfu release \
         cdk-size cdk-size-check cdk-size-baseline \
         dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
@@ -630,6 +630,21 @@ monitor:
 	  --from-config $(CDK_RTT_BUILD)/$(CDK_IMAGE)/zephyr/.config 2>/dev/null || true
 	@probe-rs attach --chip $(CDK_CHIP) $(CDK_PROBE_ARG) \
 	  $(CDK_RTT_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.elf
+
+## monitor-rtt: RTT feed for the DWM3001CDK  ·  ctrl-c ends it
+##   Takes the probe over (stops any capture already attached to this chip) and
+##   appends a copy of everything to build/rtt-cdk.log (LOG=path moves it).
+##   Attaches with the DEPLOYED ELF -- the copy `flash` keeps of what the board
+##   actually runs -- so this works without knowing which CDK_BUILD produced it.
+monitor-rtt:
+	@command -v probe-rs >/dev/null 2>&1 || { printf '  probe-rs not found  ·  see `make tools`\n' >&2; exit 1; }
+	-@pkill -f 'probe-rs attach --chip $(CDK_CHIP)' 2>/dev/null || true; sleep 1
+	@log='$(if $(LOG),$(LOG),$(ULTRAWIDELOCK_BUILD_ROOT)/rtt-cdk.log)'; \
+	elf='$(CDK_DEPLOYED_ELF)'; \
+	[ -f "$$elf" ] || elf='$(CDK_RTT_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.elf'; \
+	[ -f "$$elf" ] || { printf '  no ELF (deployed or in %s)  ·  build/flash first\n' '$(CDK_RTT_BUILD)' >&2; exit 1; }; \
+	printf '  RTT: DWM3001CDK  ·  elf %s  ·  copy -> %s  ·  ctrl-c ends\n' "$$elf" "$$log"; \
+	exec script -aq "$$log" probe-rs attach --chip $(CDK_CHIP) $(CDK_PROBE_ARG) "$$elf"
 
 ## cdk-size: what the image costs and how much room is left  ·  measures only
 cdk-size:
