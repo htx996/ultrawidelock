@@ -386,8 +386,16 @@ static int latch_settings_set(const char *name, size_t len, settings_read_cb rea
 	}
 	/* A rejected blob leaves the latch initialised-and-empty, which reads
 	 * INSIDE for everyone. Corruption must not be recoverable into a
-	 * permissive state. */
-	if (!ultrawidelock_latch_deserialize(&s_latch, NULL, blob, (size_t)got)) {
+	 * permissive state.
+	 *
+	 * The cfg must survive the reload: deserialize re-inits, and passing
+	 * NULL there re-inits to the code defaults -- which silently undid
+	 * every ULTRAWIDELOCK_LATCH_* Kconfig on any boot that had records to
+	 * load (measured 2026-08-21: a 5000 ms entry dwell ran as 60000).
+	 * Copied out first because deserialize memsets the latch it is given. */
+	struct ultrawidelock_latch_cfg cfg = s_latch.cfg;
+
+	if (!ultrawidelock_latch_deserialize(&s_latch, &cfg, blob, (size_t)got)) {
 		LOG_WRN("latch records unreadable; every credential reads INSIDE");
 	}
 	return 0;
