@@ -12,7 +12,11 @@ SAT_BOARD ?= nrf5340dk/nrf5340/cpuapp
 # Flattened board string, same as mk/anchor.mk: slashes would bury the build
 # where the ELF paths stop being copy-pasteable.
 SAT_BOARD_TAG := $(subst /,_,$(SAT_BOARD))
-SAT_BUILD ?= $(ULTRAWIDELOCK_BUILD_ROOT)/satellite-$(SAT_BOARD_TAG)
+# Thread builds land beside the plain one, never on top of it: switching would
+# otherwise reuse a CMake cache with the net-core image configured in or out,
+# and fail in a way that reads as a code error.
+SAT_SUFFIX := $(if $(filter 1,$(SAT_THREAD)),-thread,)
+SAT_BUILD ?= $(ULTRAWIDELOCK_BUILD_ROOT)/satellite-$(SAT_BOARD_TAG)$(SAT_SUFFIX)
 
 # Chip follows the board (`probe-rs attach` needs the right target or it fails
 # in a way that reads like a dead board).
@@ -25,13 +29,26 @@ override SAT_BUILD := $(abspath $(SAT_BUILD))
 
 SAT_PRISTINE := $(if $(PRISTINE),always,auto)
 
+# SAT_THREAD=1 adds the sealed link over Thread, and with it the nRF5340's
+# net-core radio image. Opt-in rather than default: the Response arm margin
+# measured WITHOUT OpenThread on this core is the baseline the Thread build has
+# to be judged against, and there is no comparison to make if only one of the
+# two can be built. It also keeps the UART-only first light available, which is
+# what docs/second-anchor.md's risks section asks for.
+ifeq ($(SAT_THREAD),1)
+SAT_EXTRA_CONF := -DEXTRA_CONF_FILE=$(SAT_APP)/overlay-thread.conf \
+                  -DSB_CONF_FILE=$(SAT_APP)/sysbuild-thread.conf
+else
+SAT_EXTRA_CONF :=
+endif
+
 .PHONY: sat-build sat-flash sat-monitor
 
 ##@ Satellite responder  ·  joins the phone's CCC round as responder 1 (stage B)
 ## sat-build: build the satellite  -> build/satellite-<board>
 sat-build:
 	@$(CDK_RUN) build -p $(SAT_PRISTINE) -b $(SAT_BOARD) \
-	  -d $(SAT_BUILD) $(SAT_APP)
+	  -d $(SAT_BUILD) $(SAT_APP) $(if $(SAT_EXTRA_CONF),-- $(SAT_EXTRA_CONF))
 
 ## sat-flash: flash the satellite built for SAT_BOARD
 sat-flash:
