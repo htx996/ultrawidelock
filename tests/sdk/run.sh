@@ -22,10 +22,8 @@ check_declarations modules/ultrawidelock_uwb/include/ultrawidelock/uwb.h
 # The flat headers this API replaced, banned so they cannot come back. This list
 # used to spell them in their pre-rename names, and the rename carried those
 # across with everything else -- which left it holding each new name twice and
-# banning none of the originals. Writing the old names back is not the fix, and
-# check_brand would reject them anyway: it bans that whole vocabulary across the
-# tree, which covers the originals more strongly than a five-entry list ever
-# did. What this list still owns is the flat shape under our own prefix. Run
+# banning none of the originals. Writing the old names back is not the fix.
+# What this list owns is the flat shape under our own prefix. Run
 # `git log -p pre-rename -- tests/sdk/run.sh` for the names themselves.
 for legacy in modules/ultrawidelock_cred/include/ultrawidelock_reader.h \
 	modules/ultrawidelock_cred/include/ultrawidelock_device.h modules/ultrawidelock_cred/include/ultrawidelock_tlv.h \
