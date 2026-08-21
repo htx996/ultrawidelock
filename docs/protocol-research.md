@@ -397,6 +397,15 @@ session's bench measurement, reported here rather than reproduced. What follows 
 arithmetic that constrains their explanation. Two of the constraints refute claims made in
 this tree before they were checked; both refutations are marked below.
 
+*Provenance, added after a later run.* Those four figures are contaminated and should not be
+quoted as the CCC path's accuracy. Two causes, both identified on 2026-08-21: the run was
+taken with the DK lacking clear line of sight at phone height, and some of the statistics
+were read out of a session that was still in progress, so approach samples sat inside the
+median. The arithmetic below was derived to explain that distribution and stands on its own
+-- it is about what the estimator can and cannot do, not about those numbers -- but the
+distribution it was aimed at turned out to be an artifact. The clean measurement is at the
+end of this section.
+
 **A constant cannot produce scatter.** A hard floor at 46 mm with a mean (335 mm) more than
 twice the median (159 mm) is a right-skewed distribution, and no additive offset produces
 skew: an offset slides a distribution and leaves its shape alone. So the run contains at
@@ -469,21 +478,43 @@ path's antenna-delay subtraction and that it was worth fixing. Applying 4092 the
 subtract 19.2 m from distances whose median is 159 mm. The empirical check refutes it
 without any of the above: an uncompensated 19.2 m offset cannot coexist with a 159 mm
 median. What remains genuinely uncompensated on the CCC path is the RF delay between the
-chip's timestamp reference plane and the antenna, at both ends -- a constant, positive, and
-of unknown size here.
+chip's timestamp reference plane and the antenna, at both ends. The clean run below bounds
+it: under 25 mm, and if anything negative rather than positive.
 
-**What is left is the leading edge.** After the two constants are removed from suspicion, the
-tail still needs a cause, and first-path detection has the right signature: it is one-sided
-positive (the estimator can pick a later path than the true one, never an earlier one), which
-is exactly a hard floor with a right tail. `uwb_cirdiag.c` already reports the first-path
-index; stage A saw it steady at 735-744 (`second-anchor.md`), so a per-range log of it beside
-the distance would confirm or kill this in one run.
+**The clean measurement: there is nothing to calibrate.** The experiment this section
+originally proposed -- tape the phone at a known distance and read *medians only*, the median
+being robust to the tail -- was run at a 2.0 m tape. Three completed sessions, stationary
+samples only, read **1975 / 1989 / 1980 mm**, IQR 10-23 mm. That is a mean of 1981.3 mm, 18.7
+mm short of the tape, or 4 ticks, or 0.93%. It is also tighter than the 20.5 mm sigma stage A
+measured on the dedicated anchor bench, where both ends are our own boards. No fixed offset,
+no scale error, and the 18.7 mm is smaller than the placement error of taping a phone to a
+wall. The whole calibration thread is closed: the CCC responder path needs no correction term
+at all, which is what the predicted-versus-measured argument above predicts.
 
-**The experiment that separates centre from tail.** Tape the phone at 0.5 m, then at 2.0 m,
-and compare *medians only* -- the median is robust to the tail, which is the point. A
-difference equal to the true 1.5 m means the centre is calibrated and only the tail is left.
-A constant offset at both distances is a residual antenna delay. An offset that grows with
-distance is a clock or units error, not a delay.
+**The tail was placement, not first-path physics.** This section previously argued that
+leading-edge detection explained the right tail, on the grounds that first-path error is
+one-sided positive and so produces exactly a hard floor with a long tail. The reasoning is
+sound and the conclusion was wrong. The 28% of samples above 400 mm disappeared completely
+once the DK had clear line of sight at phone height; later sessions span 136-272 mm with zero
+outliers. The signature fit, but the cause was geometry. No CIR or `fp_index` investigation is
+needed, and the run that would have "confirmed" it would have confirmed an artifact.
+
+**A methodology rule came out of this, and it is the transferable part.** Never read a
+session's statistics until a *later* session has started. Reading them in flight leaves
+approach samples inside the median: one session read 1656 mm while running and 1975 mm from
+its last-8 stationary samples once complete. That single mistake produced a ~320 mm apparent
+offset that was briefly believed and is now retracted. Both this session and the peer session
+published numbers derived from in-flight reads before the rule existed; treat any figure in
+the repo dated before 2026-08-21 that came from a live session as suspect.
+
+**Unresolved: occlusion sensitivity.** Late in the clean run the distance shifted tightly from
+~1980 mm to 1576/1581 mm after a person sat down between the DK and the phone. This is *not*
+recorded here as an occlusion penalty, because it is equally consistent with the phone simply
+being 400 mm closer once they sat; the two explanations are confounded and the run cannot
+separate them. It needs a controlled test -- same taped phone position, body moved in and out
+of the line -- and it matters more than it looks, because a body between the phone and one of
+two anchors is the *normal* case at a door, and stage B'' puts both anchors in the same block
+on the assumption that what differs between them is geometry.
 
 **Still unverified.** Whether two boards built at `NUM_RESPONDERS=1` / `RESPONDER_INDEX=0`
 and sharing one session's keys derive byte-identical per-block and per-slot material has not
