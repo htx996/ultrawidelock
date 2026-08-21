@@ -166,7 +166,7 @@ int32_t ultrawidelock_satellite_peer_mm(const struct ultrawidelock_satellite *s,
  * How many satellite roles a lock can ingest at once.
  *
  * THREE, and the number is not free: it is `range 1 3` on
- * ULTRAWIDELOCK_ANCHOR_ROLE (examples/zephyr/satellite/Kconfig), it is enum
+ * ULTRAWIDELOCK_ANCHOR_ROLE (apps/nrf5340dk-satellite/Kconfig), it is enum
  * ultrawidelock_witness_role, and it is what makes 0xFF safe as the lock's own
  * nonce prefix on the sealed link (HANDOFF_NONCE_ROLE, witness_link.c). Those
  * four have to move together or the AES-CCM nonce spaces stop being disjoint,

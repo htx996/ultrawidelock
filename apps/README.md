@@ -11,6 +11,7 @@ in `ports/`.
 | [`dwm3001cdk-lock/`](dwm3001cdk-lock/) | `make build` | `build/cdk-matter/` |
 | [`dwm3001cdk-lock-freertos/`](dwm3001cdk-lock-freertos/) | `make freertos-port-test` (foundation only) | `build/freertos-nrf52833-host/` |
 | [`nrf5340dk-lock/`](nrf5340dk-lock/) | `make nrf-build` | `build/nrf5340dk/` |
+| [`nrf5340dk-satellite/`](nrf5340dk-satellite/) | `make sat-build SAT_THREAD=1` | `build/satellite-<board>-thread/` |
 | [`esp32-matter-lock/`](esp32-matter-lock/) | `make esp-build APP=matter-lock TARGET=esp32s3` | `build/esp32-matter-lock-esp32s3/` |
 
 These directories are product front ends, not alternate copies of the shared
