@@ -47,6 +47,18 @@ struct ultrawidelock_fusion_cfg {
 	 * ambiguous and should read that way.
 	 */
 	int32_t deadband_mm;
+	/**
+	 * Shift of the side boundary toward the inside anchor, mm. 0 keeps the
+	 * boundary on the perpendicular bisector, which is the door plane when
+	 * the anchors straddle the door -- the shipping install. A positive
+	 * value moves the frontier so INSIDE begins (baseline - bias) / 2 in
+	 * front of the inside anchor on the axis: for a bench where both
+	 * anchors sit on the same side of the walkway, that puts "inside"
+	 * behind the lock itself. It must stay several sigma below the
+	 * baseline; at bias == baseline the INSIDE locus degenerates to the
+	 * ray behind the anchor and noise decides every verdict.
+	 */
+	int32_t boundary_bias_mm;
 };
 
 /** The verdict, with the evidence that produced it rather than just a yes or no. */

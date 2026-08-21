@@ -509,6 +509,7 @@ int main(void)
 		.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM,
 		.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
 		.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+		.boundary_bias_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM,
 	};
 
 	ultrawidelock_satellite_init(&satellite, &fusion_cfg, CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
