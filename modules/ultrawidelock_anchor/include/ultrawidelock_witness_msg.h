@@ -274,6 +274,65 @@ bool ultrawidelock_anchor_msg_decode(const uint8_t *buf, size_t len,
  */
 bool ultrawidelock_msg_is_anchor(const uint8_t *buf, size_t len);
 
+/* ── WV4: the lock's session handoff ─────────────────────────────────────── */
+
+/**
+ * The join parameters for one credential session, lock -> satellite.
+ *
+ * THIS IS THE ONLY MESSAGE THAT TRAVELS IN THAT DIRECTION WITH CONTENT, and it
+ * exists to delete a laptop. Until it did, the satellite learned each session's
+ * URSK because the lock printed it on RTT and a host script typed it into the
+ * satellite's shell -- which means a walk-up needed a debugger attached to both
+ * boards and the URSK crossed in the clear over a debug transport.
+ *
+ * The direction reverses the link's usual trust argument, so state it plainly:
+ * a WV3 report carries no authority and the lock may ignore it, but a WV4
+ * handoff is a key delivery and the satellite acts on it. What protects the
+ * satellite is that the sender proved the link key, the counter is fresh, and
+ * the worst a valid-but-hostile handoff achieves is making this board range a
+ * session that is not happening -- it can transmit Responses nobody asked for,
+ * which costs air time and reveals nothing, because a responder that is not on
+ * the initiator's real STS schedule produces nothing anyone can use.
+ *
+ * Fixed width, like WV3, and for the same reason: a length disagreement means
+ * the two sides disagree about the format.
+ */
+#define ULTRAWIDELOCK_JOIN_MSG_VER 4u
+
+/** URSK, as CCC sizes it. */
+#define ULTRAWIDELOCK_JOIN_URSK_LEN 32u
+
+/** The ranging-config block the initiator derives its schedule from. */
+#define ULTRAWIDELOCK_JOIN_RCFG_LEN 17u
+
+/** ver, boot_id, ctr, ursk, rcfg, channel, sync_code_index. */
+#define ULTRAWIDELOCK_JOIN_MSG_LEN                                                                 \
+	(1u + 4u + 4u + ULTRAWIDELOCK_JOIN_URSK_LEN + ULTRAWIDELOCK_JOIN_RCFG_LEN + 1u + 1u)
+
+/** One decoded handoff. Caller-owned; the codec allocates nothing. */
+struct ultrawidelock_join_msg {
+	uint8_t ver;
+	/** The LOCK's boot id, so a counter that restarts at zero is telling the
+	 *  truth rather than replaying. */
+	uint32_t boot_id;
+	uint32_t ctr;
+	uint8_t ursk[ULTRAWIDELOCK_JOIN_URSK_LEN];
+	uint8_t rcfg[ULTRAWIDELOCK_JOIN_RCFG_LEN];
+	uint8_t channel;
+	uint8_t sync_code_index;
+};
+
+/** @return bytes written (ULTRAWIDELOCK_JOIN_MSG_LEN), or 0 if malformed or @p cap too small. */
+size_t ultrawidelock_join_msg_encode(const struct ultrawidelock_join_msg *msg, uint8_t *buf,
+				     size_t cap);
+
+/** @return true on a well-formed WV4 handoff of exactly the expected length. */
+bool ultrawidelock_join_msg_decode(const uint8_t *buf, size_t len,
+				   struct ultrawidelock_join_msg *out);
+
+/** Which report is this, without committing to decoding it? See is_anchor. */
+bool ultrawidelock_msg_is_join(const uint8_t *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

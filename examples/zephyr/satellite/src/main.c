@@ -33,6 +33,9 @@
 
 #include <ultrawidelock/uwb.h>
 
+/* Ahead of every LOG_* in this file, which is where Zephyr requires it. */
+LOG_MODULE_REGISTER(sat, LOG_LEVEL_INF);
+
 #define SAT_URSK_LEN 32u
 #define SAT_RCFG_LEN 17u
 
@@ -73,9 +76,89 @@ static int hex_parse(const char *s, uint8_t *out, size_t len)
 	return 0;
 }
 
-static int cmd_sat_join(const struct shell *sh, size_t argc, char **argv)
+/**
+ * Join a session from raw parameters, whatever delivered them.
+ *
+ * Shared by the shell and the sealed link so the two cannot drift: the link is
+ * meant to REPLACE the typed command, and a join that behaved differently
+ * depending on how it arrived would make bench results say nothing about the
+ * wireless path. Everything above this is transport; everything below is
+ * identical.
+ *
+ * @param sid_out session id actually configured, for the caller's log.
+ * @return 0, or negative with @p why set to a caller-printable reason.
+ */
+static int sat_join_apply(const uint8_t *ursk, const uint8_t *rcfg, uint8_t channel,
+			  uint8_t sync_code_index, uint32_t *sid_out, const char **why)
 {
 	struct ultrawidelock_uwb_cred_cfg cfg = {0};
+	int rc;
+
+	/* rcfg[12] is the responder count baked into the SaltedHash. If it does
+	 * not match this build, every derived STS diverges and nothing decodes —
+	 * refuse loudly instead of listening to silence. */
+	if (rcfg[12] != CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS) {
+		*why = "rcfg responder count disagrees with this build";
+		return -EINVAL;
+	}
+
+	if (ursk != s_ursk) {
+		memcpy(s_ursk, ursk, SAT_URSK_LEN);
+	}
+	if (rcfg != s_rcfg) {
+		memcpy(s_rcfg, rcfg, SAT_RCFG_LEN);
+	}
+
+	cfg.session_id = ((uint32_t)s_rcfg[4] << 24) | ((uint32_t)s_rcfg[5] << 16) |
+			 ((uint32_t)s_rcfg[6] << 8) | s_rcfg[7];
+	cfg.sts_index0 = ((uint32_t)s_rcfg[8] << 24) | ((uint32_t)s_rcfg[9] << 16) |
+			 ((uint32_t)s_rcfg[10] << 8) | s_rcfg[11];
+	cfg.block_duration_ms = (uint32_t)s_rcfg[13] * 96u;
+	cfg.slot_per_round = s_rcfg[14];
+	cfg.slot_duration_rstu = (uint16_t)(s_rcfg[15] * 400u);
+	cfg.channel = channel;
+	cfg.sync_code_index = sync_code_index;
+	cfg.ursk = s_ursk;
+	cfg.ranging_config = s_rcfg;
+	cfg.rc_len = SAT_RCFG_LEN;
+
+	/* Re-join is the normal case (a new session per walk-up); tear the old
+	 * listen down first. A never-started stop is a no-op. */
+	ultrawidelock_uwb_stop();
+	rc = ultrawidelock_uwb_start_cred(&cfg);
+	if (rc != 0) {
+		*why = "start_cred refused the configuration";
+		return rc;
+	}
+	if (sid_out != NULL) {
+		*sid_out = cfg.session_id;
+	}
+	return 0;
+}
+
+#if defined(CONFIG_OPENTHREAD)
+/* The sealed handoff arrived and unsealed. Runs on the OpenThread RX thread. */
+static void on_link_join(const uint8_t *ursk, const uint8_t *rcfg, uint8_t channel,
+			 uint8_t sync_code_index)
+{
+	const char *why = "";
+	uint32_t sid = 0u;
+
+	if (sat_join_apply(ursk, rcfg, channel, sync_code_index, &sid, &why) != 0) {
+		LOG_WRN("sealed handoff rejected: %s", why);
+		return;
+	}
+	LOG_INF("SAT joined from the sealed link sid=0x%08x ch=%u code=%u", sid, channel,
+		sync_code_index);
+}
+#endif
+
+static int cmd_sat_join(const struct shell *sh, size_t argc, char **argv)
+{
+	const char *why = "";
+	uint32_t sid = 0u;
+	uint8_t channel;
+	uint8_t code;
 	int rc;
 
 	ARG_UNUSED(argc);
@@ -87,40 +170,16 @@ static int cmd_sat_join(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "rcfg: want %u hex chars", 2u * SAT_RCFG_LEN);
 		return -EINVAL;
 	}
-	/* rcfg[12] is the responder count baked into the SaltedHash. If it does
-	 * not match this build, every derived STS diverges and nothing decodes —
-	 * refuse loudly instead of listening to silence. */
-	if (s_rcfg[12] != CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS) {
-		shell_error(sh, "rcfg says %u responders, this build is %u — rebuild one side",
-			    s_rcfg[12], CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
-		return -EINVAL;
-	}
+	channel = (uint8_t)strtoul(argv[3], NULL, 10);
+	code = (uint8_t)strtoul(argv[4], NULL, 10);
 
-	cfg.session_id = ((uint32_t)s_rcfg[4] << 24) | ((uint32_t)s_rcfg[5] << 16) |
-			 ((uint32_t)s_rcfg[6] << 8) | s_rcfg[7];
-	cfg.sts_index0 = ((uint32_t)s_rcfg[8] << 24) | ((uint32_t)s_rcfg[9] << 16) |
-			 ((uint32_t)s_rcfg[10] << 8) | s_rcfg[11];
-	cfg.block_duration_ms = (uint32_t)s_rcfg[13] * 96u;
-	cfg.slot_per_round = s_rcfg[14];
-	cfg.slot_duration_rstu = (uint16_t)(s_rcfg[15] * 400u);
-	cfg.channel = (uint8_t)strtoul(argv[3], NULL, 10);
-	cfg.sync_code_index = (uint8_t)strtoul(argv[4], NULL, 10);
-	cfg.ursk = s_ursk;
-	cfg.ranging_config = s_rcfg;
-	cfg.rc_len = SAT_RCFG_LEN;
-
-	/* Re-join is the normal case (a new session per walk-up); tear the old
-	 * listen down first. A never-started stop is a no-op. */
-	ultrawidelock_uwb_stop();
-	rc = ultrawidelock_uwb_start_cred(&cfg);
+	rc = sat_join_apply(s_ursk, s_rcfg, channel, code, &sid, &why);
 	if (rc != 0) {
-		shell_error(sh, "start_cred rc=%d", rc);
+		shell_error(sh, "%s (rc=%d)", why, rc);
 		return rc;
 	}
-	shell_print(sh, "SAT joined sid=0x%08x sts0=0x%08x spr=%u ch=%u code=%u resp=%u/%u",
-		    cfg.session_id, cfg.sts_index0, cfg.slot_per_round, cfg.channel,
-		    cfg.sync_code_index, CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX,
-		    CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
+	shell_print(sh, "SAT joined sid=0x%08x ch=%u code=%u resp=%u/%u", sid, channel, code,
+		    CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX, CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
 	return 0;
 }
 
@@ -132,8 +191,6 @@ static int cmd_sat_stop(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "SAT stopped");
 	return 0;
 }
-
-LOG_MODULE_REGISTER(sat, LOG_LEVEL_INF);
 
 #if defined(CONFIG_OPENTHREAD)
 /*
@@ -238,11 +295,14 @@ int main(void)
 		return 0;
 	}
 #if defined(CONFIG_OPENTHREAD)
+	/* Before the socket opens, so a handoff cannot arrive with the sink
+	 * still unset -- the lock sends one at every session start. */
+	anchor_link_set_join_cb(on_link_join);
 	/* After psa_crypto_init: the link seals with PSA and would fail every
 	 * report if it opened first. */
 	anchor_link_init();
 #endif
-	printk("SAT satellite responder %u/%u — waiting for `sat join`\n",
+	printk("SAT satellite responder %u/%u — waiting for a sealed handoff\n",
 	       CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX, CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
 
 	/* Range reporter: the engine's own logs are budgeted per session, so

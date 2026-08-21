@@ -518,6 +518,9 @@ int main(void)
 	 * still unset. */
 	s_satellite = &satellite;
 	witness_link_set_anchor_cb(on_anchor_report);
+	/* The other direction: hand each session's join parameters to the second
+	 * anchor over the same sealed link, so no console relay is involved. */
+	ultrawidelock_uwb_set_handoff_listener(witness_link_send_handoff);
 #endif
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)

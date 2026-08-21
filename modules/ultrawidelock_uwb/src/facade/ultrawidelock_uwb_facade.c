@@ -168,6 +168,18 @@ void ultrawidelock_uwb_set_range_listener(void (*cb)(void))
 #endif
 }
 
+void ultrawidelock_uwb_set_handoff_listener(void (*cb)(const struct ultrawidelock_uwb_handoff *h))
+{
+#if defined(CONFIG_ULTRAWIDELOCK_CRED)
+	cherry_ccc_set_handoff_listener(cb);
+#else
+	/* No credential sessions, so no join parameters ever exist to hand over.
+	 * Accepting the registration and never calling it is the honest shape:
+	 * the caller's second anchor simply never hears from us. */
+	(void)cb;
+#endif
+}
+
 bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out)
 {
 	return ultrawidelock_uwb_trusted_range_age_cm(cm_out, NULL);

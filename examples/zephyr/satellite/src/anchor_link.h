@@ -54,4 +54,20 @@ int anchor_link_set_key(const uint8_t *key, size_t len);
 /** True when the socket is open and a key is stored. */
 bool anchor_link_ready(void);
 
+/**
+ * Called when a sealed session handoff arrives from the lock and survives both
+ * the seal and the replay window.
+ *
+ * @param ursk 32 bytes, @param rcfg 17 bytes -- borrowed for the call only.
+ *
+ * Runs on the OpenThread RX thread. The only message this board ACTS on rather
+ * than merely reports, so what protects it is the key and the counter; see
+ * ULTRAWIDELOCK_JOIN_MSG_VER for why a valid-but-hostile one is survivable.
+ */
+typedef void (*anchor_link_join_cb)(const uint8_t *ursk, const uint8_t *rcfg, uint8_t channel,
+				    uint8_t sync_code_index);
+
+/** Register the handoff sink. Set it before anchor_link_init() opens the socket. */
+void anchor_link_set_join_cb(anchor_link_join_cb cb);
+
 #endif /* ANCHOR_LINK_H */
