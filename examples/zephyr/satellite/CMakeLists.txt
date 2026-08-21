@@ -15,6 +15,7 @@ get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 list(APPEND ZEPHYR_EXTRA_MODULES
 	"${REPO_ROOT}/modules/ultrawidelock_uwb"
 	"${REPO_ROOT}/modules/ultrawidelock_dw3000"
+	"${REPO_ROOT}/modules/ultrawidelock_anchor"
 	"${REPO_ROOT}/ports/zephyr")
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
@@ -33,3 +34,7 @@ endif()
 
 target_sources(app PRIVATE
 	src/main.c)
+
+# The sealed link needs Thread. Without it the board still ranges and still
+# prints, it simply has nobody to tell.
+target_sources_ifdef(CONFIG_OPENTHREAD app PRIVATE src/anchor_link.c)

@@ -24,6 +24,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
+#if defined(CONFIG_OPENTHREAD)
+#include "anchor_link.h"
+#endif
 #include <zephyr/sys/printk.h>
 #include <psa/crypto.h>
 
@@ -131,10 +135,47 @@ static int cmd_sat_stop(const struct shell *sh, size_t argc, char **argv)
 
 LOG_MODULE_REGISTER(sat, LOG_LEVEL_INF);
 
+#if defined(CONFIG_OPENTHREAD)
+/*
+ * The link key. Typed here rather than baked in, because a key in the image is
+ * a key in the repository -- and it must match the lock's `anckey` byte for
+ * byte or every report is discarded as unopenable, which at the lock looks
+ * exactly like an anchor that never booted.
+ */
+static int cmd_sat_key(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t key[16];
+	size_t hex_len;
+	int rc;
+
+	ARG_UNUSED(argc);
+
+	hex_len = strlen(argv[1]);
+	if (hex_len != 2u * sizeof(key) ||
+	    hex2bin(argv[1], hex_len, key, sizeof(key)) != sizeof(key)) {
+		shell_error(sh, "key must be exactly %u hex characters",
+			    (unsigned)(2u * sizeof(key)));
+		return -EINVAL;
+	}
+	rc = anchor_link_set_key(key, sizeof(key));
+	if (rc != 0) {
+		shell_error(sh, "storing the key rc=%d", rc);
+		return rc;
+	}
+	shell_print(sh, "stored; reports %s",
+		    anchor_link_ready() ? "will be sent" : "wait for the Thread link");
+	return 0;
+}
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sat_cmds,
 	SHELL_CMD_ARG(join, NULL, "join <ursk-hex64> <rcfg-hex34> <channel> <sync-code>",
 		      cmd_sat_join, 5, 0),
 	SHELL_CMD_ARG(stop, NULL, "stop ranging and quiesce the radio", cmd_sat_stop, 1, 0),
+#if defined(CONFIG_OPENTHREAD)
+	SHELL_CMD_ARG(key, NULL, "set the sealed-link key: `key <hex32>` (same bytes as the "
+		      "lock's `anckey`)", cmd_sat_key, 2, 0),
+#endif
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(sat, &sat_cmds, "satellite responder (stage B)", NULL);
 
@@ -146,6 +187,11 @@ int main(void)
 		printk("SAT psa_crypto_init failed (%d)\n", (int)st);
 		return 0;
 	}
+#if defined(CONFIG_OPENTHREAD)
+	/* After psa_crypto_init: the link seals with PSA and would fail every
+	 * report if it opened first. */
+	anchor_link_init();
+#endif
 	printk("SAT satellite responder %u/%u — waiting for `sat join`\n",
 	       CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX, CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
 
@@ -179,6 +225,13 @@ int main(void)
 				LOG_INF("pair sid=%08x blk=%u mm=%d",
 					(unsigned)ultrawidelock_uwb_session_id(),
 					(unsigned)blk, (int)(cm * 10));
+#if defined(CONFIG_OPENTHREAD)
+				/* The report the lock actually acts on. The log
+				 * line above stays: it is what the bench joins
+				 * against the lock's, and it keeps working when
+				 * the link is down. */
+				anchor_link_report(cm * 10, blk);
+#endif
 			}
 			last_gen = gen;
 			printk("SAT range %d cm (gen %u)\n", (int)cm, (unsigned)gen);
