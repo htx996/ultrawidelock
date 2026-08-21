@@ -30,9 +30,9 @@
  * shape, and the same reasoning, as matter_thread_on_datagram()'s try-lock on
  * the commissioning owner. A lost inbound message costs one step timeout.
  */
+#include <stdio.h> /* snprintf, for the operational instance name */
 #include <string.h>
 
-#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 #include "matter_client.h"
@@ -51,6 +51,7 @@
 #include "matter_tlv.h"
 
 #include "ultrawidelock_hash.h"
+#include "ultrawidelock_osal.h"
 #include "ultrawidelock_port.h"
 #include "ultrawidelock_prim.h"
 
@@ -160,17 +161,23 @@ static uint8_t s_tx[CLIENT_TX_MAX];
  * the callback only stores and posts; the work applies it.
  */
 static struct matter_thread_peer s_resolved;
-static atomic_t s_resolve_state;
+static ultrawidelock_atomic_t s_resolve_state;
 #define RESOLVE_NONE 0
 #define RESOLVE_OK   1
 #define RESOLVE_FAIL 2
 
-static void poll_work_fn(struct k_work *w);
-static K_WORK_DELAYABLE_DEFINE(s_poll_work, poll_work_fn);
+static void poll_work_fn(struct ultrawidelock_dwork *w);
+static struct ultrawidelock_dwork s_poll_work;
 
+/*
+ * The work queue's clock, not the system's -- they are the same thing on
+ * target and deliberately are not on a host, where the suite steps the clock
+ * to walk this machine through its timeouts. Reading anything else here would
+ * measure elapsed time against deadlines set on a different clock.
+ */
 static uint32_t now_ms(void)
 {
-	return k_uptime_get_32();
+	return (uint32_t)ultrawidelock_osal_now_ms();
 }
 
 /** Ask for a poll in @p delay_ms. UINT32_MAX means "there is nothing to wait
@@ -180,7 +187,7 @@ static void poll_at(uint32_t delay_ms)
 	if (delay_ms == UINT32_MAX) {
 		return;
 	}
-	(void)k_work_reschedule(&s_poll_work, K_MSEC(delay_ms));
+	(void)ultrawidelock_dwork_reschedule(&s_poll_work, (int32_t)delay_ms);
 }
 
 /* ---- the peer this attempt is for ------------------------------------------ */
@@ -624,11 +631,11 @@ static void on_resolved(void *ctx, const struct matter_thread_peer *peer)
 
 	if (peer != NULL && peer->valid) {
 		s_resolved = *peer;
-		atomic_set(&s_resolve_state, RESOLVE_OK);
+		(void)ultrawidelock_atomic_xchg(&s_resolve_state, RESOLVE_OK);
 	} else {
-		atomic_set(&s_resolve_state, RESOLVE_FAIL);
+		(void)ultrawidelock_atomic_xchg(&s_resolve_state, RESOLVE_FAIL);
 	}
-	(void)k_work_reschedule(&s_poll_work, K_NO_WAIT);
+	(void)ultrawidelock_dwork_reschedule(&s_poll_work, 0);
 }
 
 /** Ask DNS-SD where the chosen target is. */
@@ -659,7 +666,7 @@ static bool start_resolve(void)
 	if (n < 0 || (size_t)n >= sizeof(instance)) {
 		return false;
 	}
-	atomic_set(&s_resolve_state, RESOLVE_NONE);
+	(void)ultrawidelock_atomic_xchg(&s_resolve_state, RESOLVE_NONE);
 	if (matter_thread_resolve(instance, on_resolved, NULL) != MATTER_OK) {
 		return false;
 	}
@@ -667,7 +674,7 @@ static bool start_resolve(void)
 	return true;
 }
 
-static void poll_work_fn(struct k_work *w)
+static void poll_work_fn(struct ultrawidelock_dwork *w)
 {
 	uint32_t t;
 	uint32_t next;
@@ -678,7 +685,7 @@ static void poll_work_fn(struct k_work *w)
 	ultrawidelock_mutex_lock(&s_lock);
 	t = now_ms();
 
-	resolved = (int)atomic_set(&s_resolve_state, RESOLVE_NONE);
+	resolved = (int)ultrawidelock_atomic_xchg(&s_resolve_state, RESOLVE_NONE);
 	/*
 	 * Only while this is still the answer being waited for. A query whose
 	 * step deadline already expired can still call back, and reporting that
@@ -772,6 +779,26 @@ static void poll_work_fn(struct k_work *w)
 		break;
 	}
 
+	/*
+	 * A handshake the schedule has given up on is one this file must give up
+	 * on too, and nothing else says so: matter_client_sm_poll() leaves SIGMA1
+	 * on its own deadline, silently, because it has no clock and no opinion
+	 * about what its caller is still holding.
+	 *
+	 * Left set, s_handshake keeps an abandoned attempt's working set alive:
+	 * the ephemeral private key and the transcript stay in RAM past the
+	 * attempt they belong to, the exchange id stays claimed against every
+	 * inbound unsecured message, and a Sigma2 arriving long after the attempt
+	 * was written off is opened as though somebody were still waiting for it.
+	 * That last one is the expensive case -- it would install a session for
+	 * an unlock nobody asked for any more.
+	 */
+	if (s_handshake && s_sm.state != (uint8_t)MATTER_CLIENT_SIGMA1 &&
+	    s_sm.state != (uint8_t)MATTER_CLIENT_SIGMA3) {
+		LOG_INF("the bound lock never answered the handshake");
+		drop_session();
+	}
+
 	next = matter_client_sm_next_ms(&s_sm, now_ms());
 	ultrawidelock_mutex_unlock(&s_lock);
 	poll_at(next);
@@ -782,6 +809,27 @@ static void poll_work_fn(struct k_work *w)
 void matter_client_init(struct matter_device_info *info)
 {
 	ultrawidelock_mutex_init(&s_lock);
+	ultrawidelock_dwork_init(&s_poll_work, poll_work_fn);
+	/*
+	 * Everything this file remembers, not just the pointers. On target this
+	 * runs once and there is nothing to forget; the reset is here because
+	 * "initialised" has to mean the same thing the second time, and a state
+	 * machine whose starting point depends on what ran before it is one no
+	 * test can pin down and no field reinitialisation can trust.
+	 */
+	drop_session();
+	s_fabric = NULL;
+	s_peer_node = 0u;
+	s_peer_endpoint = 0u;
+	s_peer.valid = false;
+	s_resolved.valid = false;
+	(void)ultrawidelock_atomic_xchg(&s_resolve_state, RESOLVE_NONE);
+	s_counter = 0u;
+	s_hs_exchange = 0u;
+	s_exchange_id = 0u;
+	s_local_session = 0u;
+	s_peer_session = 0u;
+	s_invoke_ms = 0u;
 	s_info = info;
 	matter_client_sm_init(&s_sm);
 }
@@ -798,7 +846,7 @@ void matter_client_want(void)
 	 * race with the poll can do is act on the want one cycle later.
 	 */
 	matter_client_sm_want(&s_sm, now_ms());
-	(void)k_work_reschedule(&s_poll_work, K_NO_WAIT);
+	(void)ultrawidelock_dwork_reschedule(&s_poll_work, 0);
 }
 
 bool matter_client_owns_session(uint16_t session_id)
@@ -829,11 +877,25 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 	uint32_t next;
 	uint32_t t;
 
-	if (k_mutex_lock(&s_lock, K_NO_WAIT) != 0) {
+	if (ultrawidelock_mutex_trylock(&s_lock) != 0) {
 		/* See the file comment. One step timeout, no state touched. */
 		return 0u;
 	}
 	t = now_ms();
+
+	/*
+	 * The administrator this handshake belongs to may have been removed
+	 * since the Sigma1 left. This path runs from the receive callback, which
+	 * is AHEAD of the poll that would otherwise notice, so without this a
+	 * Sigma2 is verified against a fabric slot that has already been zeroed
+	 * -- s_fabric still points at it, and it still describes nobody.
+	 */
+	if (s_fabric != NULL && !fabric_still_held()) {
+		s_fabric = NULL;
+		drop_session();
+		ultrawidelock_mutex_unlock(&s_lock);
+		return 0u;
+	}
 
 	if (ph->opcode == MATTER_OP_CASE_SIGMA2) {
 		matter_client_sm_sigma2(&s_sm, t);
@@ -911,7 +973,7 @@ size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t 
 	uint32_t t;
 	int rc;
 
-	if (k_mutex_lock(&s_lock, K_NO_WAIT) != 0) {
+	if (ultrawidelock_mutex_trylock(&s_lock) != 0) {
 		return 0u;
 	}
 	t = now_ms();
