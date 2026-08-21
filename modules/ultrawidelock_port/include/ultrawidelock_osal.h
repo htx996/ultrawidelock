@@ -72,6 +72,22 @@ static inline int ultrawidelock_osal_init_all(void)
 {
 	return 0; /* SYS_INIT already ran everything */
 }
+/**
+ * @brief The clock the delayable work queue schedules against.
+ *
+ * A state machine driven by ultrawidelock_dwork_* must measure elapsed time with the
+ * SAME clock its deadlines are set on, or the two disagree and it either fires
+ * early forever or never fires at all. On target that is just the system
+ * uptime. On host it is the suite's virtual clock, which is the whole reason
+ * this is a portable call and not a k_uptime_get() at each site: it is what
+ * lets a test move a timeout-driven machine through hours in a millisecond.
+ *
+ * Monotonic, milliseconds, zero at boot (or at ultrawidelock_osal_host_reset()).
+ */
+static inline int64_t ultrawidelock_osal_now_ms(void)
+{
+	return (int64_t)k_uptime_get();
+}
 
 #elif defined(ESP_PLATFORM)
 
@@ -111,6 +127,23 @@ typedef StackType_t ultrawidelock_thread_stack_t;
 #define ULTRAWIDELOCK_INIT_APPLICATION_PRIO(fn, prio) ULTRAWIDELOCK_INIT_APPLICATION(fn)
 void ultrawidelock_osal_init_register(int (*fn)(void));
 int ultrawidelock_osal_init_all(void); /* app_main calls this once, after the OS is up */
+
+/**
+ * @brief The clock the delayable work queue schedules against.
+ *
+ * A state machine driven by ultrawidelock_dwork_* must measure elapsed time with the
+ * SAME clock its deadlines are set on, or the two disagree and it either fires
+ * early forever or never fires at all. On target that is just the system
+ * uptime. On host it is the suite's virtual clock, which is the whole reason
+ * this is a portable call and not a k_uptime_get() at each site: it is what
+ * lets a test move a timeout-driven machine through hours in a millisecond.
+ *
+ * Monotonic, milliseconds, zero at boot (or at ultrawidelock_osal_host_reset()).
+ */
+static inline int64_t ultrawidelock_osal_now_ms(void)
+{
+	return (int64_t)xTaskGetTickCount() * (int64_t)portTICK_PERIOD_MS;
+}
 
 #elif defined(ULTRAWIDELOCK_PORT_FREERTOS)
 
@@ -164,6 +197,23 @@ typedef StackType_t ultrawidelock_thread_stack_t;
 #define ULTRAWIDELOCK_INIT_APPLICATION_PRIO(fn, prio) ULTRAWIDELOCK_INIT_APPLICATION(fn)
 void ultrawidelock_osal_init_register(int (*fn)(void));
 int ultrawidelock_osal_init_all(void);
+
+/**
+ * @brief The clock the delayable work queue schedules against.
+ *
+ * A state machine driven by ultrawidelock_dwork_* must measure elapsed time with the
+ * SAME clock its deadlines are set on, or the two disagree and it either fires
+ * early forever or never fires at all. On target that is just the system
+ * uptime. On host it is the suite's virtual clock, which is the whole reason
+ * this is a portable call and not a k_uptime_get() at each site: it is what
+ * lets a test move a timeout-driven machine through hours in a millisecond.
+ *
+ * Monotonic, milliseconds, zero at boot (or at ultrawidelock_osal_host_reset()).
+ */
+static inline int64_t ultrawidelock_osal_now_ms(void)
+{
+	return (int64_t)xTaskGetTickCount() * (int64_t)portTICK_PERIOD_MS;
+}
 
 #elif defined(ULTRAWIDELOCK_PORT_HOST)
 
@@ -229,6 +279,23 @@ unsigned ultrawidelock_osal_host_advance_ms(int64_t ms);
 
 /** @brief The virtual clock. */
 int64_t ultrawidelock_osal_host_now_ms(void);
+
+/**
+ * @brief The clock the delayable work queue schedules against.
+ *
+ * A state machine driven by ultrawidelock_dwork_* must measure elapsed time with the
+ * SAME clock its deadlines are set on, or the two disagree and it either fires
+ * early forever or never fires at all. On target that is just the system
+ * uptime. On host it is the suite's virtual clock, which is the whole reason
+ * this is a portable call and not a k_uptime_get() at each site: it is what
+ * lets a test move a timeout-driven machine through hours in a millisecond.
+ *
+ * Monotonic, milliseconds, zero at boot (or at ultrawidelock_osal_host_reset()).
+ */
+static inline int64_t ultrawidelock_osal_now_ms(void)
+{
+	return ultrawidelock_osal_host_now_ms();
+}
 
 #else
 #error "ultrawidelock_osal.h: no platform backend. Define ULTRAWIDELOCK_PORT_HOST/ULTRAWIDELOCK_PORT_FREERTOS, or build under Zephyr/ESP-IDF."
