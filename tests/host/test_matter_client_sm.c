@@ -224,6 +224,110 @@ void test_matter_client_sm(void)
 	T_EQ("and it does expire on the far side", (int)matter_client_sm_poll(&sm, 0x00002000u),
 	     (int)MATTER_CLIENT_DO_NOTHING);
 
+	t_group("a lookup may not outlive the want that asked for it");
+	{
+		struct matter_client_sm sm;
+		uint32_t now = 100000u;
+
+		matter_client_sm_init(&sm);
+		matter_client_sm_want(&sm, now);
+
+		/*
+		 * The want is already most of the way through its life when the
+		 * lookup starts. Before the clamp the step took its full
+		 * MATTER_CLIENT_STEP_MS regardless, so a lookup that answered
+		 * nothing consumed what was left of the want AND the retry the
+		 * backoff had scheduled inside it.
+		 */
+		now += MATTER_CLIENT_WANT_TTL_MS - 1000u;
+		T_EQ("the lookup starts", (int)matter_client_sm_poll(&sm, now),
+		     (int)MATTER_CLIENT_DO_RESOLVE);
+
+		/* One second short of the want's own edge: still waiting. */
+		now += 999u;
+		T_EQ("still waiting just before the want dies",
+		     (int)matter_client_sm_poll(&sm, now), (int)MATTER_CLIENT_DO_NOTHING);
+		T_EQ("and it has not given up yet", (int)sm.state, (int)MATTER_CLIENT_RESOLVING);
+
+		/* At the edge it gives up, rather than at start + STEP_MS. */
+		now += 1u;
+		T_EQ("at the want's edge the lookup is abandoned",
+		     (int)matter_client_sm_poll(&sm, now), (int)MATTER_CLIENT_DO_NOTHING);
+		T_EQ("as a failed attempt", (int)sm.state, (int)MATTER_CLIENT_BACKOFF);
+	}
+
+	t_group("a lookup with the whole want ahead of it still gets its full step");
+	{
+		struct matter_client_sm sm;
+		uint32_t now = 100000u;
+
+		matter_client_sm_init(&sm);
+		matter_client_sm_want(&sm, now);
+		T_EQ("the lookup starts", (int)matter_client_sm_poll(&sm, now),
+		     (int)MATTER_CLIENT_DO_RESOLVE);
+
+		now += MATTER_CLIENT_STEP_MS - 1u;
+		T_EQ("still waiting", (int)matter_client_sm_poll(&sm, now),
+		     (int)MATTER_CLIENT_DO_NOTHING);
+		T_EQ("in the lookup", (int)sm.state, (int)MATTER_CLIENT_RESOLVING);
+
+		now += 1u;
+		(void)matter_client_sm_poll(&sm, now);
+		T_EQ("and gives up on its own step, not early", (int)sm.state,
+		     (int)MATTER_CLIENT_BACKOFF);
+	}
+
+	t_group("a handshake still outlives its want, and says nothing was unlocked");
+	{
+		struct matter_client_sm sm;
+		uint32_t now = 100000u;
+
+		matter_client_sm_init(&sm);
+		matter_client_sm_want(&sm, now);
+		matter_client_sm_resolved(&sm, true, now);
+		T_EQ("a Sigma1 is asked for", (int)matter_client_sm_poll(&sm, now),
+		     (int)MATTER_CLIENT_DO_SIGMA1);
+		matter_client_sm_sent(&sm, now);
+
+		/*
+		 * The want dies mid-handshake. The handshake is deliberately NOT
+		 * abandoned -- the session it leaves behind is what makes the
+		 * next walk-up instant -- but nothing may be unlocked for it.
+		 */
+		now += MATTER_CLIENT_WANT_TTL_MS + 1u;
+		T_OK("the want is gone", !matter_client_sm_wants(&sm, now));
+
+		matter_client_sm_sigma2(&sm, now);
+		matter_client_sm_sent(&sm, now);
+		matter_client_sm_established(&sm);
+		T_EQ("the session is up", (int)sm.state, (int)MATTER_CLIENT_READY);
+		T_EQ("and nothing is invoked for a want nobody is waiting on",
+		     (int)matter_client_sm_poll(&sm, now), (int)MATTER_CLIENT_DO_NOTHING);
+		T_EQ("the session is kept for the next walk-up", (int)sm.state,
+		     (int)MATTER_CLIENT_READY);
+
+		/* And the next walk-up uses it immediately. */
+		matter_client_sm_want(&sm, now);
+		T_EQ("which invokes at once", (int)matter_client_sm_poll(&sm, now),
+		     (int)MATTER_CLIENT_DO_INVOKE);
+	}
+
+	t_group("the want predicate agrees with the poll that expires it");
+	{
+		struct matter_client_sm sm;
+		uint32_t now = 100000u;
+
+		matter_client_sm_init(&sm);
+		T_OK("no want, no wanting", !matter_client_sm_wants(&sm, now));
+		matter_client_sm_want(&sm, now);
+		T_OK("a fresh want is wanted", matter_client_sm_wants(&sm, now));
+		T_OK("still wanted one ms before the TTL",
+		     matter_client_sm_wants(&sm, now + MATTER_CLIENT_WANT_TTL_MS - 1u));
+		T_OK("and not at the TTL itself",
+		     !matter_client_sm_wants(&sm, now + MATTER_CLIENT_WANT_TTL_MS));
+		T_OK("a NULL wants nothing", !matter_client_sm_wants(NULL, now));
+	}
+
 	t_group("nothing here dereferences a NULL");
 
 	matter_client_sm_init(NULL);
@@ -235,6 +339,7 @@ void test_matter_client_sm(void)
 	matter_client_sm_invoked(NULL, true);
 	matter_client_sm_failed(NULL, 0u);
 	matter_client_sm_session_lost(NULL);
+	T_OK("a NULL is not wanting anything", !matter_client_sm_wants(NULL, 0u));
 	T_EQ("a poll without a client does nothing", (int)matter_client_sm_poll(NULL, 0u),
 	     (int)MATTER_CLIENT_DO_NOTHING);
 	T_OK("and asks for no timer", matter_client_sm_next_ms(NULL, 0u) == UINT32_MAX);

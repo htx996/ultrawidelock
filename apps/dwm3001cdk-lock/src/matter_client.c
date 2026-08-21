@@ -121,6 +121,20 @@ static uint64_t s_fabric_id;
 static uint64_t s_peer_node;
 static uint16_t s_peer_endpoint;
 static struct matter_thread_peer s_peer;
+/**
+ * This node's own operational public key, read out of the NOC it will ship.
+ *
+ * Only so the Sigma3 signature can be checked against the certificate that
+ * travels with it, before a peer gets the chance to reject it without saying
+ * why. Parsed in choose_target() -- once per attempt, not once per Sigma3, and
+ * not on OpenThread's stack.
+ *
+ * False leaves the check off rather than failing the attempt: an unparsable NOC
+ * is a problem the handshake itself will report, and refusing here would turn a
+ * diagnostic into an outage.
+ */
+static uint8_t s_noc_pub[MATTER_CASE_PUBKEY_LEN];
+static bool s_have_noc_pub;
 
 /*
  * The handshake's working set. Live only between a Sigma1 leaving and the
@@ -283,6 +297,20 @@ static bool choose_target(void)
 		    matter_case_operational_ipk(f->ipk, cfid, s_ipk) != MATTER_OK) {
 			LOG_ERR("cannot derive the operational key for fabric %u", f->index);
 			continue;
+		}
+		{
+			struct matter_cert_info ci;
+
+			s_have_noc_pub =
+				matter_cert_parse(f->noc, f->noc_len, &ci) == MATTER_OK &&
+				ci.have_public_key;
+			if (s_have_noc_pub) {
+				memcpy(s_noc_pub, ci.public_key, sizeof(s_noc_pub));
+			} else {
+				LOG_WRN("fabric %u: no public key in the NOC, so the "
+					"Sigma3 signature will not be self-checked",
+					f->index);
+			}
 		}
 		s_fabric = f;
 		s_fabric_id = f->fabric_id;
@@ -572,9 +600,18 @@ static size_t handle_sigma2(const uint8_t *payload, size_t payload_len,
 			  : NULL;
 	s3.icac_len = s3.icac != NULL ? s_info->icac.len : 0u;
 	s3.op_priv = s_fabric->op_priv;
-	/* Never NULL on hardware: a peer that rejects a signature says nothing
-	 * about why, and this is the only place the mistake is still visible. */
-	s3.verify_pub = NULL;
+	/*
+	 * Never NULL on hardware: a peer that rejects a signature says nothing
+	 * about why, and this is the only place the mistake is still visible.
+	 *
+	 * It was NULL here until this line was written, which meant the check
+	 * this comment describes was not being made at all -- the server half
+	 * passes it (matter_commission.c) and the host tests pass it, so the one
+	 * configuration that skipped it was the firmware. The key comes from
+	 * choose_target(), which parses it out of the NOC once per attempt
+	 * rather than once per Sigma3.
+	 */
+	s3.verify_pub = s_have_noc_pub ? s_noc_pub : NULL;
 	rc = matter_case_client_sigma3_encode(&s3, reply + hdr, cap - hdr, &s3_len);
 	if (rc != MATTER_OK) {
 		LOG_ERR("cannot build a Sigma3 (%d)", rc);
@@ -933,6 +970,7 @@ void matter_client_init(struct matter_device_info *info)
 	drop_session();
 	s_fabric = NULL;
 	s_fabric_id = 0u;
+	s_have_noc_pub = false;
 	s_peer_node = 0u;
 	s_peer_endpoint = 0u;
 	s_peer.valid = false;
@@ -1059,6 +1097,21 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 		if (ok) {
 			LOG_INF("CASE ESTABLISHED as initiator: session 0x%04x",
 				(unsigned int)s_local_session);
+			/*
+			 * Say so when the session is up and nobody is waiting for
+			 * it any more. The handshake is deliberately allowed to
+			 * outlive its want -- the warm session is what makes the
+			 * next walk-up instant -- but the visible result is an
+			 * ESTABLISHED line with no UnlockDoor after it, which
+			 * reads exactly like the invoke having silently failed.
+			 * This is the difference between "too slow" and "broken",
+			 * and it is not recoverable from the log without it.
+			 */
+			if (!matter_client_sm_wants(&s_sm, t)) {
+				LOG_WRN("...but the walk-up it was for has expired; "
+					"the bound lock was NOT told to unlock. The "
+					"session is kept for the next one.");
+			}
 			matter_client_sm_established(&s_sm);
 			/*
 			 * Acknowledged before the handshake exchange is let go.

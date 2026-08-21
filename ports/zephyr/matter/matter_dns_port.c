@@ -22,6 +22,7 @@
  */
 #include <string.h>
 
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/openthread.h>
 
@@ -40,11 +41,36 @@ LOG_MODULE_DECLARE(matter_thread, CONFIG_LOG_DEFAULT_LEVEL);
  */
 #define MATTER_SERVICE_NAME "_matter._tcp.default.service.arpa."
 
+/**
+ * How long a query may hold the slot before it is treated as never coming back.
+ *
+ * A BACKSTOP FOR A CALLBACK THAT NEVER ARRIVES, not a tuning knob. otDnsClient
+ * has its own timeout and retry schedule and normally answers -- with a failure
+ * if nothing else -- well inside this. But `busy` used to be cleared ONLY by
+ * that callback, so a query that never completed left the slot held for the
+ * rest of the boot: every later resolve returned MATTER_E_STATE, every walk-up
+ * failed instantly with nothing on the radio, and only a reboot fixed it. A
+ * wedged slot is worth more than the answer it is still waiting for.
+ */
+#define QUERY_MAX_MS 15000u
+
 /** The one outstanding query, and who asked for it. */
 static struct {
 	matter_thread_resolve_fn cb;
 	void *ctx;
 	bool busy;
+	uint32_t started_ms;
+	/**
+	 * Which query the callback is allowed to answer.
+	 *
+	 * Reclaiming the slot on QUERY_MAX_MS is not enough on its own: the
+	 * abandoned query may still be alive inside otDnsClient, and its answer
+	 * would otherwise be handed to whoever asked NEXT -- a resolve for one
+	 * peer completing with another peer's address. The generation goes out
+	 * as the query's context and comes back with the answer, so a late one
+	 * is recognised and dropped instead.
+	 */
+	uint32_t generation;
 } s_query;
 
 /**
@@ -73,6 +99,11 @@ static void resolve_cb(otError err, const otDnsServiceResponse *response, void *
 {
 	struct matter_thread_peer peer;
 	otDnsServiceInfo info;
+
+	if ((uint32_t)(uintptr_t)ctx != s_query.generation) {
+		LOG_WRN("a resolve that had already been given up on answered; ignoring it");
+		return;
+	}
 	char host[OT_DNS_MAX_NAME_SIZE];
 
 	(void)ctx;
@@ -137,7 +168,19 @@ int matter_thread_resolve(const char *instance_name, matter_thread_resolve_fn cb
 		return MATTER_E_STATE;
 	}
 	if (s_query.busy) {
-		return MATTER_E_STATE;
+		if ((int32_t)(k_uptime_get_32() - s_query.started_ms) < (int32_t)QUERY_MAX_MS) {
+			return MATTER_E_STATE;
+		}
+		/*
+		 * Past the backstop. The slot is freed here and the generation
+		 * is bumped by the start below, which is what orphans the old
+		 * query: a late answer carries the old generation and is
+		 * dropped rather than handed to whoever asked next.
+		 */
+		LOG_WRN("the previous resolve never answered; taking the slot back");
+		s_query.cb = NULL;
+		s_query.ctx = NULL;
+		s_query.busy = false;
 	}
 	/*
 	 * Detached, there is no SRP server to ask and the query would fail
@@ -151,14 +194,18 @@ int matter_thread_resolve(const char *instance_name, matter_thread_resolve_fn cb
 	s_query.cb = cb;
 	s_query.ctx = ctx;
 	s_query.busy = true;
+	s_query.started_ms = k_uptime_get_32();
+	s_query.generation++;
 
 	LOG_INF("resolving bound peer %s", instance_name);
 
 	openthread_mutex_lock();
 	/* NULL config: use whatever server the network told OpenThread about,
-	 * which is the same one the SRP client registered this node with. */
-	err = otDnsClientResolveService(ot, instance_name, MATTER_SERVICE_NAME, resolve_cb, NULL,
-					NULL);
+	 * which is the same one the SRP client registered this node with. The
+	 * context is the generation, so a late answer can be told apart from
+	 * the answer to the query now in the slot. */
+	err = otDnsClientResolveService(ot, instance_name, MATTER_SERVICE_NAME, resolve_cb,
+					(void *)(uintptr_t)s_query.generation, NULL);
 	openthread_mutex_unlock();
 
 	if (err != OT_ERROR_NONE) {

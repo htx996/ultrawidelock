@@ -125,6 +125,20 @@ void matter_client_sm_init(struct matter_client_sm *sm);
 void matter_client_sm_want(struct matter_client_sm *sm, uint32_t now_ms);
 
 /**
+ * Is there still a walk-up worth acting on?
+ *
+ * True while a want is pending AND younger than MATTER_CLIENT_WANT_TTL_MS.
+ * Exported because a caller that has just finished a handshake needs to know
+ * whether anyone is still waiting for it, and answering that by comparing
+ * timestamps at the call site is how the wrap-safe arithmetic in this file
+ * gets quietly reimplemented wrongly somewhere else.
+ *
+ * Pure: it reports the want, it does not drop one. matter_client_sm_poll() is
+ * what expires it.
+ */
+bool matter_client_sm_wants(const struct matter_client_sm *sm, uint32_t now_ms);
+
+/**
  * Advance the clock-driven transitions and say what to do.
  *
  * The state does not move until the caller reports back through one of the

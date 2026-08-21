@@ -36,10 +36,16 @@ static uint32_t backoff_ms(uint8_t attempts)
 	return (ms > MATTER_CLIENT_BACKOFF_MAX_MS) ? MATTER_CLIENT_BACKOFF_MAX_MS : ms;
 }
 
+bool matter_client_sm_wants(const struct matter_client_sm *sm, uint32_t now_ms)
+{
+	return sm != NULL && sm->want &&
+	       !reached(now_ms, sm->want_ms + MATTER_CLIENT_WANT_TTL_MS);
+}
+
 /** Drop a want that is older than a door can care about. */
 static void expire_want(struct matter_client_sm *sm, uint32_t now_ms)
 {
-	if (sm->want && reached(now_ms, sm->want_ms + MATTER_CLIENT_WANT_TTL_MS)) {
+	if (sm->want && !matter_client_sm_wants(sm, now_ms)) {
 		sm->want = false;
 	}
 }
@@ -80,8 +86,27 @@ enum matter_client_action matter_client_sm_poll(struct matter_client_sm *sm, uin
 			return MATTER_CLIENT_DO_NOTHING;
 		}
 		if (!sm->have_peer) {
+			uint32_t left = until(now_ms, sm->want_ms + MATTER_CLIENT_WANT_TTL_MS);
+
 			sm->state = (uint8_t)MATTER_CLIENT_RESOLVING;
-			sm->deadline_ms = now_ms + MATTER_CLIENT_STEP_MS;
+			/*
+			 * A LOOKUP MAY NOT OUTLIVE THE WANT THAT ASKED FOR IT.
+			 * MATTER_CLIENT_STEP_MS is most of
+			 * MATTER_CLIENT_WANT_TTL_MS, so a lookup that answers
+			 * nothing used to spend the whole budget and leave no
+			 * room for the retry the backoff had already scheduled.
+			 * Failing at the want's own edge instead buys two or
+			 * three attempts out of one walk-up.
+			 *
+			 * Only this step is clamped. A handshake past Sigma1
+			 * deliberately runs to completion even once the want is
+			 * gone (see the header): the session it leaves behind is
+			 * what makes the NEXT walk-up instant, and there is no
+			 * such prize for a DNS query.
+			 */
+			sm->deadline_ms = now_ms + (left < MATTER_CLIENT_STEP_MS
+							    ? left
+							    : MATTER_CLIENT_STEP_MS);
 			return MATTER_CLIENT_DO_RESOLVE;
 		}
 		return MATTER_CLIENT_DO_SIGMA1;
