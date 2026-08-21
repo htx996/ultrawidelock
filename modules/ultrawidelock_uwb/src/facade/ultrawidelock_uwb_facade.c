@@ -197,6 +197,11 @@ bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_o
 #endif
 }
 
+uint32_t ultrawidelock_uwb_session_id(void)
+{
+	return fira_session_id();
+}
+
 uint32_t ultrawidelock_uwb_range_generation(void)
 {
 #if defined(CONFIG_ULTRAWIDELOCK_CRED)

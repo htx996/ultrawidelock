@@ -412,12 +412,35 @@ Deferred until the board exists; nothing above depends on it.
   guards the peer's. It fails safe -- a bad peer reading withholds, so the door
   stays shut -- but that is a usability failure that will get blamed on fusion
   rather than on the missing gate.
-- Level shifts between conditions (2026-08-21, four tight clusters hundreds of
-  mm apart at one nominal distance) matter less here than first feared: the
-  verdict reads `sign(d_inside - d_outside)`, so a COMMON-MODE shift cancels
-  exactly and only a differential one hurts. Stage C is the instrument that
-  separates the two, since a same-round pair on one phone has never been taken.
-  It becomes a hard gate at stage D, where the verdict starts moving a bolt.
+- RESOLVED 2026-08-21: the differential error is a CONSTANT, so the two-anchor
+  approach stands. Phone on the perpendicular bisector, where the true
+  difference is zero by construction; 452 pairs joined on (session, block)
+  across four independent sessions:
+
+  | session | n | median | IQR |
+  |---|---|---|---|
+  | 0465bb25 | 95 | -200 mm | 90 |
+  | 57cf247c | 120 | -200 mm | 100 |
+  | a0330e5b | 124 | -210 mm | 80 |
+  | fb77ba1f | 113 | -200 mm | 50 |
+
+  The same offset four times over, varying by 10 mm. Remove it and the anchors
+  agree to **sigma 39 mm** over 79% of pairs -- inside the 60 mm dead band,
+  which is the number that had to be beaten. A wandering differential would
+  have been unfixable; a constant is an install-time calibration.
+
+  What remains is a ~20% TAIL, and that is a categorically easier problem: it
+  is what median filtering and the K-consecutive trust layer already exist for.
+
+  Two honest limits. A positioning error and a calibration bias both produce a
+  constant, so the -200 mm cannot be attributed to the radios; it does not
+  matter, because the question was constant-versus-wandering and the sigma is
+  independent of where the centre sits. And this is one geometry at one
+  distance -- the tail fraction may differ at an install baseline.
+
+  Earlier single-anchor captures could not see any of this. A COMMON-MODE shift
+  cancels exactly in `sign(d_inside - d_outside)`, so the four 420 mm clusters
+  that looked alarming were never evidence either way. Only a pair can tell.
 - `N_Resp` is baked into key derivation, so lock and satellite builds must
   agree and the setting applies from session establishment — a mid-session
   change desyncs every derived key (known, documented at the knob).

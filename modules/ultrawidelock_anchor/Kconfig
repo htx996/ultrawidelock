@@ -394,3 +394,35 @@ config ULTRAWIDELOCK_ANCHOR_AJAR_DWELL_S
 	  impact threshold.
 
 endif # ULTRAWIDELOCK_ANCHOR
+
+config ULTRAWIDELOCK_ANCHOR_PAIR_LOG
+	bool "Log this node's (ranging block, distance) for cross-anchor comparison"
+	depends on ULTRAWIDELOCK_UWB
+	help
+	  Prints one line per accepted trusted range: the initiator's ranging
+	  block and this node's distance in millimetres. Its only purpose is to
+	  let two anchors' captures be JOINED ON BLOCK afterwards, so the
+	  difference between them can be measured at an instant where the true
+	  difference is known.
+
+	  That difference is the question the whole two-anchor approach rests on.
+	  A common-mode error -- both anchors reading long or short together --
+	  cancels exactly in sign(d_inside - d_outside) and costs nothing. A
+	  DIFFERENTIAL one does not cancel, and against a 60 mm dead band a
+	  drifting differential error would make the side verdict meaningless. No
+	  measurement taken so far can tell those two apart, because every one of
+	  them came from a single anchor.
+
+	  Printed from the grant loop on the main thread, NOT from the ranging
+	  callback, and deliberately: main.c forces the per-frame trace off before
+	  the radio starts because synchronous printk inside those callbacks
+	  pushes the delayed Response TX past its slot. This costs that path
+	  nothing.
+
+	  Deliberately NOT dependent on ULTRAWIDELOCK_ANCHOR. This instrument
+	  exists to decide whether the two-anchor approach is viable at all, so
+	  requiring the anchor subsystem to be compiled in before the test can run
+	  would be backwards -- and it silently dropped the symbol the first time,
+	  because the bench lock image does not set ANCHOR.
+
+	  Bench instrument. Leave it off on a mounted door.
