@@ -23,6 +23,8 @@ static struct ultrawidelock_side_features s_pending;
 static bool s_have;
 static bool s_inited;
 static uint32_t s_seq;
+static int s_bl_cmd;
+static int32_t s_bl_mm;
 
 static void ensure_init(void)
 {
@@ -121,6 +123,43 @@ bool side_feed_take(struct ultrawidelock_side_features *out)
 	return got;
 }
 
+int side_feed_take_baseline(int32_t *out_mm)
+{
+	int cmd;
+
+	ensure_init();
+	k_mutex_lock(&s_lock, K_FOREVER);
+	cmd = s_bl_cmd;
+	s_bl_cmd = 0;
+	if (cmd == 1 && out_mm != NULL) {
+		*out_mm = s_bl_mm;
+	}
+	k_mutex_unlock(&s_lock);
+	return cmd;
+}
+
+#if defined(CONFIG_ULTRAWIDELOCK_SIDE_FEED_RTT) && CONFIG_ULTRAWIDELOCK_SIDE_FEED_RTT
+static void bl_line(const char *p)
+{
+	while (*p == ' ' || *p == '\t') {
+		p++;
+	}
+	ensure_init();
+	k_mutex_lock(&s_lock, K_FOREVER);
+	if (strncmp(p, "cal", 3) == 0) {
+		s_bl_cmd = 2;
+	} else {
+		long v = strtol(p, NULL, 10);
+
+		if (v >= 300 && v <= 10000) {
+			s_bl_cmd = 1;
+			s_bl_mm = (int32_t)v;
+		}
+	}
+	k_mutex_unlock(&s_lock);
+}
+#endif
+
 void side_feed_rtt_poll(void)
 {
 #if defined(CONFIG_ULTRAWIDELOCK_SIDE_FEED_RTT) && CONFIG_ULTRAWIDELOCK_SIDE_FEED_RTT
@@ -161,9 +200,19 @@ void side_feed_rtt_poll(void)
 		memmove(buf, nl + 1, len - line_len - 1);
 		len -= line_len + 1;
 		buf[len] = '\0';
-		if (side_feed_parse_sf1(line, &feat)) {
-			feat.seq = ++s_seq;
-			side_feed_push(&feat);
+		{
+			const char *t = line;
+
+			while (*t == ' ' || *t == '\t') {
+				t++;
+			}
+			if (strncmp(t, "BL", 2) == 0 &&
+			    (t[2] == '\0' || t[2] == ' ' || t[2] == '\t')) {
+				bl_line(t + 2);
+			} else if (side_feed_parse_sf1(line, &feat)) {
+				feat.seq = ++s_seq;
+				side_feed_push(&feat);
+			}
 		}
 	}
 #else

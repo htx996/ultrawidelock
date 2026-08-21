@@ -444,6 +444,59 @@ static void latch_note_opened(uint32_t cred_id, int64_t now_ms)
 }
 #endif
 
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/* Anchor separation set at runtime (BL over RTT down), persisted so a bench
+ * rearrangement survives the reboot. 0 = never set; the Kconfig rules then. */
+static int32_t s_baseline_saved;
+
+static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+			       void *cb_arg)
+{
+	int32_t v;
+
+	if (strcmp(name, "bl") != 0 || len != sizeof(v)) {
+		return -ENOENT;
+	}
+	if (read_cb(cb_arg, &v, sizeof(v)) != (ssize_t)sizeof(v)) {
+		return -EINVAL;
+	}
+	if (v >= 300 && v <= 10000) {
+		s_baseline_saved = v;
+	}
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(uwl_anchor, "uwl/anchor", NULL, anchor_settings_set, NULL, NULL);
+
+/* The frontier moves WITH the baseline. What the configured pair fixes is the
+ * gap between the frontier and the inside anchor -- (BASELINE - BIAS) / 2 --
+ * so a new baseline keeps that gap rather than the raw bias: reusing 1000
+ * against a 1000 mm baseline would sit exactly on the degenerate limit the
+ * Kconfig help warns about. A configured bias of 0 (bisector install) stays 0
+ * at every separation. */
+static int32_t baseline_bias(int32_t baseline_mm)
+{
+	const int32_t gap = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM -
+			    CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM;
+
+	if (CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM == 0) {
+		return 0;
+	}
+	return baseline_mm > gap ? baseline_mm - gap : 0;
+}
+
+static void baseline_apply(struct ultrawidelock_satellite *sat, int32_t mm, bool save)
+{
+	sat->cfg.baseline_mm = mm;
+	sat->cfg.boundary_bias_mm = baseline_bias(mm);
+	LOG_INF("anchor baseline %d mm (frontier bias %d)", mm,
+		sat->cfg.boundary_bias_mm);
+	if (save && settings_save_one("uwl/anchor/bl", &mm, sizeof(mm)) != 0) {
+		LOG_ERR("baseline not saved");
+	}
+}
+#endif
+
 int main(void)
 {
 	/* Off before the radio comes up: keeps the ranging callbacks print-free so the
@@ -534,6 +587,17 @@ int main(void)
 
 	ultrawidelock_satellite_init(&satellite, &fusion_cfg, CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
 			   IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SELF_INSIDE));
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	(void)settings_load_subtree("uwl/anchor");
+	if (s_baseline_saved != 0) {
+		baseline_apply(&satellite, s_baseline_saved, false);
+	}
+	/* BL cal: median over this many paired rounds. The phone is held still,
+	 * so block alignment is irrelevant; 25 rounds is a few seconds. */
+	static int32_t bl_cal[25];
+	static uint8_t bl_cal_n;
+	static bool bl_cal_on;
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 	/* Before witness_link_init(), so no datagram can arrive with the sink
 	 * still unset. */
@@ -704,6 +768,24 @@ int main(void)
 			struct ultrawidelock_side_features feat;
 
 			side_feed_rtt_poll();
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+			{
+				int32_t bl_mm;
+
+				switch (side_feed_take_baseline(&bl_mm)) {
+				case 1:
+					baseline_apply(&satellite, bl_mm, true);
+					break;
+				case 2:
+					bl_cal_n = 0;
+					bl_cal_on = true;
+					LOG_INF("baseline cal: hold the phone still ~1 m past the DK");
+					break;
+				default:
+					break;
+				}
+			}
+#endif
 			if (side_feed_take(&feat)) {
 				feat.now_ms = now;
 				if (feat.obs_session_id == 0) {
@@ -1033,6 +1115,34 @@ int main(void)
 							   : ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN),
 					sf.uwb_range_mm, now);
 #endif
+				if (bl_cal_on && sf.uwb_range_mm >= 0 &&
+				    sf.uwb_peer_mm >= 0) {
+					bl_cal[bl_cal_n++] = sf.uwb_range_mm - sf.uwb_peer_mm;
+					if (bl_cal_n == ARRAY_SIZE(bl_cal)) {
+						int32_t m;
+
+						/* Insertion sort; the median
+						 * shrugs off the NLOS tail. */
+						for (size_t i = 1; i < ARRAY_SIZE(bl_cal); i++) {
+							int32_t k = bl_cal[i];
+							size_t j = i;
+
+							for (; j > 0 && bl_cal[j - 1] > k; j--) {
+								bl_cal[j] = bl_cal[j - 1];
+							}
+							bl_cal[j] = k;
+						}
+						m = bl_cal[ARRAY_SIZE(bl_cal) / 2];
+						m = m < 0 ? -m : m;
+						bl_cal_on = false;
+						if (m >= 300 && m <= 10000) {
+							baseline_apply(&satellite, m, true);
+						} else {
+							LOG_WRN("baseline cal failed (median %d): not past an anchor?",
+								m);
+						}
+					}
+				}
 			}
 #endif
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
