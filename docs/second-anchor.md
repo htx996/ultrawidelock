@@ -379,9 +379,27 @@ inside or the satellite off, behaviour is bit-for-bit today's.
 ## STAGE C TRANSPORT PASSES — 2026-08-21 10:29
 
 A sealed distance measured by the satellite reached the lock over the air and
-paired with the lock's own measurement of the SAME ranging block. The Mac is
-out of the loop: what `pairjoin.py` did offline after the common-mode test, the
-lock now does on-board and live.
+paired with the lock's own measurement of the SAME ranging block: what
+`pairjoin.py` did offline after the common-mode test, the lock now does on-board
+and live.
+
+THE MAC IS OUT OF THE RETURN PATH ONLY, and the distinction matters. Two links
+run in opposite directions and only one of them is finished:
+
+| Direction | Carries | Transport now |
+|---|---|---|
+| satellite → lock | the measured distance + block | **sealed Thread UDP, on-board** |
+| lock → satellite | the session URSK, per session | **still the Mac** |
+
+`modules/ultrawidelock_uwb/src/ccc/cherry_ccc_shim.c:314` logs `SAT-HANDOFF: sat join
+<ursk> ...` on RTT and a host script replays it into the satellite's shell. So a
+walk-up today still needs a laptop attached to both boards, and the URSK crosses
+in plaintext over a debug transport. Stage C removed the laptop from the half
+that decides; the half that keys the satellite is untouched and is the harder
+problem, because the URSK is derived per session inside the credential exchange
+and the satellite has no way to derive it independently.
+
+Until that is solved this is a bench result, not a product one.
 
 | | |
 |---|---|
