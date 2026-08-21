@@ -1350,6 +1350,13 @@ int main(void)
 		if (!sess_gone) {
 			flap_hold_ms = 0;
 		} else if (flap_hold_ms == 0 && granted && approach.last_feed_ms != 0 &&
+			   /* Only the mid-phase flap earns a hold. A close from
+			    * ESTABLISHED is the peer done on purpose -- Wallet's
+			    * UWB toggled off -- and the old immediate relock is
+			    * exactly right there (measured 2026-08-22 01:15: the
+			    * hold bridged a toggle-off into the reconnect and
+			    * the bolt never relocked). */
+			   !ultrawidelock_reader_last_close_established() &&
 			   approach.last_cm < approach.cfg.relock_cm &&
 			   (now - approach.last_feed_ms) <= SESSION_FLAP_FEED_FRESH_MS) {
 			flap_hold_ms = now;
