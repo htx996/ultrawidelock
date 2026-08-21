@@ -28,9 +28,16 @@
 
 set -u
 
+# Defaults identify the DWM3001CDK; the four FIND_* variables retarget the same
+# mechanism at any other board on the bench. mk/satellite.mk passes the nRF5340
+# DK's values (its FICR lives at a different base, so the address must move with
+# the part pattern or every candidate faults and none matches).
 CACHE="${1:?usage: cdk-find-probe.sh <cache-file>}"
-CHIP="${CDK_CHIP:-nRF52833_xxAA}"
-FICR_PART=0x10000100
+CHIP="${FIND_CHIP:-${CDK_CHIP:-nRF52833_xxAA}}"
+FICR_PART="${FIND_FICR_ADDR:-0x10000100}"
+PART_PAT="${FIND_PART_PAT:-52833}"
+LABEL="${FIND_LABEL:-DWM3001CDK}"
+PART_NAME="${FIND_PART_NAME:-nRF52833}"
 
 command -v probe-rs >/dev/null 2>&1 || exit 0
 
@@ -55,25 +62,25 @@ matches=()
 while IFS= read -r t; do
 	[ -n "$t" ] || continue
 	if probe-rs read --chip "$CHIP" --probe "$t" b32 "$FICR_PART" 1 2>/dev/null |
-		grep -q 52833; then
+		grep -q "$PART_PAT"; then
 		matches+=("$t")
 	fi
 done <<<"$triples"
 
 if [ "${#matches[@]}" -eq 1 ]; then
 	printf '%s\n' "${matches[0]}" >"$CACHE"
-	echo "  pinned the DWM3001CDK to probe ${matches[0]}" >&2
+	echo "  pinned the $LABEL to probe ${matches[0]}" >&2
 	echo "  (silicon-verified; cached in $CACHE -- delete that file to re-identify)" >&2
 	printf '%s\n' "${matches[0]}"
 	exit 0
 fi
 
 if [ "${#matches[@]}" -eq 0 ]; then
-	echo "  $count probes attached and none answers as an nRF52833 (FICR INFO.PART)." >&2
-	echo "  Is the DWM3001CDK plugged in and its target powered?" >&2
+	echo "  $count probes attached and none answers as an $PART_NAME (FICR INFO.PART)." >&2
+	echo "  Is the $LABEL plugged in and its target powered?" >&2
 else
-	echo "  ${#matches[@]} probes answer as an nRF52833; cannot settle which is the CDK." >&2
+	echo "  ${#matches[@]} probes answer as an $PART_NAME; cannot settle which is the $LABEL." >&2
 fi
 probe-rs list >&2
-echo "  Pick one:  make <target> CDK_PROBE=<VID:PID:Serial>" >&2
+echo "  Pick one:  make <target> ${FIND_VAR_HINT:-CDK_PROBE}=<VID:PID:Serial>" >&2
 exit 1

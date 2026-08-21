@@ -1,12 +1,22 @@
 # Hardware validation
 
-Automated CI gates the host-side logic (KAT suite, coverage floor, sanitizers, fuzz,
-CBMC, the ESP32 port suite), and `make fw-check` compile-gates the Zephyr
-firmware. There is no CI in this repository; both are run locally. What they cannot
-exercise is the product itself, which runs against a live iPhone. This checklist is
-the manual gate: run
-every applicable item before cutting a release, and record the results table in the
-release notes.
+CI gates the host-side logic (`make ci`: the KAT suite, sanitizers, CBMC, the
+tooling gates). It builds no firmware, so `make regress` compile-gates every
+DWM3001CDK configuration and the size baseline on a bench instead. What none of
+that can exercise is the product itself, which runs against a live iPhone.
+
+This checklist is the manual gate: run every applicable item before cutting a
+release, and record the results table in the release notes. Part of it is no longer
+manual -- `make regress-hil` runs the rows marked automated below and writes
+`build/regress-hil/<timestamp>/verdict.txt` naming each one:
+
+| Row | Automated by | Stage |
+|---|---|---|
+| CDK-4 | `make regress-hil REGRESS_HIL_ARGS=--selftest` | `uwb-selftest` (reflashes the reader) |
+| CDK-5..CDK-8 | `make regress-hil` | `walkup`, via `scripts/hitl-run.sh` |
+
+Everything else here, CDK-9, CDK-10 and CDK-14..CDK-18 included, still needs a
+person and a phone.
 
 Three hardware paths have recorded bench evidence: the DWM3001CDK, the nRF5340 DK
 using the legacy Nordic binary with its default ST25R300/RFAL reader, and ESP32-S3.

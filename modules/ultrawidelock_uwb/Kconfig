@@ -148,6 +148,22 @@ config ULTRAWIDELOCK_PRETTY_SHELL
 	  matching log-level cuts. Default n = today's verbose output, byte-for-byte.
 	  Reverse by dropping the PRETTY=1 build switch (flag returns to n).
 
+config ULTRAWIDELOCK_UWB_RANGE_BIAS_MM
+	int "Per-board range bias correction, millimetres"
+	depends on ULTRAWIDELOCK_CRED
+	default 0
+	range -1000 1000
+	help
+	  Added to every computed DS-TWR distance before it is used or reported.
+	  The ToF-to-distance conversion carries no antenna-delay compensation, so
+	  a board can read a constant offset from true (a DWM3001CDK measured
+	  -160 mm at 1 m; an nRF5340 DK measured ~0). Calibrate per board against
+	  a tape-measured distance of at least 0.5 m -- contact-range readings
+	  are near-field and calibrate nothing. A wrong value here shifts every
+	  geometry check by the same amount, and two-anchor fusion needs both
+	  boards' residuals matched, or the difference lands in delta_mm as a
+	  fake side offset.
+
 config ULTRAWIDELOCK_RANGE_GATE_STRICT
 	bool "Range gate: enforce STS quality (drop suspect blocks)"
 	depends on ULTRAWIDELOCK_CRED

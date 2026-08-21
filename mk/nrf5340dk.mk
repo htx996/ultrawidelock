@@ -87,7 +87,7 @@ NRF_RELEASE_VER ?= $(shell git -C $(REPO_ROOT) describe --tags --always --dirty 
 export NRF_RELEASE_VER
 
 .PHONY: nrf-build nrf-rebuild nrf-pretty nrf-selftest nrf-flash nrf-flash-erase nrf-init-build nrf-init-flash nrf-term nrf-pairing-code nrf-release hitl term \
-        nrf-size nrf-size-check nrf-size-baseline
+        nrf-size nrf-size-check nrf-size-baseline regress-hil
 
 ##@ nRF5340 DK  ·  NFC tap + approach unlock
 ## nrf-build: incremental build          -> build/nrf5340dk/merged.hex
@@ -182,6 +182,14 @@ nrf-init-flash:
 ## hitl: enrol, build, flash and judge the initiator against a live reader
 hitl:
 	@$(REPO_ROOT)/scripts/hitl-run.sh $(HITL_ARGS)
+
+## regress-hil: the hardware tier  ·  build every CDK image, then prove it on air
+##   `make regress` is everything a machine can check without boards. This needs
+##   the bench: a reader on its probe and the DK as the phone. Exit 2 means the
+##   rig refused, not that the firmware failed.
+##   REGRESS_HIL_ARGS="--skip-build --selftest" to scope it.
+regress-hil:
+	@$(REPO_ROOT)/scripts/regress-hil.sh $(REGRESS_HIL_ARGS)
 
 ## nrf-term: serial console — live logs + typeable shell (tio, 115200 8N1)
 nrf-term: nrf-pairing-code

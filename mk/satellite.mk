@@ -63,6 +63,24 @@ endif
 
 SAT_BAUD ?= 115200
 
+# The DK pins its own probe the way the CDK does: by asking the silicon, not by
+# enumeration order. Same script, retargeted -- the nRF5340's INFO.PART word
+# lives at 0x00FF020C (read off this DK; the nRF52-era 0x10000100 reads back
+# unrelated data here). The cache lives beside the CDK's, in the deny-all
+# gitignored key dir, because a probe serial is machine-local state.
+SAT_PROBE ?=
+SAT_PROBE_CACHE ?= $(CDK_KEY_DIR)/sat-probe
+SAT_PROBE_GOALS := sat-monitor nrf-monitor-rtt
+ifeq ($(strip $(SAT_PROBE)),)
+ifneq ($(filter $(SAT_PROBE_GOALS),$(MAKECMDGOALS)),)
+SAT_PROBE := $(shell FIND_CHIP='$(SAT_CHIP)' FIND_FICR_ADDR=0x00FF020C \
+  FIND_PART_PAT=5340 FIND_LABEL='nRF5340 DK' FIND_PART_NAME=nRF5340 \
+  FIND_VAR_HINT=SAT_PROBE \
+  '$(REPO_ROOT)/scripts/cdk-find-probe.sh' '$(SAT_PROBE_CACHE)')
+endif
+endif
+SAT_PROBE_ARG := $(if $(SAT_PROBE),--probe '$(SAT_PROBE)')
+
 # ---- size ---------------------------------------------------------------------
 # The same three programs mk/cdk.mk runs on the lock, pointed at this app, and
 # they matter here for the same reason: on the CDK the satellite is an nRF52833,
@@ -81,7 +99,8 @@ SAT_SIZE_REPORTS  ?= 1
 SAT_SIZE_ARGS      = --build '$(SAT_BUILD)' --image satellite --json '$(SAT_SIZE_JSON)' \
                      $(if $(filter-out 0 n no off N NO OFF,$(SAT_SIZE_REPORTS)),--reports --run-prefix '$(CDK_WEST)')
 
-.PHONY: sat-build sat-flash sat-monitor sat-term sat-size sat-size-check sat-size-baseline
+.PHONY: sat-build sat-flash sat-monitor sat-term sat-size sat-size-check sat-size-baseline \
+        nrf-monitor-rtt
 
 ##@ Satellite responder  ·  joins the phone's CCC round as responder 1 (stage B)
 ## sat-build: build the satellite  -> build/satellite-<board>
@@ -126,10 +145,26 @@ sat-flash:
 	@$(CDK_RUN) flash -d $(SAT_BUILD) $(CDK_DEV_ID_ARG)
 
 ## sat-monitor: RTT console  ·  survives a shell thread that has died
+##   Attaches on the DK's OWN pinned probe. It used CDK_PROBE_ARG until
+##   2026-08-21 -- the other board's triple -- which with both probes attached
+##   failed in the way that reads like a dead board.
 sat-monitor:
-	$(CDK_PROBE_GUARD)
-	@probe-rs attach --chip $(SAT_CHIP) $(CDK_PROBE_ARG) \
+	@probe-rs attach --chip $(SAT_CHIP) $(SAT_PROBE_ARG) \
 	  $(SAT_BUILD)/satellite/zephyr/zephyr.elf
+
+## nrf-monitor-rtt: RTT feed for the nRF5340 DK  ·  ctrl-c ends it
+##   Takes the probe over (stops any capture already attached to this chip) and
+##   appends a copy of everything to build/rtt-nrf5340dk.log (LOG=path moves it).
+##   Picks the newest satellite ELF so the plain command matches whatever build
+##   was flashed last, thread or not.
+nrf-monitor-rtt:
+	@command -v probe-rs >/dev/null 2>&1 || { printf '  probe-rs not found  ·  see `make tools`\n' >&2; exit 1; }
+	-@pkill -f 'probe-rs attach --chip $(SAT_CHIP)' 2>/dev/null || true; sleep 1
+	@log='$(if $(LOG),$(LOG),$(ULTRAWIDELOCK_BUILD_ROOT)/rtt-nrf5340dk.log)'; \
+	elf=$$(/bin/ls -t $(ULTRAWIDELOCK_BUILD_ROOT)/satellite-*/satellite/zephyr/zephyr.elf 2>/dev/null | head -1); \
+	[ -n "$$elf" ] || { printf '  no satellite ELF under %s  ·  make sat-build first\n' '$(ULTRAWIDELOCK_BUILD_ROOT)' >&2; exit 1; }; \
+	printf '  RTT: nRF5340 DK  ·  elf %s  ·  copy -> %s  ·  ctrl-c ends\n' "$$elf" "$$log"; \
+	exec script -aq "$$log" probe-rs attach --chip $(SAT_CHIP) $(SAT_PROBE_ARG) "$$elf"
 
 ## sat-term: serial console  ·  live logs + typeable shell (tio, 115200 8N1)
 ##   The Thread build runs a shell on BOTH the UART and RTT, so this and

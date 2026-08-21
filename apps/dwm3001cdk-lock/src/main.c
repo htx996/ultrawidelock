@@ -317,6 +317,21 @@ static void factory_reset_if_requested(void)
  * prediction or threshold crossing, relocks on departure or abort, and exits with an error code if
  * reader startup fails.
  */
+/* How long the departure fallback holds an open bolt through the iOS
+ * phase-deadline flap before treating the dead session as a walk-away. Only
+ * entered when the controller was fed a range inside relock_cm moments before
+ * the session died -- a phone the evidence puts AT the door (measured
+ * 2026-08-21: flap at 16 cm, reconnect 4.2 s later; the immediate relock shut
+ * the bolt under the owner's hand). Departures don't look like that: the far
+ * tiers relock on ranges, not on the session. 10 s covers the observed
+ * reconnect with margin while bounding how long a real walk-away that never
+ * reconnects can leave the bolt open.
+ *
+ * Outside the latch guard: the departure fallback is in every image, latch or
+ * not, so the constants it reads have to be too. */
+#define SESSION_FLAP_HOLD_MS 10000
+#define SESSION_FLAP_FEED_FRESH_MS 3000
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 /*
  * The inside veto. The side gate classifies each window; this decides what a
@@ -393,8 +408,16 @@ static int latch_settings_set(const char *name, size_t len, settings_read_cb rea
 	}
 	/* A rejected blob leaves the latch initialised-and-empty, which reads
 	 * INSIDE for everyone. Corruption must not be recoverable into a
-	 * permissive state. */
-	if (!ultrawidelock_latch_deserialize(&s_latch, NULL, blob, (size_t)got)) {
+	 * permissive state.
+	 *
+	 * The cfg must survive the reload: deserialize re-inits, and passing
+	 * NULL there re-inits to the code defaults -- which silently undid
+	 * every ULTRAWIDELOCK_LATCH_* Kconfig on any boot that had records to
+	 * load (measured 2026-08-21: a 5000 ms entry dwell ran as 60000).
+	 * Copied out first because deserialize memsets the latch it is given. */
+	struct ultrawidelock_latch_cfg cfg = s_latch.cfg;
+
+	if (!ultrawidelock_latch_deserialize(&s_latch, &cfg, blob, (size_t)got)) {
 		LOG_WRN("latch records unreadable; every credential reads INSIDE");
 	}
 	return 0;
@@ -428,6 +451,70 @@ static void latch_note_opened(uint32_t cred_id, int64_t now_ms)
 	ultrawidelock_latch_note_grant(&s_latch, cred_id, now_ms);
 	s_latch_dirty = true;
 	latch_save();
+}
+#endif
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/* Anchor separation set at runtime (BL over RTT down), persisted so a bench
+ * rearrangement survives the reboot. 0 = never set; the Kconfig rules then. */
+static int32_t s_baseline_saved;
+
+static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+			       void *cb_arg)
+{
+	int32_t v;
+
+	if (strcmp(name, "bl") != 0 || len != sizeof(v)) {
+		return -ENOENT;
+	}
+	if (read_cb(cb_arg, &v, sizeof(v)) != (ssize_t)sizeof(v)) {
+		return -EINVAL;
+	}
+	if (v >= 300 && v <= 10000) {
+		s_baseline_saved = v;
+	}
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(uwl_anchor, "uwl/anchor", NULL, anchor_settings_set, NULL, NULL);
+
+/* The frontier moves WITH the baseline. What the configured pair fixes is the
+ * gap between the frontier and the inside anchor -- (BASELINE - BIAS) / 2 --
+ * so a new baseline keeps that gap rather than the raw bias: reusing 1000
+ * against a 1000 mm baseline would sit exactly on the degenerate limit the
+ * Kconfig help warns about. A configured bias of 0 (bisector install) stays 0
+ * at every separation. */
+static int32_t baseline_bias(int32_t baseline_mm)
+{
+	const int32_t gap = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM -
+			    CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM;
+
+	if (CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM == 0) {
+		return 0;
+	}
+	return baseline_mm > gap ? baseline_mm - gap : 0;
+}
+
+static void baseline_apply(struct ultrawidelock_satellite_set *set, int32_t mm, bool save)
+{
+	/*
+	 * Role 1's slot only. The RTT calibration below measures the separation
+	 * to the satellite that is answering, and role 1 is the one a
+	 * one-satellite lock has -- so this stays exactly the number it was
+	 * before the set existed. Roles 2 and 3 keep their configured
+	 * baselines: a separation measured against one board is not the
+	 * separation to another, and writing it into their slots would size
+	 * their triangle test for the wrong geometry.
+	 */
+	struct ultrawidelock_satellite *sat = &set->peer[0];
+
+	sat->cfg.baseline_mm = mm;
+	sat->cfg.boundary_bias_mm = baseline_bias(mm);
+	LOG_INF("anchor baseline %d mm (frontier bias %d)", mm,
+		sat->cfg.boundary_bias_mm);
+	if (save && settings_save_one("uwl/anchor/bl", &mm, sizeof(mm)) != 0) {
+		LOG_ERR("baseline not saved");
+	}
 }
 #endif
 
@@ -522,22 +609,36 @@ int main(void)
 			.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM,
 			.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
 			.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+			.boundary_bias_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM,
 		},
 		{
 			.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM,
 			.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
 			.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+			.boundary_bias_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM,
 		},
 		{
 			.baseline_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_3_MM,
 			.tol_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_TOL_MM,
 			.deadband_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_DEADBAND_MM,
+			.boundary_bias_mm = CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM,
 		},
 	};
 
 	ultrawidelock_satellite_set_init(&satellite, fusion_cfg,
 					 CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
 					 IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SELF_INSIDE));
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	(void)settings_load_subtree("uwl/anchor");
+	if (s_baseline_saved != 0) {
+		baseline_apply(&satellite, s_baseline_saved, false);
+	}
+	/* BL cal: median over this many paired rounds. The phone is held still,
+	 * so block alignment is irrelevant; 25 rounds is a few seconds. */
+	static int32_t bl_cal[25];
+	static uint8_t bl_cal_n;
+	static bool bl_cal_on;
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 	/* Before witness_link_init(), so no datagram can arrive with the sink
 	 * still unset. */
@@ -708,6 +809,24 @@ int main(void)
 			struct ultrawidelock_side_features feat;
 
 			side_feed_rtt_poll();
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+			{
+				int32_t bl_mm;
+
+				switch (side_feed_take_baseline(&bl_mm)) {
+				case 1:
+					baseline_apply(&satellite, bl_mm, true);
+					break;
+				case 2:
+					bl_cal_n = 0;
+					bl_cal_on = true;
+					LOG_INF("baseline cal: hold the phone still ~1 m past the DK");
+					break;
+				default:
+					break;
+				}
+			}
+#endif
 			if (side_feed_take(&feat)) {
 				feat.now_ms = now;
 				if (feat.obs_session_id == 0) {
@@ -987,6 +1106,18 @@ int main(void)
 				sf.ble_rssi_outside_dbm = INT16_MIN;
 				sf.ble_rssi_threshold_dbm = INT16_MIN;
 				sf.uwb_peer_mm = ultrawidelock_satellite_set_peer_mm(&satellite, now);
+				/* The filter checks quorum against THIS mask, not
+				 * against the evidence fields themselves; leaving it
+				 * zero fails quorum on every sample regardless of what
+				 * was measured. */
+				if (sf.uwb_range_mm >= 0) {
+					sf.anchor_health_mask |=
+						ULTRAWIDELOCK_SIDE_ANCHOR_PRIMARY_UWB;
+				}
+				if (sf.uwb_peer_mm >= 0) {
+					sf.anchor_health_mask |=
+						ULTRAWIDELOCK_SIDE_ANCHOR_UWB_SATELLITE;
+				}
 				sf.fusion_side = fv.geometry_ok ? (uint8_t)fv.side
 								: ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN;
 				/* Flat, not a function of delta_mm: the dead band and
@@ -1005,6 +1136,54 @@ int main(void)
 					(unsigned)side_dec.side, side_dec.confidence, side_dec.flags,
 					(int)sf.uwb_range_mm, (int)sf.uwb_peer_mm,
 					(int)fv.delta_mm);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+				/*
+				 * Same accounting the BLE feed does, because the
+				 * latch counts WINDOWS and does not care which
+				 * evidence produced one. Without this an image
+				 * with no BLE witnesses never advances the run at
+				 * all, and the latch refuses for ever on
+				 * ULTRAWIDELOCK_LATCH_R_WINDOWS however long the
+				 * phone stands outside.
+				 */
+				ultrawidelock_latch_note_window(
+					&s_latch, latch_cred,
+					ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)
+						? side_dec.side
+						: (side_dec.side ==
+							   ULTRAWIDELOCK_SIDE_LABEL_INSIDE
+							   ? ULTRAWIDELOCK_SIDE_LABEL_INSIDE
+							   : ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN),
+					sf.uwb_range_mm, now);
+#endif
+				if (bl_cal_on && sf.uwb_range_mm >= 0 &&
+				    sf.uwb_peer_mm >= 0) {
+					bl_cal[bl_cal_n++] = sf.uwb_range_mm - sf.uwb_peer_mm;
+					if (bl_cal_n == ARRAY_SIZE(bl_cal)) {
+						int32_t m;
+
+						/* Insertion sort; the median
+						 * shrugs off the NLOS tail. */
+						for (size_t i = 1; i < ARRAY_SIZE(bl_cal); i++) {
+							int32_t k = bl_cal[i];
+							size_t j = i;
+
+							for (; j > 0 && bl_cal[j - 1] > k; j--) {
+								bl_cal[j] = bl_cal[j - 1];
+							}
+							bl_cal[j] = k;
+						}
+						m = bl_cal[ARRAY_SIZE(bl_cal) / 2];
+						m = m < 0 ? -m : m;
+						bl_cal_on = false;
+						if (m >= 300 && m <= 10000) {
+							baseline_apply(&satellite, m, true);
+						} else {
+							LOG_WRN("baseline cal failed (median %d): not past an anchor?",
+								m);
+						}
+					}
+				}
 			}
 #endif
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_TRUSTED_RANGE);
@@ -1045,6 +1224,57 @@ int main(void)
 		}
 
 		ml_feed_vote_trace(&approach, now);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_BENCH_TOGGLE_UNLOCK)
+		/*
+		 * Bench-only: a NEW ranging session opens a short window in which
+		 * a clean committed OUTSIDE unlocks with no approach at all. The
+		 * Wallet UWB toggle (and the first session after a flash) is what
+		 * creates a new session, so on the bench this is "toggle asks the
+		 * geometry": outside unlocks, inside or unknown refuses. Kept off
+		 * a mounted door because iOS ALSO recreates sessions on its own,
+		 * and an owner resting outside must not have the bolt follow
+		 * every session churn.
+		 */
+		{
+			static uint32_t tg_sid;
+			static int64_t tg_until;
+			uint32_t sid = ultrawidelock_uwb_session_id();
+
+			if (sid != 0u && sid != tg_sid) {
+				tg_sid = sid;
+				/* 20 s: the second anchor takes ~3-4 s to join the
+				 * new session before geometry exists at all, and a
+				 * measured 00:24 window expired at 8 s with the
+				 * commit still forming. The length costs nothing --
+				 * INSIDE refuses by verdict, never by timeout. */
+				tg_until = now + 20000;
+				LOG_INF("toggle window open");
+			}
+			/* A committed INSIDE also refreshes the window: stepping
+			 * back out is the third stationary case the bench needs
+			 * decided, and without this it had no unlock path at
+			 * all until iOS recycled the session (~30 s). While
+			 * INSIDE holds, the gate below refuses anyway; the
+			 * refresh only matters once the verdict flips. */
+			if (side_dec.side == ULTRAWIDELOCK_SIDE_LABEL_INSIDE) {
+				tg_until = now + 20000;
+			}
+			if (!granted && tg_until != 0 && now < tg_until && session_now &&
+			    latch_cred != LATCH_CRED_NONE &&
+			    ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)) {
+				tg_until = 0;
+				LOG_INF("toggle unlock (conf=%u)", side_dec.confidence);
+				ultrawidelock_reader_notify_unlock(true);
+				status_led_signal(STATUS_LED_UNLOCKED, true);
+				granted = true;
+				/* Hand the open bolt to the controller so its range
+				 * departure and silence tiers relock it, same as any
+				 * other grant. */
+				approach.locked = false;
+				latch_note_opened(latch_cred, now);
+			}
+		}
+#endif
 		if (act == ULTRAWIDELOCK_APPROACH_UNLOCK_PREDICT ||
 		    act == ULTRAWIDELOCK_APPROACH_UNLOCK_THRESHOLD) {
 			(void)ultrawidelock_lat_mark(ULTRAWIDELOCK_LAT_NEAR_DWELL);
@@ -1151,7 +1381,31 @@ int main(void)
 		/* Departure: the peer's credential session ended (walked away / phone pocketed). iOS
 		 * ranging silence alone does NOT mean departed (a still phone stops ranging too),
 		 * so gate on the session, not on range age. Tell Wallet Secured once and reset. */
-		if (present && !ultrawidelock_reader_session_active()) {
+		/* One hold per flap, judged on the evidence at the moment the
+		 * session died: feeds stop with the session, so the freshness
+		 * test would fail on every later tick of the same flap if it
+		 * were re-judged. A session that comes back clears the hold. */
+		static int64_t flap_hold_ms;
+		bool sess_gone = present && !ultrawidelock_reader_session_active();
+
+		if (!sess_gone) {
+			flap_hold_ms = 0;
+		} else if (flap_hold_ms == 0 && granted && approach.last_feed_ms != 0 &&
+			   /* Only the mid-phase flap earns a hold. A close from
+			    * ESTABLISHED is the peer done on purpose -- Wallet's
+			    * UWB toggled off -- and the old immediate relock is
+			    * exactly right there (measured 2026-08-22 01:15: the
+			    * hold bridged a toggle-off into the reconnect and
+			    * the bolt never relocked). */
+			   !ultrawidelock_reader_last_close_established() &&
+			   approach.last_cm < approach.cfg.relock_cm &&
+			   (now - approach.last_feed_ms) <= SESSION_FLAP_FEED_FRESH_MS) {
+			flap_hold_ms = now;
+			LOG_WRN("session died with the phone fed at %d cm; holding the bolt %d ms",
+				approach.last_cm, SESSION_FLAP_HOLD_MS);
+		}
+		if (sess_gone && (flap_hold_ms == 0 || (now - flap_hold_ms) > SESSION_FLAP_HOLD_MS)) {
+			flap_hold_ms = 0;
 			/*
 			 * Reaching here with the bolt still open means the silence
 			 * relock in ultrawidelock_approach_tick() did NOT fire, and this is

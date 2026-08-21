@@ -332,6 +332,21 @@ config ULTRAWIDELOCK_ANCHOR_DEADBAND_MM
 	  that way; UNKNOWN permits prediction, so this is a bias toward the door
 	  opening.
 
+config ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM
+	int "Side boundary shift toward the inside anchor, millimetres"
+	default 0
+	range 0 10000
+	help
+	  0 keeps the INSIDE/OUTSIDE frontier on the anchors' perpendicular
+	  bisector, which is the door plane when the anchors straddle the door
+	  -- the shipping install needs no shift. A positive value moves the
+	  frontier toward the inside anchor: on the axis, INSIDE begins
+	  (BASELINE_MM - this) / 2 in front of it. Meant for a bench where both
+	  anchors stand on the same side of the walkway and "inside" should
+	  mean "behind the lock board". Keep it several sigma of ranging jitter
+	  below BASELINE_MM: at equality the INSIDE locus degenerates to the
+	  ray behind the anchor and every verdict there is a coin toss.
+
 config ULTRAWIDELOCK_ANCHOR_STALE_MS
 	int "Satellite report lifetime, milliseconds"
 	default 1500

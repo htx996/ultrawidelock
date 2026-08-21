@@ -25,6 +25,12 @@
 #include "uwb_rxdiag.h"         /* uwb_rxdiag_stream_get — the `ultrawidelock log` runtime toggle */
 #include "flight_recorder.h"    /* fr_capture_ev — record/replay walk-up capture (gated) */
 
+/* The host test build compiles this file without Kconfig, so the calibration
+ * has to carry its own default: zero, which is the uncorrected reading. */
+#ifndef CONFIG_ULTRAWIDELOCK_UWB_RANGE_BIAS_MM
+#define CONFIG_ULTRAWIDELOCK_UWB_RANGE_BIAS_MM 0
+#endif
+
 #if defined(CONFIG_DW3000_SPI_METRICS)
 #include "dw3000_spi.h"
 #endif
@@ -864,7 +870,8 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 			 * link and this path share one definition. 1 tick ~ 15.65 ps,
 			 * ~4.6917 mm/tick. */
 			int32_t tof = ds_twr_tof_signed(&tw);
-			int d_mm = (int)(((int64_t)tof * 4692) / 1000);
+			int d_mm = (int)(((int64_t)tof * 4692) / 1000) +
+				   CONFIG_ULTRAWIDELOCK_UWB_RANGE_BIAS_MM;
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 			g_dbg_dstwr_ok++;
 			g_dbg_last_dmm = d_mm;
