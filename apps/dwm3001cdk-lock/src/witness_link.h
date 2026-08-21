@@ -41,6 +41,21 @@ extern "C" {
 #define WITNESS_LINK_KEY_LEN 16u
 
 /** Open the UDP socket and load witness keys. Safe to call before Thread is up. */
+/**
+ * Called when a sealed SECOND-ANCHOR report (WV3) is accepted.
+ *
+ * A callback rather than a direct call into the fusion layer, so the transport
+ * stays ignorant of what a distance is for: it authenticates a datagram and
+ * hands over what it said. @p ranging_block travels with @p peer_mm because a
+ * distance without the round it was measured in cannot be paired with ours.
+ *
+ * Runs on the OpenThread receive path. Keep it to a store.
+ */
+typedef void (*witness_link_anchor_cb)(int32_t peer_mm, uint32_t ranging_block, int64_t now_ms);
+
+/** Register the WV3 sink (NULL to clear). Call before witness_link_init(). */
+void witness_link_set_anchor_cb(witness_link_anchor_cb cb);
+
 void witness_link_init(void);
 
 /**

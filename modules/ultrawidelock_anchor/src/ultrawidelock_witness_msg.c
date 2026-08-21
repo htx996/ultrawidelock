@@ -176,21 +176,30 @@ ultrawidelock_witness_msg_at(const struct ultrawidelock_witness_msg *msg, uint8_
 	return &msg->tuples[idx];
 }
 
-bool ultrawidelock_witness_seen_accept(struct ultrawidelock_witness_seen *seen,
-				       const struct ultrawidelock_witness_msg *msg)
+bool ultrawidelock_seen_accept_ctr(struct ultrawidelock_witness_seen *seen, uint32_t boot_id,
+				   uint32_t ctr)
 {
-	if (seen == NULL || msg == NULL) {
+	if (seen == NULL) {
 		return false;
 	}
-	if (seen->have && seen->boot_id == msg->boot_id) {
-		if (msg->ctr <= seen->ctr) {
+	if (seen->have && seen->boot_id == boot_id) {
+		if (ctr <= seen->ctr) {
 			return false; /* replay or reorder; state untouched */
 		}
 	}
-	seen->boot_id = msg->boot_id;
-	seen->ctr = msg->ctr;
+	seen->boot_id = boot_id;
+	seen->ctr = ctr;
 	seen->have = true;
 	return true;
+}
+
+bool ultrawidelock_witness_seen_accept(struct ultrawidelock_witness_seen *seen,
+				       const struct ultrawidelock_witness_msg *msg)
+{
+	if (msg == NULL) {
+		return false;
+	}
+	return ultrawidelock_seen_accept_ctr(seen, msg->boot_id, msg->ctr);
 }
 
 /* ── WV3: the second anchor's report ─────────────────────────────────────── */

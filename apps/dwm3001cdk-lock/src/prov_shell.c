@@ -33,6 +33,53 @@
 #include "witness_link.h"
 #include <ultrawidelock/reader.h>
 
+/*
+ * The SECOND ANCHOR's link key. Separate command and separate record from
+ * `witkey`: the anchor is a UWB responder, not a BLE witness, and the two
+ * device classes must not share an enrolment path -- the witnesses are retired
+ * and nothing new should be enrolled as one.
+ */
+static int cmd_anckey(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t key[WITNESS_LINK_KEY_LEN];
+	size_t hex_len;
+	int rc;
+
+	ARG_UNUSED(argc);
+
+	hex_len = strlen(argv[1]);
+	if (hex_len != 2u * WITNESS_LINK_KEY_LEN ||
+	    hex2bin(argv[1], hex_len, key, sizeof(key)) != sizeof(key)) {
+		shell_error(sh, "key must be exactly %u hex characters (%u bytes)",
+			    (unsigned int)(2u * WITNESS_LINK_KEY_LEN),
+			    (unsigned int)WITNESS_LINK_KEY_LEN);
+		return -EINVAL;
+	}
+	if (all_zero(key, sizeof(key))) {
+		shell_error(sh, "refusing an all-zero key; generate one with "
+			    "`openssl rand -hex %u`", (unsigned int)WITNESS_LINK_KEY_LEN);
+		return -EINVAL;
+	}
+
+	rc = settings_subsys_init();
+	if (rc != 0) {
+		shell_error(sh, "settings init rc=%d; nothing stored", rc);
+		return rc;
+	}
+	/* Split literal for the same reason as witkey's: port_purity_check.sh
+	 * matches this against PORTING.md to catch the writer and the reader in
+	 * witness_link.c drifting apart. */
+	rc = settings_save_one("uwl/anc/k" "", key, sizeof(key));
+	if (rc != 0) {
+		shell_error(sh, "storing the anchor key rc=%d", rc);
+		return rc;
+	}
+
+	shell_print(sh, "stored the second-anchor link key. Give the satellite the same "
+		    "bytes, then flash the Thread image WITHOUT --erase.");
+	return 0;
+}
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_HEAP_PROBE)
 #include <mbedtls/memory_buffer_alloc.h>
 #endif
@@ -312,6 +359,53 @@ static int cmd_witkey(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * The SECOND ANCHOR's link key. Separate command and separate record from
+ * `witkey`: the anchor is a UWB responder, not a BLE witness, and the two
+ * device classes must not share an enrolment path -- the witnesses are retired
+ * and nothing new should be enrolled as one.
+ */
+static int cmd_anckey(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t key[WITNESS_LINK_KEY_LEN];
+	size_t hex_len;
+	int rc;
+
+	ARG_UNUSED(argc);
+
+	hex_len = strlen(argv[1]);
+	if (hex_len != 2u * WITNESS_LINK_KEY_LEN ||
+	    hex2bin(argv[1], hex_len, key, sizeof(key)) != sizeof(key)) {
+		shell_error(sh, "key must be exactly %u hex characters (%u bytes)",
+			    (unsigned int)(2u * WITNESS_LINK_KEY_LEN),
+			    (unsigned int)WITNESS_LINK_KEY_LEN);
+		return -EINVAL;
+	}
+	if (all_zero(key, sizeof(key))) {
+		shell_error(sh, "refusing an all-zero key; generate one with "
+			    "`openssl rand -hex %u`", (unsigned int)WITNESS_LINK_KEY_LEN);
+		return -EINVAL;
+	}
+
+	rc = settings_subsys_init();
+	if (rc != 0) {
+		shell_error(sh, "settings init rc=%d; nothing stored", rc);
+		return rc;
+	}
+	/* Split literal for the same reason as witkey's: port_purity_check.sh
+	 * matches this against PORTING.md to catch the writer and the reader in
+	 * witness_link.c drifting apart. */
+	rc = settings_save_one("uwl/anc/k" "", key, sizeof(key));
+	if (rc != 0) {
+		shell_error(sh, "storing the anchor key rc=%d", rc);
+		return rc;
+	}
+
+	shell_print(sh, "stored the second-anchor link key. Give the satellite the same "
+		    "bytes, then flash the Thread image WITHOUT --erase.");
+	return 0;
+}
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_HEAP_PROBE)
 /* Run this straight after an `import`: the commit path does a software P-256
  * derive, which is the reader's heaviest single crypto step, and the peak is
@@ -345,6 +439,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      0),
 	SHELL_CMD_ARG(witkey, NULL, "Enroll a BLE witness: `witkey <inside|outside|threshold> "
 		      "<hex32>`.", cmd_witkey, 3, 0),
+	SHELL_CMD_ARG(anckey, NULL, "Enroll the second UWB anchor: `anckey <hex32>`.",
+		      cmd_anckey, 2, 0),
 	SHELL_COND_CMD(CONFIG_ULTRAWIDELOCK_HEAP_PROBE, heap, NULL,
 		       "Peak mbedTLS heap use since boot.", cmd_heap),
 	SHELL_SUBCMD_SET_END);

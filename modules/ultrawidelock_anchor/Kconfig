@@ -135,8 +135,49 @@ config ULTRAWIDELOCK_INSIDE_LATCH
 
 	  Read docs/inside-latch.md before changing any default below.
 
+config ULTRAWIDELOCK_SEALED_LINK
+	bool
+	help
+	  The sealed peer link itself: one UDP socket on the Thread interface,
+	  AES-CCM under a per-peer key, a monotonic counter per peer boot, and a
+	  challenge nonce. It carries a VERSION-TAGGED message and knows nothing
+	  about what any version means.
+
+	  Selected, never set directly. It exists so a consumer can use the
+	  transport without inheriting another consumer's device class: the second
+	  UWB anchor rides this link and has nothing to do with BLE witnesses,
+	  which are retired. Without this split, enabling the anchor would compile
+	  in witness ingest and enrol the anchor's key as though it were a witness.
+
+config ULTRAWIDELOCK_ANCHOR_LINK
+	bool "Ingest second-anchor distance reports (WV3) over the sealed link"
+	depends on ULTRAWIDELOCK_ANCHOR
+	depends on NET_L2_OPENTHREAD || OPENTHREAD
+	select ULTRAWIDELOCK_SEALED_LINK
+	default n
+	help
+	  Accepts sealed WV3 reports from a second UWB anchor: its own measured
+	  distance to the phone, and the ranging block it measured it in.
+
+	  Its own key and its own replay window, NOT a witness role slot. The
+	  anchor is a UWB responder sharing the credential session's keys, not a
+	  BLE observer, and enrolling it through the witness path would tie a live
+	  device class to a retired one.
+
+	  The block travels with the distance because a distance without the round
+	  it belongs to cannot be paired with this node's own.
+
+	  NOT YET STANDALONE. The anchor's identity, key, enrolment command,
+	  replay window and settings subtree are all its own, and the advertiser
+	  picker is witness-only. But witness_link.c still contains the WV2
+	  consumer inline, woven through the nonce and health paths, so an image
+	  with ANCHOR_LINK and no WITNESS_LINK_OT does not link yet. Carving that
+	  out is a refactor of a security-sensitive file and is deliberately not
+	  bundled with this. Every shipping config enables both.
+
 config ULTRAWIDELOCK_WITNESS_LINK_OT
 	bool "Ingest BLE witness reports over Thread UDP"
+	select ULTRAWIDELOCK_SEALED_LINK
 	depends on ULTRAWIDELOCK_INSIDE_LATCH
 	depends on NET_L2_OPENTHREAD || OPENTHREAD
 	default n
@@ -157,11 +198,14 @@ config ULTRAWIDELOCK_WITNESS_LINK_OT
 	  open passively.
 
 config ULTRAWIDELOCK_WITNESS_PORT
-	int "UDP port for witness reports"
+	int "UDP port for the sealed peer link"
 	default 49180
 	range 1024 65535
-	depends on ULTRAWIDELOCK_WITNESS_LINK_OT
+	depends on ULTRAWIDELOCK_SEALED_LINK
 	help
+	  One socket, shared by every consumer of the link: the version byte
+	  demultiplexes, not the port.
+
 	  Mesh-local only. Not registered with SRP: the witnesses are told the
 	  lock's address at enrollment, and publishing a service for them would
 	  advertise the lock's role to the whole fabric for no benefit.
@@ -170,7 +214,7 @@ config ULTRAWIDELOCK_WITNESS_MAX
 	int "Enrolled witnesses"
 	default 3
 	range 2 4
-	depends on ULTRAWIDELOCK_WITNESS_LINK_OT
+	depends on ULTRAWIDELOCK_SEALED_LINK
 	help
 	  Two is the working set: inside and outside. Three leaves room for the
 	  optional threshold role without a rebuild.
@@ -179,7 +223,7 @@ config ULTRAWIDELOCK_WITNESS_NONCE_MS
 	int "Challenge nonce lifetime, milliseconds"
 	default 30000
 	range 1000 600000
-	depends on ULTRAWIDELOCK_WITNESS_LINK_OT
+	depends on ULTRAWIDELOCK_SEALED_LINK
 	help
 	  How long one challenge epoch lasts while a credential session is
 	  live. Shorter narrows the replay window and costs downlink traffic to
