@@ -82,6 +82,18 @@ static uint64_t s_nonce;
 static int64_t s_nonce_ms;
 static int64_t s_nonce_sent_ms;
 static int64_t s_deaf_ms;
+/* WV3 sink. NULL on a build with no second anchor, which is why the dispatch
+ * checks it: the transport still authenticates and replay-checks the report,
+ * it simply has nowhere to put it. */
+static witness_link_anchor_cb s_anchor_cb;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/* The anchor's OWN credentials. Deliberately not a witness role slot: it is a
+ * UWB responder sharing the credential session's keys, and enrolling it through
+ * the witness path would tie a live device class to a retired one. */
+static uint8_t s_anchor_key[KEY_LEN];
+static bool s_anchor_provisioned;
+static struct ultrawidelock_witness_seen s_anchor_seen;
+#endif
 static bool s_session;
 
 /* Reports older than this are not reports. Matches the satellite module's
@@ -174,8 +186,10 @@ static void nonce_send(void)
 	s_nonce_sent_ms = k_uptime_get();
 }
 
-static bool unseal(struct witness_slot *w, const uint8_t *in, size_t in_len, uint8_t *out,
-		   size_t out_cap, size_t *out_len)
+/* Takes the KEY, not a witness slot: the second anchor holds its own key and is
+ * not enrolled as a witness, so the seal cannot be tied to that slot type. */
+static bool unseal_key(const uint8_t *k, const uint8_t *in, size_t in_len, uint8_t *out,
+		       size_t out_cap, size_t *out_len)
 {
 	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
 	psa_key_id_t key = PSA_KEY_ID_NULL;
@@ -188,7 +202,7 @@ static bool unseal(struct witness_slot *w, const uint8_t *in, size_t in_len, uin
 	psa_set_key_algorithm(&attr, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN));
 	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
 	psa_set_key_bits(&attr, KEY_LEN * 8u);
-	if (psa_import_key(&attr, w->key, KEY_LEN, &key) != PSA_SUCCESS) {
+	if (psa_import_key(&attr, k, KEY_LEN, &key) != PSA_SUCCESS) {
 		return false;
 	}
 	st = psa_aead_decrypt(key, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN), in,
@@ -378,10 +392,18 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 		if (!s_wit[i].provisioned) {
 			continue;
 		}
-		if (unseal(&s_wit[i], sealed, len, plain, sizeof(plain), &plain_len)) {
+		if (unseal_key(s_wit[i].key, sealed, len, plain, sizeof(plain), &plain_len)) {
 			goto opened;
 		}
 	}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	/* The second anchor's own key, tried after the witnesses and enrolled
+	 * separately from them. */
+	if (s_anchor_provisioned &&
+	    unseal_key(s_anchor_key, sealed, len, plain, sizeof(plain), &plain_len)) {
+		goto opened;
+	}
+#endif
 	/*
 	 * Rate-limited on purpose, and present at all for one reason: a link
 	 * key typed differently on the two ends drops every report here in
@@ -397,6 +419,33 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 	return;
 
 opened:
+	/*
+	 * Demultiplex on the version byte BEFORE choosing a decoder. WV3 is the
+	 * second anchor's own measured distance; it rides this link unchanged --
+	 * same socket, same seal, same per-role key -- and shares WV2's leading
+	 * fields precisely so the replay window below applies to both.
+	 */
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	if (ultrawidelock_msg_is_anchor(plain, plain_len)) {
+		struct ultrawidelock_anchor_msg am;
+
+		if (!ultrawidelock_anchor_msg_decode(plain, plain_len, &am)) {
+			return;
+		}
+		if (!s_anchor_provisioned) {
+			return;
+		}
+		if (!ultrawidelock_seen_accept_ctr(&s_anchor_seen, am.boot_id, am.ctr)) {
+			LOG_WRN("anchor role=%u replay (ctr=%u)", (unsigned)am.role,
+				(unsigned)am.ctr);
+			return;
+		}
+		if (s_anchor_cb != NULL) {
+			s_anchor_cb(am.peer_mm, am.ranging_block, now);
+		}
+		return;
+	}
+#endif
 	if (!ultrawidelock_witness_msg_decode(plain, plain_len, &wm)) {
 		return;
 	}
@@ -445,6 +494,30 @@ static int witness_settings_set(const char *name, size_t len, settings_read_cb r
 
 SETTINGS_STATIC_HANDLER_DEFINE(witness, "uwl/wit", NULL, witness_settings_set, NULL, NULL);
 
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/* Its own subtree, so the anchor's key is not enrolled, listed or erased as
+ * part of the witness set. */
+static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+			       void *cb_arg)
+{
+	if (len != KEY_LEN || strcmp(name, "k") != 0) {
+		return -ENOENT;
+	}
+	if (read_cb(cb_arg, s_anchor_key, KEY_LEN) != (ssize_t)KEY_LEN) {
+		return -EINVAL;
+	}
+	s_anchor_provisioned = true;
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(anchor, "uwl/anc", NULL, anchor_settings_set, NULL, NULL);
+#endif
+
+void witness_link_set_anchor_cb(witness_link_anchor_cb cb)
+{
+	s_anchor_cb = cb;
+}
+
 void witness_link_init(void)
 {
 	otInstance *ot = openthread_get_default_instance();
@@ -466,6 +539,9 @@ void witness_link_init(void)
 	 * nor obviously safe.
 	 */
 	(void)settings_load_subtree("uwl/wit");
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	(void)settings_load_subtree("uwl/anc");
+#endif
 
 	for (size_t i = 0; i < WITNESS_MAX; i++) {
 		if (s_wit[i].provisioned) {

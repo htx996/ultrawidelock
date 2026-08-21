@@ -20,13 +20,18 @@ if(CONFIG_ULTRAWIDELOCK_ANCHOR)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_side.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_side_log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_slam.c)
-  # Both halves of the witness link, gated separately: the lock wants the
-  # veto and the codec, the witness firmware wants only the codec, and
-  # ULTRAWIDELOCK_ANCHOR alone must still grow no image at all.
+  # The wire codec carries BOTH message families -- WV2 witness reports and WV3
+  # anchor reports share one version byte, so one file owns it -- and the sealed
+  # link needs it whichever consumer is enabled. The advertiser picker and the
+  # label core are witness-only and stay behind the witness gate, so an
+  # anchor-only image compiles none of them. ULTRAWIDELOCK_ANCHOR alone must
+  # still grow no image at all.
+  if(CONFIG_ULTRAWIDELOCK_WITNESS_CODEC OR CONFIG_ULTRAWIDELOCK_SEALED_LINK)
+    zephyr_library_sources(${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_msg.c)
+  endif()
   if(CONFIG_ULTRAWIDELOCK_WITNESS_CODEC)
     zephyr_library_sources(
       ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_core.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_msg.c
       ${CMAKE_CURRENT_SOURCE_DIR}/src/ultrawidelock_witness_pick.c)
   endif()
   if(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)

@@ -198,6 +198,16 @@ struct ultrawidelock_witness_seen {
 bool ultrawidelock_witness_seen_accept(struct ultrawidelock_witness_seen *seen,
 				       const struct ultrawidelock_witness_msg *msg);
 
+/**
+ * The same accept-or-reject, taking the two fields it actually reads.
+ *
+ * WV2 and WV3 carry boot_id and ctr in the same places and mean the same thing
+ * by them, so they share one replay window rather than growing a second
+ * implementation that could drift out of agreement with this one.
+ */
+bool ultrawidelock_seen_accept_ctr(struct ultrawidelock_witness_seen *seen, uint32_t boot_id,
+				   uint32_t ctr);
+
 /* ── WV3: the second anchor's report ─────────────────────────────────────── */
 
 /**

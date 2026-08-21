@@ -48,7 +48,7 @@
 #include "ultrawidelock_hash.h" /* SHA-256, for the credential's non-identifying name */
 #include <zephyr/settings/settings.h>
 #endif
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
 #include "witness_link.h"
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
@@ -145,6 +145,28 @@ extern volatile int ultrawidelock_uwb_diag_on;
  * an unparseable file as zero rule coverage rather than a clean result, which
  * would silently drop every rule that guards this file. */
 static struct k_sem s_range_sig;
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+/* The fusion state lives in main()'s frame; the transport callback needs a way
+ * to reach it without the transport knowing what it is. */
+static struct ultrawidelock_satellite *s_satellite;
+
+/**
+ * A sealed, replay-checked distance from the second anchor.
+ *
+ * Stores only. The pairing decision is not taken here and must not be: which of
+ * OUR measurements this one belongs with is settled by its ranging block when
+ * the verdict is asked for, against the ring of recent samples -- so a report
+ * that took a block or two to arrive still finds its partner instead of being
+ * matched against whatever we happen to hold right now.
+ */
+static void on_anchor_report(int32_t peer_mm, uint32_t ranging_block, int64_t now_ms)
+{
+	if (s_satellite != NULL) {
+		ultrawidelock_satellite_report(s_satellite, peer_mm, ranging_block, now_ms);
+	}
+}
+#endif
 
 /**
  * Wake the grant loop on an accepted range latch. Runs on the UWB RX path, so it does nothing but
@@ -478,6 +500,12 @@ int main(void)
 
 	ultrawidelock_satellite_init(&satellite, &fusion_cfg, CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
 			   IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SELF_INSIDE));
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	/* Before witness_link_init(), so no datagram can arrive with the sink
+	 * still unset. */
+	s_satellite = &satellite;
+	witness_link_set_anchor_cb(on_anchor_report);
+#endif
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 	/* Door alarms. The ajar half waits on the same missing transport as the
@@ -544,7 +572,7 @@ int main(void)
 	 * LATCH_SESSION_CARRY_MS: the uptime when the gap began. */
 	int64_t latch_gap_ms = 0;
 #endif
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
 	witness_link_init();
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SLAM)
@@ -619,7 +647,7 @@ int main(void)
 			dataset_dumped = true;
 		}
 #endif
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
 		witness_link_tick(now);
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
@@ -782,7 +810,7 @@ int main(void)
 					 * carry window: same approach, and the
 					 * run of agreeing windows survives. */
 					latch_gap_ms = 0;
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
 					witness_link_session(true);
 #endif
 				}
@@ -795,7 +823,7 @@ int main(void)
 				 * different approach closes the session. */
 				if (latch_gap_ms == 0) {
 					latch_gap_ms = now;
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
 					witness_link_session(false);
 #endif
 				} else if ((now - latch_gap_ms) >
@@ -813,7 +841,7 @@ int main(void)
 					ultrawidelock_latch_session_close(&s_latch);
 				}
 				ultrawidelock_latch_session_open(&s_latch, cred_now);
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_WITNESS_LINK_OT)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
 				witness_link_session(true);
 #endif
 				latch_cred = cred_now;
