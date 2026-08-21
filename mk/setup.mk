@@ -1,7 +1,7 @@
 # mk/setup.mk — getting a machine ready: host gate tools, then the NCS toolchain
 # and the fetched west workspace both Zephyr ports build against.
 
-.PHONY: tools bootstrap dfu-key print-sign-key
+.PHONY: tools bootstrap ws-seed dfu-key print-sign-key
 
 ##@ Setup
 ## tools: what the host suites need, what this machine has
@@ -9,8 +9,21 @@ tools:
 	@$(REPO_ROOT)/scripts/toolchain.sh
 
 ## bootstrap: set this machine up for the repo  ·  the only command before build
+##   In a linked worktree with no ./workspace yet, this delegates to ws-seed: a COW
+##   clone of the primary's tree costs ~0 disk, where refetching costs 6.5 GB.
+##   Options: NO_SEED=1 in a worktree, fetch a full independent workspace anyway
 bootstrap:
-	@$(NRF_ENV) ./scripts/bootstrap.sh
+	@if [ -z "$(NO_SEED)" ] && [ ! -d workspace/.west ] && \
+	    [ "$$(git rev-parse --git-common-dir)" != "$$(git rev-parse --git-dir)" ]; then \
+	  printf '  linked worktree with no workspace: cloning the primary (NO_SEED=1 to refetch)\n'; \
+	  $(REPO_ROOT)/scripts/ws-seed.sh && exit 0; \
+	fi; \
+	$(NRF_ENV) ./scripts/bootstrap.sh
+
+## ws-seed: give THIS worktree its own workspace (APFS COW clone, ~0 disk)
+##   Idempotent. Isolates worktrees so branch-bouncing can't build stale patches.
+ws-seed:
+	@$(REPO_ROOT)/scripts/ws-seed.sh
 
 ## dfu-key: generate this checkout's MCUboot signing key  ·  once per clone
 #   Refuses to overwrite: replacing the key strands every board carrying the old
