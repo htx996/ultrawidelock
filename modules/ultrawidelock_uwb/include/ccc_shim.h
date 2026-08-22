@@ -109,4 +109,13 @@ bool ccc_prepoll_listening(void);
 /** @brief The bound session's `STS_Index0` (for UAD/Pre-POLL derivation); 0 if unbound. */
 uint32_t ccc_shim_sts_index0(void);
 
+/**
+ * @brief Register the credential-session handoff listener (NULL to clear).
+ *
+ * Backs ultrawidelock_uwb_set_handoff_listener(); see uwb.h for the contract
+ * and for why the parameters leave this module at all.
+ */
+struct ultrawidelock_uwb_handoff;
+void cherry_ccc_set_handoff_listener(void (*cb)(const struct ultrawidelock_uwb_handoff *h));
+
 #endif /* CCC_SHIM_H */

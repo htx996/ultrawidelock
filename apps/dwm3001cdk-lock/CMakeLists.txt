@@ -102,8 +102,19 @@ if(CONFIG_ULTRAWIDELOCK_BENCH_CRED_O2)
 		"${CRED}/src/ultrawidelock_prim_psa.c"
 		PROPERTIES COMPILE_OPTIONS "-O2")
 endif()
-# Provisioning console (USB CDC-ACM, provisioning mode only).
+# Provisioning console (USB CDC-ACM, provisioning mode only). Dropped by
+# 4bdfd44a, which replaced this line with the side_feed one below instead of
+# adding it, and so deleted `ultrawidelock import/export/erase` from every build
+# without deleting the file or the comment. Restored, and the two lines are kept
+# apart so the next edit here cannot repeat it.
+target_sources_ifdef(CONFIG_ULTRAWIDELOCK_PROV_CONSOLE app PRIVATE src/prov_shell.c)
+
+# The side gate's bench feed: an RTT buffer drained by host tooling.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_SIDE_GATE app PRIVATE src/side_feed.c)
+# The deployed witness transport. Separate from SIDE_GATE's bench feed: this
+# one binds a Thread socket instead of draining an RTT buffer, so it is gated
+# on its own symbol and the RTT path stays available for bench work.
+target_sources_ifdef(CONFIG_ULTRAWIDELOCK_SEALED_LINK app PRIVATE src/witness_link.c)
 # Measurement only; CONFIG_ULTRAWIDELOCK_THREAD_GATE defaults n so this is absent from
 # every shipping image.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_THREAD_GATE app PRIVATE src/thread_gate.c)

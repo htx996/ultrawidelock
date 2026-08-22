@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: ISC
+#
+# Satellite responder options.
+
+config ULTRAWIDELOCK_ANCHOR_ROLE
+	int "Which side of the door this anchor is mounted on"
+	default 1
+	range 1 3
+	help
+	  1 = inside, 2 = outside, 3 = threshold, matching
+	  enum ultrawidelock_witness_role, which the sealed link's role field
+	  reuses so one demultiplexer serves every peer on the port.
+
+	  A MOUNTING FACT, and the lock reads it to decide which distance is the
+	  inside one. Getting it backwards does not crash and fails no geometry
+	  test -- it silently inverts the side verdict, withholding from people
+	  indoors and granting to people on the doorstep.
+
+	  Build-time here rather than provisioned: this board is screwed to one
+	  side of one door, unlike the interchangeable witnesses it replaces.
+
+source "Kconfig.zephyr"

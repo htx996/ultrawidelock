@@ -50,7 +50,7 @@ changed or HA mode differs` when the west workspace carries a different patch
 set than this tree expects. A worktree whose `workspace` is a symlink to the
 main checkout shares that state, so bootstrapping for one retargets it for all
 of them. `ULTRAWIDELOCK_WS=<path>` is read by both `scripts/bootstrap.sh` and
-`apps/nrf5340dk-lock/build.sh` and gives a worktree its own workspace instead.
+`scripts/nrf5340dk-build.sh` and gives a worktree its own workspace instead.
 `make ws-seed` does the same by copy-on-write clone; to seed a worktree whose
 branch predates that script, run `scripts/ws-seed.sh <worktree>` from a checkout
 that has it.

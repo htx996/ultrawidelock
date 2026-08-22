@@ -87,6 +87,38 @@ bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out);
  */
 bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out);
 
+/**
+ * A trusted range AND the initiator's ranging block it was measured in, from
+ * ONE latch.
+ *
+ * For pairing this node's distance against a SECOND ANCHOR's. Two anchors
+ * fusing a side-of-door verdict must be describing the same instant, and the
+ * block index is how that is decided: both read the same integer off the
+ * initiator's own frames, so equality is exact rather than estimated. Age
+ * cannot substitute -- a staleness window wide enough to be useful is many
+ * blocks wide, and a phone moves a long way in that.
+ *
+ * Both out-params come from one call for a reason. Reading the distance and the
+ * block through separate accessors lets a latch land between them, producing a
+ * block that does not describe the distance it travels with -- and a label that
+ * is checked but wrong is worse than no label, because the check passes and
+ * nobody looks further. For the same reason the caller must fuse THIS distance,
+ * not one taken from a tracker with its own update rules.
+ *
+ * @return false when no trusted range exists, leaving both out-params untouched.
+ */
+bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_out);
+
+/**
+ * The live UWB session id, or 0 when no session is up.
+ *
+ * Needed alongside the ranging block whenever two anchors' captures are
+ * compared: the block is the INITIATOR's counter and it RESTARTS every session,
+ * so block alone is not a key. Joining on it produced a confident 940 mm
+ * reading out of two unrelated moments before that was noticed.
+ */
+uint32_t ultrawidelock_uwb_session_id(void);
+
 /** Monotonic accepted-range epoch for post-challenge freshness checkpoints. */
 uint32_t ultrawidelock_uwb_range_generation(void);
 
@@ -120,6 +152,32 @@ bool ultrawidelock_uwb_trusted_range_after_checked_cm(int32_t *cm_out, uint32_t 
  * without CONFIG_ULTRAWIDELOCK_CRED.
  */
 void ultrawidelock_uwb_set_range_listener(void (*cb)(void));
+
+/** Everything a second anchor needs to join the round this lock just started. */
+struct ultrawidelock_uwb_handoff {
+	const uint8_t *ursk; /**< 32 bytes, valid only for the duration of the call */
+	size_t ursk_len;
+	const uint8_t *rcfg; /**< 17 bytes, same lifetime */
+	size_t rcfg_len;
+	uint8_t channel;
+	uint8_t sync_code_index;
+};
+
+/**
+ * Register a callback fired at credential session start with the join
+ * parameters (NULL to clear).
+ *
+ * Exists so the SEALED link can carry the handoff instead of a human relaying
+ * it: CONFIG_ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG prints the same payload to a
+ * debug console, which needs a laptop wired to both boards and puts the URSK in
+ * the clear on RTT. This module knows the parameters but nothing about
+ * transports, so it hands them over and the application decides.
+ *
+ * The pointers are borrowed for the duration of the call only -- copy what you
+ * keep. Runs on the credential thread before the radio starts, so a handoff can
+ * land before UWB_Time0; treat it as latency-sensitive and do not block.
+ */
+void ultrawidelock_uwb_set_handoff_listener(void (*cb)(const struct ultrawidelock_uwb_handoff *h));
 
 #ifdef __cplusplus
 }

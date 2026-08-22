@@ -59,6 +59,46 @@ static void deadband_is_honest(void)
 	T_EQ("dead.outside_band", v.side, ULTRAWIDELOCK_SIDE_OUTSIDE);
 }
 
+static void boundary_bias_moves_the_frontier(void)
+{
+	/* Same bench, boundary pushed to 200 mm in front of the inside anchor:
+	 * (1200 - 800) / 2 per the header. The bench case this serves is both
+	 * anchors on one side of the walkway, "inside" meaning behind the lock. */
+	static const struct ultrawidelock_fusion_cfg k_biased = {
+		.baseline_mm = 1200,
+		.tol_mm = 90,
+		.deadband_mm = 60,
+		.boundary_bias_mm = 800,
+	};
+	struct ultrawidelock_fusion_verdict v;
+
+	t_group("bias: the frontier moves, the evidence and the gate do not");
+
+	/* Between the bisector and the inside anchor -- INSIDE at bias 0
+	 * (side.inside above proves the sign) -- now reads OUTSIDE. */
+	v = ultrawidelock_fusion_eval(&k_biased, 400, 800);
+	T_OK("bias.front.ok", v.geometry_ok);
+	T_EQ("bias.front", v.side, ULTRAWIDELOCK_SIDE_OUTSIDE);
+
+	/* Behind the shifted frontier is still INSIDE. */
+	v = ultrawidelock_fusion_eval(&k_biased, 100, 1100);
+	T_EQ("bias.behind", v.side, ULTRAWIDELOCK_SIDE_INSIDE);
+
+	/* The dead band recentres on the frontier: exactly on it is UNKNOWN,
+	 * and delta_mm stays the RAW difference -- the bias moves opinion,
+	 * not evidence. */
+	v = ultrawidelock_fusion_eval(&k_biased, 200, 1000);
+	T_EQ("bias.on_frontier", v.side, ULTRAWIDELOCK_SIDE_UNKNOWN);
+	T_EQ("bias.raw_delta", v.delta_mm, -800);
+	v = ultrawidelock_fusion_eval(&k_biased, 235, 965); /* eff +70, past the band */
+	T_EQ("bias.past_band", v.side, ULTRAWIDELOCK_SIDE_OUTSIDE);
+
+	/* The triangle gate still runs on the raw pair: an impossible pair is
+	 * refused no matter where the frontier sits. */
+	v = ultrawidelock_fusion_eval(&k_biased, 200, 300);
+	T_OK("bias.gate_intact", !v.geometry_ok);
+}
+
 static void triangle_gate_refuses_impossible_pairs(void)
 {
 	struct ultrawidelock_fusion_verdict v;
@@ -177,6 +217,7 @@ void test_ultrawidelock_fusion(void)
 {
 	side_of_door();
 	deadband_is_honest();
+	boundary_bias_moves_the_frontier();
 	triangle_gate_refuses_impossible_pairs();
 	symmetric_relay_is_not_caught();
 	predict_gate();

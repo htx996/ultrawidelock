@@ -435,14 +435,22 @@ else
 	bad "generated/build_dir survived into the baseline"
 fi
 
-# The committed baseline itself, if it is there: no absolute home paths, ever.
-if [ -f apps/dwm3001cdk-lock/size-baseline.json ]; then
-	if grep -qE '/(Users|home)/[A-Za-z0-9._-]+|[A-Za-z]:\\\\Users' apps/dwm3001cdk-lock/size-baseline.json; then
-		bad "apps/dwm3001cdk-lock/size-baseline.json contains an absolute home path"
-	else
-		ok "apps/dwm3001cdk-lock/size-baseline.json carries no build-host path"
-	fi
+# The committed baselines themselves: no absolute home paths, ever. Every one
+# of them, discovered rather than listed -- this guarded only the DWM3001CDK
+# until 2026-08-22, and the nRF5340 DK baseline carried four absolute overlay
+# paths for a week because nothing looked at it. A new board must not be able
+# to reintroduce that by being new.
+_baselines="$(git ls-files 'apps/*size-baseline*.json' 2>/dev/null)"
+if [ -z "$_baselines" ]; then
+	bad "no committed size baseline found to check"
 fi
+for _b in $_baselines; do
+	if grep -qE '/(Users|home)/[A-Za-z0-9._-]+|[A-Za-z]:\\\\Users' "$_b"; then
+		bad "$_b contains an absolute home path"
+	else
+		ok "$_b carries no build-host path"
+	fi
+done
 
 printf '\n'
 if [ "$fails" -gt 0 ]; then

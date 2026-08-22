@@ -32,6 +32,8 @@ commissioning and credential storage.
 
 ## Contents
 
-- `build.sh` resolves the fetched workspace, build options, and product checks.
+- `scripts/nrf5340dk-build.sh` resolves the fetched workspace, build options,
+  and product checks. It lives in `scripts/` with the other build programs; this
+  directory holds only what the product owns.
 - `overlays/` contains product-owned Kconfig, devicetree, partition, and
   sysbuild inputs.

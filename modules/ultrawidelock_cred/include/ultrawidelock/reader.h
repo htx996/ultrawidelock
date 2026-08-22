@@ -98,6 +98,14 @@ void ultrawidelock_reader_status_tick(int64_t now_ms);
  * task -- a plain read of the session table, no lock needed for a boolean. */
 bool ultrawidelock_reader_session_active(void);
 
+/* True when the most recent session teardown left from ESTABLISHED -- a healthy
+ * link that was deliberately closed (Wallet toggled its UWB off) or walked out
+ * of BLE range. False when it died mid-phase (the iOS credential-phase
+ * deadline), which is the flap that reconnects within seconds. Consumers that
+ * hold state across a flap must NOT hold it across a graceful close: the first
+ * is a hiccup, the second is the peer saying it is done. */
+bool ultrawidelock_reader_last_close_established(void);
+
 /* Register a listener for the per-transaction access verdict: true once a
  * credential has authenticated and passed the trust gate (including the
  * expedited-fast path and the dev-identity accept), false when one was presented

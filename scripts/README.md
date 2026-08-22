@@ -6,6 +6,7 @@ operations, and release workflows.
 | Group | Scripts |
 |---|---|
 | Setup and environment | `bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh`, `ws-seed.sh` |
+| nRF5340 DK builds | `nrf5340dk-build.sh` |
 | DWM3001CDK operations | `cdk-dfu.sh`, `cdk-find-probe.sh`, `cdk-rtt-elf-check.sh` |
 | Firmware size | `cdk-size.py`, `cdk-size-compare.py`, `cdk-size-baseline.py` |
 | Delta update and SMP | `ultrawidelock_patch.py`, `ultrawidelock_push.py`, `ultrawidelock_smp.py` |

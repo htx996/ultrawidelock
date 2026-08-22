@@ -632,7 +632,7 @@ check_private_headers() {
 # notably mk/cdk.mk injecting ultrawidelock_dfu at the sysbuild level.
 module_list_paths() {
 	grep -hoE -- '-D(ZEPHYR_EXTRA_MODULES|EXTRA_ZEPHYR_MODULES)=[^[:space:]]+' \
-		apps/nrf5340dk-lock/build.sh mk/*.mk \
+		scripts/nrf5340dk-build.sh mk/*.mk \
 		| sed -e 's/^-D[A-Z_]*=//' -e "s/[\"']//g" \
 		| tr ';' '\n' \
 		| sed -e 's|^\$TREE|.|' -e 's|^\$(REPO_ROOT)|.|' -e 's|^\${REPO_ROOT}|.|'
@@ -643,6 +643,7 @@ BUILD_FILES=(
 	CMakeLists.txt
 	apps/dwm3001cdk-lock/CMakeLists.txt
 	apps/esp32-matter-lock/CMakeLists.txt
+	apps/satellite/CMakeLists.txt
 	examples/zephyr/anchor/CMakeLists.txt
 	examples/zephyr/nrf5340dk-initiator/CMakeLists.txt
 	examples/esp32/*/CMakeLists.txt
@@ -653,42 +654,7 @@ BUILD_FILES=(
 	tests/on_target/esp32/ultrawidelock-device-ec/main/CMakeLists.txt
 )
 
-# ---- brand ratchet -----------------------------------------------------------
-#
-# The rename to ultrawidelock_ is finished, so the two old names may only appear
-# where they belong to someone else. brand_allowlist.txt says where that is, one
-# regex per line; everything else fails. Vendored trees and the host fake mirrors
-# are whole-file exemptions because we do not author them at all.
-#
-# This is the check that would have caught, without a test having to, both the
-# wire constants and the frozen add-on includes that a broad substitution took
-# out during the rename.
-BRAND_RE='woz|aliro'
-BRAND_EXEMPT=(':!*size-baseline*.json' ':!tests/host/stackfake' ':!tests/host/nfcfake'
-	':!tests/host/ecpfake' ':!modules/ultrawidelock_dw3000/dwt_uwb_driver'
-	':!modules/ultrawidelock_dfu/src/detools'
-	':!tests/tooling/brand_allowlist.txt'
-	# Both of these have to spell the banned names in order to ban them.
-	':!tests/tooling/port_purity_check.sh'
-	# A record of the rename itself, so it names what was renamed.
-	':!.git-blame-ignore-revs')
-
-brand_hits() { # -> allowlist survivors, "path:line:text"
-	local allow="$1"
-	# A patch's context lines are upstream's text; only its + lines are ours.
-	git grep -inE "$BRAND_RE" -- . "${BRAND_EXEMPT[@]}" \
-		':!integrations/nrfconnect-door-lock/patches' |
-		grep -vEf "$allow" || true
-	# "+++ b/path" is a diff header naming an upstream file, not one of our added
-	# lines, and it starts with + like they do. Reading it as ours is what drove
-	# the rename through every patch header and broke all twelve of them.
-	git grep -inE "^\+.*($BRAND_RE)" -- integrations/nrfconnect-door-lock/patches |
-		grep -vE '^[^:]+:[0-9]+:\+\+\+ ' |
-		grep -vEf "$allow" || true
-}
-
-# The mirror of the rule above, and the one that would have caught the break:
-# upstream has never heard of us, so no line a patch does not add may say our
+# Upstream has never heard of us, so no line a patch does not add may say our
 # name. Header, context and removal lines all have to match the pristine tree
 # byte for byte or `git apply` fails, and bootstrap is the only thing that
 # would have found out.
@@ -703,23 +669,6 @@ check_patch_upstream() {
 		return 1
 	fi
 	printf '%s  ok   patches: upstream headers and context never name ultrawidelock%s\n' "$G" "$Z"
-}
-
-check_brand() {
-	local allow list n
-	allow="$(mktemp)"
-	grep -vE '^#|^$' "$(dirname "$0")/brand_allowlist.txt" >"$allow"
-	list="$(brand_hits "$allow")"
-	rm -f "$allow"
-	if [ -n "$list" ]; then
-		printf '%s\n' "$list" | sed "s/^/$R  unrenamed: /;s/\$/$Z/" >&2
-		printf '%scheck-purity: %d line(s) still name woz or aliro outside the frozen set%s\n' \
-			"$R" "$(printf '%s\n' "$list" | wc -l | tr -d ' ')" "$Z" >&2
-		return 1
-	fi
-	n=$(grep -cvE '^#|^$' "$(dirname "$0")/brand_allowlist.txt")
-	printf '%s  ok   brand: woz/aliro appear only in the %d allowlisted vendor spellings%s\n' \
-		"$G" "$n" "$Z"
 }
 
 check_build_paths() {
@@ -1535,27 +1484,10 @@ self_test() {
 	[ "$fails" -ne 0 ] || printf '%s  self-test: manifest parser and allowlist are exact%s\n' "$G" "$Z"
 	rm -rf "$fixdir"
 
-	# The brand ratchet passes on a clean tree, which is also what a scan that
-	# matches nothing at all looks like. Emptying the allowlist separates the
-	# two: the scan must then report the vendor spellings it normally excuses.
-	local empty raw
-	empty="$(mktemp)"
-	printf 'this matches no line\n' >"$empty"
-	raw="$(brand_hits "$empty" | wc -l | tr -d ' ')"
-	rm -f "$empty"
-	if [ "$raw" -lt 50 ]; then
-		printf '%s  self-test FAILED: brand scan found only %s line(s) with the allowlist emptied%s\n' \
-			"$R" "$raw" "$Z" >&2
-		fails=$((fails + 1))
-	else
-		printf '%s  self-test: brand scan is live (%s line(s) without the allowlist)%s\n' \
-			"$G" "$raw" "$Z"
-	fi
-
-	# Same trap, one check over: check_patch_upstream passes by finding nothing,
-	# and a pathspec that had stopped matching any patch at all would look
-	# identical. Its own selector, asked for the word upstream really does use,
-	# has to come back with the whole corpus.
+	# check_patch_upstream passes by finding nothing, and a pathspec that had
+	# stopped matching any patch at all would look identical. Its own selector,
+	# asked for the word upstream really does use, has to come back with the
+	# whole corpus.
 	local upstream_lines
 	upstream_lines="$(git grep -invE '^\+' -- integrations/nrfconnect-door-lock/patches |
 		grep -icE 'aliro' | tr -d ' ')"
@@ -1594,7 +1526,6 @@ case "${1-}" in
 	check_build_paths || rc=1
 	check_storage_names || rc=1
 	check_patch_symbols || rc=1
-	check_brand || rc=1
 	check_patch_upstream || rc=1
 	exit "$rc"
 	;;

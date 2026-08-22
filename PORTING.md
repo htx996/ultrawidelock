@@ -97,6 +97,19 @@ length-checks those where they are written.
 | zephyr | subtree | `mf2` | 64 | `ports/zephyr/store/matter_fab_settings.c` |
 | zephyr | subtree | `msub` | 64 | `apps/dwm3001cdk-lock/src/matter_commission.c` |
 | zephyr | key | `srp/hid` | 64 | `ports/zephyr/matter/matter_thread_port.c` |
+| zephyr | subtree | `uwl/latch` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
+| zephyr | key | `uwl/latch/rec` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
+| zephyr | subtree | `uwl/wit` | 64 | `apps/dwm3001cdk-lock/src/witness_link.c` |
+| zephyr | key | `uwl/wit/k` | 64 | `apps/dwm3001cdk-lock/src/prov_shell.c` |
+| zephyr | subtree | `uwl/anc` | 64 | `apps/dwm3001cdk-lock/src/witness_link.c` |
+| zephyr | key | `uwl/anc/k` | 64 | `apps/dwm3001cdk-lock/src/prov_shell.c` |
+| zephyr | subtree | `wit` | 64 | `examples/zephyr/ble-witness/src/main.c` |
+| zephyr | key | `wit/role` | 64 | `examples/zephyr/ble-witness/src/main.c` |
+| zephyr | key | `wit/lk` | 64 | `examples/zephyr/ble-witness/src/main.c` |
+| zephyr | key | `wit/gk` | 64 | `examples/zephyr/ble-witness/src/main.c` |
+| zephyr | key | `wit/ds` | 64 | `examples/zephyr/ble-witness/src/main.c` |
+| zephyr | subtree | `sat` | 64 | `apps/satellite/src/anchor_link.c` |
+| zephyr | key | `sat/lk` | 64 | `apps/satellite/src/anchor_link.c` |
 
 <!-- storage-names:end -->
 

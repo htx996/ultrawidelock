@@ -214,7 +214,7 @@ if [ "$SKIP_FLASH" = 0 ]; then
 		if grep -q "must be recovered" "$ART/flash.log"; then
 			printf '   APPROTECT engaged (power-cycled since last flash); recovering the DK\n'
 			if ! ULTRAWIDELOCK_BUILD="$REPO_ROOT/build/nrf5340dk-initiator" \
-				"$REPO_ROOT/apps/nrf5340dk-lock/build.sh" flash-recover \
+				"$REPO_ROOT/scripts/nrf5340dk-build.sh" flash-recover \
 				>>"$ART/flash.log" 2>&1; then
 				tail -10 "$ART/flash.log" >&2
 				die "DK recover-flash failed too (full log: $ART/flash.log)"
