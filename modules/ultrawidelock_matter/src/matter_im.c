@@ -146,9 +146,11 @@ void matter_im_read_pool_drop_session(struct matter_im_read_pool *pool, uint16_t
 #define TAG_EDATA_DATA             7u
 
 /* AttributePathIB.h:40-45. The IB itself is a LIST, not a structure. */
-#define TAG_PATH_ENDPOINT  2u
-#define TAG_PATH_CLUSTER   3u
-#define TAG_PATH_ATTRIBUTE 4u
+#define TAG_PATH_ENDPOINT   2u
+#define TAG_PATH_CLUSTER    3u
+#define TAG_PATH_ATTRIBUTE  4u
+/* AttributePathIB.ListIndex. On a write this is the AppendItem marker. */
+#define TAG_PATH_LIST_INDEX 5u
 
 /* ReportDataMessage.h:43-47 */
 #define TAG_REPORT_SUBSCRIPTION_ID   0u
@@ -264,6 +266,13 @@ static int decode_path(struct matter_tlv_reader *r, struct matter_im_path *p)
 			}
 			p->attribute = (uint32_t)v;
 			p->have_attribute = true;
+		} else if (matter_tlv_tag(r) == MATTER_TLV_CTX(TAG_PATH_LIST_INDEX)) {
+			/* Presence is the whole signal; see
+			 * matter_im_path::have_list_index. Null is what an
+			 * append carries, and any type is accepted rather than
+			 * checked, because refusing here would turn a chunked
+			 * list into a batch and lose the write. */
+			p->have_list_index = true;
 		}
 	}
 
@@ -1435,6 +1444,91 @@ int matter_im_timed_request_decode(const uint8_t *buf, size_t len, uint16_t *tim
 /* WriteResponseMessage.h:39-42 */
 #define TAG_WRESP_RESPONSES 0u
 
+/** Rebuild state for a list arriving as several AttributeDataIBs. */
+struct list_rebuild {
+	struct matter_tlv_writer w;
+	bool active;
+};
+
+/** Same attribute, ignoring ListIndex: an append names the list it extends. */
+static bool same_attribute(const struct matter_im_path *a, const struct matter_im_path *b)
+{
+	return a->have_endpoint && b->have_endpoint && a->endpoint == b->endpoint &&
+	       a->have_cluster && b->have_cluster && a->cluster == b->cluster &&
+	       a->have_attribute && b->have_attribute && a->attribute == b->attribute;
+}
+
+/**
+ * Add one AppendItem member to the list being rebuilt, starting the rebuild on
+ * the first call by copying whatever the replace-all block already carried.
+ *
+ * @return MATTER_OK, or MATTER_E_NOSPACE when the result would not fit
+ *         matter_im_write::list_buf.
+ */
+static int list_append(struct matter_im_write *out, struct list_rebuild *lr, const uint8_t *elem,
+		       size_t elem_len)
+{
+	int rc;
+
+	if (elem == NULL || elem_len < 2u) {
+		return MATTER_E_INVAL;
+	}
+
+	if (!lr->active) {
+		struct matter_tlv_reader src;
+
+		matter_tlv_writer_init(&lr->w, out->list_buf, sizeof(out->list_buf));
+		rc = matter_tlv_start_container(&lr->w, MATTER_TLV_ANON, MATTER_TLV_ARRAY);
+		if (rc != MATTER_TLV_OK) {
+			return MATTER_E_NOSPACE;
+		}
+		lr->active = true;
+
+		/*
+		 * The replace-all block leads the list and is usually the empty
+		 * array matter.js sends, but the spec permits members in it and
+		 * they come first. Copied verbatim: they are already anonymous
+		 * array members, so no re-tagging applies.
+		 */
+		if (out->data != NULL && out->data_len > 0u) {
+			matter_tlv_reader_init(&src, out->data, out->data_len);
+			if (matter_tlv_next(&src) != MATTER_OK ||
+			    matter_tlv_element_type(&src) != MATTER_TLV_ARRAY) {
+				return MATTER_E_TYPE;
+			}
+			if (matter_tlv_enter(&src) != MATTER_OK) {
+				return MATTER_E_INVAL;
+			}
+			for (;;) {
+				size_t start = src.next_off;
+
+				rc = matter_tlv_next(&src);
+				if (rc == MATTER_END) {
+					break;
+				}
+				if (rc != MATTER_OK) {
+					return rc;
+				}
+				if (matter_tlv_is_container(&src)) {
+					if (matter_tlv_enter(&src) != MATTER_OK ||
+					    matter_tlv_exit(&src) != MATTER_OK) {
+						return MATTER_E_INVAL;
+					}
+				}
+				rc = matter_tlv_put_raw(&lr->w, out->data + start,
+							src.next_off - start);
+				if (rc != MATTER_TLV_OK) {
+					return MATTER_E_NOSPACE;
+				}
+			}
+		}
+	}
+
+	/* Data is context-tagged on the wire and anonymous inside an array. */
+	rc = matter_tlv_put_encoded_anon(&lr->w, elem, elem_len);
+	return (rc == MATTER_TLV_OK) ? MATTER_OK : MATTER_E_NOSPACE;
+}
+
 /**
  * Decode a Matter write request message from TLV to extract attribute path, value, and flags.
  * Parses WriteRequestMessage: exactly one AttributeDataIB containing path and data value,
@@ -1448,6 +1542,7 @@ int matter_im_timed_request_decode(const uint8_t *buf, size_t len, uint16_t *tim
 int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter_im_write *out)
 {
 	struct matter_tlv_reader r;
+	struct list_rebuild lr;
 	unsigned int seen = 0u;
 	int rc;
 
@@ -1455,6 +1550,7 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 		return MATTER_E_INVAL;
 	}
 	memset(out, 0, sizeof(*out));
+	memset(&lr, 0, sizeof(lr));
 
 	matter_tlv_reader_init(&r, tlv, len);
 	if (matter_tlv_next(&r) != MATTER_OK ||
@@ -1501,74 +1597,96 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 				return rc;
 			}
 			seen++;
-			if (seen > 1u) {
-				/*
-				 * One attribute per WriteRequest is this node's
-				 * cap. It used to be reported by returning an
-				 * error, which the caller could only answer with
-				 * SILENCE -- and a commissioner that gets no
-				 * WriteResponse waits out its timeout on "Adding
-				 * to home". Matter has no MaxAttributesPerWrite
-				 * to declare the cap with, so the only honest
-				 * way to say it is in the response.
-				 *
-				 * The first path is already parsed and stays
-				 * valid; @ref matter_im_write::truncated makes
-				 * the encoder refuse the whole request with
-				 * RESOURCE_EXHAUSTED rather than apply a write
-				 * the peer asked for as part of a set.
-				 */
-				out->truncated = true;
-				return MATTER_OK;
-			}
 
-			rc = matter_tlv_enter(&r); /* into the AttributeDataIB */
-			if (rc != MATTER_OK) {
-				return rc;
-			}
-			for (;;) {
-				size_t start;
+			{
+				struct matter_im_path this_path;
+				const uint8_t *this_data = NULL;
+				size_t this_data_len = 0u;
+				bool this_is_append = false;
 
-				/* Where this element begins, captured BEFORE it
-				 * is loaded: the reader reports where a value
-				 * sits, not where its header does, and a
-				 * container's body is not part of either. */
-				start = r.next_off;
+				memset(&this_path, 0, sizeof(this_path));
 
-				rc = matter_tlv_next(&r);
-				if (rc == MATTER_END) {
-					break;
+				rc = matter_tlv_enter(&r); /* into the AttributeDataIB */
+				if (rc != MATTER_OK) {
+					return rc;
 				}
+				for (;;) {
+					size_t start;
+
+					/* Where this element begins, captured
+					 * BEFORE it is loaded: the reader
+					 * reports where a value sits, not where
+					 * its header does, and a container's
+					 * body is not part of either. */
+					start = r.next_off;
+
+					rc = matter_tlv_next(&r);
+					if (rc == MATTER_END) {
+						break;
+					}
+					if (rc != MATTER_OK) {
+						return rc;
+					}
+
+					if (matter_tlv_tag(&r) ==
+					    MATTER_TLV_CTX(TAG_ADATA_PATH)) {
+						rc = decode_path(&r, &this_path);
+						if (rc != MATTER_OK) {
+							return rc;
+						}
+						this_is_append = this_path.have_list_index;
+					} else if (matter_tlv_tag(&r) ==
+						   MATTER_TLV_CTX(TAG_ADATA_DATA)) {
+						/* Walk it to find where it ends.
+						 * A value of any type is legal
+						 * here, so its extent cannot be
+						 * assumed from the header
+						 * alone. */
+						if (matter_tlv_is_container(&r)) {
+							rc = matter_tlv_enter(&r);
+							if (rc == MATTER_OK) {
+								rc = matter_tlv_exit(&r);
+							}
+							if (rc != MATTER_OK) {
+								return rc;
+							}
+						}
+						this_data = tlv + start;
+						this_data_len = r.next_off - start;
+					}
+				}
+				rc = matter_tlv_exit(&r);
 				if (rc != MATTER_OK) {
 					return rc;
 				}
 
-				if (matter_tlv_tag(&r) == MATTER_TLV_CTX(TAG_ADATA_PATH)) {
-					rc = decode_path(&r, &out->path);
-					if (rc != MATTER_OK) {
-						return rc;
-					}
-				} else if (matter_tlv_tag(&r) == MATTER_TLV_CTX(TAG_ADATA_DATA)) {
-					/* Walk it to find where it ends. A value
-					 * of any type is legal here, so its
-					 * extent cannot be assumed from the
-					 * header alone. */
-					if (matter_tlv_is_container(&r)) {
-						rc = matter_tlv_enter(&r);
-						if (rc == MATTER_OK) {
-							rc = matter_tlv_exit(&r);
-						}
-						if (rc != MATTER_OK) {
-							return rc;
-						}
-					}
-					out->data = tlv + start;
-					out->data_len = r.next_off - start;
+				if (seen == 1u) {
+					out->path = this_path;
+					out->data = this_data;
+					out->data_len = this_data_len;
+					continue;
 				}
-			}
-			rc = matter_tlv_exit(&r);
-			if (rc != MATTER_OK) {
-				return rc;
+
+				/*
+				 * Past the first block, only ONE thing is not a
+				 * batch: another piece of the same list. It has
+				 * to name the same attribute and carry a
+				 * ListIndex, which is what distinguishes an
+				 * AppendItem from a second attribute.
+				 */
+				if (!this_is_append || !same_attribute(&out->path, &this_path)) {
+					out->truncated = true;
+					return MATTER_OK;
+				}
+				rc = list_append(out, &lr, this_data, this_data_len);
+				if (rc != MATTER_OK) {
+					/* Overflowed the rebuild buffer. Refused
+					 * whole rather than stored short, so the
+					 * peer is never told a list applied that
+					 * is missing members. */
+					out->truncated = true;
+					return MATTER_OK;
+				}
 			}
 		}
 		rc = matter_tlv_exit(&r);
@@ -1588,6 +1706,20 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 	 */
 	if (!out->path.have_endpoint || !out->path.have_cluster || !out->path.have_attribute) {
 		return MATTER_E_INVAL;
+	}
+	if (lr.active) {
+		size_t len_out = 0u;
+
+		if (matter_tlv_end_container(&lr.w) != MATTER_TLV_OK ||
+		    matter_tlv_writer_finish(&lr.w, &len_out) != MATTER_TLV_OK) {
+			/* Same refusal as an overflowing append, and for the
+			 * same reason: a short list is a lock that opens for
+			 * the wrong set of people. */
+			out->truncated = true;
+			return MATTER_OK;
+		}
+		out->data = out->list_buf;
+		out->data_len = len_out;
 	}
 	return MATTER_OK;
 }

@@ -124,6 +124,15 @@ struct matter_im_path {
 	bool have_endpoint;
 	bool have_cluster;
 	bool have_attribute;
+	/**
+	 * A ListIndex was present, which on a write means AppendItem.
+	 *
+	 * The VALUE is deliberately not kept: Matter's append encodes it as
+	 * Null, and this node has no use for a numeric index -- it only needs
+	 * to tell "another member of the list I am already assembling" from
+	 * "a second attribute", which presence alone answers.
+	 */
+	bool have_list_index;
 };
 
 /** True when any component is wildcarded (app/AttributePathParams.h:57-59). */
@@ -524,11 +533,21 @@ struct matter_im_server {
  *         malformed message, or whatever the TLV decoder returned.
  */
 /**
+ * Room to rebuild a chunked list write. Matches MATTER_ACL_MAX, the largest
+ * list any cluster on this node will store; a binding list is far smaller.
+ * Stated here rather than included from matter_clusters.h, which is the layer
+ * above this one.
+ */
+#define MATTER_IM_WRITE_LIST_MAX 256u
+
+/**
  * One attribute write.
  *
- * Exactly one per message, the same restriction matter_im_invoke has and for
- * the same reason: a commissioner that sent two and saw one status would be
- * entitled to assume both applied.
+ * Exactly one ATTRIBUTE per message, the same restriction matter_im_invoke has
+ * and for the same reason: a commissioner that sent two and saw one status
+ * would be entitled to assume both applied. That is a cap on attributes, not
+ * on data blocks -- one list attribute may arrive as several. See
+ * @ref matter_im_write::list_buf.
  */
 struct matter_im_write {
 	struct matter_im_path path;
@@ -553,8 +572,32 @@ struct matter_im_write {
 	 * RESOURCE_EXHAUSTED and runs NOTHING: the peer asked for a set, and
 	 * applying an arbitrary member of it is a worse answer than refusing --
 	 * and either way it gets an answer, where it used to get silence.
+	 *
+	 * A CHUNKED LIST IS NOT A SET, and does not set this. See @ref list_buf.
 	 */
 	bool truncated;
+	/**
+	 * Where a list arriving in several AttributeDataIBs is put back together.
+	 *
+	 * Matter writes a list as replace-all followed by one AppendItem per
+	 * member (Interaction Model, "Writing a list"), so ONE attribute
+	 * legitimately arrives as several data blocks -- all naming the same
+	 * path, the appends carrying a ListIndex. Counting blocks and calling
+	 * that a batch is what made a Home Assistant binding write come back
+	 * RESOURCE_EXHAUSTED with an empty 3-byte replace-all as the only thing
+	 * this node had parsed. Measured against matter.js 0.17.9, 2026-08-22.
+	 *
+	 * So they are coalesced here into the single array the cluster would
+	 * have seen from an unchunked controller, and @ref data points at this
+	 * rather than into the message. Cluster code is unchanged and never
+	 * learns a list was chunked, which is the point: every list attribute
+	 * is fixed at once rather than the binding alone.
+	 *
+	 * Sized to the largest list any cluster here accepts (the ACL). A list
+	 * that overflows it is refused rather than truncated, on the same
+	 * reasoning as everything else in this file.
+	 */
+	uint8_t list_buf[MATTER_IM_WRITE_LIST_MAX];
 };
 
 /**

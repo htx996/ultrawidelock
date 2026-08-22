@@ -1589,6 +1589,133 @@ static size_t build_write(uint8_t *buf, size_t cap, unsigned int n_requests, boo
 	return len;
 }
 
+/**
+ * A list write the way a real controller sends one: a replace-all block
+ * carrying @p n_seed members, then @p n_append AppendItem blocks that each name
+ * the SAME attribute and carry a ListIndex.
+ *
+ * This is what matter.js put on the wire for a binding write on 2026-08-22, and
+ * what this node used to answer RESOURCE_EXHAUSTED because it counted blocks
+ * and called anything past the first a batch.
+ *
+ * Each member is a one-field structure, standing in for the ACL entries and
+ * binding targets whose real shapes belong to the cluster, not to this layer.
+ */
+static size_t build_chunked_write(uint8_t *buf, size_t cap, unsigned int n_seed,
+				  unsigned int n_append, bool appends_match)
+{
+	struct matter_tlv_writer w;
+	unsigned int i;
+	size_t len = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(0), false);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(1), false);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_ARRAY);
+
+	/* Block one: replace all, with n_seed members already in it. */
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	put_path(&w, MATTER_TLV_CTX(1), true, MATTER_ENDPOINT_ROOT, true,
+		 MATTER_CLUSTER_ACCESS_CONTROL, true, MATTER_ATTR_AC_ACL);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_ARRAY);
+	for (i = 0u; i < n_seed; i++) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1), 100u + i);
+		(void)matter_tlv_end_container(&w);
+	}
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+
+	/* Then one block per appended member. */
+	for (i = 0u; i < n_append; i++) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(1), MATTER_TLV_LIST);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2), MATTER_ENDPOINT_ROOT);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(3), MATTER_CLUSTER_ACCESS_CONTROL);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(4),
+					 appends_match ? MATTER_ATTR_AC_ACL
+						       : MATTER_ATTR_AC_ACL + 1u);
+		/* ListIndex Null: the AppendItem marker. */
+		(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(5));
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1), 200u + i);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_end_container(&w);
+	}
+
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_writer_finish(&w, &len);
+	return len;
+}
+
+/** Count the members of the array @p data holds, or -1 if it is not an array. */
+static int array_members(const uint8_t *data, size_t len)
+{
+	struct matter_tlv_reader r;
+	int n = 0;
+
+	matter_tlv_reader_init(&r, data, len);
+	if (matter_tlv_next(&r) != MATTER_OK || matter_tlv_element_type(&r) != MATTER_TLV_ARRAY) {
+		return -1;
+	}
+	if (matter_tlv_enter(&r) != MATTER_OK) {
+		return -1;
+	}
+	for (;;) {
+		int rc = matter_tlv_next(&r);
+
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return -1;
+		}
+		if (matter_tlv_is_container(&r)) {
+			if (matter_tlv_enter(&r) != MATTER_OK || matter_tlv_exit(&r) != MATTER_OK) {
+				return -1;
+			}
+		}
+		n++;
+	}
+	return n;
+}
+
+/** The first uint64 inside array member @p want, or UINT64_MAX if unreadable. */
+static uint64_t array_member_value(const uint8_t *data, size_t len, int want)
+{
+	struct matter_tlv_reader r;
+	int n = 0;
+
+	matter_tlv_reader_init(&r, data, len);
+	if (matter_tlv_next(&r) != MATTER_OK || matter_tlv_enter(&r) != MATTER_OK) {
+		return UINT64_MAX;
+	}
+	for (;;) {
+		if (matter_tlv_next(&r) != MATTER_OK) {
+			return UINT64_MAX;
+		}
+		if (n == want) {
+			uint64_t v = 0u;
+
+			if (matter_tlv_enter(&r) != MATTER_OK ||
+			    matter_tlv_next(&r) != MATTER_OK ||
+			    matter_tlv_get_u64(&r, &v) != MATTER_OK) {
+				return UINT64_MAX;
+			}
+			return v;
+		}
+		if (matter_tlv_is_container(&r)) {
+			if (matter_tlv_enter(&r) != MATTER_OK || matter_tlv_exit(&r) != MATTER_OK) {
+				return UINT64_MAX;
+			}
+		}
+		n++;
+	}
+}
+
 static size_t build_subscribe(uint8_t *buf, size_t cap, unsigned int n_paths, uint16_t min_s,
 			      uint16_t max_s, bool keep, bool paths_as_array)
 {
@@ -1671,6 +1798,72 @@ void test_matter_im_write(void)
 		T_EQ("decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
 		T_OK("suppression carried", wr.suppress_response);
 		T_OK("timed flag carried", wr.timed_request);
+
+		/*
+		 * A CHUNKED LIST IS NOT A BATCH. Matter writes a list as
+		 * replace-all then one AppendItem per member, so one attribute
+		 * arrives as several blocks. Counting blocks is what answered a
+		 * Home Assistant binding write with RESOURCE_EXHAUSTED and left
+		 * the list empty; these prove the members are put back together
+		 * instead.
+		 */
+		blen = build_chunked_write(buf, sizeof(buf), 0u, 1u, true);
+		T_EQ("a chunked list decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("and is NOT a batch", !wr.truncated);
+		T_EQ("the appended member is there",
+		     (long)array_members(wr.data, wr.data_len), 1L);
+		T_EQ("carrying its own value",
+		     (long)array_member_value(wr.data, wr.data_len, 0), 200L);
+		T_OK("rebuilt into the write's own buffer", wr.data == wr.list_buf);
+
+		/* An empty replace-all with three appends is the shape a
+		 * multi-entry ACL arrives in. */
+		blen = build_chunked_write(buf, sizeof(buf), 0u, 3u, true);
+		T_EQ("three appends decode",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("still not a batch", !wr.truncated);
+		T_EQ("all three are kept", (long)array_members(wr.data, wr.data_len), 3L);
+		T_EQ("in the order they arrived",
+		     (long)array_member_value(wr.data, wr.data_len, 2), 202L);
+
+		/* Members already in the replace-all block lead the list, and
+		 * the appends follow them. */
+		blen = build_chunked_write(buf, sizeof(buf), 2u, 2u, true);
+		T_EQ("a seeded replace-all decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("not a batch either", !wr.truncated);
+		T_EQ("seed and appends are all present",
+		     (long)array_members(wr.data, wr.data_len), 4L);
+		T_EQ("the seed comes first",
+		     (long)array_member_value(wr.data, wr.data_len, 0), 100L);
+		T_EQ("and the appends follow it",
+		     (long)array_member_value(wr.data, wr.data_len, 2), 200L);
+
+		/*
+		 * The cap still exists. A second block naming a DIFFERENT
+		 * attribute is a set, whatever its ListIndex says, and applying
+		 * an arbitrary member of a set is the thing this refuses.
+		 */
+		blen = build_chunked_write(buf, sizeof(buf), 0u, 1u, false);
+		T_EQ("an append for another attribute decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("but is still a batch", wr.truncated);
+
+		/* Enough members to overflow the rebuild buffer: refused whole,
+		 * never stored short. Its own buffer, because the request that
+		 * overflows MATTER_IM_WRITE_LIST_MAX is itself larger than the
+		 * one every other case here fits in. */
+		{
+			static uint8_t big[4096];
+			size_t biglen;
+
+			biglen = build_chunked_write(big, sizeof(big), 0u, 100u, true);
+			T_OK("an oversized list builds", biglen > 0u);
+			T_EQ("it decodes",
+			     matter_im_write_request_decode(big, biglen, &wr), MATTER_OK);
+			T_OK("and is refused rather than truncated silently", wr.truncated);
+		}
 	}
 
 	t_group("WriteResponse");

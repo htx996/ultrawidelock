@@ -138,6 +138,35 @@ int matter_tlv_put_bytes(struct matter_tlv_writer *w, matter_tlv_tag_t tag, cons
 int matter_tlv_put_encoded(struct matter_tlv_writer *w, matter_tlv_tag_t tag, const uint8_t *elem,
 			   size_t len);
 
+/**
+ * Copy an already-encoded context-tagged element as an ANONYMOUS one.
+ *
+ * The same substitution as matter_tlv_put_encoded and the same reason for
+ * existing, for the one destination that helper cannot express: an array's
+ * members carry no tag at all, so re-tagging drops the tag byte rather than
+ * replacing it. Needed to rebuild a list from the AttributeDataIBs of a
+ * chunked write, whose members arrive tagged as Data and have to end up
+ * anonymous inside an array.
+ *
+ * @param elem one complete context-tagged element, control byte first.
+ * @return MATTER_TLV_OK, or E_INVAL if @p elem is not context-tagged.
+ */
+int matter_tlv_put_encoded_anon(struct matter_tlv_writer *w, const uint8_t *elem, size_t len);
+
+/**
+ * Append already-encoded bytes with no re-tagging at all.
+ *
+ * For members that are ALREADY in the shape the destination wants -- the
+ * anonymous members of one array being copied into another. Nothing is
+ * validated beyond the bounds check: the caller has walked these elements with
+ * a reader and knows their extent, and this cannot re-check a shape it does
+ * not parse. Do not reach for it where the tag has to change; that is what the
+ * two put_encoded helpers are for.
+ *
+ * @return MATTER_TLV_OK, or E_NOSPACE.
+ */
+int matter_tlv_put_raw(struct matter_tlv_writer *w, const uint8_t *bytes, size_t len);
+
 int matter_tlv_start_container(struct matter_tlv_writer *w, matter_tlv_tag_t tag, uint8_t type);
 int matter_tlv_end_container(struct matter_tlv_writer *w);
 
