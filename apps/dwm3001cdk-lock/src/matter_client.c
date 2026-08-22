@@ -572,8 +572,20 @@ static size_t handle_sigma2(const uint8_t *payload, size_t payload_len,
 		 * peer does not hold this fabric's keys, MATTER_E_ACCESS means
 		 * it holds them and is not who this node asked for.
 		 */
-		LOG_WRN("Sigma2 REJECTED (%d)%s", rc,
-			rc == MATTER_E_ACCESS ? " -- chain or identity" : "");
+		if (rc == MATTER_E_ACCESS) {
+			/* Both sides of the comparison that failed. Which of
+			 * the two differs says whether the binding names the
+			 * wrong node or the peer answered for another fabric,
+			 * and those have completely different fixes. */
+			LOG_WRN("Sigma2 REJECTED (%d) -- identity: peer says node 0x%016llx "
+				"fabric 0x%016llx, we asked for node 0x%016llx fabric 0x%016llx",
+				rc, (unsigned long long)peer.node_id,
+				(unsigned long long)peer.fabric_id,
+				(unsigned long long)s_peer_node,
+				(unsigned long long)s_fabric->fabric_id);
+		} else {
+			LOG_WRN("Sigma2 REJECTED (%d) -- chain", rc);
+		}
 		return 0u;
 	}
 

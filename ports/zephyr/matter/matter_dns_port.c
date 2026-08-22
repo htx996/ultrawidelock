@@ -135,9 +135,18 @@ static void resolve_cb(otError err, const otDnsServiceResponse *response, void *
 	}
 
 	/*
-	 * A SRV record with no AAAA behind it. This happens when the peer's
-	 * host registration expired while its service registration had not, and
-	 * it is worth telling apart from "not found": the name exists, so the
+	 * A SRV record with no AAAA behind it, AFTER the follow-up AAAA query
+	 * the resolver below asks for. That makes this the narrow case it was
+	 * always described as -- the peer's host registration expired while its
+	 * service registration had not -- rather than the ordinary one.
+	 *
+	 * It used to be the ordinary one, and it stopped the first walk-up that
+	 * ever reached this far: 2026-08-22 21:13:59, service found, address
+	 * empty, "the bound lock did not resolve". The old call only reported
+	 * an address when the server volunteered one in Additional Data, and
+	 * this network's did not.
+	 *
+	 * Still worth telling apart from "not found": the name exists, so the
 	 * binding is right and the peer is the problem.
 	 */
 	if (info.mHostAddress.mFields.m32[0] == 0u && info.mHostAddress.mFields.m32[1] == 0u &&
@@ -200,12 +209,24 @@ int matter_thread_resolve(const char *instance_name, matter_thread_resolve_fn cb
 	LOG_INF("resolving bound peer %s", instance_name);
 
 	openthread_mutex_lock();
-	/* NULL config: use whatever server the network told OpenThread about,
-	 * which is the same one the SRP client registered this node with. The
-	 * context is the generation, so a late answer can be told apart from
-	 * the answer to the query now in the slot. */
-	err = otDnsClientResolveService(ot, instance_name, MATTER_SERVICE_NAME, resolve_cb,
-					(void *)(uintptr_t)s_query.generation, NULL);
+	/*
+	 * ...AndHostAddress, not the bare ResolveService, and that difference is
+	 * the whole reason a binding could not open a door. Both send SRV and
+	 * TXT; only this one follows up with an AAAA query when the answer
+	 * carries no address in its Additional Data section. A CASE session
+	 * needs somewhere to send Sigma1, so a service without an address is
+	 * not a partial success here, it is the end of the walk-up.
+	 *
+	 * NULL config: use whatever server the network told OpenThread about,
+	 * which is the same one the SRP client registered this node with. It
+	 * also keeps the default service mode, which matters -- this call is
+	 * rejected outright with a TXT-only mode. The context is the
+	 * generation, so a late answer can be told apart from the answer to the
+	 * query now in the slot.
+	 */
+	err = otDnsClientResolveServiceAndHostAddress(ot, instance_name, MATTER_SERVICE_NAME,
+						      resolve_cb,
+						      (void *)(uintptr_t)s_query.generation, NULL);
 	openthread_mutex_unlock();
 
 	if (err != OT_ERROR_NONE) {

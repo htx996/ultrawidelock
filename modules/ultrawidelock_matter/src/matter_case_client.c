@@ -488,6 +488,15 @@ int matter_case_client_sigma2_open(const struct matter_case_client_sigma2_in *in
 	 */
 	if (!cert.have_node_id || !cert.have_fabric_id || cert.fabric_id != in->fabric_id ||
 	    cert.node_id != in->peer_node_id) {
+		/*
+		 * Published before refusing, so the caller can say WHICH of the
+		 * four it was. "chain or identity" on its own sent a bench
+		 * session hunting a fabric mismatch that the fabric tables had
+		 * already ruled out; the numbers would have ended it in one
+		 * line. Zero for either means the NOC carried no such name.
+		 */
+		out->node_id = cert.have_node_id ? cert.node_id : 0u;
+		out->fabric_id = cert.have_fabric_id ? cert.fabric_id : 0u;
 		return MATTER_E_ACCESS;
 	}
 
