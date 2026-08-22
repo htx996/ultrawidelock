@@ -2123,6 +2123,16 @@ static void on_connected(uint16_t conn_handle)
 	ultrawidelock_lab_ev("session.start");
 }
 
+/* How the most recent teardown left: from ESTABLISHED (deliberate close or
+ * walked out of range) or mid-phase (the reconnect-in-seconds flap). Plain
+ * boolean, same locking argument as ultrawidelock_reader_session_active(). */
+static bool s_last_close_established;
+
+bool ultrawidelock_reader_last_close_established(void)
+{
+	return s_last_close_established;
+}
+
 // BLE disconnection callback: marks the connection's session inactive (if one exists) and
 // stops any UWB ranging associated with the connection.
 // Logs the session's message count and final transaction phase before deactivating it.
@@ -2133,6 +2143,7 @@ static void on_disconnected(uint16_t conn_handle)
 	if (s != NULL) {
 		LOG_INF("[conn %u] credential session destroyed (%u msgs, phase=%s)", conn_handle,
 			(unsigned)s->msgs_rx, phase_str(s->phase));
+		s_last_close_established = (s->phase == PH_ESTABLISHED);
 		/* Centralize the ESTABLISHED exit before clearing the host-owned slot,
 		 * so the cross-task atomic snapshot cannot remain stale. */
 		session_enter_phase(s, PH_FAILED);

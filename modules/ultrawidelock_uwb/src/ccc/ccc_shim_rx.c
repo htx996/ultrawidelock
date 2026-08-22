@@ -25,6 +25,12 @@
 #include "uwb_rxdiag.h"         /* uwb_rxdiag_stream_get — the `ultrawidelock log` runtime toggle */
 #include "flight_recorder.h"    /* fr_capture_ev — record/replay walk-up capture (gated) */
 
+/* The host test build compiles this file without Kconfig, so the calibration
+ * has to carry its own default: zero, which is the uncorrected reading. */
+#ifndef CONFIG_ULTRAWIDELOCK_UWB_RANGE_BIAS_MM
+#define CONFIG_ULTRAWIDELOCK_UWB_RANGE_BIAS_MM 0
+#endif
+
 #if defined(CONFIG_DW3000_SPI_METRICS)
 #include "dw3000_spi.h"
 #endif
@@ -169,6 +175,17 @@ static uint32_t g_final_round2;
 static bool g_final_round_valid;
 #endif
 
+/* Frames we DISCARD. Deliberately not behind the bench-instrumentation ifdef:
+ * either counter being non-zero means we are deleting frames the initiator did
+ * send, which is a correctness signal on every build, not a diagnostic. */
+static volatile uint32_t g_dbg_sp0_oversize; /* SP0 frame exceeded the stash */
+static volatile uint32_t g_dbg_fd_rejected;  /* Final_Data failed the length guard */
+
+/* Budget for the discard reports below. Loud enough that a drop can never go
+ * unnoticed, bounded so a persistent mismatch cannot saturate a 115200 console
+ * against the ~1.8 ms ranging-slot deadlines. */
+#define CCC_DISCARD_LOG_BUDGET 8u
+
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 /* Bench instrumentation, read over J-Link (no logging => no ISR/timing impact).
  * Diagnoses the DS-TWR capture/consume pairing on the single-core CDK. */
@@ -304,11 +321,58 @@ static bool mhr_context_ok(const struct ccc_mhr_fields *mhr)
 	return true;
 }
 
+/**
+ * @brief Largest SP0 frame the shim will accept, DERIVED rather than guessed.
+ *
+ * MHR + Final_Data header + one record per responder + MIC + the two FCS bytes
+ * the driver counts in @c datalength (confirmed on air: a one-record Final_Data
+ * reads 58 = 23+18+7+8+2, not 56).
+ *
+ * This was a bare 64. A two-record Final_Data is 65, so it was discarded one
+ * byte over by the size gate below -- silently, with no counter and no log,
+ * before final_data_decode ever ran. On the bench that is indistinguishable
+ * from an initiator declining to send Final_Data once Response_1 goes out,
+ * which is exactly the observation stage B was built on. Sizing it from the
+ * constants stops the buffer falling behind CCC_MAX_RESPONDERS again.
+ */
+#define CCC_SP0_STASH_LEN                                                                          \
+	(CCC_MHR_LEN + CCC_FINAL_DATA_HDR_LEN + (CCC_MAX_RESPONDERS * CCC_RESPONDER_LEN) +          \
+	 CCC_SP0_MIC_LEN + 2u)
+
 /** @brief Pre-POLL frame stashed at RX for a DEFERRED decode: the ~2 ms decrypt+derive must not run
  * between the Pre-POLL and the POLL. */
-static uint8_t g_pp_stash[64];
+static uint8_t g_pp_stash[CCC_SP0_STASH_LEN];
 static uint16_t g_pp_stash_len;
 static bool g_pp_pending;
+
+/**
+ * @brief Whether THIS anchor answers the block whose POLL is being handled.
+ *
+ * Only meaningful on the POLL path, and only there: it reads state that is
+ * exactly one block behind. In steady state this block's Pre-POLL is stashed
+ * but NOT yet decoded (the ~2 ms decrypt+derive is deferred past the Response
+ * TX arm, see ccc_shim_rx_try_prepoll), so @c g_session_block still holds the
+ * PREVIOUS block's index and this block's parity is one more than it.
+ *
+ * Both anchors run this identical code against the identical air input, so they
+ * always reach opposite verdicts and never share a slot. The @c g_pp_pending
+ * requirement is what keeps that true across the seam: on a cold bootstrap
+ * block the decode runs inline instead, leaving the counter current rather than
+ * one behind, and an anchor that joins mid-session would otherwise compute its
+ * parity off a differently-aged counter than its partner. An anchor that cannot
+ * place itself in the alternation stays silent, which costs one block; guessing
+ * would risk transmitting in the same slot as its partner.
+ */
+static inline bool ccc_block_is_ours(void)
+{
+#if ULTRAWIDELOCK_BLOCK_PARITY < 0
+	return true;
+#else
+	return g_have_session_block && g_pp_pending &&
+	       (unsigned)((g_session_block + 1u) & 1u) ==
+		       (unsigned)ULTRAWIDELOCK_BLOCK_PARITY;
+#endif
+}
 
 #if CCC_RX_LOCK_SWEEP
 /** @brief Lock/search state for the phase-locked (o,K) tracker. */
@@ -576,13 +640,14 @@ static void prepoll_decode(const uint8_t *frame, uint16_t datalength)
 	if (g_poll_stride != 0u) {
 		uint32_t widx = g_poll_sts_index + g_poll_stride;
 
-		/* Warm the POLL (widx), Response_0 (widx+1) AND Final — same round, same dURSK,
+		/* Warm the POLL (widx), our Response AND Final — same round, same dURSK,
 		 * only STS-V advances — so no leg runs a KDF. */
 		/* EXPERIMENT-2RESP: the phone's Final RFRAME sits ULTRAWIDELOCK_FINAL_SLOT_OFFSET
-		 * slots past the POLL (n=1 -> widx+2, n=2 -> widx+3; responder 1's silent
-		 * slot is widx+2). Response_0 stays at widx+1 (we are responder 0). */
+		 * slots past the POLL (n=1 -> widx+2, n=2 -> widx+3). Responder l's
+		 * Response_l sits at widx+1+l: the lock is 0, the satellite is 1. */
 		if (ccc_shim_sts_for_index(widx, g_warm_dursk, g_warm_sts_v) == 0 &&
-		    ccc_shim_sts_for_index(widx + 1u, g_warm_resp_dursk, g_warm_resp_sts_v) == 0 &&
+		    ccc_shim_sts_for_index(widx + 1u + ULTRAWIDELOCK_RESPONDER_INDEX,
+					   g_warm_resp_dursk, g_warm_resp_sts_v) == 0 &&
 		    ccc_shim_sts_for_index(widx + ULTRAWIDELOCK_FINAL_SLOT_OFFSET, g_warm_final_dursk,
 					   g_warm_final_sts_v) == 0) {
 			g_warm_index = widx;
@@ -647,7 +712,11 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 	// CCC final message carrying credential authentication data (MAC, derived ranging state).
 	struct ccc_final_data fd;
 	uint8_t dudsk[CCC_DUDSK_LEN];
-	uint8_t plain[64];
+	/* Decrypted Final_Data payload: header + one record per responder. This was
+	 * a bare 64, which caps at six responders (18 + 7n <= 64), the same
+	 * buffer-behind-the-constant shape as the SP0 stash one layer up. Derived so
+	 * neither can fall behind CCC_MAX_RESPONDERS again. */
+	uint8_t plain[CCC_FINAL_DATA_HDR_LEN + (CCC_MAX_RESPONDERS * CCC_RESPONDER_LEN)];
 	bool lg = (g_fd_logged < 16u);
 	int rc;
 
@@ -659,6 +728,13 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 	}
 	if (mhr.payload_len > sizeof(plain) ||
 	    (uint16_t)(CCC_MHR_LEN + mhr.payload_len + CCC_SP0_MIC_LEN) > datalength) {
+		/* Also a discard, so also visible. This one was a bare return too. */
+		g_dbg_fd_rejected++;
+		if (g_dbg_fd_rejected <= CCC_DISCARD_LOG_BUDGET) {
+			ultrawidelock_printf("W: Final_Data rejected pl=%u cap=%u dl=%u (#%u)\n",
+				   (unsigned)mhr.payload_len, (unsigned)sizeof(plain),
+				   (unsigned)datalength, (unsigned)g_dbg_fd_rejected);
+		}
 		return;
 	}
 	/* Final_Data can be dispatched after the next block has changed the live
@@ -786,7 +862,7 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 			g_dbg_have_round++;
 		}
 #endif
-		if (have_round && ccc_responder_ds_twr(&fd, 0u, t_reply1, t_round2, &tw) == 0) {
+		if (have_round && ccc_responder_ds_twr(&fd, ULTRAWIDELOCK_RESPONDER_INDEX, t_reply1, t_round2, &tw) == 0) {
 			/* Signed, because near zero the numerator goes slightly negative and
 			 * an unsigned divide would wrap it into a kilometre. This used to be
 			 * open-coded here to dodge exactly that in ccc_ds_twr_tof(); the
@@ -794,7 +870,8 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 			 * link and this path share one definition. 1 tick ~ 15.65 ps,
 			 * ~4.6917 mm/tick. */
 			int32_t tof = ds_twr_tof_signed(&tw);
-			int d_mm = (int)(((int64_t)tof * 4692) / 1000);
+			int d_mm = (int)(((int64_t)tof * 4692) / 1000) +
+				   CONFIG_ULTRAWIDELOCK_UWB_RANGE_BIAS_MM;
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 			g_dbg_dstwr_ok++;
 			g_dbg_last_dmm = d_mm;
@@ -877,8 +954,23 @@ void ccc_shim_rx_try_prepoll(uint16_t datalength)
 	 * in dispatch order, so a host replay drives the identical entry point. */
 	fr_capture_ev((uint8_t)FR_EP_TRY_PREPOLL, 0u, datalength);
 
-	if (!ccc_shim_active() || datalength == 0u || datalength > sizeof(g_pp_stash)) {
+	if (!ccc_shim_active() || datalength == 0u) {
 		return; /* (the POLL event is gated out by the shim's await snapshot) */
+	}
+	if (datalength > sizeof(g_pp_stash)) {
+		/* Loud, always, and through the FACADE PRINTER rather than DIAGK: pretty
+		 * builds compile DIAGK to nothing, which is precisely how this path ate
+		 * every two-responder Final_Data for a whole night without leaving a
+		 * mark, and how the phone got blamed for it. A discard nobody can see is
+		 * how a confident wrong verdict gets built. Same reasoning as the
+		 * Pre-POLL acceptance line further down. */
+		g_dbg_sp0_oversize++;
+		if (g_dbg_sp0_oversize <= CCC_DISCARD_LOG_BUDGET) {
+			ultrawidelock_printf("W: SP0 oversize len=%u cap=%u DROPPED (#%u)\n",
+				   (unsigned)datalength, (unsigned)sizeof(g_pp_stash),
+				   (unsigned)g_dbg_sp0_oversize);
+		}
+		return;
 	}
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 	g_dbg_try_prepoll_n++;
@@ -1480,8 +1572,9 @@ static int tx_response_sp3(uint32_t poll_ip, uint32_t resp_idx)
 #endif
 	dwt_configurestsloadiv(); /* reset the HW STS counter to our V */
 	/* STS mode stays SP3/ND (the POLL arm set it) — the Response is the same RFRAME. */
-	dx = poll_ip +
-	     CCC_RESP_SLOT_HI32; /* RMARKER = POLL + one negotiated slot, antenna-compensated */
+	/* RMARKER = POLL + (1 + responder index) negotiated slots, antenna-compensated. */
+	dx = poll_ip + CCC_RESP_SLOT_HI32 +
+	     (uint32_t)ULTRAWIDELOCK_RESPONDER_INDEX * CCC_SLOT_NOMINAL_HI32;
 	dwt_setdelayedtrxtime(dx);
 	dwt_writetxdata(sizeof(g_resp_payload), g_resp_payload, 0u);
 	dwt_writetxfctrl(sizeof(g_resp_payload) + 2u, 0u, 1u); /* +FCS; ranging=1 (STS) */
@@ -1563,7 +1656,7 @@ static void resp_tx_done(const dwt_cb_data_t *cb)
 
 	if (g_resp_txn < 16u) {
 		DIAGK("RESP txdone #%u idx=%08x\n", (unsigned)g_resp_txn,
-		      (unsigned)(g_armed_index + 1u));
+		      (unsigned)(g_armed_index + 1u + ULTRAWIDELOCK_RESPONDER_INDEX));
 		g_resp_txn++;
 	}
 #if defined(ESP_PLATFORM)
@@ -1778,15 +1871,29 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 		int16_t stsq = 0;
 		int qret = 0;
 		int tr = -1;
+		bool ours;
 
 		g_await_poll = false;
+		/* Evaluate ONCE, here: ccc_block_is_ours() reads g_pp_pending, which
+		 * resp_tx_done clears as soon as the Response TX completes, so a second
+		 * call further down would not agree with the one that made the decision. */
+		ours = ccc_block_is_ours();
 		/* Time-critical FIRST: arm Response_0's delayed TX before the stsq read and
 		 * ultrawidelock_printf. cper=0 => real POLL, so delayed-TX Response_0 (index+1); else return
-		 * to the SP0 listen. */
-		if (cper == 0u && ip != 0u) {
+		 * to the SP0 listen.
+		 *
+		 * Under block-parity alternation the partner anchor owns the other blocks.
+		 * Leaving tr = -1 on theirs falls through to exactly the path a non-POLL
+		 * takes, and the whole ranging leg fails closed behind it: no Response TX
+		 * means resp_tx_done never runs, so g_await_final stays false, so the Final
+		 * handler never latches a capture, so Final_Data finds no fresh round and
+		 * computes no distance. A silent block therefore produces no range at all
+		 * rather than a stale-timestamp one, which is what keeps the layer-4 trust
+		 * run intact across it. */
+		if (cper == 0u && ip != 0u && ours) {
 			g_poll_ip_for_final = ip; /* round anchor for the Final RX arm (TXDONE) */
 			g_t_poll_rx = ip40;       /* t2: responder POLL RX */
-			tr = tx_response_sp3(ip, g_armed_index + 1u);
+			tr = tx_response_sp3(ip, g_armed_index + 1u + ULTRAWIDELOCK_RESPONDER_INDEX);
 #if defined(ESP_PLATFORM)
 			/* ESP32: the TX-done callback (resp_tx_done) dispatches too late and too
 			 * jittery (~2-16 ms) to arm the Final RFRAME, which sits only ~2 ms after
@@ -1846,7 +1953,10 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 			      "dec=%dus\n",
 			      (unsigned)st, cper, d, d / 250, (int)stsq, qret,
 			      (unsigned)g_armed_index,
-			      (cper == 0u && ip != 0u) ? ((tr == 0) ? "armed" : "FAIL") : "-",
+			      (cper != 0u || ip == 0u) ? "-"
+			      : !ours                  ? "skip" /* partner anchor's block */
+			      : (tr == 0)              ? "armed"
+						       : "FAIL",
 			      (int)(g_ccc_dbg_decode / 250u));
 		}
 

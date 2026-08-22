@@ -31,6 +31,32 @@ Useful related images are:
 Use `make flash` to program the built image and `make monitor` to open the RTT
 console. `make flash-erase` also erases commissioning and reader state.
 
+## Overlays
+
+`overlay-*.conf` beside this file are the shipping profiles, and `make build`
+picks between them from the command line: `RELEASE=1`, `SMP=1`, `OTLOG=1`,
+`ANCHOR=1`, `SIDE=1`, `LATCH=1`, and `LTO=0` to turn off the LTO that is on by
+default. `make anchorlink` spells its own list out instead, because two of its
+overlays are not the caller's to choose.
+
+`overlays/` is a different thing: bench instrumentation, calibration and
+bisection arms, none of which belong in a shipping image. Four are reachable
+from a target -- `uwb-selftest.conf` (`make selftest`), `cirdiag.conf` (`make
+cirdiag`), `mlgate.conf` (`make mlgate`), and `bench-anchorlink.conf` (`make
+anchorlink BENCH=1`, this desk's calibration). The rest are layered by hand,
+which the command line allows because `CDK_CONF` names the whole list:
+
+```sh
+make build CDK_CONF="overlay-thread.conf;overlay-lto.conf;overlays/bench.conf"
+```
+
+Order matters -- later files win -- and each overlay's own header says what it
+measures and what it costs. Several stack on another one rather than on the
+base, and say so in their first lines. Nothing in `overlays/` is safe to ship:
+`thread-dataset-dump.conf` prints the Thread network key, `bench-side-margin.conf`
+lowers the margin the inside/outside decision rests on, and `bench-latch.conf`
+relaxes the latch choreography.
+
 ## Contents
 
 - `src/` contains the product entry point and product policy.

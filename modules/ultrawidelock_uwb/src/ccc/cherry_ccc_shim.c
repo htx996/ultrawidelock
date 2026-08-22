@@ -22,6 +22,19 @@ LOG_MODULE_REGISTER(ultrawidelock_ccc_shim, LOG_LEVEL_INF);
 #define SHIM_URSK_LEN 32u
 
 /**
+ * Who wants the join parameters when a credential session starts.
+ *
+ * Unset by default, so a build that registers nothing behaves exactly as it did
+ * before this seam existed. See ultrawidelock_uwb_set_handoff_listener().
+ */
+static void (*s_handoff_cb)(const struct ultrawidelock_uwb_handoff *h);
+
+void cherry_ccc_set_handoff_listener(void (*cb)(const struct ultrawidelock_uwb_handoff *h))
+{
+	s_handoff_cb = cb;
+}
+
+/**
  * @brief Opaque Cherry context holder.
  * @param core_cb Core callback (never invoked: no UCI).
  * @param user_data Client data from cherry_create().
@@ -289,6 +302,51 @@ enum cherry_err cherry_session_start(struct cherry_session *session)
 		"ps=%02x",
 		rcfg[0], rcfg[1], rcfg[2], rcfg[3], rcfg[12], rcfg[13], rcfg[14], rcfg[15],
 		rcfg[16]);
+
+	/*
+	 * The same payload the bench log below prints, handed to whoever
+	 * registered for it -- normally the sealed link to the second anchor.
+	 * Before the radio start for the log's reason: the handoff can then land
+	 * before UWB_Time0, and pre-poll recovery makes a late one cost a block
+	 * rather than the session.
+	 */
+	if (s_handoff_cb != NULL) {
+		struct ultrawidelock_uwb_handoff h = {
+			.ursk = s->ursk,
+			.ursk_len = SHIM_URSK_LEN,
+			.rcfg = rcfg,
+			.rcfg_len = sizeof(rcfg),
+			.channel = c->channel,
+			.sync_code_index = c->sync_code_index,
+		};
+
+		s_handoff_cb(&h);
+	}
+
+#if defined(CONFIG_ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG)
+	/* Bench-only (see the Kconfig help): the exact `sat join` line the satellite
+	 * responder's shell accepts. Everything it needs beyond the URSK is inside
+	 * rcfg[] plus the PHY pair. Redundant once the sealed handoff above is
+	 * carrying it, and the reason to turn this off: it prints the URSK. */
+	{
+		static const char hx[] = "0123456789abcdef";
+		char ursk_hex[2 * SHIM_URSK_LEN + 1];
+		char rcfg_hex[2 * sizeof(rcfg) + 1];
+
+		for (size_t i = 0; i < SHIM_URSK_LEN; i++) {
+			ursk_hex[2 * i] = hx[s->ursk[i] >> 4];
+			ursk_hex[2 * i + 1] = hx[s->ursk[i] & 0xfu];
+		}
+		ursk_hex[2 * SHIM_URSK_LEN] = '\0';
+		for (size_t i = 0; i < sizeof(rcfg); i++) {
+			rcfg_hex[2 * i] = hx[rcfg[i] >> 4];
+			rcfg_hex[2 * i + 1] = hx[rcfg[i] & 0xfu];
+		}
+		rcfg_hex[2 * sizeof(rcfg)] = '\0';
+		LOG_INF("SAT-HANDOFF: sat join %s %s %u %u", ursk_hex, rcfg_hex,
+			c->channel, c->sync_code_index);
+	}
+#endif
 
 	rc = ultrawidelock_uwb_start_cred(&fcfg);
 	if (rc != 0) {

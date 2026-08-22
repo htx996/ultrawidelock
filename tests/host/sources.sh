@@ -70,6 +70,10 @@ UNIT_SRCS=(
 	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_side.c"
 	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_side_log.c"
 	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_slam.c"
+	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_latch.c"
+	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_witness_core.c"
+	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_witness_msg.c"
+	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_witness_pick.c"
 )
 
 # ultrawidelock_cred roles. wire_codecs = the shared step-up/assert codecs (one source;
@@ -148,6 +152,10 @@ TEST_SRCS=(
 	"$HOST/test_ultrawidelock_satellite.c"
 	"$HOST/test_ultrawidelock_side.c"
 	"$HOST/test_ultrawidelock_side_replay.c"
+	"$HOST/test_ultrawidelock_latch.c"
+	"$HOST/test_ultrawidelock_witness_core.c"
+	"$HOST/test_ultrawidelock_witness_msg.c"
+	"$HOST/test_ultrawidelock_witness_pick.c"
 	"$HOST/test_ultrawidelock_slam.c"
 	"$HOST/test_ultrawidelock_logfmt.c"
 	"$HOST/test_trace.c"

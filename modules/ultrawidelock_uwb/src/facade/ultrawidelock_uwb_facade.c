@@ -168,6 +168,18 @@ void ultrawidelock_uwb_set_range_listener(void (*cb)(void))
 #endif
 }
 
+void ultrawidelock_uwb_set_handoff_listener(void (*cb)(const struct ultrawidelock_uwb_handoff *h))
+{
+#if defined(CONFIG_ULTRAWIDELOCK_CRED)
+	cherry_ccc_set_handoff_listener(cb);
+#else
+	/* No credential sessions, so no join parameters ever exist to hand over.
+	 * Accepting the registration and never calling it is the honest shape:
+	 * the caller's second anchor simply never hears from us. */
+	(void)cb;
+#endif
+}
+
 bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out)
 {
 	return ultrawidelock_uwb_trusted_range_age_cm(cm_out, NULL);
@@ -184,6 +196,22 @@ bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out
 #else
 	return fira_session_last_range(cm_out, NULL, NULL, NULL, age_ms_out);
 #endif
+}
+
+bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_out)
+{
+#if defined(CONFIG_ULTRAWIDELOCK_CRED)
+	/* One call, so the block and the distance are from the same latch. */
+	return fira_session_last_range(cm_out, NULL, NULL, block_out, NULL) &&
+	       fira_session_range_trusted();
+#else
+	return fira_session_last_range(cm_out, NULL, NULL, block_out, NULL);
+#endif
+}
+
+uint32_t ultrawidelock_uwb_session_id(void)
+{
+	return fira_session_id();
 }
 
 uint32_t ultrawidelock_uwb_range_generation(void)

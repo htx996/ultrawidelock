@@ -1,93 +1,104 @@
-# Inside vs outside — build, flash, commission, calibrate, place
+# Inside veto — build, provision, place
 
-## What this covers
-- Fail-closed side gate (`ultrawidelock_side`) with OUTSIDE / INSIDE / THRESHOLD / UNKNOWN
-- Binary 48-byte decision log (`ultrawidelock_side_log`)
-- nRF52840 BLE witness firmware (inside / outside / threshold)
-- Raspberry Pi JSONL collector + differential-RSSI baseline tool
-- DWM3001CDK integration behind `SIDE=1` (default build unchanged)
-- Secondary UWB experiment scaffold (explicitly unproven)
+The lock must never passively unlock while the credentialed phone is inside.
+This is the operator flow for the two-dongle system that enforces that.
+
+Design and safety argument: `docs/inside-latch.md`. Read it before changing a
+default; every threshold here has a reason recorded next to it.
+
+Running it for the first time: `docs/bench-inside-outside.md` is the linear
+recipe, with the pass/fail for each step and the point at which to stop.
+
+## What runs where
+
+| device | image | job |
+|---|---|---|
+| DWM3001CDK | `make build LATCH=1` | owns every decision; holds the veto |
+| nRF52840 dongle x2 | `make witness-build` | reports what it hears; decides nothing |
+
+One dongle inside, one outside, mirrored across the door plane, each on a USB
+charger. No Raspberry Pi, no debug probe, no wiring between devices.
 
 ## Baseline (unchanged Matter image)
+
 ```
 make dfu-key          # once per checkout
 make build
 make cdk-size CDK_SIZE_REPORTS=0
 ```
-The committed baseline (`make cdk-size-check`) is the reference for what the
-unchanged image weighs.
 
-## SIDE=1 image (gate linked in)
-```
-make build SIDE=1 CDK_BUILD=build/cdk-side
-make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-side
-```
-| region | used | Δ vs baseline |
-|--------|------|---------------|
-| FLASH | 401100 | **+524 B** |
-| RAM | 116068 | **+128 B** |
+## The LATCH image
 
-`CONFIG_ULTRAWIDELOCK_SIDE_GATE=y` verified in the side image `.config`.
+```
+make build LATCH=1 CDK_BUILD=build/cdk-latch
+make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-latch
+```
+
+MEASURED 2026-08-19, against `make build` on the same tree:
+
+| region | baseline | LATCH=1 | delta |
+|--------|---------:|--------:|------:|
+| FLASH | 417,684 | 424,544 | **+6,860 B** |
+| RAM | 118,312 | 119,464 | **+1,152 B** |
+
+The default image is unchanged: built at commit 588459f5 and at this branch's
+HEAD, both 417,684 B, differing in 4 bytes — the `__TIME__` string inside
+OpenThread's version banner.
+
+`RELEASE=1 SMP=1 LATCH=1` measures 406,536 B flash (93.74%), 115,944 B RAM.
 
 ## Host tests
+
 ```
 make check
 ```
-New suite: `ultrawidelock_side` (policy fail-closed, spike hysteresis, log CRC).
 
-## Enable the side gate on the lock
-```
-make build SIDE=1 CDK_BUILD=build/cdk-side
-make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-side
-```
-With `SIDE=1` and no live witness evidence, **all passive unlocks are withheld**.
-NFC Express Mode, Apple Home, and mechanical operation are not gated.
+Suites: `ultrawidelock_latch` (the veto and every evidence-loss case),
+`ultrawidelock_witness_msg` (wire format, replay), `ultrawidelock_witness_core`
+(which advertisers get reported), `ultrawidelock_witness_pick` (which one is
+the phone), plus the existing `ultrawidelock_side` gate suite.
 
-## BLE witnesses
-```
-make witness-build WITNESS_ROLE=outside WITNESS_BOARD=nrf52840dk/nrf52840
-make witness-build WITNESS_ROLE=inside  WITNESS_BOARD=nrf52840dk/nrf52840
-make witness-build WITNESS_ROLE=threshold WITNESS_BOARD=nrf52840dk/nrf52840
-```
-Placement:
-1. Outside: approach face, ~0.3–1 m from door plane
-2. Inside: protected face, mirrored
-3. Threshold: lintel / frame, in the plane
+## Provisioning the dongles
 
-## Feeding the lock
-
-The lock ingests one line per witness window on RTT down-buffer 0:
+Once each, over USB, before mounting:
 
 ```
-SF1 in=<dbm> out=<dbm> th=<dbm> ni=<n> no=<n> nt=<n>
+make witness-prov-help      # prints the PROV line and what each field is
 ```
 
-`in`/`out`/`th` are the mean RSSI each witness heard over its window and
-`ni`/`no`/`nt` the packet counts. Build the lock with `SIDE=1` so
-`CONFIG_ULTRAWIDELOCK_SIDE_FEED_RTT` and `CONFIG_ULTRAWIDELOCK_SIDE_PEER_EMIT` are on, then drive
-the buffer with any host that can hold an RTT connection.
+Three secrets, and the difference between them matters:
 
-This is a bench path, not a product one: it needs a debug probe attached for
-the life of the session. A witness link over UART or Matter is the work that
-replaces it.
+- **link key** — one per dongle, also stored on the lock. Seals that
+  witness's reports. The lock's copy goes in on the reader image, which is
+  the one with a console (`ultrawidelock witkey inside <hex32>`); reflash the
+  Thread image with `make flash`, never `flash-erase`, or the keys go with it.
+  See docs/inside-latch.md section 6.1.
+- **group key** — the same on both dongles and NOT on the lock. Labels
+  advertisers so the two dongles can be compared without the lock ever
+  learning an address.
+- **Thread dataset** — your existing network. Get it from the lock, which is
+  already joined: `overlays/thread-dataset-dump.conf` + SW2. See
+  docs/inside-latch.md section 6.
 
-## Telling the witnesses which advertiser is the credential
+Generate keys with `openssl rand -hex 16`.
 
-With `CONFIG_ULTRAWIDELOCK_SIDE_PEER_EMIT=y` the lock logs `SIDE peer=<AdvA> type=…` when
-the credential L2CAP channel opens and `SIDE peer=clear` when it closes. Forward that
-address to each witness as an `ADDR` command and they will summarise one phone
-instead of every advertiser in the room.
+## What it does with no witnesses
 
-That address is personal data, which is why the option is default n and why
-captured runs are not committed (see `.gitignore`). Do not enable it in a
-shipped image.
+Refuses every passive unlock. That is the fail-closed behaviour the design
+asks for, not a regression. NFC Express Mode, Apple Home commands and
+mechanical operation are never gated and keep working.
 
-## Matter control plane
-Not implemented yet. Control/summaries will use a vendor cluster;
-raw high-rate samples stay on USB/UART to the Pi.
+## Recovering
 
-## Unsupported / not yet proven
-- Multi-anchor stock-iPhone UWB ranging
-- Absolute RSSI as distance
-- Fail-open passive unlock on UNKNOWN (explicitly rejected)
-- Unlock authority on Pi or witnesses (forbidden)
+One deliberate unlock — NFC tap, app, key — re-seeds the latch record. That is
+the recovery from a factory boot, corrupt storage, a new credential, or an exit
+through a door nothing observed.
+
+## Unsupported / not proven
+
+- BLE observer + Thread SED coexistence on the nRF52840: builds, not yet
+  measured on hardware. This is the first thing to test.
+- Every picker and latch threshold: set from geometry, not from a capture.
+- Multi-anchor stock-iPhone UWB ranging (unrelated to this path, still unproven).
+- Fail-open passive unlock on UNKNOWN — explicitly rejected.
+- Unlock authority on a witness — forbidden by construction.

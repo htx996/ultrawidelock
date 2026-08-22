@@ -38,7 +38,7 @@ REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ULTRAWIDELOCK_BUILD_ROOT ?= $(REPO_ROOT)/build
 export ULTRAWIDELOCK_BUILD_ROOT
 
-# NCS version for both Zephyr ports. Matches apps/nrf5340dk-lock/build.sh.
+# NCS version for both Zephyr ports. Matches scripts/nrf5340dk-build.sh.
 NCS_VER ?= v3.3.0
 
 # ---- the MCUboot image-signing key ------------------------------------------
@@ -93,6 +93,7 @@ include $(REPO_ROOT)/mk/esp32.mk
 # After the ports: it reuses cdk.mk's west launcher and probe guard, and it is a
 # bench tool rather than a target anyone flashes a lock with.
 include $(REPO_ROOT)/mk/anchor.mk
+include $(REPO_ROOT)/mk/satellite.mk
 include $(REPO_ROOT)/mk/witness.mk
 include $(REPO_ROOT)/mk/setup.mk
 include $(REPO_ROOT)/mk/host.mk

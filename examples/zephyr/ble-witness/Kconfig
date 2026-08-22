@@ -1,20 +1,41 @@
-# BLE witness role selection.
+# BLE witness build options.
+#
+# Role is NOT here any more. It used to be a build-time choice, which meant a
+# separate image per dongle and a reflash to move one from inside to outside.
+# It is provisioned at install now and lives in settings.
 
 mainmenu "ultrawidelock BLE witness"
 
-choice WITNESS_ROLE
-	prompt "Witness placement role"
-	default WITNESS_ROLE_INSIDE
+config WITNESS_WINDOW_MS
+	int "Summarisation window, milliseconds"
+	default 2000
+	range 250 10000
+	help
+	  How long each report covers. MEASURED 2026-08-11 on the previous
+	  firmware: a filtered advertiser yielded 3-8 packets per 2000 ms
+	  window, against the lock's minimum of 2 for a usable mean. Halving
+	  this halves that count and starves the quorum; doubling it doubles
+	  the time a walk-up needs to accumulate agreeing windows.
 
-config WITNESS_ROLE_INSIDE
-	bool "Inside the door"
+config WITNESS_PORT
+	int "UDP port for reports and challenges"
+	default 49180
+	range 1024 65535
+	help
+	  Must match CONFIG_ULTRAWIDELOCK_WITNESS_PORT on the lock. Both ends
+	  bind it: reports go up, the challenge nonce comes down.
 
-config WITNESS_ROLE_OUTSIDE
-	bool "Outside the door"
+config WITNESS_BOOT_TRACE
+	bool "Light an LED at each boot milestone (BENCH ONLY)"
+	default n
+	help
+	  The dongle has no debug connector, so firmware that dies before USB
+	  enumerates cannot be diagnosed at all: no console, no RTT, nothing to
+	  attach. This puts a colour on the RGB LED at each of seven points in the
+	  boot; the colour still showing when the board stops says how far it got.
+	  See src/boot_trace.c for the mapping.
 
-config WITNESS_ROLE_THRESHOLD
-	bool "Threshold / lintel / door frame"
-
-endchoice
+	  Off in anything deployed: it takes the LEDs the status indication owns,
+	  and two owners for one lamp is worse than no instrument.
 
 source "Kconfig.zephyr"

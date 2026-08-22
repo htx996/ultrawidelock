@@ -82,24 +82,44 @@ static uint16_t mk_prepoll(uint8_t *out, uint32_t fc, uint32_t poll_idx)
 	return mk_prepoll_for(out, fc, poll_idx, RND_BLOCK);
 }
 
-/** Build an encrypted Final_Data (1 responder) keyed on the armed POLL index. */
-static uint16_t mk_final_data_for(uint8_t *out, uint32_t fc, uint32_t armed_idx,
-				  uint32_t t_round1, uint32_t t_reply2, uint32_t session_id,
-				  uint16_t ranging_block, uint32_t final_sts_index)
+/** One responder record, tag and timestamp given explicitly. */
+struct fd_rec {
+	uint8_t idx;
+	uint32_t ts;
+};
+
+/**
+ * Build an encrypted Final_Data carrying @p n records, keyed on the armed POLL
+ * index, and return the length the DRIVER would report.
+ *
+ * That return value includes the two FCS bytes. It used to omit them, so every
+ * fixture frame was 2 bytes shorter than the hardware reports -- which, with the
+ * responder count hardcoded to 1, is why the suite could never reach the
+ * 64-byte SP0 stash gate that a 65-byte two-record frame trips. Both halves of
+ * that blind spot are closed here.
+ */
+static uint16_t mk_final_data_n(uint8_t *out, uint32_t fc, uint32_t armed_idx,
+				const struct fd_rec *recs, uint8_t n, uint32_t final_tx,
+				uint32_t session_id, uint16_t ranging_block,
+				uint32_t final_sts_index)
 {
 	struct ccc_mhr_fields f;
 	struct ccc_final_data fd;
-	uint8_t plain[64];
+	uint8_t plain[CCC_FINAL_DATA_HDR_LEN + (CCC_MAX_RESPONDERS * CCC_RESPONDER_LEN)];
 	uint8_t dudsk[CCC_DUDSK_LEN];
 	size_t pl = 0;
+	uint8_t i;
 
 	memset(&fd, 0, sizeof(fd));
 	fd.uwb_session_id = session_id;
 	fd.ranging_block = ranging_block;
 	fd.final_sts_index = final_sts_index;
-	fd.ranging_ts_final_tx = t_round1 + t_reply2; /* t5-t1 */
-	fd.num_responders = 1u;
-	fd.responders[0].timestamp = t_round1;        /* t4-t1 */
+	fd.ranging_ts_final_tx = final_tx; /* t5-t1 */
+	fd.num_responders = n;
+	for (i = 0u; i < n; i++) {
+		fd.responders[i].responder_index = recs[i].idx;
+		fd.responders[i].timestamp = recs[i].ts; /* t4-t1 */
+	}
 	T_EQ("mk_fd.pack", ccc_final_data_pack(&fd, plain, sizeof(plain), &pl), 0);
 
 	memset(&f, 0, sizeof(f));
@@ -114,7 +134,22 @@ static uint16_t mk_final_data_for(uint8_t *out, uint32_t fc, uint32_t armed_idx,
 	     ccc_sp0_encrypt(dudsk, g_src_long, fc, out, CCC_MHR_LEN, plain, pl,
 			     &out[CCC_MHR_LEN], &out[CCC_MHR_LEN + pl]),
 	     0);
-	return (uint16_t)(CCC_MHR_LEN + pl + CCC_SP0_MIC_LEN);
+	/* Write the FCS the radio appends, so the bytes the stub hands back are
+	 * initialised rather than merely counted. */
+	out[CCC_MHR_LEN + pl + CCC_SP0_MIC_LEN] = 0xAAu;
+	out[CCC_MHR_LEN + pl + CCC_SP0_MIC_LEN + 1u] = 0x55u;
+	return (uint16_t)(CCC_MHR_LEN + pl + CCC_SP0_MIC_LEN + 2u);
+}
+
+/** Build an encrypted Final_Data (1 responder, tagged 0) keyed on the armed POLL index. */
+static uint16_t mk_final_data_for(uint8_t *out, uint32_t fc, uint32_t armed_idx,
+				  uint32_t t_round1, uint32_t t_reply2, uint32_t session_id,
+				  uint16_t ranging_block, uint32_t final_sts_index)
+{
+	const struct fd_rec rec = {.idx = 0u, .ts = t_round1};
+
+	return mk_final_data_n(out, fc, armed_idx, &rec, 1u, t_round1 + t_reply2, session_id,
+			       ranging_block, final_sts_index);
 }
 
 static uint16_t mk_final_data(uint8_t *out, uint32_t fc, uint32_t armed_idx,
@@ -259,6 +294,37 @@ void test_prepoll_round(void)
 		ccc_shim_rx_try_prepoll(len);
 		T_EQ("replayed Final_Data cannot relatch", (long)fira_session_range_generation(),
 		     (long)generation);
+	}
+
+	t_group("two-record Final_Data survives the SP0 gate and selects by tag");
+	/*
+	 * The whole path in one frame: try_prepoll -> the stash size gate ->
+	 * final_data_decode -> record select -> the DS-TWR latch. Two things are
+	 * being defended at once, both of which shipped broken:
+	 *
+	 *   size  a two-record frame is 65 bytes on air against a stash that was
+	 *         64, so it was discarded before the decode ran and the initiator
+	 *         got blamed for not sending it;
+	 *   order the records are laid out tagged {1, 0}, so ARRAY POSITION and
+	 *         TAG disagree. This build is responder 0, so a correct lookup
+	 *         reads the tag-0 record (101000) and lands on the same 234 cm as
+	 *         the single-record case above; position indexing would read
+	 *         150000 and be off by kilometres.
+	 */
+	{
+		const struct fd_rec recs[2] = {
+			{.idx = 1u, .ts = 150000u}, /* the satellite's, first in the array */
+			{.idx = 0u, .ts = 101000u}, /* ours, second */
+		};
+
+		len = mk_final_data_n(frame, fc++, widx, recs, 2u, 300000u, RND_SID, RND_BLOCK,
+				      widx + 2u);
+		T_EQ("two-record frame is 65 bytes on air", (long)len, 65L);
+
+		stash_frame(frame, len, 0x3220000ull);
+		ccc_shim_rx_try_prepoll(len);
+		T_OK("two-record range latched", fira_session_last_range(&cm, NULL, NULL, NULL, NULL));
+		T_EQ("two-record range picks the tag-0 record", cm, 234);
 	}
 
 	t_group("round 2: POLL result with STS error reverts and reflushes");

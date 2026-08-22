@@ -575,6 +575,20 @@ static int32_t effective_unlock_cm(const struct ultrawidelock_approach *ap, int6
 #endif
 }
 
+/* Whether an outstanding predictive open has, by its own evidence, been kept:
+ * the estimate or the last fed range is inside the unlock radius. Judged on
+ * the same numbers the fire decision used, so a prediction cannot be aborted
+ * for succeeding. */
+static bool pred_arrived(const struct ultrawidelock_approach *ap, int64_t now_ms)
+{
+	const int32_t eff = effective_unlock_cm(ap, now_ms);
+
+	if (ap->kf_init && ap->d <= (float)eff) {
+		return true;
+	}
+	return ap->last_feed_ms != 0 && ap->last_cm <= eff;
+}
+
 static int32_t channel_correct(const struct ultrawidelock_approach *ap, int64_t now_ms,
 			       int32_t median_cm)
 {
@@ -762,6 +776,24 @@ FEED_NAME(struct ultrawidelock_approach *ap, int64_t now_ms, int32_t cm, FEED_CA
 	 * against them. Under KF_MIN_SAMPLES the velocity is not evidence of
 	 * anything; the deadline alone supervises until the filter converges. */
 	if (ap->pred_open) {
+		/*
+		 * Arrival first, before either abort test. A phone that stopped
+		 * or went quiet INSIDE the unlock radius did what the
+		 * prediction promised -- stopping is how arriving at a door
+		 * ends, and the shadow of the door is where ranging goes
+		 * quiet. Both abort triggers fire on exactly that moment
+		 * (measured 2026-08-21: predict at 23:53:36.4, velocity
+		 * collapse at the board, bolt shut 0.5 s after it opened), so
+		 * the conversion to presence must not have to outrace them.
+		 * From here the presence machinery owns the open bolt, with
+		 * the same silence and departure tiers a threshold unlock
+		 * gets.
+		 */
+		if (pred_arrived(ap, now_ms)) {
+			ap->pred_open = false;
+			ap->pred_dwell = 0;
+			return ULTRAWIDELOCK_APPROACH_HOLD;
+		}
 		if (now_ms >= ap->pred_deadline_ms) {
 			return pred_abort(ap);
 		}
@@ -847,6 +879,13 @@ enum ultrawidelock_approach_action ultrawidelock_approach_tick(struct ultrawidel
 	 * measurement-free filter would happily "arrive" on its own). Only an
 	 * overdue predictive open acts here. */
 	if (ap->pred_open && now_ms >= ap->pred_deadline_ms) {
+		/* Same arrival-first rule as the feed path: quiet INSIDE the
+		 * unlock radius is a phone standing at its own open door. */
+		if (pred_arrived(ap, now_ms)) {
+			ap->pred_open = false;
+			ap->pred_dwell = 0;
+			return ULTRAWIDELOCK_APPROACH_HOLD;
+		}
 		return pred_abort(ap);
 	}
 

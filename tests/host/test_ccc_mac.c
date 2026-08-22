@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <string.h>
 
+#include "ccc_kdf.h"
 #include "ccc_mac.h"
 #include "test.h"
 
@@ -184,8 +185,63 @@ static void ds_twr(void)
 	struct ds_twr out;
 	T_EQ("resp.ok", ccc_responder_ds_twr(&fd, 0u, 0x00010000u, 0x00028000u, &out), 0);
 	T_EQ("resp.round1", out.t_round1, fd.responders[0].timestamp);
-	T_EQ("resp.oob", ccc_responder_ds_twr(&fd, 5u, 0u, 0u, &out), -EINVAL);
+	/* Legal responder that this frame does not carry is ENOENT; only a value
+	 * outside the protocol range is EINVAL. The old code conflated the two by
+	 * bounding against num_responders, which rejected the one case that matters:
+	 * a record tagged 1 arriving in a frame carrying a single record. */
+	T_EQ("resp.absent", ccc_responder_ds_twr(&fd, 5u, 0u, 0u, &out), -ENOENT);
+	T_EQ("resp.oob", ccc_responder_ds_twr(&fd, CCC_MAX_RESPONDERS, 0u, 0u, &out), -EINVAL);
 	T_EQ("resp.null", ccc_responder_ds_twr(NULL, 0u, 0u, 0u, &out), -EINVAL);
+
+	/* A lone record TAGGED 1: what a satellite receives when the initiator
+	 * validated it and not the lock. Position indexing either rejected this or
+	 * silently read it as responder 0's timestamps. */
+	fd.responders[0].responder_index = 1u;
+	fd.responders[0].timestamp = 0x00031000u;
+	T_EQ("resp.tag1", ccc_responder_ds_twr(&fd, 1u, 0x00010000u, 0x00028000u, &out), 0);
+	T_EQ("resp.tag1.ts", out.t_round1, 0x00031000u);
+	T_EQ("resp.tag1.no0", ccc_responder_ds_twr(&fd, 0u, 0u, 0u, &out), -ENOENT);
+
+	/* Records in reverse order: select by tag, never by slot. */
+	fd.num_responders = 2u;
+	fd.responders[0].responder_index = 1u;
+	fd.responders[0].timestamp = 0x00031000u;
+	fd.responders[1].responder_index = 0u;
+	fd.responders[1].timestamp = 0x00030000u;
+	T_EQ("resp.order0", ccc_responder_ds_twr(&fd, 0u, 0u, 0u, &out), 0);
+	T_EQ("resp.order0.ts", out.t_round1, 0x00030000u);
+	T_EQ("resp.order1", ccc_responder_ds_twr(&fd, 1u, 0u, 0u, &out), 0);
+	T_EQ("resp.order1.ts", out.t_round1, 0x00031000u);
+
+	/* Duplicate tags are not trustworthy, so fall back to position. */
+	fd.responders[0].responder_index = 0u;
+	fd.responders[1].responder_index = 0u;
+	fd.responders[0].timestamp = 0x00032000u;
+	T_EQ("resp.dup", ccc_responder_ds_twr(&fd, 0u, 0u, 0u, &out), 0);
+	T_EQ("resp.dup.ts", out.t_round1, 0x00032000u);
+}
+
+/**
+ * The one-byte defect stage B was built on: a two-record Final_Data is 65 bytes
+ * on air, the SP0 stash was 64, and the oversize path discarded it silently. The
+ * host suite could not see it because its fixture hardcoded one responder AND
+ * omitted the two FCS bytes the driver counts in datalength. Pin the wire size.
+ */
+static void final_data_two_record_wire_size(void)
+{
+	struct ccc_final_data fd;
+	uint8_t plain[128];
+	size_t pl = 0;
+
+	memset(&fd, 0, sizeof(fd));
+	fd.num_responders = 2u;
+	fd.responders[0].responder_index = 0u;
+	fd.responders[1].responder_index = 1u;
+	T_EQ("fd2.pack", ccc_final_data_pack(&fd, plain, sizeof(plain), &pl), 0);
+	/* MHR + payload + MIC + FCS, the number the RX callback actually reports. */
+	T_EQ("fd2.onair", (int)(CCC_MHR_LEN + pl + CCC_SP0_MIC_LEN + 2u), 65);
+	/* And one record is the 58 observed on air, which is what proved FCS counts. */
+	T_EQ("fd2.hdr", (int)(CCC_FINAL_DATA_HDR_LEN + 2u * CCC_RESPONDER_LEN), (int)pl);
 }
 
 static void ursk_lifetime(void)
@@ -215,5 +271,6 @@ void test_ccc_mac(void)
 	final_data_codec();
 	schedule();
 	ds_twr();
+	final_data_two_record_wire_size();
 	ursk_lifetime();
 }

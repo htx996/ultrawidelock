@@ -1,24 +1,44 @@
 /* SPDX-License-Identifier: ISC */
 
 /**
- * @file main.c — nRF52840 BLE RSSI witness for inside/outside/threshold roles.
+ * @file main.c — nRF52840 BLE witness: hears the room, tells the lock, decides
+ *       nothing.
  *
- * Scans BLE advertisements during a short observation window, aggregates RSSI
- * for packets matching an ephemeral filter, and emits compact ASCII summaries
- * on UART. Does not store stable phone identifiers. Cannot command an unlock.
+ * ONE IMAGE for every mounting position. The old firmware baked the role in at
+ * build time (WITNESS_ROLE=inside|outside|threshold) and needed a `LEARN` pass
+ * and an `ADDR` push from a host on every session. All three are gone:
  *
- * UART commands (one line each, USB CDC):
- *   LEARN          — 5s lock onto loudest adv fingerprint; prints LEARN ok filt=XXXX
- *   FILT XXXX      — use that 16-bit fingerprint (hex); FILT 0 = accept all
- *   ADDR AA:BB:..  — only accept ads from that AdvA; ADDR 0 = clear
- *   HELP
+ *   - role, keys and the Thread dataset are provisioned once and persist
+ *   - nothing is learned, because nothing is filtered: the witness reports the
+ *     loudest advertisers it heard and the LOCK works out which is the phone
+ *   - reports ride Thread, so no probe, no USB host, no per-session anything
  *
- * LED: solid green = app running; blink ~2 Hz = ADDR filter set.
- * On PCA10059 dongle, drives LD2 (led0) and RGB green (led1_green) — RGB is the
- * visible center LED; LD2 alone is easy to miss by the USB plug.
+ * WHY THE FILTER IS GONE, and it is the load-bearing change. The lock cannot
+ * tell a witness which advertiser to watch, because the lock does not know: it
+ * holds the credential connection's InitA, generated for the initiating role,
+ * while what this firmware hears comes from advertising sets with their own
+ * addresses and rotation timers. Matching those two would fail in the ordinary
+ * case. So the lock correlates advertiser RSSI against its own authenticated
+ * UWB range instead (ultrawidelock_witness_pick.h), and this firmware's job is
+ * to report honestly and rank sensibly.
  *
- * Build:
- *   make witness-build WITNESS_ROLE=outside WITNESS_BOARD=nrf52840dongle/nrf52840
+ * WHAT LEAVES THIS BOARD. Never an address. Each advertiser is labelled
+ * trunc24(CMAC(group_key, addr)) under a key shared by the WITNESSES and not
+ * held by the lock, so the same phone carries the same label at both witnesses
+ * -- which is what lets inside be compared against outside -- while the label
+ * is opaque to the lock and to anyone listening.
+ *
+ * AUTHORITY: none. Reports are sealed for integrity and freshness, not because
+ * this board is trusted. Every rule is enforced at the lock; the worst a
+ * compromised witness achieves is a door that will not open passively.
+ *
+ * Provisioning (once, over USB CDC, before the dongle goes on the wall):
+ *   PROV <role> <link-key-hex32> <group-key-hex32> <dataset-hex>
+ *   SHOW | WIPE | HELP
+ * Steady state needs no host and no commands.
+ *
+ * LED: fast blink = unprovisioned; slow blink = provisioned, Thread not
+ * attached; solid = attached and reporting.
  */
 
 #include <zephyr/bluetooth/bluetooth.h>
@@ -28,472 +48,616 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/printk.h>
+
+#if IS_ENABLED(CONFIG_WITNESS_BOOT_TRACE)
+void witness_boot_trace_main(void); /* src/boot_trace.c, bench only */
+void witness_boot_trace_phase(unsigned int n); /* src/boot_trace.c, bench only */
+#define TRACE_PHASE(n) witness_boot_trace_phase(n)
+#else
+#define TRACE_PHASE(n) ((void)0)
+#endif
+
+#include <openthread/dataset.h>
+#include <openthread/instance.h>
+#include <openthread/link.h>
+#include <openthread/message.h>
+#include <openthread/thread.h>
+#include <openthread/udp.h>
+#include <zephyr/net/openthread.h>
+
+#include <psa/crypto.h>
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "ultrawidelock_witness_core.h"
+#include "ultrawidelock_witness_msg.h"
+
 LOG_MODULE_REGISTER(witness, LOG_LEVEL_INF);
 
-#ifndef CONFIG_WITNESS_ROLE_OUTSIDE
-#define CONFIG_WITNESS_ROLE_OUTSIDE 0
-#endif
-#ifndef CONFIG_WITNESS_ROLE_THRESHOLD
-#define CONFIG_WITNESS_ROLE_THRESHOLD 0
-#endif
+#define WINDOW_MS      CONFIG_WITNESS_WINDOW_MS
+#define WITNESS_PORT   CONFIG_WITNESS_PORT
+#define KEY_LEN        16u
+#define CCM_TAG_LEN    8u
+#define CCM_NONCE_LEN  13u
+#define DATASET_MAX    254u
+#define CMD_MAX        640u
+#define MIN_PKTS       2u
 
-#if defined(CONFIG_WITNESS_ROLE_THRESHOLD) && CONFIG_WITNESS_ROLE_THRESHOLD
-static const char *const k_role_name = "threshold";
-#elif defined(CONFIG_WITNESS_ROLE_OUTSIDE) && CONFIG_WITNESS_ROLE_OUTSIDE
-static const char *const k_role_name = "outside";
-#else
-static const char *const k_role_name = "inside";
-#endif
+/* Persisted once at provisioning; nothing here identifies a phone. */
+static struct {
+	uint8_t role; /* enum ultrawidelock_witness_role */
+	uint8_t link_key[KEY_LEN];
+	uint8_t group_key[KEY_LEN];
+	uint8_t dataset[DATASET_MAX];
+	uint8_t dataset_len;
+	bool have_role;
+	bool have_link;
+	bool have_group;
+} s_prov;
 
-#define WITNESS_WINDOW_MS     2000
-#define WITNESS_MAX_SAMPLES   64
-#define WITNESS_REPORT_MAGIC  "WR1"
-#define WITNESS_LEARN_MS      5000
-#define WITNESS_LEARN_SLOTS   24
-#define WITNESS_CMD_MAX       64
+static struct ultrawidelock_witness_core s_core;
+static struct k_mutex s_core_lock;
+static otUdpSocket s_sock;
+static bool s_sock_open;
+static uint32_t s_boot_id;
+static uint32_t s_ctr;
+static uint64_t s_nonce; /* newest challenge heard from the lock */
+static uint32_t s_hint;  /* label the lock asked to always include; 0 = none */
+static bool s_attached;
 
-struct witness_window {
-	uint32_t obs_session_id;
-	uint16_t filter_hash; /* truncated adv fingerprint; not a stable ID */
-	int64_t start_ms;
-	int16_t rssi[WITNESS_MAX_SAMPLES];
-	uint8_t n;
-	bool active;
-};
+static struct gpio_dt_spec s_leds[2];
+static uint8_t s_led_n;
 
-struct learn_slot {
-	uint16_t fp;
-	uint16_t count;
-	int32_t rssi_sum;
-	int16_t rssi_peak;
-	bool used;
-};
-
-static struct witness_window g_win;
-static K_MUTEX_DEFINE(g_lock);
-
-/* Active session filter; 0 = accept all (legacy ambient mode). */
-static uint16_t g_filt;
-static bool g_learning;
-static int64_t g_learn_deadline_ms;
-static struct learn_slot g_learn[WITNESS_LEARN_SLOTS];
-
-/* Optional AdvA filter from credential peer (Pi bridge pushes ADDR …). */
-static bool g_addr_set;
-static uint8_t g_addr[6]; /* MSB-first as printed AA:BB:… */
-
-/* Status greens: LD2 (led0) and, on the dongle, RGB green (led1_green). */
-static struct gpio_dt_spec g_leds[2];
-static uint8_t g_led_n;
-
-static const char *role_name(void)
+static bool provisioned(void)
 {
-	return k_role_name;
+	return s_prov.have_role && s_prov.have_link && s_prov.have_group &&
+	       s_prov.dataset_len > 0u;
 }
 
-static void led_set_all(int on)
-{
-	for (uint8_t i = 0; i < g_led_n; i++) {
-		(void)gpio_pin_set_dt(&g_leds[i], on ? 1 : 0);
-	}
-}
+/* ---- LEDs ------------------------------------------------------------- */
 
-static void led_try_add(const struct gpio_dt_spec *led, const char *name)
+static void led_try_add(const struct gpio_dt_spec *led)
 {
-	if (g_led_n >= ARRAY_SIZE(g_leds)) {
-		return;
-	}
-	if (!gpio_is_ready_dt(led)) {
-		LOG_WRN("%s not ready", name);
+	if (s_led_n >= ARRAY_SIZE(s_leds) || !gpio_is_ready_dt(led)) {
 		return;
 	}
 	if (gpio_pin_configure_dt(led, GPIO_OUTPUT_ACTIVE) != 0) {
-		LOG_WRN("%s configure failed", name);
 		return;
 	}
-	g_leds[g_led_n++] = *led;
+	s_leds[s_led_n++] = *led;
 }
 
 static void led_init(void)
 {
-	g_led_n = 0;
 #if DT_NODE_HAS_STATUS(DT_ALIAS(led0), okay)
 	{
-		static const struct gpio_dt_spec led =
-			GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-		led_try_add(&led, "led0");
+		static const struct gpio_dt_spec l = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+
+		led_try_add(&l);
 	}
 #endif
 #if DT_NODE_HAS_STATUS(DT_ALIAS(led1_green), okay)
 	{
-		static const struct gpio_dt_spec led =
+		static const struct gpio_dt_spec l =
 			GPIO_DT_SPEC_GET(DT_ALIAS(led1_green), gpios);
-		led_try_add(&led, "led1_green");
+
+		led_try_add(&l);
 	}
 #elif DT_NODE_HAS_STATUS(DT_ALIAS(led2), okay)
 	{
-		static const struct gpio_dt_spec led =
-			GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
-		led_try_add(&led, "led2");
+		static const struct gpio_dt_spec l = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
+
+		led_try_add(&l);
 	}
 #endif
-	/* Solid on = firmware running / USB path alive. */
-	led_set_all(1);
-	printk("led status pins=%u\n", (unsigned)g_led_n);
 }
 
+static void led_set(int on)
+{
+	for (uint8_t i = 0; i < s_led_n; i++) {
+		(void)gpio_pin_set_dt(&s_leds[i], on);
+	}
+}
+
+/* Three states, distinguishable across a room: the installer has no console
+ * once the dongle is on the wall, so the LED is the only diagnostic. */
 static void led_tick(void)
 {
-	static int64_t last_ms;
-	static bool on = true;
-	int64_t now;
+	static int64_t last;
+	static bool on;
+	int64_t period;
+	int64_t now = k_uptime_get();
 
-	if (g_led_n == 0) {
+	if (s_led_n == 0u) {
 		return;
 	}
-	if (!g_addr_set) {
+	if (s_attached) {
 		if (!on) {
 			on = true;
-			led_set_all(1);
+			led_set(1);
 		}
 		return;
 	}
-	now = k_uptime_get();
-	if (now - last_ms < 250) {
+	period = provisioned() ? 700 : 150;
+	if ((now - last) < period) {
 		return;
 	}
-	last_ms = now;
+	last = now;
 	on = !on;
-	led_set_all(on ? 1 : 0);
+	led_set(on ? 1 : 0);
 }
 
-static void window_reset(uint32_t obs_id, uint16_t filter_hash)
+/* ---- crypto ----------------------------------------------------------- */
+
+/*
+ * The label. CMAC rather than a plain hash because the point is that only a
+ * holder of the group key can compute it: a truncated unkeyed hash of an
+ * address is trivially reversed by anyone who can enumerate addresses, and
+ * addresses are what this whole design refuses to disclose.
+ */
+static bool label_of(const bt_addr_le_t *addr, uint32_t *out)
 {
-	k_mutex_lock(&g_lock, K_FOREVER);
-	memset(&g_win, 0, sizeof(g_win));
-	g_win.obs_session_id = obs_id;
-	g_win.filter_hash = filter_hash;
-	g_win.start_ms = k_uptime_get();
-	g_win.active = true;
-	k_mutex_unlock(&g_lock);
-	LOG_INF("window start obs=%u filter=%04x role=%s", obs_id, filter_hash, role_name());
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t key = PSA_KEY_ID_NULL;
+	uint8_t mac[16];
+	uint8_t in[7];
+	size_t mac_len = 0;
+	psa_status_t st;
+
+	if (addr == NULL || out == NULL) {
+		return false;
+	}
+	in[0] = addr->type;
+	memcpy(&in[1], addr->a.val, 6);
+
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
+	psa_set_key_algorithm(&attr, PSA_ALG_CMAC);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, KEY_LEN * 8u);
+	if (psa_import_key(&attr, s_prov.group_key, KEY_LEN, &key) != PSA_SUCCESS) {
+		return false;
+	}
+	st = psa_mac_compute(key, PSA_ALG_CMAC, in, sizeof(in), mac, sizeof(mac), &mac_len);
+	(void)psa_destroy_key(key);
+	if (st != PSA_SUCCESS || mac_len < 3u) {
+		return false;
+	}
+	*out = ((uint32_t)mac[0] << 16) | ((uint32_t)mac[1] << 8) | (uint32_t)mac[2];
+	return true;
 }
 
-static uint16_t adv_fingerprint(const uint8_t *data, uint8_t len)
+/* Wire layout is nonce || ciphertext || tag; the lock reads the nonce off the
+ * front. It is not secret -- it is a counter and a boot id -- and it must be
+ * on the wire because the lock cannot reconstruct a counter it has not seen. */
+static size_t seal(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t cap)
 {
-	uint16_t h = 0xA5A5u;
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t key = PSA_KEY_ID_NULL;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN);
+	size_t ct_len = 0;
+	psa_status_t st;
 
-	if (data == NULL) {
+	if (cap < CCM_NONCE_LEN + plain_len + CCM_TAG_LEN) {
 		return 0;
 	}
-	for (uint8_t i = 0; i < len; i++) {
-		h = (uint16_t)((h * 33u) ^ data[i]);
+	memset(out, 0, CCM_NONCE_LEN);
+	out[0] = s_prov.role;
+	out[1] = (uint8_t)(s_boot_id >> 24);
+	out[2] = (uint8_t)(s_boot_id >> 16);
+	out[3] = (uint8_t)(s_boot_id >> 8);
+	out[4] = (uint8_t)s_boot_id;
+	out[5] = (uint8_t)(s_ctr >> 24);
+	out[6] = (uint8_t)(s_ctr >> 16);
+	out[7] = (uint8_t)(s_ctr >> 8);
+	out[8] = (uint8_t)s_ctr;
+
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+	psa_set_key_algorithm(&attr, alg);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, KEY_LEN * 8u);
+	if (psa_import_key(&attr, s_prov.link_key, KEY_LEN, &key) != PSA_SUCCESS) {
+		return 0;
 	}
-	return h;
+	st = psa_aead_encrypt(key, alg, out, CCM_NONCE_LEN, NULL, 0, plain, plain_len,
+			      out + CCM_NONCE_LEN, cap - CCM_NONCE_LEN, &ct_len);
+	(void)psa_destroy_key(key);
+	if (st != PSA_SUCCESS) {
+		return 0;
+	}
+	return CCM_NONCE_LEN + ct_len;
 }
 
-static void learn_reset(void)
+/* ---- Thread ----------------------------------------------------------- */
+
+static void report_send(const uint8_t *buf, size_t len)
 {
-	memset(g_learn, 0, sizeof(g_learn));
-	g_learning = true;
-	g_learn_deadline_ms = k_uptime_get() + WITNESS_LEARN_MS;
-	printk("LEARN start ms=%d role=%s\n", WITNESS_LEARN_MS, role_name());
-}
+	otInstance *ot = openthread_get_default_instance();
+	otMessageInfo info;
+	otMessage *msg;
 
-static void learn_note(uint16_t fp, int8_t rssi)
-{
-	int free_i = -1;
-
-	for (int i = 0; i < WITNESS_LEARN_SLOTS; i++) {
-		if (g_learn[i].used && g_learn[i].fp == fp) {
-			if (g_learn[i].count < 0xFFFFu) {
-				g_learn[i].count++;
-			}
-			g_learn[i].rssi_sum += rssi;
-			if (rssi > g_learn[i].rssi_peak) {
-				g_learn[i].rssi_peak = rssi;
-			}
-			return;
-		}
-		if (!g_learn[i].used && free_i < 0) {
-			free_i = i;
-		}
-	}
-	if (free_i >= 0) {
-		g_learn[free_i].used = true;
-		g_learn[free_i].fp = fp;
-		g_learn[free_i].count = 1;
-		g_learn[free_i].rssi_sum = rssi;
-		g_learn[free_i].rssi_peak = rssi;
-	}
-}
-
-static void learn_finish(void)
-{
-	int best = -1;
-	int16_t best_peak = -128;
-	uint16_t best_count = 0;
-
-	g_learning = false;
-	for (int i = 0; i < WITNESS_LEARN_SLOTS; i++) {
-		if (!g_learn[i].used || g_learn[i].count < 3) {
-			continue;
-		}
-		if (g_learn[i].rssi_peak > best_peak ||
-		    (g_learn[i].rssi_peak == best_peak && g_learn[i].count > best_count)) {
-			best = i;
-			best_peak = g_learn[i].rssi_peak;
-			best_count = g_learn[i].count;
-		}
-	}
-	if (best < 0) {
-		printk("LEARN fail role=%s (no fingerprint)\n", role_name());
+	if (!s_sock_open || ot == NULL) {
 		return;
 	}
-	g_filt = g_learn[best].fp;
-	printk("LEARN ok filt=%04x peak=%d count=%u mean=%d role=%s\n", g_filt, best_peak,
-	       (unsigned)g_learn[best].count,
-	       (int)(g_learn[best].rssi_sum / (int32_t)g_learn[best].count), role_name());
+	msg = otUdpNewMessage(ot, NULL);
+	if (msg == NULL) {
+		return;
+	}
+	if (otMessageAppend(msg, buf, (uint16_t)len) != OT_ERROR_NONE) {
+		otMessageFree(msg);
+		return;
+	}
+	memset(&info, 0, sizeof(info));
+	/* Mesh-local all-nodes. The witness is not told the lock's address at
+	 * provisioning, so it does not have to be re-provisioned when the lock
+	 * is replaced or its address changes; only a holder of the link key can
+	 * produce a report, so the broadcast costs nothing but a frame. */
+	info.mPeerAddr.mFields.m8[0] = 0xFFu;
+	info.mPeerAddr.mFields.m8[1] = 0x03u;
+	info.mPeerAddr.mFields.m8[15] = 0x01u;
+	info.mPeerPort = WITNESS_PORT;
+	if (otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
+		otMessageFree(msg); /* takes ownership on success only */
+	}
 }
 
-static void summarize_and_emit(void)
+/* The challenge. Unauthenticated by design: it is a freshness beacon, not a
+ * command, and echoing a wrong one costs a clear rather than granting one. */
+static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 {
-	int32_t sum = 0;
-	int16_t min_v = 127;
-	int16_t max_v = -128;
-	uint8_t n;
-	uint32_t obs;
-	uint16_t filt;
-	int16_t mean = 0;
-	int32_t var = 0;
+	uint8_t body[12];
+	uint16_t len;
 
-	k_mutex_lock(&g_lock, K_FOREVER);
-	n = g_win.n;
-	obs = g_win.obs_session_id;
-	filt = g_win.filter_hash;
-	for (uint8_t i = 0; i < n; i++) {
-		int16_t v = g_win.rssi[i];
+	ARG_UNUSED(ctx);
+	ARG_UNUSED(info);
 
-		sum += v;
-		if (v < min_v) {
-			min_v = v;
-		}
-		if (v > max_v) {
-			max_v = v;
-		}
+	/* 9 B is the bare challenge; 12 B carries the lock's picked label as a
+	 * trailer, to be kept in every report while the pick lasts (see
+	 * ultrawidelock_witness_core_include). Either length is a valid
+	 * challenge, and a bare one clears any standing hint -- the lock
+	 * sends the trailer on every challenge for as long as it has a pick,
+	 * so a missing trailer means the pick is gone, not lost in the air. */
+	len = otMessageGetLength(msg) - otMessageGetOffset(msg);
+	if (len != 9u && len != sizeof(body)) {
+		return;
 	}
-	if (n > 0) {
-		mean = (int16_t)(sum / n);
-		for (uint8_t i = 0; i < n; i++) {
-			int32_t d = (int32_t)g_win.rssi[i] - mean;
-
-			var += d * d;
-		}
-		if (n > 1) {
-			var /= (n - 1);
-		}
+	if (otMessageRead(msg, otMessageGetOffset(msg), body, len) != len) {
+		return;
 	}
-	g_win.active = false;
-	k_mutex_unlock(&g_lock);
+	if (body[0] != ULTRAWIDELOCK_WITNESS_MSG_VER) {
+		return;
+	}
+	s_nonce = 0u;
+	for (int i = 0; i < 8; i++) {
+		s_nonce = (s_nonce << 8) | body[1 + i];
+	}
+	s_hint = (len == sizeof(body))
+			 ? (((uint32_t)body[9] << 16) | ((uint32_t)body[10] << 8) | body[11])
+			 : 0u;
+}
 
-	if (g_addr_set) {
-		printk("%s role=%s obs=%u filt=%04x addr=%02X%02X%02X%02X%02X%02X "
-		       "n=%u mean=%d min=%d max=%d var=%d\n",
-		       WITNESS_REPORT_MAGIC, role_name(), obs, filt, g_addr[0], g_addr[1],
-		       g_addr[2], g_addr[3], g_addr[4], g_addr[5], n, mean, min_v, max_v,
-		       (int)var);
+static void ot_state_changed(otChangedFlags flags, void *context)
+{
+	otInstance *ot = (otInstance *)context;
+	otDeviceRole role;
+
+	if ((flags & OT_CHANGED_THREAD_ROLE) == 0u) {
+		return;
+	}
+	role = otThreadGetDeviceRole(ot);
+	s_attached = (role == OT_DEVICE_ROLE_CHILD || role == OT_DEVICE_ROLE_ROUTER ||
+		      role == OT_DEVICE_ROLE_LEADER);
+	LOG_INF("thread role=%d attached=%d", (int)role, (int)s_attached);
+}
+
+static void thread_start(void)
+{
+	otInstance *ot = openthread_get_default_instance();
+	otOperationalDatasetTlvs tlvs;
+	otSockAddr bind_addr;
+
+	if (ot == NULL || s_prov.dataset_len == 0u) {
+		return;
+	}
+	memset(&tlvs, 0, sizeof(tlvs));
+	tlvs.mLength = s_prov.dataset_len;
+	memcpy(tlvs.mTlvs, s_prov.dataset, s_prov.dataset_len);
+
+	openthread_mutex_lock();
+	if (otDatasetSetActiveTlvs(ot, &tlvs) != OT_ERROR_NONE) {
+		openthread_mutex_unlock();
+		LOG_ERR("dataset rejected; not joining");
+		return;
+	}
+	(void)otSetStateChangedCallback(ot, ot_state_changed, ot);
+	(void)otIp6SetEnabled(ot, true);
+	(void)otThreadSetEnabled(ot, true);
+
+	memset(&bind_addr, 0, sizeof(bind_addr));
+	bind_addr.mPort = WITNESS_PORT;
+	if (otUdpOpen(ot, &s_sock, udp_rx, NULL) == OT_ERROR_NONE &&
+	    otUdpBind(ot, &s_sock, &bind_addr, OT_NETIF_THREAD) == OT_ERROR_NONE) {
+		s_sock_open = true;
 	} else {
-		printk("%s role=%s obs=%u filt=%04x n=%u mean=%d min=%d max=%d var=%d\n",
-		       WITNESS_REPORT_MAGIC, role_name(), obs, filt, n, mean, min_v, max_v,
-		       (int)var);
+		LOG_ERR("could not bind UDP %u", (unsigned)WITNESS_PORT);
 	}
+	openthread_mutex_unlock();
 }
 
-static bool addr_matches(const bt_addr_le_t *addr)
-{
-	uint8_t msb[6];
+/* ---- scanning and windows --------------------------------------------- */
 
-	if (!g_addr_set || addr == NULL) {
-		return !g_addr_set;
-	}
-	/* Zephyr stores AdvA LSB-first in a.val[]; g_addr is MSB-first. */
-	for (int i = 0; i < 6; i++) {
-		msb[i] = addr->a.val[5 - i];
-	}
-	return memcmp(msb, g_addr, 6) == 0;
-}
-
+#if IS_ENABLED(CONFIG_BT)
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		    struct net_buf_simple *ad)
 {
-	uint16_t fp;
+	uint32_t label;
 
 	ARG_UNUSED(type);
+	ARG_UNUSED(ad);
 
-	if (ad == NULL) {
+	/* The payload is deliberately not examined. The old firmware
+	 * fingerprinted it, which is why it needed a LEARN pass and why an
+	 * Apple payload rotating mid-window looked like a new device. */
+	if (!provisioned() || !label_of(addr, &label)) {
 		return;
 	}
-	fp = adv_fingerprint(ad->data, ad->len);
+	k_mutex_lock(&s_core_lock, K_FOREVER);
+	ultrawidelock_witness_core_note(&s_core, label, rssi);
+	k_mutex_unlock(&s_core_lock);
+}
+#endif /* CONFIG_BT */
 
-	k_mutex_lock(&g_lock, K_FOREVER);
-	if (g_learning) {
-		learn_note(fp, rssi);
-		if (k_uptime_get() >= g_learn_deadline_ms) {
-			k_mutex_unlock(&g_lock);
-			learn_finish();
-			return;
-		}
-		k_mutex_unlock(&g_lock);
+static void window_close_and_send(void)
+{
+	struct ultrawidelock_witness_msg wm;
+	uint8_t plain[ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN];
+	uint8_t sealed[CCM_NONCE_LEN + ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN + CCM_TAG_LEN];
+	size_t plain_len, sealed_len;
+	uint8_t n;
+
+	memset(&wm, 0, sizeof(wm));
+	wm.ver = ULTRAWIDELOCK_WITNESS_MSG_VER;
+	wm.role = s_prov.role;
+	wm.boot_id = s_boot_id;
+	wm.ctr = ++s_ctr;
+	wm.echo_nonce = s_nonce;
+	wm.window_ms = WINDOW_MS;
+
+	k_mutex_lock(&s_core_lock, K_FOREVER);
+	n = ultrawidelock_witness_core_summarize(&s_core, &wm, MIN_PKTS);
+	if (s_hint != 0u && ultrawidelock_witness_core_include(&s_core, &wm, s_hint)) {
+		n = wm.n_tuples;
+	}
+	ultrawidelock_witness_core_open(&s_core);
+	k_mutex_unlock(&s_core_lock);
+
+	/*
+	 * An empty window is still sent. Silence is evidence the lock needs:
+	 * it is how a witness that is alive but hearing nothing is told apart
+	 * from one that has died, and those two must not look the same to a
+	 * gate that fails closed on staleness.
+	 */
+	plain_len = ultrawidelock_witness_msg_encode(&wm, plain, sizeof(plain));
+	if (plain_len == 0u) {
 		return;
 	}
-	if (g_win.active) {
-		bool fp_ok = (g_win.filter_hash == 0 || g_win.filter_hash == fp);
-		bool addr_ok = addr_matches(addr);
-
-		if (fp_ok && addr_ok) {
-			if (g_win.n < WITNESS_MAX_SAMPLES) {
-				g_win.rssi[g_win.n++] = rssi;
-			}
-		}
-		if ((k_uptime_get() - g_win.start_ms) >= WITNESS_WINDOW_MS) {
-			k_mutex_unlock(&g_lock);
-			summarize_and_emit();
-			return;
-		}
+	sealed_len = seal(plain, plain_len, sealed, sizeof(sealed));
+	if (sealed_len == 0u) {
+		LOG_ERR("report could not be sealed");
+		return;
 	}
-	k_mutex_unlock(&g_lock);
+	report_send(sealed, sealed_len);
+	LOG_DBG("report ctr=%u tuples=%u", (unsigned)wm.ctr, (unsigned)n);
 }
 
-static void trim_inplace(char *s)
-{
-	size_t n;
-	char *p = s;
+/* ---- settings and provisioning ---------------------------------------- */
 
-	while (*p && isspace((unsigned char)*p)) {
-		p++;
+static int wit_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	if (strcmp(name, "role") == 0 && len == 1u) {
+		if (read_cb(cb_arg, &s_prov.role, 1) == 1) {
+			s_prov.have_role = true;
+			return 0;
+		}
+		return -EINVAL;
 	}
-	if (p != s) {
-		memmove(s, p, strlen(p) + 1);
+	if (strcmp(name, "lk") == 0 && len == KEY_LEN) {
+		if (read_cb(cb_arg, s_prov.link_key, KEY_LEN) == (ssize_t)KEY_LEN) {
+			s_prov.have_link = true;
+			return 0;
+		}
+		return -EINVAL;
 	}
-	n = strlen(s);
-	while (n > 0 && isspace((unsigned char)s[n - 1])) {
-		s[--n] = '\0';
+	if (strcmp(name, "gk") == 0 && len == KEY_LEN) {
+		if (read_cb(cb_arg, s_prov.group_key, KEY_LEN) == (ssize_t)KEY_LEN) {
+			s_prov.have_group = true;
+			return 0;
+		}
+		return -EINVAL;
 	}
+	if (strcmp(name, "ds") == 0 && len <= DATASET_MAX) {
+		ssize_t got = read_cb(cb_arg, s_prov.dataset, DATASET_MAX);
+
+		if (got > 0) {
+			s_prov.dataset_len = (uint8_t)got;
+			return 0;
+		}
+		return -EINVAL;
+	}
+	return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(wit, "wit", NULL, wit_settings_set, NULL, NULL);
+
+static int unhex(const char *hex, uint8_t *out, size_t cap)
+{
+	size_t n = strlen(hex);
+	size_t bytes = n / 2u;
+
+	if ((n % 2u) != 0u || bytes == 0u || bytes > cap) {
+		return -1;
+	}
+	for (size_t i = 0; i < bytes; i++) {
+		char b[3] = {hex[2 * i], hex[2 * i + 1], '\0'};
+		char *end;
+		long v = strtol(b, &end, 16);
+
+		if (*end != '\0' || v < 0 || v > 255) {
+			return -1;
+		}
+		out[i] = (uint8_t)v;
+	}
+	return (int)bytes;
+}
+
+static uint8_t role_of(const char *s)
+{
+	if (strcmp(s, "inside") == 0) {
+		return ULTRAWIDELOCK_WITNESS_ROLE_INSIDE;
+	}
+	if (strcmp(s, "outside") == 0) {
+		return ULTRAWIDELOCK_WITNESS_ROLE_OUTSIDE;
+	}
+	if (strcmp(s, "threshold") == 0) {
+		return ULTRAWIDELOCK_WITNESS_ROLE_THRESHOLD;
+	}
+	return ULTRAWIDELOCK_WITNESS_ROLE_UNKNOWN;
+}
+
+static const char *role_name(uint8_t r)
+{
+	switch (r) {
+	case ULTRAWIDELOCK_WITNESS_ROLE_INSIDE:
+		return "inside";
+	case ULTRAWIDELOCK_WITNESS_ROLE_OUTSIDE:
+		return "outside";
+	case ULTRAWIDELOCK_WITNESS_ROLE_THRESHOLD:
+		return "threshold";
+	default:
+		return "unset";
+	}
+}
+
+static void cmd_prov(char *args)
+{
+	char *role_s = strtok(args, " \t");
+	char *lk_s = strtok(NULL, " \t");
+	char *gk_s = strtok(NULL, " \t");
+	char *ds_s = strtok(NULL, " \t");
+	uint8_t lk[KEY_LEN], gk[KEY_LEN], ds[DATASET_MAX];
+	uint8_t role;
+	int dsn;
+
+	if (role_s == NULL || lk_s == NULL || gk_s == NULL || ds_s == NULL) {
+		printk("PROV err=args\n");
+		return;
+	}
+	role = role_of(role_s);
+	if (role == ULTRAWIDELOCK_WITNESS_ROLE_UNKNOWN) {
+		printk("PROV err=role\n");
+		return;
+	}
+	if (unhex(lk_s, lk, KEY_LEN) != (int)KEY_LEN || unhex(gk_s, gk, KEY_LEN) != (int)KEY_LEN) {
+		printk("PROV err=key\n");
+		return;
+	}
+	dsn = unhex(ds_s, ds, DATASET_MAX);
+	if (dsn <= 0) {
+		printk("PROV err=dataset\n");
+		return;
+	}
+
+	if (settings_save_one("wit/role", &role, 1) != 0 ||
+	    settings_save_one("wit/lk", lk, KEY_LEN) != 0 ||
+	    settings_save_one("wit/gk", gk, KEY_LEN) != 0 ||
+	    settings_save_one("wit/ds", ds, (size_t)dsn) != 0) {
+		printk("PROV err=store\n");
+		return;
+	}
+	printk("PROV ok role=%s ds=%d reboot\n", role_name(role), dsn);
+}
+
+static void cmd_wipe(void)
+{
+	(void)settings_delete("wit/role");
+	(void)settings_delete("wit/lk");
+	(void)settings_delete("wit/gk");
+	(void)settings_delete("wit/ds");
+	printk("WIPE ok reboot\n");
 }
 
 static void handle_cmd(char *line)
 {
-	trim_inplace(line);
-	if (line[0] == '\0') {
+	while (*line && isspace((unsigned char)*line)) {
+		line++;
+	}
+	if (*line == '\0') {
 		return;
 	}
-	for (char *p = line; *p; p++) {
-		*p = (char)toupper((unsigned char)*p);
-	}
-
-	if (strcmp(line, "HELP") == 0) {
-		printk("cmds: LEARN | FILT <hex>|0 | ADDR <aa:bb:..>|0 | HELP  role=%s "
-		       "filt=%04x addr=%d\n",
-		       role_name(), g_filt, g_addr_set ? 1 : 0);
+	if (strncmp(line, "PROV", 4) == 0) {
+		cmd_prov(line + 4);
 		return;
 	}
-	if (strcmp(line, "LEARN") == 0) {
-		k_mutex_lock(&g_lock, K_FOREVER);
-		g_win.active = false;
-		learn_reset();
-		k_mutex_unlock(&g_lock);
+	if (strncmp(line, "WIPE", 4) == 0) {
+		cmd_wipe();
 		return;
 	}
-	if (strncmp(line, "FILT", 4) == 0) {
-		char *arg = line + 4;
-
-		while (*arg && isspace((unsigned char)*arg)) {
-			arg++;
-		}
-		if (*arg == '\0') {
-			printk("FILT need hex (got empty) filt=%04x\n", g_filt);
-			return;
-		}
-		g_filt = (uint16_t)strtoul(arg, NULL, 16);
-		printk("FILT ok filt=%04x role=%s\n", g_filt, role_name());
+	if (strncmp(line, "SHOW", 4) == 0) {
+		/* Deliberately prints no key material: a provisioning console
+		 * that echoes secrets turns one careless capture into a
+		 * permanent compromise of the witness link. */
+		printk("SHOW role=%s prov=%d ds=%u attached=%d ctr=%u\n",
+		       role_name(s_prov.role), provisioned() ? 1 : 0,
+		       (unsigned)s_prov.dataset_len, (int)s_attached, (unsigned)s_ctr);
 		return;
 	}
-	if (strncmp(line, "ADDR", 4) == 0) {
-		char *arg = line + 4;
-		unsigned int b[6];
-		int n;
-
-		while (*arg && isspace((unsigned char)*arg)) {
-			arg++;
-		}
-		if (*arg == '\0' || strcmp(arg, "0") == 0 || strcmp(arg, "CLEAR") == 0) {
-			g_addr_set = false;
-			memset(g_addr, 0, sizeof(g_addr));
-			printk("ADDR ok clear role=%s\n", role_name());
-			return;
-		}
-		n = sscanf(arg, "%02X:%02X:%02X:%02X:%02X:%02X", &b[0], &b[1], &b[2], &b[3],
-			   &b[4], &b[5]);
-		if (n != 6) {
-			n = sscanf(arg, "%02X%02X%02X%02X%02X%02X", &b[0], &b[1], &b[2], &b[3],
-				   &b[4], &b[5]);
-		}
-		if (n != 6) {
-			printk("ADDR need AA:BB:CC:DD:EE:FF role=%s\n", role_name());
-			return;
-		}
-		for (int i = 0; i < 6; i++) {
-			g_addr[i] = (uint8_t)b[i];
-		}
-		g_addr_set = true;
-		printk("ADDR ok %02X:%02X:%02X:%02X:%02X:%02X role=%s\n", g_addr[0], g_addr[1],
-		       g_addr[2], g_addr[3], g_addr[4], g_addr[5], role_name());
-		return;
-	}
-	printk("unknown cmd (HELP) role=%s\n", role_name());
+	printk("cmds: PROV <role> <lk-hex32> <gk-hex32> <ds-hex> | SHOW | WIPE | HELP\n");
 }
 
-static char g_cmd_line[WITNESS_CMD_MAX];
-static size_t g_cmd_len;
-static struct k_msgq g_uart_msgq;
-static char __aligned(4) g_uart_msgq_buf[WITNESS_CMD_MAX * 4];
+/*
+ * Console input over the UART IRQ into a message queue, rather than a blocking
+ * console read: provisioning is a once-ever event and the reporting cadence
+ * must not depend on whether a host is attached. Lines are assembled in the
+ * ISR and consumed by the main loop.
+ */
+static struct k_msgq s_uart_msgq;
+static char __aligned(4) s_uart_msgq_buf[CMD_MAX * 2];
 
 static void uart_rx_feed(unsigned char c)
 {
-	if (c == '\r') {
-		return;
-	}
-	if (c == '\n') {
-		if (g_cmd_len > 0) {
-			g_cmd_line[g_cmd_len] = '\0';
-			(void)k_msgq_put(&g_uart_msgq, g_cmd_line, K_NO_WAIT);
-			g_cmd_len = 0;
+	static char line[CMD_MAX];
+	static size_t n;
+
+	if (c == '\r' || c == '\n') {
+		line[n] = '\0';
+		if (n > 0u) {
+			(void)k_msgq_put(&s_uart_msgq, line, K_NO_WAIT);
 		}
+		n = 0u;
 		return;
 	}
-	if (g_cmd_len + 1 < sizeof(g_cmd_line)) {
-		g_cmd_line[g_cmd_len++] = (char)c;
+	if (n < sizeof(line) - 1u) {
+		line[n++] = (char)c;
 	} else {
-		g_cmd_len = 0;
+		/* Overlong line: drop it whole rather than acting on a
+		 * truncated dataset, which would provision a witness onto a
+		 * network it can never attach to. */
+		n = 0u;
 	}
 }
 
 static void uart_cb(const struct device *dev, void *user_data)
 {
-	uint8_t c;
+	unsigned char c;
 
 	ARG_UNUSED(user_data);
-	if (!uart_irq_update(dev)) {
-		return;
-	}
-	if (!uart_irq_rx_ready(dev)) {
+
+	if (!uart_irq_update(dev) || !uart_irq_rx_ready(dev)) {
 		return;
 	}
 	while (uart_fifo_read(dev, &c, 1) == 1) {
@@ -501,86 +665,118 @@ static void uart_cb(const struct device *dev, void *user_data)
 	}
 }
 
-static int uart_cmd_init(const struct device *uart)
+static void console_init_uart(const struct device *uart)
 {
 	if (uart == NULL || !device_is_ready(uart)) {
-		return -ENODEV;
+		return;
 	}
-	k_msgq_init(&g_uart_msgq, g_uart_msgq_buf, WITNESS_CMD_MAX,
-		    sizeof(g_uart_msgq_buf) / WITNESS_CMD_MAX);
-	/* CDC ACM only keeps accepting host OUT once IRQ RX is enabled. */
+	k_msgq_init(&s_uart_msgq, s_uart_msgq_buf, CMD_MAX,
+		    sizeof(s_uart_msgq_buf) / CMD_MAX);
 	uart_irq_callback_user_data_set(uart, uart_cb, NULL);
 	uart_irq_rx_enable(uart);
-	return 0;
 }
 
-static void poll_uart_cmds(const struct device *uart)
+static void console_poll(void)
 {
-	char line[WITNESS_CMD_MAX];
+	static char line[CMD_MAX];
 
-	ARG_UNUSED(uart);
-	while (k_msgq_get(&g_uart_msgq, line, K_NO_WAIT) == 0) {
+	while (k_msgq_get(&s_uart_msgq, line, K_NO_WAIT) == 0) {
 		handle_cmd(line);
 	}
 }
 
+/* ---- entry ------------------------------------------------------------ */
+
 int main(void)
 {
-	int err;
-	const struct device *uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-	struct bt_le_scan_param scan = {
+#if IS_ENABLED(CONFIG_BT)
+	static const struct bt_le_scan_param scan_param = {
 		.type = BT_LE_SCAN_TYPE_PASSIVE,
 		.options = BT_LE_SCAN_OPT_NONE,
 		.interval = BT_GAP_SCAN_FAST_INTERVAL,
 		.window = BT_GAP_SCAN_FAST_WINDOW,
 	};
+#endif
+	int64_t next_window;
 
-	LOG_INF("ble witness role=%s", role_name());
+#if IS_ENABLED(CONFIG_WITNESS_BOOT_TRACE)
+	/* Before anything else in main, and before led_init() takes the same
+	 * pins: the question this answers is whether main was reached at all. */
+	witness_boot_trace_main();
+	k_sleep(K_SECONDS(3)); /* long enough to read the pattern by eye */
+#endif
+	k_mutex_init(&s_core_lock);
 	led_init();
-	if (uart_cmd_init(uart) != 0) {
-		LOG_WRN("uart cmd init failed — ADDR/FILT over USB may not work");
+	console_init_uart(DEVICE_DT_GET(DT_CHOSEN(zephyr_console)));
+
+	if (psa_crypto_init() != PSA_SUCCESS) {
+		LOG_ERR("PSA init failed; this board cannot seal a report");
 	}
-	err = bt_enable(NULL);
-	if (err) {
-		LOG_ERR("bt_enable %d", err);
-		return err;
+	sys_rand_get(&s_boot_id, sizeof(s_boot_id));
+
+	(void)settings_subsys_init();
+	(void)settings_load();
+
+	printk("witness role=%s provisioned=%d\n", role_name(s_prov.role),
+	       provisioned() ? 1 : 0);
+	TRACE_PHASE(1);
+
+#if !IS_ENABLED(CONFIG_OPENTHREAD_SYS_INIT)
+	/* DIAGNOSTIC BUILD ONLY (overlay-otmain.conf). With OPENTHREAD_SYS_INIT
+	 * off, nothing has created the OpenThread instance and main() must do
+	 * it. That is the entire point: called from here the console already
+	 * exists, so a stall inside otSysInit is a printed line rather than a
+	 * dead board. The sleep is for the USB host, which needs a moment to
+	 * enumerate and open the port before anything printed can be seen. */
+	{
+		int ot_rc;
+
+		k_sleep(K_SECONDS(5));
+		printk("openthread_init: calling\n");
+		TRACE_PHASE(2);
+		ot_rc = openthread_init();
+		TRACE_PHASE(3);
+		printk("openthread_init: returned %d\n", ot_rc);
 	}
-	err = bt_le_scan_start(&scan, scan_cb);
-	if (err) {
-		LOG_ERR("scan_start %d", err);
-		return err;
+#endif
+
+#if IS_ENABLED(CONFIG_BT)
+	if (bt_enable(NULL) != 0) {
+		LOG_ERR("bluetooth would not start");
+	} else if (bt_le_scan_start(&scan_param, scan_cb) != 0) {
+		LOG_ERR("scan would not start");
+	}
+#else
+	/* DIAGNOSTIC BUILD ONLY (overlay-nobt.conf). A witness that does not
+	 * scan cannot witness anything; this exists to answer one question --
+	 * whether the boot survives without the BLE controller -- and the
+	 * answer is read off the LED, not off any report. */
+	LOG_WRN("built with CONFIG_BT=n: this image reports nothing");
+#endif
+	TRACE_PHASE(4);
+
+	if (provisioned()) {
+		thread_start();
+	} else {
+		/* No dataset, no keys: joining would scan a radio BLE is
+		 * sharing, forever, for a network it cannot authenticate to. */
+		LOG_WRN("not provisioned; scanning only, reporting nothing");
 	}
 
-	printk("witness ready role=%s filt=%04x (LEARN|FILT|ADDR|HELP)\n", role_name(), g_filt);
+	TRACE_PHASE(5);
+	ultrawidelock_witness_core_open(&s_core);
+	next_window = k_uptime_get() + WINDOW_MS;
 
-	for (;;) {
-		static uint32_t obs;
-		int64_t until;
+	while (1) {
+		int64_t now = k_uptime_get();
 
-		poll_uart_cmds(uart);
+		console_poll();
 		led_tick();
-		if (g_learning) {
-			k_sleep(K_MSEC(20));
-			continue;
+		if (provisioned() && now >= next_window) {
+			next_window = now + WINDOW_MS;
+			window_close_and_send();
 		}
-
-		obs++;
-		window_reset(obs, g_filt);
-		until = k_uptime_get() + WITNESS_WINDOW_MS + 200;
-		while (k_uptime_get() < until) {
-			poll_uart_cmds(uart);
-			led_tick();
-			k_sleep(K_MSEC(20));
-		}
-		if (g_win.active) {
-			summarize_and_emit();
-		}
-		until = k_uptime_get() + 800;
-		while (k_uptime_get() < until) {
-			poll_uart_cmds(uart);
-			led_tick();
-			k_sleep(K_MSEC(20));
-		}
+		k_sleep(K_MSEC(20));
 	}
 	return 0;
 }

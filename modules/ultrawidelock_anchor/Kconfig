@@ -45,6 +45,21 @@ config ULTRAWIDELOCK_SIDE_GATE
 	  commissioned BLE witnesses will refuse every passive unlock -- that
 	  is intentional fail-closed behaviour, not a regression.
 
+config ULTRAWIDELOCK_SIDE_OUTSIDE_MARGIN_DB
+	int "RSSI margin to call OUTSIDE, decibels"
+	default 6
+	range 1 20
+	depends on ULTRAWIDELOCK_SIDE_GATE
+	help
+	  How much louder the outside witness must hear the phone than the
+	  inside one before a window classifies as OUTSIDE (symmetrically,
+	  INSIDE). Below the margin the window is dead-band and cannot commit
+	  a side. 6 dB assumes the door itself sits between the witnesses; a
+	  bench with both dongles in open air on one plane rarely reaches it,
+	  so bench overlays lower this. Lowering it on a mounted door trades
+	  inside-safety for availability -- the margin is the whole defence
+	  against multipath reading an inside phone as outside.
+
 config ULTRAWIDELOCK_SIDE_PEER_EMIT
 	bool "Bench: log the credential peer address at L2CAP CoC open"
 	depends on ULTRAWIDELOCK_SIDE_GATE
@@ -80,6 +95,175 @@ config ULTRAWIDELOCK_SIDE_FEED_RTT
 	  link over UART or Matter exists, ULTRAWIDELOCK_SIDE_GATE without this option
 	  refuses every passive unlock, exactly as its own help warns.
 
+config ULTRAWIDELOCK_WITNESS_CODEC
+	bool "BLE witness wire format, window accumulator and phone picker"
+	default n
+	help
+	  The three platform-free pieces both ends of the witness link share:
+	  the WV2 report codec, the per-window accumulator that decides which
+	  advertisers a witness reports, and the trajectory correlator that
+	  picks which of them is the phone.
+
+	  Selected by ULTRAWIDELOCK_INSIDE_LATCH on the lock, and set directly
+	  by the witness firmware, which links the same code without wanting
+	  the lock's side gate. Two implementations of one wire format agree
+	  until they do not, so there is only one.
+
+config ULTRAWIDELOCK_INSIDE_LATCH
+	bool "Inside veto: refuse passive unlock for a phone believed indoors"
+	depends on ULTRAWIDELOCK_SIDE_GATE
+	select ULTRAWIDELOCK_WITNESS_CODEC
+	default n
+	help
+	  Adds ultrawidelock_latch.h on top of the side gate. The side gate asks
+	  "which side is the phone on right now" every window and needs a
+	  confident OUTSIDE to release a grant. MEASURED 2026-08-11, that
+	  question is unanswerable where it matters: 49% of windows landed in
+	  the dead band at the door plane, which is exactly where the approach
+	  controller asks.
+
+	  The latch changes the question. Each credential carries a persistent
+	  INSIDE belief whose resting state is INSIDE and which no amount of
+	  missing evidence can move. Clearing it takes a live session, a
+	  recorded crossing opportunity, and a run of agreeing OUTSIDE windows
+	  that STARTS beyond ULTRAWIDELOCK_LATCH_CLEAR_MIN_MM -- and the grant
+	  then re-latches immediately, so nothing cleared ever persists.
+
+	  Costs one settings key and about 1 KB of RAM. Turning this on without
+	  a witness link refuses every passive unlock, exactly as the side gate
+	  does: that is the intended fail-closed behaviour.
+
+	  Read docs/inside-latch.md before changing any default below.
+
+config ULTRAWIDELOCK_SEALED_LINK
+	bool
+	help
+	  The sealed peer link itself: one UDP socket on the Thread interface,
+	  AES-CCM under a per-peer key, a monotonic counter per peer boot, and a
+	  challenge nonce. It carries a VERSION-TAGGED message and knows nothing
+	  about what any version means.
+
+	  Selected, never set directly. It exists so a consumer can use the
+	  transport without inheriting another consumer's device class: the second
+	  UWB anchor rides this link and has nothing to do with BLE witnesses,
+	  which are retired. Without this split, enabling the anchor would compile
+	  in witness ingest and enrol the anchor's key as though it were a witness.
+
+config ULTRAWIDELOCK_ANCHOR_LINK
+	bool "Ingest second-anchor distance reports (WV3) over the sealed link"
+	depends on ULTRAWIDELOCK_ANCHOR
+	depends on NET_L2_OPENTHREAD || OPENTHREAD
+	select ULTRAWIDELOCK_SEALED_LINK
+	select ULTRAWIDELOCK_ANCHOR_MSG
+	default n
+	help
+	  Accepts sealed WV3 reports from a second UWB anchor: its own measured
+	  distance to the phone, and the ranging block it measured it in.
+
+	  Its own key and its own replay window, NOT a witness role slot. The
+	  anchor is a UWB responder sharing the credential session's keys, not a
+	  BLE observer, and enrolling it through the witness path would tie a live
+	  device class to a retired one.
+
+	  The block travels with the distance because a distance without the round
+	  it belongs to cannot be paired with this node's own.
+
+	  NOT YET STANDALONE. The anchor's identity, key, enrolment command,
+	  replay window and settings subtree are all its own, and the advertiser
+	  picker is witness-only. But witness_link.c still contains the WV2
+	  consumer inline, woven through the nonce and health paths, so an image
+	  with ANCHOR_LINK and no WITNESS_LINK_OT does not link yet. Carving that
+	  out is a refactor of a security-sensitive file and is deliberately not
+	  bundled with this. Every shipping config enables both.
+
+config ULTRAWIDELOCK_WITNESS_LINK_OT
+	bool "Ingest BLE witness reports over Thread UDP"
+	select ULTRAWIDELOCK_SEALED_LINK
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	depends on NET_L2_OPENTHREAD || OPENTHREAD
+	default n
+	help
+	  Binds a UDP socket on the Thread interface and decodes sealed WV2
+	  datagrams from the enrolled BLE witnesses, replacing the RTT SF1 feed
+	  that needed a debug probe held open for the session.
+
+	  Each report is AES-CCM sealed under a per-witness key, carries a
+	  monotonic counter per witness boot, and echoes the lock's current
+	  challenge nonce. Only reports echoing the CURRENT nonce may clear the
+	  inside veto; a replayed genuine "phone is outside" window is the one
+	  forgery that would open a door, so the clear direction is challenged
+	  and the veto direction is not.
+
+	  The witnesses hold no authority. Every rule is enforced here, and the
+	  worst a forged or flooding witness achieves is a door that does not
+	  open passively.
+
+config ULTRAWIDELOCK_WITNESS_MAX
+	int "Enrolled witnesses"
+	default 3
+	range 2 4
+	depends on ULTRAWIDELOCK_SEALED_LINK
+	help
+	  Two is the working set: inside and outside. Three leaves room for the
+	  optional threshold role without a rebuild.
+
+config ULTRAWIDELOCK_WITNESS_NONCE_MS
+	int "Challenge nonce lifetime, milliseconds"
+	default 30000
+	range 1000 600000
+	depends on ULTRAWIDELOCK_SEALED_LINK
+	help
+	  How long one challenge epoch lasts while a credential session is
+	  live. Shorter narrows the replay window and costs downlink traffic to
+	  sleepy witnesses; the witnesses poll at roughly 500 ms, so anything
+	  below a couple of seconds mostly buys missed windows.
+
+config ULTRAWIDELOCK_LATCH_ENTRY_DWELL_MS
+	int "Post-grant dwell before another passive unlock, milliseconds"
+	default 60000
+	range 1000 600000
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  After any grant the phone is assumed to have gone inside, and during
+	  the walk-in it is at the door plane where every classification is
+	  noise. This is how long that assumption is held unconditionally.
+
+config ULTRAWIDELOCK_LATCH_CLEAR_WINDOWS
+	int "Agreeing OUTSIDE windows required to clear the veto"
+	default 3
+	range 1 20
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  Matches ULTRAWIDELOCK_SIDE_GATE's own agree_windows, and runs in
+	  series with it: these are windows the side filter had already
+	  committed. One would make a single misread sufficient.
+
+config ULTRAWIDELOCK_LATCH_CLEAR_MIN_MM
+	int "Range at which a clear must begin, millimetres"
+	default 3000
+	range 500 20000
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  The FIRST agreeing window must be taken at or beyond this range, so
+	  every clear starts far from the door where the two witnesses are not
+	  close to equidistant and the sign of the differential means what it
+	  says. Later windows may be closer; that is the approach happening.
+
+	  UNMEASURED as a distance. It comes from the geometry argument in
+	  ultrawidelock_fusion.h, not from a capture.
+
+config ULTRAWIDELOCK_LATCH_CLEAR_VALID_MS
+	int "How long a proven approach stays usable, milliseconds"
+	default 10000
+	range 1000 120000
+	depends on ULTRAWIDELOCK_INSIDE_LATCH
+	help
+	  This is what carries a proven approach across the dead band at the
+	  door plane -- the job ultrawidelock_side_cfg::outside_hold_ms was
+	  reaching for, as bounded evidence rather than a widened confidence
+	  window. Long enough to walk the last few metres, far too short to
+	  still be valid next time anyone passes the door.
+
 config ULTRAWIDELOCK_ANCHOR_BASELINE_MM
 	int "Distance between the two anchors, millimetres"
 	default 1200
@@ -95,6 +279,36 @@ config ULTRAWIDELOCK_ANCHOR_BASELINE_MM
 	  approach on "ambiguous". If more than 20% of approaches land in the
 	  dead band, move the anchors further apart rather than shrinking the
 	  band.
+
+config ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM
+	int "Distance to the satellite in role 2, millimetres (0 = not installed)"
+	default 0
+	range 0 10000
+	help
+	  The same measurement as ULTRAWIDELOCK_ANCHOR_BASELINE_MM, for a SECOND
+	  satellite. Per role because the baseline is the distance from this node
+	  to THAT board, and two boards are not in the same place: one value
+	  shared between them sizes every triangle test for one and mis-sizes it
+	  for the other, which reads as a satellite under attack rather than as a
+	  number nobody set.
+
+	  0 means no satellite is mounted in this role, which is the default and
+	  the shipping case -- one lock, one satellite. A zero baseline is
+	  already how this tree spells "no satellite" (ultrawidelock_satellite.c
+	  fresh()), so an uninstalled role permits prediction exactly as a quiet
+	  one does; it does not withhold.
+
+	  ULTRAWIDELOCK_ANCHOR_BASELINE_MM stays the role-1 value, unrenamed, so
+	  a one-satellite deployment keeps the setting it already has.
+
+config ULTRAWIDELOCK_ANCHOR_BASELINE_3_MM
+	int "Distance to the satellite in role 3, millimetres (0 = not installed)"
+	default 0
+	range 0 10000
+	help
+	  Role 3 (threshold) baseline. See ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM;
+	  3 is the ceiling, set by ULTRAWIDELOCK_ANCHOR_ROLE's `range 1 3` and by
+	  the sealed link's nonce split, not by this file.
 
 config ULTRAWIDELOCK_ANCHOR_TOL_MM
 	int "Triangle-inequality tolerance, millimetres"
@@ -117,6 +331,21 @@ config ULTRAWIDELOCK_ANCHOR_DEADBAND_MM
 	  jitter. A phone in the doorway is genuinely ambiguous and has to read
 	  that way; UNKNOWN permits prediction, so this is a bias toward the door
 	  opening.
+
+config ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM
+	int "Side boundary shift toward the inside anchor, millimetres"
+	default 0
+	range 0 10000
+	help
+	  0 keeps the INSIDE/OUTSIDE frontier on the anchors' perpendicular
+	  bisector, which is the door plane when the anchors straddle the door
+	  -- the shipping install needs no shift. A positive value moves the
+	  frontier toward the inside anchor: on the axis, INSIDE begins
+	  (BASELINE_MM - this) / 2 in front of it. Meant for a bench where both
+	  anchors stand on the same side of the walkway and "inside" should
+	  mean "behind the lock board". Keep it several sigma of ranging jitter
+	  below BASELINE_MM: at equality the INSIDE locus degenerates to the
+	  ray behind the anchor and every verdict there is a coin toss.
 
 config ULTRAWIDELOCK_ANCHOR_STALE_MS
 	int "Satellite report lifetime, milliseconds"
@@ -242,3 +471,67 @@ config ULTRAWIDELOCK_ANCHOR_AJAR_DWELL_S
 	  impact threshold.
 
 endif # ULTRAWIDELOCK_ANCHOR
+
+config ULTRAWIDELOCK_ANCHOR_MSG
+	bool "Build the sealed-link wire codec"
+	help
+	  The WV2/WV3 codec alone -- no picker, no label core, no ingest. Both
+	  ends of the second-anchor link need it: the lock to decode a report and
+	  the satellite to encode one, and the satellite is not an ULTRAWIDELOCK_ANCHOR
+	  build at all.
+
+	  Separate from ULTRAWIDELOCK_WITNESS_CODEC because that one also carries the
+	  advertiser picker, which belongs to a retired device class. A UWB anchor
+	  that had to compile the BLE picker to send its own distance would be
+	  exactly the coupling this split exists to remove.
+
+config ULTRAWIDELOCK_ANCHOR_PAIR_LOG
+	bool "Log this node's (ranging block, distance) for cross-anchor comparison"
+	depends on ULTRAWIDELOCK_UWB
+	help
+	  Prints one line per accepted trusted range: the initiator's ranging
+	  block and this node's distance in millimetres. Its only purpose is to
+	  let two anchors' captures be JOINED ON BLOCK afterwards, so the
+	  difference between them can be measured at an instant where the true
+	  difference is known.
+
+	  That difference is the question the whole two-anchor approach rests on.
+	  A common-mode error -- both anchors reading long or short together --
+	  cancels exactly in sign(d_inside - d_outside) and costs nothing. A
+	  DIFFERENTIAL one does not cancel, and against a 60 mm dead band a
+	  drifting differential error would make the side verdict meaningless. No
+	  measurement taken so far can tell those two apart, because every one of
+	  them came from a single anchor.
+
+	  Printed from the grant loop on the main thread, NOT from the ranging
+	  callback, and deliberately: main.c forces the per-frame trace off before
+	  the radio starts because synchronous printk inside those callbacks
+	  pushes the delayed Response TX past its slot. This costs that path
+	  nothing.
+
+	  Deliberately NOT dependent on ULTRAWIDELOCK_ANCHOR. This instrument
+	  exists to decide whether the two-anchor approach is viable at all, so
+	  requiring the anchor subsystem to be compiled in before the test can run
+	  would be backwards -- and it silently dropped the symbol the first time,
+	  because the bench lock image does not set ANCHOR.
+
+	  Bench instrument. Leave it off on a mounted door.
+
+config ULTRAWIDELOCK_WITNESS_PORT
+	int "UDP port for the sealed peer link"
+	default 49180
+	range 1024 65535
+	depends on ULTRAWIDELOCK_SEALED_LINK || ULTRAWIDELOCK_ANCHOR_MSG
+	help
+	  One socket, shared by every consumer of the link: the version byte
+	  demultiplexes, not the port.
+
+	  Outside the ULTRAWIDELOCK_ANCHOR gate on purpose. BOTH ENDS of the link must
+	  agree on this number, and the far end -- the satellite -- is not an
+	  anchor build at all: it encodes a report and fuses nothing. A symbol
+	  inside an unmet `if` is silently dropped with no warning and a clean
+	  build, which is exactly how the first attempt at this failed.
+
+	  Mesh-local only. Not registered with SRP: the witnesses are told the
+	  lock's address at enrollment, and publishing a service for them would
+	  advertise the lock's role to the whole fabric for no benefit.

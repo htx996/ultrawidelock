@@ -16,15 +16,15 @@
 # has to: first build, changed build flags (UWB chip / self-test / config), or
 # when you ask for one. A preflight first checks the workspace is bootstrapped.
 #
-#   apps/nrf5340dk-lock/build.sh build                  # incremental where safe (fast)
-#   apps/nrf5340dk-lock/build.sh rebuild                # force a clean pristine build
-#   PRISTINE=1 apps/nrf5340dk-lock/build.sh build       # same as rebuild
-#   UWB_SELFTEST=1 apps/nrf5340dk-lock/build.sh build   # one-shot boot self-test, no iPhone (diagnostic)
-#   PRETTY=1 apps/nrf5340dk-lock/build.sh build         # curated/clean console (reversible; default verbose)
-#   ULTRAWIDELOCK_SOURCE=0 apps/nrf5340dk-lock/build.sh build   # legacy Nordic credential binary fallback
-#   UWB_CHIP=dw3720 apps/nrf5340dk-lock/build.sh build  # select the plugged-in UWB chip (default: dw3000)
-#   LTO=1 apps/nrf5340dk-lock/build.sh build            # link-time optimisation (overlays/lto.conf)
-#   DFU=1 apps/nrf5340dk-lock/build.sh build            # MCUboot + Matter OTA (overlays/sysbuild-dfu.conf)
+#   scripts/nrf5340dk-build.sh build                  # incremental where safe (fast)
+#   scripts/nrf5340dk-build.sh rebuild                # force a clean pristine build
+#   PRISTINE=1 scripts/nrf5340dk-build.sh build       # same as rebuild
+#   UWB_SELFTEST=1 scripts/nrf5340dk-build.sh build   # one-shot boot self-test, no iPhone (diagnostic)
+#   PRETTY=1 scripts/nrf5340dk-build.sh build         # curated/clean console (reversible; default verbose)
+#   ULTRAWIDELOCK_SOURCE=0 scripts/nrf5340dk-build.sh build   # legacy Nordic credential binary fallback
+#   UWB_CHIP=dw3720 scripts/nrf5340dk-build.sh build  # select the plugged-in UWB chip (default: dw3000)
+#   LTO=1 scripts/nrf5340dk-build.sh build            # link-time optimisation (overlays/lto.conf)
+#   DFU=1 scripts/nrf5340dk-build.sh build            # MCUboot + Matter OTA (overlays/sysbuild-dfu.conf)
 #
 # NOTE both default to OFF *here* and ON via `make nrf-build`, which is the same
 # split the DWM3001CDK uses: mk/ is the policy layer and decides what a plain
@@ -36,8 +36,12 @@
 # key trusts everybody. SIGN_KEY=<absolute path> overrides where it looks.
 set -euo pipefail
 
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TREE="$(cd "$APP_DIR/../.." && pwd)"
+# Lives in scripts/ like every other build program; the product it builds is
+# apps/nrf5340dk-lock, which holds the overlays and the size baseline but no
+# sources of its own -- the application itself is Nordic's, fetched into
+# ./workspace and patched from integrations/nrfconnect-door-lock.
+TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_DIR="$TREE/apps/nrf5340dk-lock"
 WS="${ULTRAWIDELOCK_WS:-$TREE/workspace}"
 
 # A linked git worktree usually has no NCS workspace of its own (the ~6.5 GB

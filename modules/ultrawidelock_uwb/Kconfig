@@ -36,6 +36,62 @@ config ULTRAWIDELOCK_CRED
 	  externally supplied URSK (the add-on hands us the plaintext URSK in
 	  UltraWideBandImpl::_ConfigureRangingSession).
 
+config ULTRAWIDELOCK_NUM_RESPONDERS
+	int "Responder count the CCC round is built for"
+	depends on ULTRAWIDELOCK_CRED
+	range 1 2
+	default 1
+	help
+	  Number_Responder_Nodes advertised in M3 and baked into the
+	  RangingConfiguration SaltedHash (cred_round_config.h). Every image in
+	  the session — lock AND satellite — must be built with the same value,
+	  or every derived STS/dURSK/dUDSK diverges and nothing decodes.
+	  1 = validated 1:1 baseline; 2 = dual-anchor round with a second
+	  responder transmitting Response_1.
+
+config ULTRAWIDELOCK_RESPONDER_INDEX
+	int "This node's responder index in the round"
+	depends on ULTRAWIDELOCK_CRED
+	range 0 1
+	default 0
+	help
+	  Which Response slot this build transmits in: responder l replies at
+	  POLL + 1 + l slots / STS index + 1 + l. 0 is the lock, 1 is the
+	  satellite. Must be unique per node and < ULTRAWIDELOCK_NUM_RESPONDERS
+	  (compile-enforced in cred_round_config.h).
+
+config ULTRAWIDELOCK_BLOCK_PARITY
+	int "Ranging-block parity this anchor answers on (-1 = every block)"
+	depends on ULTRAWIDELOCK_CRED
+	range -1 1
+	default -1
+	help
+	  Two anchors sharing one session take turns in the single responder slot
+	  the initiator actually reports, instead of claiming a slot each: an
+	  anchor transmits Response_0 only on ranging blocks whose parity matches
+	  this value. The initiator sees the ordinary one-responder round, and each
+	  anchor gets its own authenticated DS-TWR distance every second block.
+	  -1 answers every block and leaves single-anchor behaviour unchanged.
+	  Give the two anchors DIFFERENT parities (0 and 1) or they transmit in the
+	  same slot and collide. Requires ULTRAWIDELOCK_NUM_RESPONDERS=1, since
+	  alternation shares one slot rather than adding one.
+
+	  Costs the anchor half its sample rate, so trust (K agreeing blocks)
+	  takes twice as long: at a 192 ms block and K=3, about 1152 ms instead of
+	  576 ms worst case. The silent blocks do not break the run — layer 4 only
+	  advances or resets inside an accepted latch, never on a block tick.
+
+config ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG
+	bool "Log the session handoff line (PRINTS THE URSK) at credential start"
+	depends on ULTRAWIDELOCK_CRED
+	help
+	  At every credential session start, print one line carrying the URSK,
+	  the RangingConfiguration bytes, channel and SYNC code — the exact
+	  payload a satellite responder needs to join the round. The URSK is
+	  per-session key material: it dies with the session and opens nothing,
+	  but this still belongs only on a bench image while the sealed
+	  satellite handoff link is not built. Never enable on a deployed lock.
+
 choice
 	prompt "AES-ECB backend for the CCC key ladder"
 	default ULTRAWIDELOCK_CRYPTO_PSA
@@ -91,6 +147,22 @@ config ULTRAWIDELOCK_PRETTY_SHELL
 	  Pairs with apps/nrf5340dk-lock/overlays/ultrawidelock-pretty.conf, which carries the
 	  matching log-level cuts. Default n = today's verbose output, byte-for-byte.
 	  Reverse by dropping the PRETTY=1 build switch (flag returns to n).
+
+config ULTRAWIDELOCK_UWB_RANGE_BIAS_MM
+	int "Per-board range bias correction, millimetres"
+	depends on ULTRAWIDELOCK_CRED
+	default 0
+	range -1000 1000
+	help
+	  Added to every computed DS-TWR distance before it is used or reported.
+	  The ToF-to-distance conversion carries no antenna-delay compensation, so
+	  a board can read a constant offset from true (a DWM3001CDK measured
+	  -160 mm at 1 m; an nRF5340 DK measured ~0). Calibrate per board against
+	  a tape-measured distance of at least 0.5 m -- contact-range readings
+	  are near-field and calibrate nothing. A wrong value here shifts every
+	  geometry check by the same amount, and two-anchor fusion needs both
+	  boards' residuals matched, or the difference lands in delta_mm as a
+	  fake side offset.
 
 config ULTRAWIDELOCK_RANGE_GATE_STRICT
 	bool "Range gate: enforce STS quality (drop suspect blocks)"

@@ -76,6 +76,23 @@ struct ultrawidelock_side_features {
 
 	int32_t uwb_peer_mm; /**< secondary UWB range; <0 = absent */
 
+	/**
+	 * Polarity from a two-anchor fusion, when a caller has one.
+	 *
+	 * THE "explicitly configured fusion caller" the rule baseline refers to.
+	 * Two UWB anchors give a real differential -- sign(d_inside - d_outside)
+	 * -- and which anchor is which is a mounting fact the fusion layer holds,
+	 * so this is not the "guess inside from the primary lock alone" that the
+	 * baseline refuses to do. It is the same kind of evidence differential
+	 * BLE provides, from better instruments.
+	 *
+	 * ULTRAWIDELOCK_SIDE_LABEL_UNKNOWN (0) = absent, and absent must stay
+	 * indistinguishable from "no opinion": a fusion that went stale or failed
+	 * its triangle gate reports UNKNOWN, which withholds rather than permits.
+	 */
+	uint8_t fusion_side; /**< ULTRAWIDELOCK_SIDE_LABEL_*; 0 = absent */
+	uint8_t fusion_conf; /**< 0..100; ignored when fusion_side is UNKNOWN */
+
 	uint8_t door_state; /**< ULTRAWIDELOCK_DOOR_* or 0 = unknown */
 	uint8_t prev_side;  /**< last confirmed ULTRAWIDELOCK_SIDE_LABEL_* */
 	uint16_t since_confirmed_ms;

@@ -144,6 +144,20 @@ config ULTRAWIDELOCK_LAT_TRACE
 	  cheap stores, but the final RTT report is diagnostic output and must be
 	  measured before enabling it in a release image.
 
+config ULTRAWIDELOCK_BENCH_TOGGLE_UNLOCK
+	bool "A fresh ranging session may unlock on geometry alone (BENCH ONLY)"
+	depends on ULTRAWIDELOCK_BENCH
+	depends on ULTRAWIDELOCK_SIDE_GATE
+	default n
+	help
+	  Every new UWB ranging session -- which is what the Wallet UWB toggle
+	  creates, and the first session after a flash -- opens a 20 s window in
+	  which a clean committed OUTSIDE from the side gate unlocks without any
+	  approach. Lets a stationary phone test the inside/outside rule by
+	  toggling: outside unlocks, inside or unknown refuses. BENCH ONLY: iOS
+	  also recreates sessions on its own schedule, so on a mounted door this
+	  would let the bolt follow session churn while the owner rests outside.
+
 config ULTRAWIDELOCK_BENCH_CRED_O2
 	bool "Compile credential hot files with -O2 (BENCH ONLY)"
 	depends on ULTRAWIDELOCK_BENCH
@@ -610,8 +624,10 @@ config ULTRAWIDELOCK_THREAD_DATASET_DUMP
 	depends on OPENTHREAD
 	default n
 	help
-	  Logs the active operational dataset as hex the moment Thread attaches,
-	  in the raw TLV form `chip-tool pairing ble-thread` takes.
+	  Logs the active operational dataset as hex in the raw TLV form
+	  `chip-tool pairing ble-thread` takes, when the commissioning window
+	  opens -- an SW2 press, not every attach. Tying it to a gesture the
+	  owner just made is deliberate; see admin_arm() in matter_commission.c.
 
 	  THIS PRINTS THE THREAD NETWORK KEY IN THE CLEAR. Whoever reads that log
 	  can join the network. It exists for one bench job: commissioning a second

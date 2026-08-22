@@ -1,7 +1,7 @@
 # mk/nrf5340dk.mk — the nRF5340 DK port: NFC tap + approach unlock.
 #
 # The board this project was brought up on and the only one with NFC. Thin front
-# door over apps/nrf5340dk-lock/build.sh, which holds the real logic: preflight,
+# door over scripts/nrf5340dk-build.sh, which holds the real logic: preflight,
 # pristine-vs-incremental signature detection, chip resolution.
 #
 # Every target here is nrf-prefixed. Bare build/flash/monitor mean the
@@ -52,7 +52,7 @@ NRF_ENV := $(strip \
   $(if $(NRF_DFU),DFU=1) \
   $(if $(CIR),CIR=$(CIR)))
 
-NRF_BUILD_SH := $(REPO_ROOT)/apps/nrf5340dk-lock/build.sh
+NRF_BUILD_SH := $(REPO_ROOT)/scripts/nrf5340dk-build.sh
 
 # Where the Matter onboarding payload lands. Generated at BUILD time
 # (CONFIG_CHIP_FACTORY_DATA_GENERATE_ONBOARDING_CODES) and merged into the image

@@ -29,6 +29,14 @@ void side_feed_push(const struct ultrawidelock_side_features *feat);
 /** Pop newest features if any; returns true once per push. */
 bool side_feed_take(struct ultrawidelock_side_features *out);
 
+/**
+ * Baseline command typed over the same RTT down-buffer:
+ *   BL <mm>   set the anchor separation (300..10000)
+ *   BL cal    measure it: median of paired rounds, phone held still past the DK
+ * Returns 0 none pending, 1 set (*out_mm filled), 2 calibrate requested.
+ */
+int side_feed_take_baseline(int32_t *out_mm);
+
 /** Drain RTT down-buffer for SF1 lines (no-op if FEED_RTT off). */
 void side_feed_rtt_poll(void);
 
