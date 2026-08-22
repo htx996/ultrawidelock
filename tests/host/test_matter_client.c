@@ -198,7 +198,7 @@ static bool reach_sigma1(struct matter_device_info *info)
 	struct matter_thread_peer peer;
 
 	fixture(info, true, true);
-	matter_client_want();
+	matter_client_want(true);
 	tick(1u);
 	if (!matterfake_resolve_pending()) {
 		return false;
@@ -216,16 +216,38 @@ void test_matter_client(void)
 	t_group("a lock nobody has bound goes looking for nobody");
 	{
 		fixture(&info, true, false);
-		matter_client_want();
+		matter_client_want(true);
 		tick(MATTER_CLIENT_STEP_MS * 4u);
 		T_EQ("no lookup was started", (long)matterfake_resolve_count(), 0L);
 		T_EQ("and nothing was sent", (long)matterfake_tx_count(), 0L);
 	}
 
+	t_group("the bound lock is a state to reconcile, not a stream of edges");
+	{
+		/*
+		 * A relock with nothing to undo must not put a LockDoor on the
+		 * air. The far lock is already shut, and a walk-up that ends
+		 * without ever granting would otherwise talk to it for no
+		 * reason -- once per approach, on a mesh, for nothing.
+		 */
+		fixture(&info, true, true);
+		matter_client_want(false);
+		tick(MATTER_CLIENT_STEP_MS * 4u);
+		T_EQ("relocking an already-locked peer starts no lookup",
+		     (long)matterfake_resolve_count(), 0L);
+		T_EQ("and sends nothing", (long)matterfake_tx_count(), 0L);
+
+		/* The same call after an unlock DOES have something to undo. */
+		fixture(&info, true, true);
+		matter_client_want(true);
+		tick(1u);
+		T_EQ("the unlock starts a lookup", (long)matterfake_resolve_count(), 1L);
+	}
+
 	t_group("a binding whose administrator was never committed is not a target");
 	{
 		fixture(&info, false, true);
-		matter_client_want();
+		matter_client_want(true);
 		tick(MATTER_CLIENT_STEP_MS * 4u);
 		T_EQ("no lookup was started", (long)matterfake_resolve_count(), 0L);
 		T_EQ("and nothing was sent", (long)matterfake_tx_count(), 0L);
@@ -235,7 +257,7 @@ void test_matter_client(void)
 	{
 		fixture(&info, true, true);
 		T_EQ("nothing happens before the walk-up", (long)matterfake_resolve_count(), 0L);
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		T_EQ("the walk-up starts exactly one lookup", (long)matterfake_resolve_count(), 1L);
 		T_OK("which is still outstanding", matterfake_resolve_pending());
@@ -248,7 +270,7 @@ void test_matter_client(void)
 	t_group("a bound lock that is not there is an answer, not a stall");
 	{
 		fixture(&info, true, true);
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		matterfake_resolve_answer(NULL);
 		tick(1u);
@@ -263,7 +285,7 @@ void test_matter_client(void)
 		const struct matterfake_tx *tx;
 
 		fixture(&info, true, true);
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		matterfake_some_peer(&peer);
 		matterfake_resolve_answer(&peer);
@@ -365,7 +387,7 @@ void test_matter_client(void)
 
 		fixture(&info, true, true);
 		matterfake_fail_next_sends(1u);
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		matterfake_some_peer(&peer);
 		matterfake_resolve_answer(&peer);
@@ -383,7 +405,7 @@ void test_matter_client(void)
 	{
 		fixture(&info, true, true);
 		matterfake_fail_next_resolve();
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		T_OK("no query is outstanding", !matterfake_resolve_pending());
 		T_EQ("and nothing was sent", (long)matterfake_tx_count(), 0L);
@@ -414,7 +436,7 @@ void test_matter_client(void)
 		struct matter_thread_peer peer;
 
 		fixture(&info, true, true);
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		T_EQ("the first attempt queried", (long)matterfake_resolve_count(), 1L);
 
@@ -422,7 +444,7 @@ void test_matter_client(void)
 		tick(MATTER_CLIENT_STEP_MS + 1u);
 		T_OK("the query is still outstanding", matterfake_resolve_pending());
 
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		T_EQ("so the next attempt cannot start one", (long)matterfake_resolve_count(), 1L);
 		T_EQ("and sends nothing", (long)matterfake_tx_count(), 0L);
@@ -430,7 +452,7 @@ void test_matter_client(void)
 		/* When it finally answers, the client is still there to act. */
 		matterfake_some_peer(&peer);
 		matterfake_resolve_answer(&peer);
-		matter_client_want();
+		matter_client_want(true);
 		tick(MATTER_CLIENT_BACKOFF_MS * 4u);
 		T_OK("and once it clears, walk-ups are served again",
 		     matterfake_resolve_count() >= 2u);
@@ -441,7 +463,7 @@ void test_matter_client(void)
 		struct matter_thread_peer peer;
 
 		fixture(&info, true, true);
-		matter_client_want();
+		matter_client_want(true);
 		tick(1u);
 		T_OK("a query is outstanding", matterfake_resolve_pending());
 
@@ -523,7 +545,7 @@ void test_matter_client(void)
 		ultrawidelock_osal_host_reset();
 		matterfake_thread_reset();
 		matter_client_init(NULL);
-		matter_client_want();
+		matter_client_want(true);
 		tick(MATTER_CLIENT_STEP_MS * 2u);
 		T_OK("a client with no device state owns no session",
 		     !matter_client_owns_session(1u));

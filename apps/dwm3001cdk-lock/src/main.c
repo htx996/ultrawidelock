@@ -919,6 +919,9 @@ int main(void)
 				ultrawidelock_reader_notify_unlock(false);
 				status_led_signal(STATUS_LED_UNLOCKED, false);
 				granted = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+				matter_client_want(false);
+#endif
 				/* Same state repair as a refusal: the controller still
 				 * believes the bolt it opened is open. Without this it
 				 * never offers again until a departure past relock_cm,
@@ -1368,7 +1371,7 @@ int main(void)
 			 * must not delay them, and matter_client_want() returns
 			 * without waiting for anything at all.
 			 */
-			matter_client_want();
+			matter_client_want(true);
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 			/* The door is open, so assume the phone goes in. This
@@ -1389,6 +1392,12 @@ int main(void)
 			ultrawidelock_reader_notify_unlock(false); /* Reader Status -> Secured */
 			status_led_signal(STATUS_LED_UNLOCKED, false);
 			granted = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			/* And close the lock this one opened. Same shape as the
+			 * grant above: after this board's own bolt, never
+			 * before it. */
+			matter_client_want(false);
+#endif
 			break;
 		default:
 			break;
@@ -1451,6 +1460,9 @@ int main(void)
 				ultrawidelock_reader_notify_unlock(false);
 				status_led_signal(STATUS_LED_UNLOCKED, false);
 				granted = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+				matter_client_want(false);
+#endif
 			}
 			present = false;
 		}

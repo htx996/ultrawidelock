@@ -167,6 +167,21 @@ static uint32_t s_hs_linger_until;
 /** The unsecured message counter, randomised once; see send_sigma2()'s note. */
 static uint32_t s_counter;
 
+/*
+ * What the bound lock should be, and what it last agreed to be.
+ *
+ * Two flags rather than a queue because the door has a STATE, not a backlog of
+ * edges. If they differ there is work to do; if they match there is not, and
+ * that stays true however many times the person steps in and out while an
+ * invoke is in flight. The alternative -- forwarding each edge -- loses a
+ * relock that lands during an unlock, and the lock it loses it for is the far
+ * one nobody is standing next to.
+ */
+static bool s_desired_unlocked;
+static bool s_synced_unlocked;
+/** What the invoke now in flight is trying to make true. */
+static bool s_inflight_unlocked;
+
 static uint8_t s_invoke_step;
 static uint32_t s_invoke_ms;
 static uint8_t s_tx[CLIENT_TX_MAX];
@@ -736,7 +751,8 @@ static size_t send_invoke(uint8_t *reply, size_t cap)
 	memset(&inv, 0, sizeof(inv));
 	inv.endpoint = s_peer_endpoint;
 	inv.cluster = MATTER_CLUSTER_DOOR_LOCK;
-	inv.command = MATTER_CMD_DL_UNLOCK_DOOR;
+	s_inflight_unlocked = s_desired_unlocked;
+	inv.command = s_inflight_unlocked ? MATTER_CMD_DL_UNLOCK_DOOR : MATTER_CMD_DL_LOCK_DOOR;
 	inv.fields = matter_im_client_unlock_fields;
 	inv.fields_ctx = &pin;
 	inv.timed_request = true;
@@ -767,8 +783,8 @@ static size_t send_invoke(uint8_t *reply, size_t cap)
 	}
 	s_invoke_step = (uint8_t)INVOKE_SENT;
 	s_invoke_ms = now_ms();
-	LOG_INF("UnlockDoor out: endpoint %u%s", s_peer_endpoint,
-		pin.pin_len > 0u ? ", with a PIN" : "");
+	LOG_INF("%sDoor out: endpoint %u%s", s_inflight_unlocked ? "Unlock" : "Lock",
+		s_peer_endpoint, pin.pin_len > 0u ? ", with a PIN" : "");
 	return len;
 }
 
@@ -1015,9 +1031,15 @@ void matter_client_init(struct matter_device_info *info)
 	matter_client_sm_init(&s_sm);
 }
 
-void matter_client_want(void)
+void matter_client_want(bool unlocked)
 {
 	if (s_info == NULL) {
+		return;
+	}
+	s_desired_unlocked = unlocked;
+	if (s_desired_unlocked == s_synced_unlocked) {
+		/* Already where it should be. Says nothing on the wire, which
+		 * is what makes this safe to call on every edge. */
 		return;
 	}
 	/*
@@ -1247,13 +1269,29 @@ size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t 
 		rc = matter_im_client_response_decode(in.payload, in.payload_len, &resp);
 		ok = rc == MATTER_OK && resp.status == MATTER_IM_STATUS_SUCCESS;
 		if (ok) {
-			LOG_INF("the bound lock UNLOCKED");
+			LOG_INF("the bound lock %s", s_inflight_unlocked ? "UNLOCKED" : "LOCKED");
+			/*
+			 * Only now is the peer known to hold this state. Moved
+			 * on a refusal too and the two would look in step while
+			 * the far door stood open.
+			 */
+			s_synced_unlocked = s_inflight_unlocked;
 		} else {
-			LOG_WRN("the bound lock refused UnlockDoor (status 0x%02x, decode %d)",
+			LOG_WRN("the bound lock refused %sDoor (status 0x%02x, decode %d)",
+				s_inflight_unlocked ? "Unlock" : "Lock",
 				rc == MATTER_OK ? resp.status : 0u, rc);
 		}
 		s_invoke_step = (uint8_t)INVOKE_IDLE;
 		matter_client_sm_invoked(&s_sm, ok);
+		/*
+		 * The bolt may have moved again while this was in the air. The
+		 * state machine clears the want on completion whatever it was,
+		 * so without this the second edge is dropped -- exactly the
+		 * walk-in-and-straight-out case.
+		 */
+		if (ok && s_desired_unlocked != s_synced_unlocked) {
+			matter_client_sm_want(&s_sm, now_ms());
+		}
 		/* The peer asked to be acknowledged and this is the end of the
 		 * interaction, so there is nothing else to carry the ack. */
 		if (in.ack_requested) {

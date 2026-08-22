@@ -51,13 +51,24 @@ extern "C" {
 void matter_client_init(struct matter_device_info *info);
 
 /**
- * An unlock was granted locally. Tell the bound lock, if there is one.
+ * The local bolt is now @p unlocked. Bring the bound lock to match.
  *
- * Returns immediately and never blocks -- it is called from the walk-up path,
- * after the local lock has already opened. A node with no binding, no fabric or
+ * A STATE to reconcile, not an event to forward, and the difference matters:
+ * the walk-up opens the door and the departure closes it, so a client that
+ * only ever forwarded the opening left the other lock standing open until
+ * somebody noticed. Call it on both edges.
+ *
+ * Reconciled rather than queued. What is remembered is the last state the peer
+ * ACCEPTED, so a relock that arrives while the unlock is still in flight is
+ * not lost behind it, and a refusal or a dropped session leaves the two still
+ * visibly out of step -- which is the condition that makes the next attempt
+ * happen rather than a missed edge nobody can see.
+ *
+ * Returns immediately and never blocks: it is called from the walk-up path,
+ * after the local bolt has already moved. A node with no binding, no fabric or
  * no Thread network does nothing at all, which is the normal case.
  */
-void matter_client_want(void);
+void matter_client_want(bool unlocked);
 
 /**
  * Is @p session_id the client's own secure session?
