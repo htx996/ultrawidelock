@@ -22,7 +22,10 @@
  *    feed publishes to, so the side gate and the latch consume evidence
  *    through one path whatever delivered it.
  *
- * Runs entirely on OpenThread's callback and the main loop; starts no thread.
+ * Runs entirely on the datagram link's receive callback and the main loop;
+ * starts no thread. The transport itself is ultrawidelock_dgram.h -- this file
+ * names no OpenThread symbol and takes no OpenThread lock. What it sends is a
+ * sealed blob to the group; who carries it is the port's business.
  */
 
 #include "witness_link.h"
@@ -34,10 +37,7 @@
 #include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
 
-#include <openthread/instance.h>
-#include <openthread/message.h>
-#include <openthread/udp.h>
-#include <zephyr/net/openthread.h>
+#include "ultrawidelock_dgram.h"
 
 #include "side_feed.h"
 /* struct ultrawidelock_uwb_handoff, whose members the sealed handoff reads --
@@ -73,6 +73,11 @@ BUILD_ASSERT(WITNESS_LINK_KEY_LEN == ULTRAWIDELOCK_SEAL_KEY_LEN,
 
 /* One report must fit a single 802.15.4 frame with room for the seal. */
 #define SEALED_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN + CCM_TAG_LEN + CCM_NONCE_LEN)
+/* And it must fit one datagram, which ultrawidelock_dgram.h asks every consumer
+ * to check for itself: a report over the cap would be refused at send time, on a
+ * board, after a tuple count change that looked harmless. */
+BUILD_ASSERT(SEALED_MAX <= ULTRAWIDELOCK_DGRAM_MAX,
+	     "a sealed witness report no longer fits one datagram");
 
 /** One enrolled witness. Keys arrive at enrollment and live only in RAM. */
 struct witness_slot {
@@ -88,8 +93,6 @@ struct witness_slot {
 };
 
 static struct witness_slot s_wit[WITNESS_MAX];
-static otUdpSocket s_sock;
-static bool s_open;
 
 static struct ultrawidelock_witness_pick s_pick;
 static int32_t s_range_mm = -1;
@@ -165,13 +168,10 @@ static void nonce_roll(int64_t now_ms)
  */
 static void nonce_send(void)
 {
-	otInstance *ot = openthread_get_default_instance();
-	otMessageInfo info;
-	otMessage *msg;
 	uint8_t body[12];
 	uint32_t hint = 0u;
 
-	if (!s_open || ot == NULL) {
+	if (!ultrawidelock_dgram_ready()) {
 		return;
 	}
 	body[0] = ULTRAWIDELOCK_WITNESS_MSG_VER;
@@ -179,23 +179,6 @@ static void nonce_send(void)
 		body[1 + i] = (uint8_t)(s_nonce >> (56 - 8 * i));
 	}
 
-	memset(&info, 0, sizeof(info));
-	/* Mesh-local all-nodes: the witnesses are on this network and nothing
-	 * outside it can act on a challenge anyway. */
-	info.mPeerAddr.mFields.m8[0] = 0xFFu;
-	info.mPeerAddr.mFields.m8[1] = 0x03u;
-	info.mPeerAddr.mFields.m8[15] = 0x01u;
-	info.mPeerPort = WITNESS_PORT;
-
-	/*
-	 * The OpenThread API lock, and it is not optional. This runs on the main
-	 * thread; OT's own thread is concurrently servicing the radio through
-	 * MPSL. Every other caller in this tree takes the lock for exactly this
-	 * reason (matter_thread_port.c does it around every call). Callbacks are
-	 * the exception -- udp_rx() below already runs with the lock held and
-	 * must not take it again.
-	 */
-	openthread_mutex_lock();
 	/* The picked label rides along, so the witnesses can keep it in their
 	 * reports even when it would lose the loudness cut -- a pick whose
 	 * label one report drops fails quorum, and that was every window of
@@ -203,19 +186,23 @@ static void nonce_send(void)
 	 * without the witness group key, and a forged hint buys at most one
 	 * junk tuple per report: inclusion is not authority. Zero means no
 	 * pick; a real label hashing to zero loses its hint, one in 16M.
-	 * Read under the OT lock: udp_rx() feeds s_pick on the OT thread. */
+	 *
+	 * UNGUARDED, and it was already half-unguarded before the transport
+	 * moved to ultrawidelock_dgram.h. This read used to sit inside the
+	 * OpenThread API lock, which udp_rx() also holds, so it happened to
+	 * exclude the writer -- but witness_link_session() has always read and
+	 * reset s_pick from the main thread with no lock at all, so the
+	 * discipline was never complete. The seam owns its own locking and does
+	 * not lend it out. Closing this properly means deciding which thread
+	 * owns s_pick, which is a change to this file's threading model rather
+	 * than to its transport; it is deliberately not folded in here. The
+	 * exposure is one torn hint on a challenge, and a wrong hint costs a
+	 * witness one window. */
 	(void)ultrawidelock_witness_pick_best(&s_pick, &hint);
 	body[9] = (uint8_t)(hint >> 16);
 	body[10] = (uint8_t)(hint >> 8);
 	body[11] = (uint8_t)hint;
-	msg = otUdpNewMessage(ot, NULL);
-	if (msg != NULL) {
-		if (otMessageAppend(msg, body, sizeof(body)) != OT_ERROR_NONE ||
-		    otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
-			otMessageFree(msg); /* send takes ownership on success only */
-		}
-	}
-	openthread_mutex_unlock();
+	(void)ultrawidelock_dgram_send(body, sizeof(body));
 	s_nonce_sent_ms = k_uptime_get();
 }
 
@@ -258,14 +245,11 @@ void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
 	uint8_t plain[ULTRAWIDELOCK_JOIN_MSG_LEN];
 	uint8_t sealed[CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN];
 	uint8_t nonce[CCM_NONCE_LEN];
-	otInstance *ot = openthread_get_default_instance();
-	otMessageInfo info;
-	otMessage *msg;
 	size_t plain_len;
 	size_t sealed_len;
 	uint32_t sent_ctr;
 
-	if (h == NULL || !s_open || ot == NULL || !s_anchor_provisioned) {
+	if (h == NULL || !ultrawidelock_dgram_ready() || !s_anchor_provisioned) {
 		return;
 	}
 	if (h->ursk == NULL || h->ursk_len != ULTRAWIDELOCK_JOIN_URSK_LEN ||
@@ -306,28 +290,16 @@ void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
 		return;
 	}
 
-	memset(&info, 0, sizeof(info));
-	/* Mesh-local all-nodes, matching every other message on this link: the
-	 * lock is never told the satellite's address, so replacing the satellite
-	 * costs no re-provisioning. Only a key holder can read the handoff. */
-	info.mPeerAddr.mFields.m8[0] = 0xFFu;
-	info.mPeerAddr.mFields.m8[1] = 0x03u;
-	info.mPeerAddr.mFields.m8[15] = 0x01u;
-	info.mPeerPort = WITNESS_PORT;
-
 	/*
-	 * Called from the credential thread, not an OT callback, so the API lock
-	 * is ours to take -- same rule as nonce_send() above.
+	 * To the group, like everything else on this link: the lock is never told
+	 * the satellite's address, so replacing the satellite costs no
+	 * re-provisioning. Only a key holder can read the handoff.
+	 *
+	 * Called from the credential thread, not from the receive callback, so
+	 * taking the transport's lock is allowed -- ultrawidelock_dgram.h states
+	 * that rule once, where it used to be a comment in each sender.
 	 */
-	openthread_mutex_lock();
-	msg = otUdpNewMessage(ot, NULL);
-	if (msg != NULL) {
-		if (otMessageAppend(msg, sealed, (uint16_t)sealed_len) != OT_ERROR_NONE ||
-		    otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
-			otMessageFree(msg); /* send takes ownership on success only */
-		}
-	}
-	openthread_mutex_unlock();
+	(void)ultrawidelock_dgram_send(sealed, sealed_len);
 	LOG_INF("handoff sent to the second anchor (ctr %u)", (unsigned)sent_ctr);
 }
 #endif /* CONFIG_ULTRAWIDELOCK_ANCHOR_LINK */
@@ -480,24 +452,24 @@ static void publish_pair(int64_t now_ms)
 	out->have = false;
 }
 
-static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
+static void link_rx(void *ctx, const uint8_t *sealed, size_t len)
 {
-	uint8_t sealed[SEALED_MAX];
 	uint8_t plain[ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN];
 	struct ultrawidelock_witness_msg wm;
 	struct witness_slot *w;
 	size_t plain_len = 0;
-	uint16_t len;
 	int64_t now;
 
 	ARG_UNUSED(ctx);
-	ARG_UNUSED(info);
 
-	len = otMessageGetLength(msg) - otMessageGetOffset(msg);
-	if (len == 0u || len > sizeof(sealed)) {
-		return;
-	}
-	if (otMessageRead(msg, otMessageGetOffset(msg), sealed, len) != len) {
+	/*
+	 * The datagram arrives flattened and already length-checked against
+	 * ULTRAWIDELOCK_DGRAM_MAX, so the otMessage offset arithmetic this
+	 * function used to open with is gone. The cap that remains is this
+	 * protocol's own: a report longer than the seal can produce is not a
+	 * report, whatever the transport was willing to carry.
+	 */
+	if (len == 0u || len > SEALED_MAX) {
 		return;
 	}
 	now = k_uptime_get();
@@ -657,8 +629,6 @@ void witness_link_set_anchor_cb(witness_link_anchor_cb cb)
 
 void witness_link_init(void)
 {
-	otInstance *ot = openthread_get_default_instance();
-	otSockAddr bind_addr;
 	unsigned provisioned = 0u;
 
 	ultrawidelock_witness_pick_init(&s_pick, NULL);
@@ -701,21 +671,14 @@ void witness_link_init(void)
 		 * -- the intended state for an uncommissioned lock. */
 		LOG_WRN("no witnesses enrolled; passive unlock stays withheld");
 	}
-	if (ot == NULL) {
-		return;
-	}
-	memset(&bind_addr, 0, sizeof(bind_addr));
-	bind_addr.mPort = WITNESS_PORT;
-	openthread_mutex_lock();
-	if (otUdpOpen(ot, &s_sock, udp_rx, NULL) == OT_ERROR_NONE &&
-	    otUdpBind(ot, &s_sock, &bind_addr, OT_NETIF_THREAD) == OT_ERROR_NONE) {
-		openthread_mutex_unlock();
-		s_open = true;
-		LOG_INF("witness link on UDP %u (%u enrolled)", (unsigned)WITNESS_PORT,
+	if (ultrawidelock_dgram_open(WITNESS_PORT, link_rx, NULL) == ULTRAWIDELOCK_DGRAM_OK) {
+		LOG_INF("witness link on port %u (%u enrolled)", (unsigned)WITNESS_PORT,
 			provisioned);
 	} else {
-		openthread_mutex_unlock();
-		LOG_ERR("witness link could not bind UDP %u", (unsigned)WITNESS_PORT);
+		/* Not fatal, and not retried here. A link that never opened
+		 * delivers nothing, and everything below fails closed on
+		 * silence: the latch stays shut, which is the safe end. */
+		LOG_ERR("witness link could not open port %u", (unsigned)WITNESS_PORT);
 	}
 }
 
