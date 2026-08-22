@@ -10,8 +10,20 @@ ESP32 accepts what goes out on the air.
 This is the procedure for finding out. It is written to be run once, badly, and
 to produce a diagnosis rather than a verdict.
 
-**Expect it to fail the first time.** The value of the run is which quarter of
-the path it stops in, not whether a door opens.
+> **It has since been run, and it works.** 2026-08-22: a walk-up at the CDK
+> opens `apps/nrf5340dk-lock` over Thread, and stepping away closes both. It
+> took five runs, and each one stopped in a different quarter of the path --
+> which is exactly what this document was written to make possible. The faults
+> are listed under "What went wrong the first time" below, in the order they
+> surfaced, because every one of them was a place the code agreed with itself
+> and not with anybody else.
+>
+> Read the rest of this page as a bring-up procedure, not as a warning. What
+> follows still applies to a peer that is NOT `apps/nrf5340dk-lock` -- a Nuki
+> or an Aqara has met none of this.
+
+**Expect it to fail the first time** against an untested peer. The value of the
+run is which quarter of the path it stops in, not whether a door opens.
 
 ## What you need to physically have
 
@@ -142,6 +154,27 @@ capture worth taking.
 are in `docs/matter-binding.md`. Read the binding back before continuing, to
 confirm it stuck.
 
+**You do not need `chip-tool` for this.** The 2026-08-22 bring-up wrote both
+attributes through Home Assistant's Matter server websocket
+(`ws://<ha-host>:5580/ws`, no token), which is worth preferring for a reason
+beyond convenience: a binding is fabric-scoped, so whichever administrator
+writes it owns the fabric the CASE session will run on forever. Home Assistant
+is a fabric you are keeping. A `chip-tool` fabric is one whose keys live in a
+directory on a laptop, and deleting them takes the binding with it.
+
+The attribute paths, the tag-keyed structures and the ACL merge rule are in
+`docs/matter-binding.md`. The rule that matters: an ACL write REPLACES that
+fabric's entries, so read the list, keep the administrator's own entry, append
+yours, and write the whole set back.
+
+What it looked like when it worked, on this bench:
+
+```
+CDK  1/30/0  ->  [{1:7, 3:1, 4:257, 254:3}]              binding to node 7
+DK   0/31/0  ->  [ ... {1:5,2:2,3:[112233],254:3},       HA's admin, KEPT
+                       {1:3,2:2,3:[6],4:[{0:257,1:1}],254:3} ]   node 6, Operate
+```
+
 ## Stage 4: the run
 
 Walk up with an enrolled phone. **Once.** A second attempt overlaps the first
@@ -153,32 +186,45 @@ diagnosis:
 | Last line you see | It got as far as | Look at |
 |---|---|---|
 | nothing | the gate never fired | the UWB grant, not Matter. `matter_client_want()` is called only on a granted unlock |
-| `resolving <instance>` | DNS-SD query sent, no answer | the border router, the peer's SRP registration, and whether both are on ONE Thread network |
-| `Sigma1 out to node ...` | the handshake started, no Sigma2 came back | **the most likely stop.** See below |
-| `Sigma2 REJECTED (-6)` | the peer does not hold this fabric's keys | the binding names the wrong node, or the peer is on another fabric |
-| `Sigma2 REJECTED (-9)` | right fabric, wrong identity | the binding's node id |
+| `resolving bound peer <instance>` | DNS-SD query sent, no answer | the border router, the peer's SRP registration, and whether both are on ONE Thread network |
+| `bound peer has a service but no address yet` | SRV found, no AAAA behind it | the peer's host registration has expired while its service has not. Was once the ordinary case; see the DNS fix below |
+| `bound peer resolved: port n` | we know where to send | the handshake, next row |
+| `Sigma1 out to node ...` | the handshake started, no Sigma2 came back | the peer's own log. A CHIP peer says whether it matched the destination id |
+| `Sigma2: chain not from this fabric root (-6)` | the certificate did not verify to our root | genuinely the wrong fabric -- or, once, our own verifier. See below |
+| `Sigma2: bound 0x..., answered 0x...` | right fabric, wrong node answered | the binding's node id, against the peer's id ON THIS FABRIC |
 | `Sigma3 out: session ...` | we accepted the peer and answered | the peer is verifying our signature. No StatusReport means it refused |
 | `CASE ESTABLISHED as initiator` | the handshake is done | the invoke, below |
 | `the bound lock refused the timed window` | the peer would not open a timed window | rare; a peer that does this refuses the invoke too |
 | `UnlockDoor out: endpoint n` | the command is on the air | the peer's ACL. `UNSUPPORTED_ACCESS` is the expected answer to a missing entry |
+| `the bound lock stopped answering mid-unlock` | the command went out and died | the peer DROPPED it. See the MRP ack fix below |
 | `the bound lock UNLOCKED` | it worked | stop reading |
+| `LockDoor out` / `the bound lock LOCKED` | the departure propagated too | nothing. Both doors are shut |
+
+The two `Sigma2:` codes are worth telling apart and did not used to be. A chain
+failure is `MATTER_E_TYPE` (-6) and an identity mismatch is `MATTER_E_ACCESS`
+(-9); they were both -9 until 2026-08-22, which cost an evening reading a chain
+fault as the wrong node answering.
 
 ## What is most likely to be wrong
 
-Ranked. Both of the deviations this list used to lead with have since been
-settled: one was checked against CHIP's own source and is not a blocker, the
-other has been implemented. What remains is thinner than it was, which is the
-point of having looked.
+Ranked, and much thinner than it was. The entry this list used to lead with --
+"nothing here has ever met a real peer" -- has been retired by meeting one; see
+"What went wrong the first time" below for the five faults that surfaced when
+it did. What is left is what has still never been exercised.
 
-### 1. Nothing here has ever met a real peer
+### 1. No peer but `apps/nrf5340dk-lock` has ever answered
 
-The honest top entry. Everything this node does from Stage 3 onwards has been
-exercised only against a host double, and the CASE initiator has never had a
-cryptographically valid Sigma2 put in front of it by another implementation. The parts that are tested
-are tested well; they have simply never been wrong in company.
+The honest top entry, narrowed. The CASE initiator has now had cryptographically
+valid Sigma2 messages put in front of it by CHIP, and the whole path from a
+walk-up to a bolt moving works against this repo's own DK. A Nuki, an Aqara or
+anything else has still never seen a byte of it.
 
-**Signature:** anything. This is the entry that says the first run is an
-experiment, not a verification.
+That matters more than it sounds. Every one of the five faults below was a
+place this code agreed with ITSELF -- its own encoder, its own test double, its
+own verifier -- and disagreed with the wider world. A second peer implementation
+is the only thing that finds the next one of those.
+
+**Signature:** anything, on a peer that is not the DK.
 
 ### 2. An outstanding DNS-SD query blocks the next attempt
 
@@ -229,6 +275,65 @@ sealed by `matter_exchange`, whose counters `matter_client.c` does not own.
 **Signature of the remaining gap:** intermittent failure after
 `CASE ESTABLISHED`, correlating with mesh quality, where the retry restarts
 from `resolving` rather than resuming the invoke.
+
+## What went wrong the first time
+
+Five faults, in the order they surfaced on 2026-08-22. Each hid the next, which
+is why it took five walk-ups rather than one, and why the log lines in the Stage
+4 table are worth keeping honest. All five had been passed over by every host
+gate, because a test that signs its own certificates and encodes its own
+messages agrees with a verifier that makes the same mistake.
+
+**1. A chunked list write was refused whole.** Matter writes a list as
+replace-all followed by one `AppendItem` per member, so ONE attribute arrives as
+several data blocks. This node counted blocks, called anything past the first a
+batch and answered `RESOURCE_EXHAUSTED` without applying any of it. Home
+Assistant could not write the binding -- or any other list attribute, including
+an ACL. Blocks naming the same attribute are now coalesced before the cluster
+sees them.
+
+*Signature:* a write that returns status 137 with the attribute unchanged, and
+a `write:` line in the log whose byte count is 3 -- the empty replace-all being
+the only block parsed.
+
+**2. DNS-SD found the service and not the address.**
+`otDnsClientResolveService()` reports an address only when the server volunteers
+one in the Additional Data section of the SRV answer. This border router does
+not. Now uses `otDnsClientResolveServiceAndHostAddress()`, which sends the
+follow-up AAAA query.
+
+*Signature:* `bound peer has a service but no address yet`.
+
+**3. Certificates were verified over the wrong bytes.** A Matter certificate is
+TLV, but the signature it carries is the X.509 one over the DER-encoded
+`TBSCertificate`. This node hashed the TLV span, which can verify only a
+certificate signed the same wrong way -- and the test fixture signed its
+certificates exactly that way, so 8,000 green assertions said nothing. Nothing
+else caught it either: the responder does not walk chains at all, so this code
+ran only on the client path, which had never met a peer. The converter is now
+pinned to CHIP's own output for a reference certificate, compared by SHA-256.
+
+*Signature:* every real certificate rejected, reported as an identity mismatch
+because `cert_verify()` returned `MATTER_E_ACCESS` for a signature failure. That
+conflation is fixed too; see the note under the Stage 4 table.
+
+**4. The MRP ack did not ride the invoke.** Framing refused to piggyback a
+pending acknowledgement on any exchange this node had opened. Right for a NEW
+exchange, wrong for the second message of one -- and CHIP does not merely wait
+for the ack it is owed, it DROPS the request. The `UnlockDoor` after a
+`TimedRequest` was discarded every time.
+
+*Signature:* `the bound lock stopped answering mid-unlock`, and on a CHIP peer,
+`Dropping message without piggyback ack when we are waiting for an ack`.
+
+**5. Only the unlock was ever forwarded.** The bound lock opened and never
+closed. `matter_client_want()` now takes the bolt's STATE rather than
+signalling an event, and the client reconciles what is wanted against what the
+peer last accepted -- forwarding both edges would not have been enough, because
+the state machine clears its pending want when an invoke completes, so a relock
+arriving during an unlock was swallowed.
+
+*Signature:* the peer stays unlocked after you walk away.
 
 ## Faults already fixed, and their signatures
 

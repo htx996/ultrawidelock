@@ -7,6 +7,13 @@ cloud round trip. The two locks talk to each other.
 
 Off by default. Everything below needs `CONFIG_ULTRAWIDELOCK_MATTER_CLIENT=y`.
 
+> **Working on hardware since 2026-08-22.** A walk-up opens the bound lock and
+> stepping away closes it, against `apps/nrf5340dk-lock` on a Home Assistant
+> fabric. What follows describes something that runs, not something that
+> should. `docs/matter-binding-bench.md` has the bring-up procedure and the
+> five interoperability faults that stood between "every test passes" and
+> "the door opens".
+
 ## The idea in ten lines
 
 Matter calls this the **Binding** pattern, and it has exactly three moving
@@ -14,8 +21,11 @@ parts:
 
 1. **A shared fabric.** Both locks must be commissioned onto the same fabric.
    Apple Home will not let you write bindings, so you add a *second*
-   administrator with `chip-tool`. Both fabrics coexist: Apple Home keeps
-   working, and the second fabric is what carries the binding.
+   administrator -- Home Assistant or `chip-tool`. Both fabrics coexist: Apple
+   Home keeps working, and the second fabric is what carries the binding.
+   Whichever one writes the binding is not a setup-time convenience you can
+   discard afterwards: a binding is fabric-scoped, so that fabric is where the
+   CASE session runs and where the target's ACL entry names this node.
 2. **A binding on this lock.** The Binding cluster (0x001E) holds a list of
    targets. An administrator writes "node X, endpoint 1, cluster 0x0101" onto
    the UWB lock, and that is the entire configuration.
@@ -61,12 +71,39 @@ the binding list on this one.
 
 Home Assistant's Matter integration is the obvious second option, and it is a
 better one for most people: it is probably already commissioned onto the target
-lock, and it does not need a terminal. Note what role it is playing here. It is
-the *administrator*, used once at setup time to write two attributes. It is
-**not** in the unlock path afterwards, and it can be switched off, rebooted or
-thrown away without the front door noticing. That is a different arrangement
-from the automation described at the bottom of this page, and the difference is
-the whole point of the binding.
+lock, and it does not need a terminal. **This is the route the 2026-08-22
+bring-up actually used**, start to finish, without `chip-tool` installed.
+
+Note what role it is playing. It is the *administrator*, used once at setup
+time to write two attributes. It is **not** in the unlock path afterwards, and
+it can be switched off, rebooted or thrown away without the front door
+noticing -- with one caveat the fabric note above spells out: its FABRIC has to
+stay, because that is the one the binding is scoped to. That is a different
+arrangement from the automation described at the bottom of this page, and the
+difference is the whole point of the binding.
+
+### Driving it without the UI
+
+Home Assistant's Matter server exposes its own websocket, and it is what the
+bring-up used because the integration's UI writes neither of these attributes:
+
+```
+ws://<ha-host>:5580/ws          # the Matter Server app, not HA's API; no token
+```
+
+Send `{"message_id":..., "command":"start_listening"}` first -- the reply is
+every node with its cached attributes -- then `read_attribute` and
+`write_attribute` with `{node_id, attribute_path}`, where the path is
+`"endpoint/cluster/attribute"` in decimal: `1/30/0` is Binding, `0/31/0` the
+ACL, `1/257/0` LockState. Structures come back keyed by their wire tags, and go
+back the same way: a binding target is `{1:node, 3:endpoint, 4:cluster}`.
+
+**Read the ACL, merge, write the whole set.** An ACL write is fabric-scoped and
+REPLACES that fabric's entries, and entries belonging to other fabrics read
+back as a bare `{254:index}` with no fields -- invisible, not absent. Drop the
+administrator's own entry and it locks itself out with no way back but a
+factory reset. `scripts/bind-helper.py` refuses to write without finding one;
+anything hand-rolled should do the same.
 
 Whichever administrator you use, the sequence and the values are the ones below.
 
