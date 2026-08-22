@@ -61,7 +61,7 @@ completed ports.
 
 **Scope of the Tier 0 claim.** It applies to the **UWB engine module**, which is
 SoC-neutral apart from one guarded block: the nRF5340 HFCLK boost in `ultrawidelock_uwb_facade.c`.
-It does **not** cover the full Matter door-lock product. `build.sh` pins
+It does **not** cover the full Matter door-lock product. `scripts/nrf5340dk-build.sh` pins
 `nrf5340dk/nrf5340/cpuapp` and drives a sysbuild with a separate `ipc_radio` network-core
 image, so moving the whole application to a single-core part such as nRF52840 is a
 sysbuild and Matter-transport exercise well beyond a devicetree overlay. Porting the

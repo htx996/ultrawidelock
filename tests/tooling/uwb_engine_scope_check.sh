@@ -199,7 +199,7 @@ self_test() {
 		modules/ultrawidelock_uwb/src/facade/ultrawidelock_uwb_facade.c \
 		modules/ultrawidelock_uwb/src/ccc/ccc_shim.c \
 		modules/ultrawidelock_uwb/src/ccc/ccc_kdf.c \
-		apps/nrf5340dk-lock/build.sh; do
+		scripts/nrf5340dk-build.sh; do
 		if [[ $f =~ $ENGINE_RE ]]; then
 			printf '%s  self-test FAILED: %s is exempt, but it is chip-agnostic%s\n' \
 				"$R" "$f" "$Z" >&2

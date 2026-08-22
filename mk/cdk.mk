@@ -300,7 +300,7 @@ CDK_OTA_PY   := $(CDK_OTA_VENV)/bin/python
 CDK_DEPLOYED_ELF := $(dir $(CDK_DEPLOYED))zephyr.elf
 
 # ULTRAWIDELOCK_TOOLCHAIN=env skips the nrfutil wrapper and runs west straight off PATH.
-# apps/nrf5340dk-lock/build.sh carries the same escape hatch for the same reason:
+# scripts/nrf5340dk-build.sh carries the same escape hatch for the same reason:
 # inside the NCS toolchain container CI uses, nrfutil's toolchain index is not
 # reachable, so the wrapper cannot resolve a toolchain that is already there.
 # firmware-builds.yml's dwm3001cdk job depends on this.

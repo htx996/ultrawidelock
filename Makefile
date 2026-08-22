@@ -38,7 +38,7 @@ REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ULTRAWIDELOCK_BUILD_ROOT ?= $(REPO_ROOT)/build
 export ULTRAWIDELOCK_BUILD_ROOT
 
-# NCS version for both Zephyr ports. Matches apps/nrf5340dk-lock/build.sh.
+# NCS version for both Zephyr ports. Matches scripts/nrf5340dk-build.sh.
 NCS_VER ?= v3.3.0
 
 # ---- the MCUboot image-signing key ------------------------------------------

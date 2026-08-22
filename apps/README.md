@@ -17,9 +17,9 @@ in `ports/`.
 A directory carries a board prefix when it is bound to that board, and drops it
 when it is not. `dwm3001cdk-lock/` has one board overlay, a `pm_static.yml`
 written for the nRF52833's flash layout, and signing keys; `nrf5340dk-lock/`
-hardcodes `BOARD` in its `build.sh` and holds no sources at all, layering our
-modules and patches onto the Nordic Aliro app fetched into `workspace/`.
-`satellite/` is the one that is genuinely board-neutral: one `src/` with no
+holds no sources at all, layering our modules and patches onto the Nordic Aliro
+app fetched into `workspace/`, which `scripts/nrf5340dk-build.sh` pins to one
+board. `satellite/` is the one that is genuinely board-neutral: one `src/` with no
 board `#ifdef`, two overlays under `boards/`, and `SAT_BOARD` choosing between
 them. Adding a third board there is an overlay and a size baseline, not a
 directory.

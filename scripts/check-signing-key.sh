@@ -21,7 +21,7 @@
 #
 # Both Zephyr ports call this, which is why it is a file rather than a paragraph
 # repeated in each: apps/dwm3001cdk-lock/sysbuild.cmake for the DWM3001CDK, and
-# apps/nrf5340dk-lock/build.sh for the nRF5340 DK. One list, one set of refusals,
+# scripts/nrf5340dk-build.sh for the nRF5340 DK. One list, one set of refusals,
 # one place to edit when upstream adds an eighth demo key. The DK additionally
 # reads the key back out of the built mcuboot .config, because a flag we passed
 # is not the same fact as a flag the build honoured.

@@ -587,7 +587,7 @@ check_private_headers() {
 # notably mk/cdk.mk injecting ultrawidelock_dfu at the sysbuild level.
 module_list_paths() {
 	grep -hoE -- '-D(ZEPHYR_EXTRA_MODULES|EXTRA_ZEPHYR_MODULES)=[^[:space:]]+' \
-		apps/nrf5340dk-lock/build.sh mk/*.mk \
+		scripts/nrf5340dk-build.sh mk/*.mk \
 		| sed -e 's/^-D[A-Z_]*=//' -e "s/[\"']//g" \
 		| tr ';' '\n' \
 		| sed -e 's|^\$TREE|.|' -e 's|^\$(REPO_ROOT)|.|' -e 's|^\${REPO_ROOT}|.|'
