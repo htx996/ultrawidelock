@@ -452,7 +452,8 @@ int matter_fab_commit(const struct matter_device_info *info,
 	memset(&s_io, 0, sizeof(s_io));
 	record_init(&s_io.fabric.h, REC_FABRIC,
 		    operation == MATTER_FABRIC_STORE_REMOVE ? REC_DELETED : REC_LIVE, slot);
-	if (operation == MATTER_FABRIC_STORE_COMMIT_ATTEMPT) {
+	if (operation == MATTER_FABRIC_STORE_COMMIT_ATTEMPT ||
+	    operation == MATTER_FABRIC_STORE_UPDATE) {
 		s_io.fabric.fabric = info->fabrics[slot];
 	} else if (operation != MATTER_FABRIC_STORE_REMOVE) {
 		return -EINVAL;

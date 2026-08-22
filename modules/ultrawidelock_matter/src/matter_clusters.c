@@ -1447,9 +1447,8 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 							 f->fabric_id);
 				(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_NODE_ID),
 							 f->node_id);
-				/* Empty until a commissioner writes one. */
-				(void)matter_tlv_put_utf8(w, MATTER_TLV_CTX(TAG_FABRIC_LABEL), "",
-							  0u);
+				(void)matter_tlv_put_utf8(w, MATTER_TLV_CTX(TAG_FABRIC_LABEL),
+							  f->label, f->label_len);
 				(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_INDEX),
 							 f->index);
 				(void)matter_tlv_end_container(w);
@@ -1772,6 +1771,9 @@ static bool field_u64(const struct matter_im_invoke *inv, uint8_t tag, uint64_t 
 #define TAG_NOCRESP_STATUS       0u
 #define TAG_NOCRESP_FABRIC_INDEX 1u
 
+/* UpdateFabricLabel's one argument. */
+#define TAG_UPDATE_LABEL 0u
+
 /** Borrow one octet-string field out of a command's arguments. */
 /**
  * Read an unsigned field from INSIDE a nested structure field.
@@ -1844,6 +1846,32 @@ static bool field_bytes(const struct matter_im_invoke *inv, uint8_t tag, const u
 		}
 		if (matter_tlv_tag(&r) == MATTER_TLV_CTX(tag)) {
 			return matter_tlv_get_bytes(&r, out, len) == MATTER_OK;
+		}
+	}
+}
+
+/** The UTF-8 twin: a Label is a string element, which get_bytes refuses. */
+static bool field_utf8(const struct matter_im_invoke *inv, uint8_t tag, const char **out,
+		       size_t *len)
+{
+	struct matter_tlv_reader r;
+
+	if (!inv->has_fields || inv->fields == NULL) {
+		return false;
+	}
+	matter_tlv_reader_init(&r, inv->fields, inv->fields_len);
+	if (matter_tlv_next(&r) != MATTER_OK || !matter_tlv_is_container(&r)) {
+		return false;
+	}
+	if (matter_tlv_enter(&r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		if (matter_tlv_next(&r) != MATTER_OK) {
+			return false;
+		}
+		if (matter_tlv_tag(&r) == MATTER_TLV_CTX(tag)) {
+			return matter_tlv_get_utf8(&r, out, len) == MATTER_OK;
 		}
 	}
 }
@@ -2617,6 +2645,62 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 			break;
 		}
 		*response_command = MATTER_CMD_OC_NOC_RESPONSE;
+		return MATTER_IM_STATUS_SUCCESS;
+	}
+
+	case MATTER_CMD_OC_UPDATE_FABRIC_LABEL: {
+		const char *label = NULL;
+		size_t label_len = 0u;
+		size_t slot = fabric_slot_for_request(info, info->accessing_fabric_index);
+		struct matter_fabric *f;
+		char prev[sizeof(info->fabrics[0].label)];
+		uint8_t prev_len;
+
+		/* Fabric-scoped: the label belongs to the session's own fabric,
+		 * and the answer is a NOCResponse exactly as for AddNOC. */
+		*response_command = MATTER_CMD_OC_NOC_RESPONSE;
+		info->last_noc_status = MATTER_NOC_STATUS_INVALID_FABRIC_INDEX;
+		info->last_noc_index = 0u;
+
+		if (!field_utf8(inv, TAG_UPDATE_LABEL, &label, &label_len)) {
+			return MATTER_IM_STATUS_INVALID_COMMAND;
+		}
+		if (label_len > sizeof(f->label)) {
+			return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+		}
+		if (slot >= MATTER_SUPPORTED_FABRICS) {
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		/* A non-empty label taken by ANOTHER fabric is refused in the
+		 * response body; every fabric starts empty and empty never
+		 * conflicts, or the second commissioner could not exist. */
+		if (label_len != 0u) {
+			for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+				if (i != slot && info->fabrics[i].index != 0u &&
+				    info->fabrics[i].label_len == label_len &&
+				    memcmp(info->fabrics[i].label, label, label_len) == 0) {
+					info->last_noc_status = MATTER_NOC_STATUS_LABEL_CONFLICT;
+					return MATTER_IM_STATUS_SUCCESS;
+				}
+			}
+		}
+		f = &info->fabrics[slot];
+		prev_len = f->label_len;
+		memcpy(prev, f->label, sizeof(prev));
+		memcpy(f->label, label, label_len);
+		f->label_len = (uint8_t)label_len;
+		/* The store reads the slot's record from RAM, so the mutation
+		 * comes first -- and is unwound if durability is refused, per
+		 * the hooks contract: no committed RAM change on failure. */
+		if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u &&
+		    fabric_store(info, MATTER_FABRIC_STORE_UPDATE, slot, NULL, 0u) != MATTER_OK) {
+			memcpy(f->label, prev, sizeof(prev));
+			f->label_len = prev_len;
+			*response_command = MATTER_IM_NO_RESPONSE;
+			return MATTER_IM_STATUS_FAILURE;
+		}
+		info->last_noc_status = MATTER_NOC_STATUS_OK;
+		info->last_noc_index = info->accessing_fabric_index;
 		return MATTER_IM_STATUS_SUCCESS;
 	}
 

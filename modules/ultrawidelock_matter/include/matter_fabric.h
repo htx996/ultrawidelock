@@ -115,6 +115,9 @@ struct matter_fabric {
 	uint64_t node_id;
 	/** The subject the commissioner wants granted administer privilege. */
 	uint64_t case_admin_subject;
+	/** UpdateFabricLabel. Empty until a commissioner writes one. */
+	uint8_t label_len;
+	char label[32];
 	uint16_t admin_vendor_id;
 	uint8_t root_public_key[MATTER_FABRIC_PUBKEY_LEN];
 	uint8_t ipk[MATTER_IPK_LEN];

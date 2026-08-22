@@ -731,6 +731,7 @@ struct matter_lock_event {
 #define MATTER_CMD_OC_CSR_RESPONSE                 0x0005u
 #define MATTER_CMD_OC_ADD_NOC                      0x0006u
 #define MATTER_CMD_OC_NOC_RESPONSE                 0x0008u
+#define MATTER_CMD_OC_UPDATE_FABRIC_LABEL          0x0009u
 #define MATTER_CMD_OC_REMOVE_FABRIC                0x000Au
 #define MATTER_CMD_OC_ADD_TRUSTED_ROOT_CERTIFICATE 0x000Bu
 
@@ -785,6 +786,13 @@ enum matter_fabric_store_operation {
 	 */
 	MATTER_FABRIC_STORE_BINDING = 4,
 #endif
+	/*
+	 * Re-store one COMMITTED slot's fabric record after a field of it
+	 * changed in place -- UpdateFabricLabel. Only the fabric record: the
+	 * network, ICAC, and ACL records are untouched by such a change, and
+	 * rewriting them would spend flash on bytes that did not move.
+	 */
+	MATTER_FABRIC_STORE_UPDATE = 5,
 };
 
 struct matter_device_info;
@@ -837,6 +845,7 @@ struct matter_fabric_acl {
 #define MATTER_NOC_STATUS_INVALID_NOC          3u
 #define MATTER_NOC_STATUS_MISSING_CSR          4u
 #define MATTER_NOC_STATUS_TABLE_FULL           5u
+#define MATTER_NOC_STATUS_LABEL_CONFLICT       10u
 #define MATTER_NOC_STATUS_INVALID_FABRIC_INDEX 11u
 
 /** Every Matter node's root endpoint is 0. */

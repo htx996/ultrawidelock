@@ -184,6 +184,32 @@ static bool lock_admin_allowed(struct matter_im_server *srv)
 	return srv->command(srv->ctx, &inv, &response) != MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
 }
 
+/** Invoke UpdateFabricLabel for the accessing fabric; returns the IM status. */
+static uint8_t update_label(struct matter_im_server *srv, const char *label, size_t len,
+			    uint32_t *response)
+{
+	struct matter_im_invoke inv;
+	struct matter_tlv_writer w;
+	uint8_t fields[64];
+	size_t n = 0u;
+
+	matter_tlv_writer_init(&w, fields, sizeof(fields));
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_utf8(&w, MATTER_TLV_CTX(0u), label, len);
+	(void)matter_tlv_end_container(&w);
+	T_EQ("label fields encoded", matter_tlv_writer_finish(&w, &n), MATTER_OK);
+
+	memset(&inv, 0, sizeof(inv));
+	inv.endpoint = MATTER_ENDPOINT_ROOT;
+	inv.cluster = MATTER_CLUSTER_OPERATIONAL_CREDENTIALS;
+	inv.command = MATTER_CMD_OC_UPDATE_FABRIC_LABEL;
+	inv.has_fields = true;
+	inv.fields = fields;
+	inv.fields_len = n;
+	*response = 0u;
+	return srv->command(srv->ctx, &inv, response);
+}
+
 static void pattern(uint8_t *dst, size_t len, uint8_t seed)
 {
 	size_t i;
@@ -502,6 +528,49 @@ void test_matter_clusters(void)
 		info.accessing_node_id = 0x1234u;
 		info.accessing_n_cats = 0u;
 		T_OK("a stranger is refused", !lock_admin_allowed(&srv));
+	}
+
+	t_group("UpdateFabricLabel names the accessing fabric");
+	{
+		/*
+		 * Apple sends this after every commissioning; refusing it as an
+		 * unknown command was tolerated but printed a refusal on every
+		 * pairing. The answer is a NOCResponse, like AddNOC's.
+		 */
+		uint32_t response = 0u;
+		static const char k_long[] = "123456789012345678901234567890123"; /* 33 */
+
+		reset_doubles();
+		fill_info(&info);
+		matter_clusters_init(&srv, &info);
+		info.fabrics[0].index = 1u;
+		info.fabrics[1].index = 2u;
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u) | MATTER_FABRIC_SLOT_BIT(1u);
+		info.accessing_fabric_index = 1u;
+
+		T_EQ("the label is accepted", update_label(&srv, "Home", 4u, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("answered as a NOCResponse", (long)response,
+		     (long)MATTER_CMD_OC_NOC_RESPONSE);
+		T_EQ("which reports OK", (long)info.last_noc_status, (long)MATTER_NOC_STATUS_OK);
+		T_EQ("for the accessing fabric", (long)info.last_noc_index, 1L);
+		T_EQ("and the label is stored", (long)info.fabrics[0].label_len, 4L);
+		T_OK("verbatim", memcmp(info.fabrics[0].label, "Home", 4u) == 0);
+
+		T_EQ("the same fabric may re-set its own label",
+		     update_label(&srv, "Home", 4u, &response), MATTER_IM_STATUS_SUCCESS);
+		T_EQ("still OK", (long)info.last_noc_status, (long)MATTER_NOC_STATUS_OK);
+
+		info.accessing_fabric_index = 2u;
+		T_EQ("another fabric claiming the same label is answered",
+		     update_label(&srv, "Home", 4u, &response), MATTER_IM_STATUS_SUCCESS);
+		T_EQ("with LabelConflict in the body", (long)info.last_noc_status,
+		     (long)MATTER_NOC_STATUS_LABEL_CONFLICT);
+		T_EQ("and nothing was stored", (long)info.fabrics[1].label_len, 0L);
+
+		T_EQ("a 33-character label is a constraint error",
+		     update_label(&srv, k_long, sizeof(k_long) - 1u, &response),
+		     MATTER_IM_STATUS_CONSTRAINT_ERROR);
 	}
 
 	t_group("SetAliroReaderConfig accepts a well-formed identity");
