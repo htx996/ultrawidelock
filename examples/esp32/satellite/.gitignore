@@ -1,0 +1,13 @@
+# ESP-IDF build output + generated config (sdkconfig.defaults is the tracked source).
+#
+# managed_components/ matters beyond tidiness: ESP-IDF downloads third-party
+# components there, and tests/tooling/port_purity_check.sh scans untracked files
+# too. Vendored tinyusb carries a Zephyr OSAL header, which the gate correctly
+# reads as a Zephyr include inside the ESP tree -- so without this line a plain
+# `make esp-build APP=satellite` turns `make check` red for code nobody here
+# wrote. examples/esp32/reader ignores the same paths for the same reason.
+/build/
+/sdkconfig
+/sdkconfig.old
+/dependencies.lock
+/managed_components/

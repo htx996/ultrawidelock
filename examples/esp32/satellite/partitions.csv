@@ -1,0 +1,18 @@
+# Partition table for the ESP32-S3 satellite (16 MB flash, N16R8).
+#
+# Smaller than the reader's: this board never carries Matter, so there is no
+# fctry NVS for factory data and no need to pre-stage 4 MB of app. 2 MB is ample
+# for the engine plus Wi-Fi/ESP-NOW and leaves the rest unclaimed rather than
+# reserved for something this image will never hold.
+#
+# The `nvs` partition is where the sealed-link key lives (namespace `satlink`,
+# key `lk`). Erasing it is what a re-provision means, and it is why a plain
+# reflash keeps the key while `idf.py erase-flash` does not.
+#
+# Offsets are left blank so ESP-IDF computes and aligns them (the app lands on
+# the required 0x10000 boundary: 0x9000 + nvs 0x6000 + phy 0x1000 = 0x10000).
+#
+# Name,     Type, SubType, Offset,  Size,   Flags
+nvs,        data, nvs,     ,        0x6000,
+phy_init,   data, phy,     ,        0x1000,
+factory,    app,  factory, ,        0x200000,
