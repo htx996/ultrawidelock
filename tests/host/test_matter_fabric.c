@@ -17,6 +17,8 @@
  */
 #include <string.h>
 
+#include "matter_case.h"
+#include "ultrawidelock_hash.h"
 #include "matter_clusters.h"
 #include "matter_fabric.h"
 #include "matter_im.h"
@@ -101,6 +103,45 @@ void test_matter_fabric(void)
 	T_OK("public key is uncompressed", info.public_key[0] == 0x04u);
 	T_OK("public key is the certificate's",
 	     memcmp(info.public_key, k_node01_pubkey, sizeof(k_node01_pubkey)) == 0);
+
+	/*
+	 * PINNED AGAINST CHIP ITSELF, because "it verifies" is not enough here.
+	 * A Matter certificate's signature is the X.509 one over the DER
+	 * TBSCertificate, so a converter that is merely self-consistent will
+	 * verify certificates it produced and reject every real one -- which is
+	 * exactly the bug this replaced, and it survived thousands of green
+	 * assertions by agreeing with a test fixture that made the same
+	 * mistake. The only test worth having compares the bytes to what the
+	 * reference implementation builds for the same input.
+	 *
+	 * The digest is SHA-256 over CHIP's TBS for k_node01, 394 bytes.
+	 */
+	{
+		static const uint8_t chip_tbs_sha256[32] = {
+			0xad, 0xe1, 0xa1, 0x06, 0x1a, 0xd6, 0xfe, 0x55, 0xac, 0x5d, 0x8a,
+			0xdb, 0x56, 0x22, 0x7a, 0x8c, 0x26, 0x65, 0x33, 0x3c, 0x40, 0xdc,
+			0x59, 0x9e, 0x86, 0x11, 0x7c, 0x1f, 0x9e, 0xc2, 0xe6, 0x99,
+		};
+		uint8_t tbs[512];
+		uint8_t digest[32];
+		const uint8_t *signature;
+		size_t tbs_len = 0u;
+		struct ultrawidelock_sha256 hash;
+
+		T_EQ("certificate converts to canonical X.509 TBS",
+		     matter_case_cert_tbs(k_node01, sizeof(k_node01), tbs, sizeof(tbs), &tbs_len,
+					  &signature),
+		     MATTER_OK);
+		T_EQ("canonical TBS has CHIP's length", (long)tbs_len, 394L);
+		ultrawidelock_sha256_init(&hash);
+		ultrawidelock_sha256_update(&hash, tbs, tbs_len);
+		ultrawidelock_sha256_final(&hash, digest);
+		T_OK("canonical TBS is byte-identical to CHIP",
+		     memcmp(digest, chip_tbs_sha256, sizeof(digest)) == 0);
+		T_OK("signature is borrowed from the certificate",
+		     signature >= k_node01 &&
+			     signature + MATTER_CASE_SIG_LEN <= k_node01 + sizeof(k_node01));
+	}
 
 	t_group("a root certificate");
 

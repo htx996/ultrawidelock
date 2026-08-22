@@ -62,45 +62,62 @@ static void make_priv(uint8_t priv[32], uint8_t seed)
  * Build a Matter operational certificate the way a commissioner does, signed by
  * @p issuer_priv.
  *
- * The signature covers the certificate with its own signature element removed,
- * so this writes elements 1..10, signs those bytes, and then splices the
- * signature in before the end marker -- the exact inverse of what
- * matter_case_client.c's cert_verify() does to get them back. Getting that
- * inverse wrong in BOTH places the same way would hide a bug, which is why the
- * splice is written out here by hand rather than by calling anything shared.
+ * THE SIGNATURE COVERS THE DER, not the TLV. A Matter certificate is a
+ * re-encoding of an X.509 one and keeps the X.509 signature, so signing the TLV
+ * span produces a certificate nothing real will accept -- which is exactly what
+ * this fixture used to do, agreeing with a verifier that made the same mistake
+ * and hiding the fault from 8,000 passing assertions.
+ *
+ * So the whole profile is emitted with a ZERO signature, converted to the
+ * canonical DER TBSCertificate, signed over that, and the real signature spliced
+ * back over the placeholder -- which works because the TBS excludes it. The
+ * elements are spelled out in full, in order, because the converter accepts the
+ * operational profile and nothing looser.
  */
 static size_t build_cert(uint8_t *buf, size_t cap, uint64_t node_id, uint64_t fabric_id,
 			 const uint8_t *subject_pub, const uint8_t *issuer_priv)
 {
-	uint8_t sig[MATTER_CASE_SIG_LEN];
+	uint8_t sig[MATTER_CASE_SIG_LEN] = {0};
+	uint8_t der[512];
+	const uint8_t *sig_at;
 	struct matter_tlv_writer w;
-	size_t tbs = 0u;
-	size_t n;
+	size_t der_len = 0u;
+	size_t n = 0u;
+	static const uint8_t serial[] = {1u};
+	static const uint8_t key_id[20] = {1u};
 
 	matter_tlv_writer_init(&w, buf, cap);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(1u), serial, sizeof(serial));
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2u), 1u);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(3u), MATTER_TLV_LIST);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(20u), 1u);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(4u), 1u);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(5u), 0u);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(CERT_TAG_SUBJECT), MATTER_TLV_LIST);
 	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(DN_TAG_NODE_ID), node_id);
 	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(DN_TAG_FABRIC_ID), fabric_id);
 	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(7u), 1u);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(8u), 1u);
 	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(CERT_TAG_PUBLIC_KEY), subject_pub,
 				   MATTER_CASE_PUBKEY_LEN);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(10u), MATTER_TLV_LIST);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(1u), MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(1u), false);
 	(void)matter_tlv_end_container(&w);
-	T_EQ("cert body encodes", matter_tlv_writer_finish(&w, &tbs), MATTER_OK);
-
-	T_EQ("issuer signs it", matter_case_sign(issuer_priv, buf, tbs, sig), 0);
-
-	/* buf[tbs - 1] is the structure's end marker; the signature element goes
-	 * in front of it. Control byte 0x30 = octet string, one-byte length,
-	 * context tag. */
-	n = tbs - 1u;
-	T_OK("cert fits", (n + 3u + sizeof(sig) + 1u) <= cap);
-	buf[n++] = 0x30u;
-	buf[n++] = CERT_TAG_SIGNATURE;
-	buf[n++] = (uint8_t)sizeof(sig);
-	memcpy(&buf[n], sig, sizeof(sig));
-	n += sizeof(sig);
-	buf[n++] = 0x18u;
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2u), 1u);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(4u), key_id, sizeof(key_id));
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(5u), key_id, sizeof(key_id));
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(CERT_TAG_SIGNATURE), sig, sizeof(sig));
+	(void)matter_tlv_end_container(&w);
+	T_EQ("certificate encodes", matter_tlv_writer_finish(&w, &n), MATTER_OK);
+	T_EQ("certificate converts to X.509 TBS",
+	     matter_case_cert_tbs(buf, n, der, sizeof(der), &der_len, &sig_at), MATTER_OK);
+	T_EQ("issuer signs DER TBS", matter_case_sign(issuer_priv, der, der_len, sig), 0);
+	memcpy((uint8_t *)sig_at, sig, sizeof(sig));
 	return n;
 }
 
@@ -409,8 +426,12 @@ void test_matter_case_client(void)
 					     k_fabric_id, s_peer.pub, other_root);
 		n2 = server_sigma2(&got1, t1, s2, sizeof(s2), srv_shared);
 		T_EQ("sigma2 decodes", matter_case_client_sigma2_decode(s2, n2, &got2), MATTER_OK);
+		/* E_TYPE, not E_ACCESS: this is the CHAIN failing, and the two
+		 * are now separable so that a log can name the right one. They
+		 * used to be the same code, which is how a chain that could
+		 * never verify was read for hours as an identity mismatch. */
 		T_EQ("a NOC this fabric's root never signed",
-		     matter_case_client_sigma2_open(&open_in, &open_out), MATTER_E_ACCESS);
+		     matter_case_client_sigma2_open(&open_in, &open_out), MATTER_E_TYPE);
 	}
 
 	t_group("malformed input, refused rather than half-read");
