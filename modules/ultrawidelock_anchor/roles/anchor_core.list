@@ -1,0 +1,14 @@
+# ultrawidelock_anchor role: everything CONFIG_ULTRAWIDELOCK_ANCHOR compiles unconditionally --
+# door swing geometry, two-anchor fusion, the side-of-door gate and its log,
+# the satellite protocol half, the SLAM estimator and the report formatter.
+# Integer arithmetic over caller-owned structs, so it links anywhere.
+# Consumers: modules/ultrawidelock_anchor/CMakeLists.txt,
+# ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
+# One repo-root-relative path per line, sorted; add HERE and nowhere else.
+modules/ultrawidelock_anchor/src/ultrawidelock_door.c
+modules/ultrawidelock_anchor/src/ultrawidelock_fusion.c
+modules/ultrawidelock_anchor/src/ultrawidelock_report.c
+modules/ultrawidelock_anchor/src/ultrawidelock_satellite.c
+modules/ultrawidelock_anchor/src/ultrawidelock_side.c
+modules/ultrawidelock_anchor/src/ultrawidelock_side_log.c
+modules/ultrawidelock_anchor/src/ultrawidelock_slam.c

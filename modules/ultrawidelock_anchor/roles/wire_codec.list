@@ -1,0 +1,8 @@
+# ultrawidelock_anchor role: the one file that owns BOTH message families -- WV2 witness
+# reports and WV3 anchor reports share a version byte, so one codec owns it.
+# Reached by CONFIG_ULTRAWIDELOCK_WITNESS_CODEC and by CONFIG_ULTRAWIDELOCK_ANCHOR_MSG, which is
+# how a satellite that only encodes its own measurement avoids the whole fusion
+# module. Consumers: modules/ultrawidelock_anchor/CMakeLists.txt,
+# ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
+# One repo-root-relative path per line, sorted.
+modules/ultrawidelock_anchor/src/ultrawidelock_witness_msg.c

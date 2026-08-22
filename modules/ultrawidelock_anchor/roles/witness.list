@@ -1,0 +1,8 @@
+# ultrawidelock_anchor role: the witness-only halves behind CONFIG_ULTRAWIDELOCK_WITNESS_CODEC --
+# the label core and the advertiser picker. An anchor-only image compiles
+# neither. The wire codec they speak is wire_codec.list, shared with the
+# satellite. Consumers: modules/ultrawidelock_anchor/CMakeLists.txt,
+# ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
+# One repo-root-relative path per line, sorted.
+modules/ultrawidelock_anchor/src/ultrawidelock_witness_core.c
+modules/ultrawidelock_anchor/src/ultrawidelock_witness_pick.c
