@@ -114,14 +114,15 @@ The implemented foundation now includes:
   has not defined a boot-mode signal yet.
 - `storage/kv_flash_freertos.c` is the persistent key-value store the reader's
   provisioning blob and OpenThread's settings both need. It is an append-only
-  log over two flash pages, so a value is replaced by appending a newer record
-  rather than by rewriting an older one; the newest record for a key wins, and
+  log over two 8 KB logical pages, each spanning two physical erase pages, so a
+  value is replaced by appending a newer record rather than by rewriting an
+  older one; the newest record for a key wins, and
   compaction copies the live set to the other page and erases the first. Every
   order in it is chosen against a power loss: a record's state word is written
   after its payload, so a torn record is never mistaken for a complete one, and
   a compaction target's page header is written after its records, so an
   interrupted compaction loses the work and not the data. The store occupies
-  the same two pages the Zephyr oracle reserves at `0x7e000`, but its record
+  the same 16 KB region the Zephyr oracle reserves at `0x7c000`, but its record
   format is its own and is not Zephyr NVS: a board reflashed from the Zephyr
   build finds no valid page, reformats, and loses whatever the Zephyr settings
   partition held.
@@ -131,11 +132,11 @@ The implemented foundation now includes:
   moves that one blob under `ULTRAWIDELOCK_KV_KEY_CRED_PROV`. Every failure still leaves
   a usable dev identity, because a reader that will not boot is worse than one
   that boots unprovisioned, and a stored record longer than this firmware can
-  write is refused rather than parsed. A factory reset deletes that one key
-  instead of the store: OpenThread's SRP client key shares these pages, the SRP
-  host name is the factory EUI-64, and asking for that name with a new key is
-  refused until the old lease expires, up to 14 days attached to Thread but
-  unreachable on it. A static assert holds `ULTRAWIDELOCK_PROV_BLOB_MAX` (700 bytes at
+  write is refused rather than parsed. A factory reset deletes the reader key
+  and the Matter records it owns without reformatting unrelated OpenThread
+  settings. The SRP client key and generated service-name identity are retained
+  and erased as one unit, so a new key is not paired with an old claimed name.
+  A static assert holds `ULTRAWIDELOCK_PROV_BLOB_MAX` (700 bytes at
   `ULTRAWIDELOCK_TRUST_MAX` 6) inside one record, so raising the anchor limit fails the
   build rather than the first provisioning write.
 - `radio/nrf_802154_irq_freertos.c` maps the driver's IRQ abstraction to CMSIS
@@ -397,12 +398,11 @@ make freertos-build \
   QORVO_SDK_DIR=<path-to-extracted-DW3_QM33_SDK_1.1.1>
 ```
 
-The image is assembled in layers, and a layer was only added once the one below
-it linked, because a first link that reports its section sizes is worth more
-here than a complete graph that does not. The binding constraint is 512 KB of
-flash and 128 KB of RAM, and the Zephyr oracle overflows 128 KB by 1,752 bytes
-with the same feature set, so every layer was measured as it landed. All of them
-are now linked and running on hardware.
+The image was assembled in layers, and a layer was only added once the one below
+it linked. The binding constraint is 512 KB of flash and 128 KB of RAM. The
+current Zephyr production oracle fits at 120,740 B of RAM with 10,332 B spare;
+FreeRTOS must still be measured from its own ELF because its task and storage
+layout differs. The base layers below are linked and have hardware evidence.
 
 What is linked:
 
@@ -418,11 +418,12 @@ What is linked:
 | UWB | the ranging engine, the vendored decadriver, and the DW3110 backends |
 | Thread | OpenThread as an MTD, built through its own CMake, plus the port's adapters |
 
-The complete image is 418,584 bytes of flash and 108,092 of RAM: 96 percent of
+The recorded non-Matter image is 418,584 bytes of flash and 108,092 of RAM: 96 percent of
 the 0x6a000 application slot and 82 percent of the RAM budget. Flash is the tight
-one, with under 16 KB spare, which is why the Matter commissioning stack is not
-a deferred item but an excluded one -- it is 3,417 lines and would not come
-close to fitting. A credential is typed in over the USB console instead.
+one, with under 16 KB spare. `FREERTOS_MATTER=ON` selects the separate Matter
+variant and links the portable commissioning stack; do not use the non-Matter
+number as its budget. A credential is typed over USB only in the non-Matter
+console build.
 
 `ultrawidelock_uwb_reach` still runs on every build and still reports an upper bound
 rather than a cost, because `--gc-sections` charges only what is reachable and a
@@ -455,9 +456,9 @@ Three vendor trees feed the build and none of them is copied into the
 repository: the extracted Qorvo SDK, the west workspace, and the Apache NimBLE
 checkout, each pinned by `platform.lock.yml`.
 
-`board/nrf52833_lock.ld` stops the image at `0x7e000`. The two pages above that
-are the key-value store, which holds the credential provisioning record and
-OpenThread's settings including the SRP client key, so an oversized image is a
+`board/nrf52833_lock.ld` stops the image at `0x74000`. The 16 KB region at
+`0x7c000` is the key-value store, which holds the credential provisioning
+record and OpenThread's settings including the SRP client key, so an oversized image is a
 link error rather than a lock that forgets its identity after a firmware update.
 MCUboot occupies the bottom of flash and the application runs from `0x0a000`
 with its vector table relocated, which is why the store sits at the top and out

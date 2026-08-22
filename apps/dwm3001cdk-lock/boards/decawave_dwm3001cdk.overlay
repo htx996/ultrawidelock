@@ -12,16 +12,18 @@
  * The board's DTS carries an MCUboot dual-slot layout whose app slot is only
  * 0x38000 (224 KB), but NCS builds this with Partition Manager, which ignores
  * the DTS partitions entirely and derives its own map. With
- * CONFIG_BOOTLOADER_MCUBOOT=n that map is:
+ * CONFIG_BOOTLOADER_MCUBOOT=n Partition Manager derives a map. The shipping
+ * lock enables MCUboot and pins its actual map in ../pm_static.yml:
  *
- *     app              0x00000..0x7e000   504 KB
- *     settings_storage 0x7e000..0x80000     8 KB
+ *     app              0x0a200..0x74000
+ *     patch_staging    0x74000..0x7c000    32 KB
+ *     settings_storage 0x7c000..0x80000    16 KB
  *
  * Verified by building with and without a DTS partition override: partitions.yml
  * came out byte-identical both ways, as did the memory report. So a DTS override
  * here would be inert and would mislead the next reader into thinking the app
- * slot depends on it. If the map ever needs to change, add a pm_static.yml —
- * that is the knob Partition Manager actually reads.
+ * slot depends on it. pm_static.yml is the knob Partition Manager actually
+ * reads.
  */
 
 /*

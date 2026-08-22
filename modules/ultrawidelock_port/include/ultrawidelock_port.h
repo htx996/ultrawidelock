@@ -18,6 +18,8 @@
  *   ultrawidelock_sleep_us                    short busy-wait, microseconds (deca_sleep)
  *   ultrawidelock_cycle_get_32                free-running counter, RX-arm latency probe
  *   ultrawidelock_mutex_init/lock/unlock      blocking mutex (credential reader trust store)
+ *   ultrawidelock_mutex_trylock               the same mutex, for a caller that must not wait
+ *   ultrawidelock_atomic_xchg                 read-and-replace a word, across threads
  */
 #ifndef ULTRAWIDELOCK_PORT_H
 #define ULTRAWIDELOCK_PORT_H
@@ -69,6 +71,35 @@ static inline void ultrawidelock_mutex_init(ultrawidelock_mutex_t *m)
 static inline void ultrawidelock_mutex_lock(ultrawidelock_mutex_t *m)
 {
 	k_mutex_lock(m, K_FOREVER);
+}
+/**
+ * Take @p m only if it is free. NEVER blocks.
+ *
+ * For a caller that cannot wait because something else is already waiting on
+ * it: a callback running on a stack's own thread, with that stack's API lock
+ * held, where blocking would close a lock-ordering cycle. Such a caller must
+ * treat failure as an ordinary outcome and drop the work, not retry in place.
+ *
+ * @return 0 when the mutex was taken and the caller must unlock it, non-zero
+ *         when it was already held and the caller took nothing.
+ */
+static inline int ultrawidelock_mutex_trylock(ultrawidelock_mutex_t *m)
+{
+	return k_mutex_lock(m, K_NO_WAIT);
+}
+typedef atomic_t ultrawidelock_atomic_t;
+/**
+ * @brief Replace @p *a with @p val and return what it held, indivisibly.
+ *
+ * The one atomic this codebase needs: a word one thread STORES into and another
+ * thread TAKES, where taking must also clear it so the value is consumed once.
+ * A plain read-then-write loses the race and the value is handled twice.
+ *
+ * @return the previous value.
+ */
+static inline long ultrawidelock_atomic_xchg(ultrawidelock_atomic_t *a, long val)
+{
+	return (long)atomic_set(a, (atomic_val_t)val);
 }
 static inline void ultrawidelock_mutex_unlock(ultrawidelock_mutex_t *m)
 {
@@ -132,9 +163,38 @@ static inline void ultrawidelock_mutex_lock(ultrawidelock_mutex_t *m)
 {
 	xSemaphoreTake(m->h, portMAX_DELAY);
 }
+/**
+ * Take @p m only if it is free. NEVER blocks.
+ *
+ * For a caller that cannot wait because something else is already waiting on
+ * it: a callback running on a stack's own thread, with that stack's API lock
+ * held, where blocking would close a lock-ordering cycle. Such a caller must
+ * treat failure as an ordinary outcome and drop the work, not retry in place.
+ *
+ * @return 0 when the mutex was taken and the caller must unlock it, non-zero
+ *         when it was already held and the caller took nothing.
+ */
+static inline int ultrawidelock_mutex_trylock(ultrawidelock_mutex_t *m)
+{
+	return xSemaphoreTake(m->h, 0) == pdTRUE ? 0 : -1;
+}
 static inline void ultrawidelock_mutex_unlock(ultrawidelock_mutex_t *m)
 {
 	xSemaphoreGive(m->h);
+}
+typedef long ultrawidelock_atomic_t;
+/**
+ * @brief Replace @p *a with @p val and return what it held, indivisibly.
+ *
+ * The one atomic this codebase needs: a word one thread STORES into and another
+ * thread TAKES, where taking must also clear it so the value is consumed once.
+ * A plain read-then-write loses the race and the value is handled twice.
+ *
+ * @return the previous value.
+ */
+static inline long ultrawidelock_atomic_xchg(ultrawidelock_atomic_t *a, long val)
+{
+	return __atomic_exchange_n(a, val, __ATOMIC_SEQ_CST);
 }
 
 #elif defined(ULTRAWIDELOCK_PORT_FREERTOS)
@@ -206,9 +266,38 @@ static inline void ultrawidelock_mutex_lock(ultrawidelock_mutex_t *m)
 {
 	(void)xSemaphoreTake(m->h, portMAX_DELAY);
 }
+/**
+ * Take @p m only if it is free. NEVER blocks.
+ *
+ * For a caller that cannot wait because something else is already waiting on
+ * it: a callback running on a stack's own thread, with that stack's API lock
+ * held, where blocking would close a lock-ordering cycle. Such a caller must
+ * treat failure as an ordinary outcome and drop the work, not retry in place.
+ *
+ * @return 0 when the mutex was taken and the caller must unlock it, non-zero
+ *         when it was already held and the caller took nothing.
+ */
+static inline int ultrawidelock_mutex_trylock(ultrawidelock_mutex_t *m)
+{
+	return xSemaphoreTake(m->h, 0) == pdTRUE ? 0 : -1;
+}
 static inline void ultrawidelock_mutex_unlock(ultrawidelock_mutex_t *m)
 {
 	(void)xSemaphoreGive(m->h);
+}
+typedef long ultrawidelock_atomic_t;
+/**
+ * @brief Replace @p *a with @p val and return what it held, indivisibly.
+ *
+ * The one atomic this codebase needs: a word one thread STORES into and another
+ * thread TAKES, where taking must also clear it so the value is consumed once.
+ * A plain read-then-write loses the race and the value is handled twice.
+ *
+ * @return the previous value.
+ */
+static inline long ultrawidelock_atomic_xchg(ultrawidelock_atomic_t *a, long val)
+{
+	return __atomic_exchange_n(a, val, __ATOMIC_SEQ_CST);
 }
 
 #elif defined(ULTRAWIDELOCK_PORT_HOST)
@@ -287,32 +376,74 @@ static inline uint32_t ultrawidelock_cycle_get_32(void)
 	return (uint32_t)ultrawidelock_uptime_us(); /* us resolution is plenty for the probe */
 }
 /**
- * @brief Opaque mutex type for host tests (single-threaded, no-op).
+ * @brief Mutex for host tests: a held-depth counter, never a blocking object.
+ *
+ * The suite is single-threaded, so nothing can ever wait and no lock is needed
+ * for what a mutex is normally for. The count is kept anyway, because
+ * ultrawidelock_mutex_trylock() has to be able to FAIL: the branch a caller takes when
+ * it cannot get the lock is real code, it runs on target whenever two threads
+ * meet, and a stub that always succeeds is a stub that hides it. A test reaches
+ * that branch by taking the mutex itself and then calling in.
  */
 typedef int ultrawidelock_mutex_t;
 /**
- * @brief Initialize a mutex (host-test stub).
- * @param m pointer to mutex to initialize; no-op in single-threaded tests.
+ * @brief Initialize a mutex (host): unheld.
+ * @param m pointer to mutex to initialize.
  */
 static inline void ultrawidelock_mutex_init(ultrawidelock_mutex_t *m)
 {
-	(void)m;
+	*m = 0;
 }
 /**
- * @brief Acquire a mutex (host-test stub).
- * @param m pointer to mutex to lock; no-op in single-threaded tests.
+ * @brief Acquire a mutex (host). Cannot block: records the depth and returns.
+ * @param m pointer to mutex to lock.
  */
 static inline void ultrawidelock_mutex_lock(ultrawidelock_mutex_t *m)
 {
-	(void)m;
+	*m += 1;
 }
 /**
- * @brief Release a mutex (host-test stub).
- * @param m pointer to mutex to unlock; no-op in single-threaded tests.
+ * @brief Take a mutex only if free (host).
+ *
+ * NOT recursive, and deliberately unlike Zephyr's k_mutex, which grants a
+ * K_NO_WAIT take to the thread already holding it. The divergence is only
+ * reachable by a single thread re-entering its own critical section, which is a
+ * bug wherever it happens, so failing here surfaces it instead of hiding it.
+ *
+ * @param m pointer to mutex to try.
+ * @return 0 when taken, non-zero when already held.
+ */
+static inline int ultrawidelock_mutex_trylock(ultrawidelock_mutex_t *m)
+{
+	if (*m != 0) {
+		return -1;
+	}
+	*m = 1;
+	return 0;
+}
+/**
+ * @brief Release a mutex (host).
+ * @param m pointer to mutex to unlock.
  */
 static inline void ultrawidelock_mutex_unlock(ultrawidelock_mutex_t *m)
 {
-	(void)m;
+	if (*m > 0) {
+		*m -= 1;
+	}
+}
+typedef long ultrawidelock_atomic_t;
+/**
+ * @brief Replace @p *a with @p val and return what it held, indivisibly.
+ *
+ * The one atomic this codebase needs: a word one thread STORES into and another
+ * thread TAKES, where taking must also clear it so the value is consumed once.
+ * A plain read-then-write loses the race and the value is handled twice.
+ *
+ * @return the previous value.
+ */
+static inline long ultrawidelock_atomic_xchg(ultrawidelock_atomic_t *a, long val)
+{
+	return __atomic_exchange_n(a, val, __ATOMIC_SEQ_CST);
 }
 
 #else

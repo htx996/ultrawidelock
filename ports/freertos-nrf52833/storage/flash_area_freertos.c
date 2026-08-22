@@ -13,7 +13,7 @@
  * The two windows come from the linker script, not from constants here. That is
  * the whole point: board/nrf52833_lock.ld is the one file that owns the flash
  * map, and a staging writer that disagreed with it about where the partition
- * ends would be discovered by overwriting the key-value store at 0x7e000 -- the
+ * ends would be discovered by overwriting the key-value store at 0x7c000 -- the
  * exact failure the map was pinned to prevent.
  *
  * PRIMARY is deliberately the slot MCUboot validates, header included, and not

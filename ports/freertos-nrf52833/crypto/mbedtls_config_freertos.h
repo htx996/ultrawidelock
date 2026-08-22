@@ -94,9 +94,9 @@ void ultrawidelock_freertos_mbedtls_free(void *block);
  * repeated here because this file replaces the defaults wholesale.
  *
  * AES tables live in flash, not RAM. The generated form costs about 8 KB of
- * RAM, and RAM is the binding constraint on this part -- the oracle overflows
- * its 128 KB by 1,752 B with the reader, the provisioning console and Thread
- * all enabled, so the trade goes the other way here than it would on a part
+ * RAM, and RAM is the binding constraint on this part -- the current Zephyr
+ * production oracle uses 120,740 B with reader, Matter, Thread, and SMP enabled,
+ * so the trade goes the other way here than it would on a part
  * with room.
  */
 #define MBEDTLS_ECP_NIST_OPTIM

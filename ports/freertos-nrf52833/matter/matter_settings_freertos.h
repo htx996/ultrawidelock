@@ -46,7 +46,7 @@ int settings_delete(const char *name);
 /**
  * Registered handler, called once per stored record under its subtree.
  *
- * @param name the path BELOW the subtree, e.g. "f0" for "mfab/f0".
+ * @param name the path BELOW the subtree, e.g. "f0" for "mf2/f0".
  */
 typedef int (*settings_set_cb)(const char *name, size_t len, settings_read_cb read_cb,
 			       void *cb_arg);

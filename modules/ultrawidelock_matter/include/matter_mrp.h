@@ -165,13 +165,19 @@ enum matter_mrp_action {
 };
 
 /*
- * NOT WIRED UP ON THE DWM3001CDK, DELIBERATELY. Read this before "fixing" it.
+ * BARELY WIRED UP ON THE DWM3001CDK, AND DELIBERATELY SO. Read this before
+ * "fixing" it.
  *
- * That port drives only matter_mrp_window_* -- duplicate suppression and the
- * replay window -- and never arms a retransmit timer. Everything it SENDS is a
- * reply to something the peer just sent, except the subscription report, and
- * the peer retransmits its own requests until it is answered. So the one thing
- * a timer here would add is resending a lost report.
+ * The RESPONDER side drives only matter_mrp_window_* -- duplicate suppression
+ * and the replay window -- and never arms a retransmit timer. Everything it
+ * SENDS is a reply to something the peer just sent, except the subscription
+ * report, and the peer retransmits its own requests until it is answered. So
+ * the one thing a timer there would add is resending a lost report.
+ *
+ * The one exception is the Matter CLIENT's handshake
+ * (apps/dwm3001cdk-lock/src/matter_client.c), which arms a real timer. That is
+ * the condition named at the bottom of this note, met: a Sigma1 is originated
+ * rather than replied to, and somebody is standing at the door while it goes.
  *
  * Which is exactly what the heartbeat already covers. matter_commission.c
  * re-reports every SUBSCRIPTION_HEARTBEAT_S (120 s) against a max_interval of

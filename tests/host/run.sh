@@ -372,8 +372,17 @@ _pl_cleanup() {
 pl_start() { # <name> <fn> -- run fn in the background, capturing output + status
 	local name="$1" fn="$2"
 	{
+		# The stage runs in its OWN subshell, started with &, never as the
+		# left side of || -- bash suppresses errexit through a condition
+		# context, even an explicit `set -e` inside it, so a stage invoked
+		# as `"$fn" || rc=$?` keeps going after a failed compile and RUNS
+		# THE PREVIOUS BINARY. That reported a green suite over code that
+		# did not build. Here -e is live inside the stage: the first
+		# failing compiler ends it, and wait carries out its real status.
+		(set -e; "$fn") >"$_pl_dir/$name.out" 2>&1 &
+		local inner=$!
 		local rc=0
-		"$fn" >"$_pl_dir/$name.out" 2>&1 || rc=$?
+		wait "$inner" || rc=$?
 		printf '%s' "$rc" >"$_pl_dir/$name.rc"
 	} &
 	_pl_pids="$_pl_pids $!"

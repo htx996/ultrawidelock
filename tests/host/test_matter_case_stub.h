@@ -19,6 +19,15 @@ extern int g_case_sign_fail;
 extern int g_case_verify_calls;
 extern int g_case_verify_fail;
 
+/**
+ * Make ECDH symmetric and signatures checkable, so the initiator and the
+ * responder can be run against each other. See the .c file. Cleared by reset().
+ */
+extern int g_case_stub_paired;
+
+/** The public half paired mode pairs with @p priv. Meaningless outside it. */
+void test_matter_case_stub_pubkey(const uint8_t priv[32], uint8_t out[65]);
+
 void test_matter_case_stub_reset(void);
 
 #endif /* ULTRAWIDELOCK_TEST_MATTER_CASE_STUB_H */

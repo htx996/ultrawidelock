@@ -506,7 +506,8 @@ DOC_GROUPS = (
     ("Porting", ("porting", "porting-esp32", "chipset-memory")),
     ("Protocol", ("protocol-notes", "protocol-research", "range-integrity",
                   "approach-direction", "uwb-mac-login",
-                  "matter-door-lock-events", "bodycal-falsification")),
+                  "matter-door-lock-events", "matter-binding",
+                  "bodycal-falsification")),
     ("Reference", ("reference",)),
 )
 

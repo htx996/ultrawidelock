@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: ISC */
 
 /*
- * The port's persistent key-value store, on two pages of internal flash.
+ * The port's persistent key-value store, on four physical pages of internal flash.
  *
  * The part can only clear bits, and can only set them back a whole page at a
  * time, so a value is never overwritten in place: every write appends a record
@@ -10,10 +10,11 @@
  * classic wear-levelled log, and everything below is about surviving a reset in
  * the middle of one.
  *
- * The layout matches the Zephyr oracle's reservation exactly: two 4 KB pages at
- * 0x7e000. That address is pinned there because it holds the reader's private
- * key and the trust anchors, and a board is reflashed without erasing so those
- * survive; moving it would silently orphan them.
+ * The layout matches the Zephyr oracle's reservation exactly: two 8 KB logical
+ * pages at 0x7c000. Each logical page spans two physical erase pages, giving
+ * compaction enough room for five fabrics and their fabric-scoped ACLs. The
+ * reader key and trust anchors share this store, so a normal firmware flash
+ * must leave the whole region intact.
  */
 #include <ultrawidelock_freertos_kv.h>
 
@@ -28,10 +29,10 @@
 #include <task.h>
 
 #ifndef ULTRAWIDELOCK_FREERTOS_KV_BASE
-#define ULTRAWIDELOCK_FREERTOS_KV_BASE 0x7e000u
+#define ULTRAWIDELOCK_FREERTOS_KV_BASE 0x7c000u
 #endif
 
-#define KV_PAGE_SIZE ULTRAWIDELOCK_FREERTOS_FLASH_PAGE_SIZE
+#define KV_PAGE_SIZE (2u * ULTRAWIDELOCK_FREERTOS_FLASH_PAGE_SIZE)
 #define KV_PAGE_COUNT 2u
 #define KV_ALIGN ULTRAWIDELOCK_FREERTOS_FLASH_WRITE_ALIGN
 
@@ -46,15 +47,9 @@
  * starts from an empty store. Nothing has shipped on this port, so there is no
  * store in the field to strand.
  *
- * Three formats have now existed at 0x7e000: Zephyr's NVS, this store before
- * the rename, and this store after it. None of them can read another, and each
- * reformats what it finds. That has already been paid for once on hardware —
- * booting a FreeRTOS image on a Zephyr-provisioned board destroyed the reader
- * identity, the trust anchors and the SRP key, and the board came back only
- * from a full backup. It is survivable now because nothing has shipped from
- * either port. It stops being survivable the moment one does: a fielded board
- * that changes ports needs a migration, and the migration has to exist before
- * the image does, not after a customer finds out.
+ * Earlier formats lived at 0x7e000. This clean-break layout starts at 0x7c000;
+ * Zephyr NVS and this custom store intentionally do not cross-read. Switching
+ * between them requires re-pairing Matter and Home Key.
  */
 #define KV_MAGIC 0x554c574bu
 

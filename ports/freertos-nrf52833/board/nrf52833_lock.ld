@@ -8,9 +8,9 @@
  * duplicating here. What matters at this end is that the two images agree, for
  * one reason above all others:
  *
- *   settings_storage at 0x7e000 MUST NOT MOVE. It holds the reader identity,
+ *   settings_storage at 0x7c000 MUST NOT MOVE. It holds the reader identity,
  *   the trust anchors and OpenThread's SRP key, and a board is reflashed with
- *   `west flash` and no --erase precisely so that those two pages survive. A
+ *   `west flash` and no --erase precisely so that those four pages survive. A
  *   FreeRTOS image that placed its store anywhere else would orphan every key
  *   provisioned against that board -- silently, and only discovered later.
  *
@@ -21,8 +21,8 @@
  *   0x00000  mcuboot           40,960 B  a separate image; see the note below
  *   0x0a000  mcuboot_pad          512 B  the signed image header imgtool writes
  *   0x0a200  app              433,664 B  THIS IMAGE
- *   0x74000  patch_staging     40,960 B  one inbound OTA delta patch
- *   0x7e000  settings_storage   8,192 B  the key-value store, unchanged
+ *   0x74000  patch_staging     32,768 B  one inbound OTA delta patch
+ *   0x7c000  settings_storage  16,384 B  the key-value store
  *
  * WHY THE BOOTLOADER BEING A ZEPHYR BUILD IS NOT A CONTRADICTION. MCUboot is a
  * separate image with its own reset vector, and nothing about it is linked
@@ -43,7 +43,7 @@
 MEMORY
 {
   FLASH (rx)  : ORIGIN = 0x0000a200, LENGTH = 0x69e00
-  STORAGE (r) : ORIGIN = 0x0007e000, LENGTH = 0x02000
+  STORAGE (r) : ORIGIN = 0x0007c000, LENGTH = 0x04000
   RAM (rwx)   : ORIGIN = 0x20000000, LENGTH = 0x20000
 }
 
@@ -56,7 +56,7 @@ __ultrawidelock_storage_end = ORIGIN(STORAGE) + LENGTH(STORAGE);
  * staging code cannot disagree with it.
  */
 __ultrawidelock_patch_staging_start = 0x00074000;
-__ultrawidelock_patch_staging_end = 0x0007e000;
+__ultrawidelock_patch_staging_end = 0x0007c000;
 
 /*
  * The vector table's address, which the startup code loads into VTOR. Taken

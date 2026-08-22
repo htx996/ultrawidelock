@@ -214,7 +214,7 @@ static void scenario_after_reboot(void)
 		      length == sizeof(expect) && memcmp(out, expect, sizeof(expect)) == 0 &&
 		      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK && length == 3);
 	CHECK("the log continues where it left off, without a second copy",
-	      ultrawidelock_freertos_kv_free_bytes() < 4088u);
+	      ultrawidelock_freertos_kv_free_bytes() < 8184u);
 }
 
 /*

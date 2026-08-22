@@ -62,6 +62,7 @@ suite_cmd() {
 	zopt) echo "bash tests/tooling/zephyr_opt_suite.sh" ;;
 	twin) echo "bash tests/tooling/twin_suite.sh" ;;
 	ui) echo "bash scripts/lib/ui.sh --self-test" ;;
+	bindhelper) echo "python3 scripts/bind-helper.py --self-test" ;;
 	freertos) echo "bash tests/ports/freertos-nrf52833/run.sh" ;;
 	patchdrift) echo "bash tests/tooling/patch_drift_check.sh" ;;
 	esac
@@ -81,6 +82,7 @@ suite_label() {
 	zopt) echo "zephyr-opt tooling" ;;
 	twin) echo "wasm twin" ;;
 	ui) echo "progress display" ;;
+	bindhelper) echo "binding helper" ;;
 	freertos) echo "FreeRTOS port" ;;
 	patchdrift) echo "integration patches" ;;
 	esac
@@ -258,7 +260,7 @@ run_suite() { # <suite> <outfile> <metafile>
 	fi
 }
 
-SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt twin ui}"
+SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt twin ui bindhelper}"
 declare -a NAMES OUTS METAS PIDS
 n=0
 for s in $SEL; do

@@ -72,6 +72,13 @@ to pass offline. The `twin` suite is in the default set and needs the emscripten
 SDK, which it skips loudly for rather than passing quietly, so a machine without
 emscripten still gets an honest verdict on everything else.
 
+A stage whose compile fails fails the run. That is worth stating because it was
+not always true: stages run in parallel, and one invoked as `"$fn" || rc=$?`
+loses `errexit` to bash's condition context, so a failed compile fell through
+and ran the *previous* binary -- a green suite over code that did not build.
+Each stage now runs in its own `(set -e; ...)` subshell whose real status
+`wait` reports.
+
 ## Static analysis
 
 Four passes read the portable tree, each catching what the others cannot:

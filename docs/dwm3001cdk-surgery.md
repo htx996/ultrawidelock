@@ -24,9 +24,12 @@ the ESP32 port — see §9.2).
 
 ### 1.1 The budget, measured
 
-**MEASURED.** Reader + hand-written Matter node + Thread MTD/SED, at the end of this
-work: **126,760 B of 131,072 B (96.7%)**, 4,312 B free. Flash was never close —
-442 KB of 504 KB (85%).
+**MEASURED.** Reader + hand-written Matter node + Thread MTD/MED, in the
+`RELEASE=1 SMP=1` image after the five-fabric transaction work:
+**120,740 B of 131,072 B (92.12%)**, 10,332 B free. Application flash is
+397,360 B of 433,664 B (91.63%). The like-for-like increase against clean
+`main` is 4,992 B of RAM and 8,560 B of flash; both builds used NCS v3.3.0,
+Zephyr 4.3.99, LTO, release logging, and SMP.
 
 **That is no longer the shape of the problem.** After the speed/robustness work
 the same image measures **118,312 B RAM (90.3%)** and **417,684 B of the 433,664 B
@@ -119,14 +122,16 @@ Interaction Model — decrypt, decode, cluster command, response encode, framing
    milliseconds. The commissioner retransmitted Sigma1 and the second fabric's CASE died
    with `Sigma3 REJECTED (-6)` ×5, then `RemoveFabric`.
 
-**Rule: persist at `CommissioningComplete` only, and submit it to the system work queue.**
-Apple runs commissioning twice (once per administrator), so both fabrics are still
-captured. A fabric is worthless before commissioning completes anyway — if the
-commissioner gives up half way, the fail-safe is supposed to *discard* it.
+**Current rule: prepare only provisional state before `CommissioningComplete`,
+then cross a durability boundary on the system work queue before returning
+success.** The OpenThread callback waits on a bounded semaphore; it never writes
+NVS itself. A failed persistence operation therefore fails the command instead
+of acknowledging an identity that will disappear after reset.
 
-Deferring also has to happen **after** the response has left: the InvokeResponse is still
-in the shared report buffer at that point, and building a second message there overwrites
-the reply with the report.
+Each attempt owns only the slots and staged Thread data it created. Completion
+promotes those slots to committed state; fail-safe expiry clears only those
+provisional slots. An established Apple fabric is no longer collateral damage
+when a later Home Assistant commissioner aborts.
 
 ---
 
@@ -165,13 +170,20 @@ The session role is unchanged, which makes this cheap: keys stay role-relative t
 the exchange role differs — set `I`, use an id of your own, and **do not** write it back
 over the peer's live exchange id.
 
-Two subtleties, both found by tests rather than by reading the code:
+Three subtleties, all found by tests rather than by reading the code:
 
 - **Never piggyback the peer's pending ack onto an exchange you just opened.** An ack
   names a counter *within* an exchange.
 - **Do not clear `ack_pending` on that path.** Clearing an ack that was never encoded
   makes the peer retransmit a message already handled, and the exchange that owes the ack
   stalls.
+- **Acknowledge a subscription report's StatusResponse on the report's OWN exchange,
+  with `I` set.** CHIP matches an inbound message to an exchange by id *and* by the
+  initiator flag being the opposite of its own (`ExchangeContext::MatchExchange`), so an
+  ack framed with `I` clear on the peer's exchange id matches nothing and is dropped as
+  unsolicited -- and the peer retransmits the very message being acknowledged. Every
+  `LockState` report drew the full MRP schedule until `matter_exchange_ack_initiator()`
+  existed.
 
 ### 3.3 Report on change
 
@@ -186,8 +198,8 @@ changed (600 s is what Apple asks for here). Reporting only on change means **a 
 nobody touches for ten minutes stops existing**.
 
 One timer for all subscriptions, not one each: they carry the same attribute, the
-interval is a floor rather than a schedule, and six timers is not a reasonable thing to
-spend at 96.7% RAM. 120 s is deliberately early — a report is ~67 B on a link whose round
+interval is a floor rather than a schedule, and six timers are still unnecessary at
+92.12% RAM. 120 s is deliberately early — a report is ~67 B on a link whose round
 trip measured 1.4 s, so being early is nearly free and being late is the entire failure.
 Stop re-arming when nothing is subscribed, so a node nobody watches is not waking its
 radio.
@@ -215,39 +227,54 @@ node: it came back advertising commissionable, Thread never started because noth
 replayed the dataset, and the controller showed an accessory that was simply gone. Every
 flash cost a full re-pair, which is also why iterating on this port was so expensive.
 
-Persist the fabrics, the Thread dataset, the xPAN id and the ICAC slot. Then **restore is
+The current image persists the fabrics, per-fabric ACLs, Thread dataset, xPAN id
+and the ICAC slot. Then **restore is
 not enough on its own**: a restored identity is commissioned but not *reachable* until
 the dataset is handed to the stack and one SRP instance per fabric is registered. That
 pair is what commissioning does as a side effect; the boot path has no commissioner to
 trigger it.
 
-### 4.2 One settings key per field, not one blob
+### 4.2 Versioned per-slot records, not a table rewrite
 
-A single record is ~1.7 KB and needs a buffer that size to build in. Saving each field
-straight out of the struct it already lives in costs **no buffer at all** — which matters
-on a part that has already taken stack-guard faults (§1.2).
+The `mf2` namespace stores metadata, network state, one record per fabric, one
+ACL record per fabric, and the shared ICAC. Each record is versioned, sealed,
+and written through the backend's atomic replacement primitive. A removal
+writes a valid tombstone before returning success, so a power cut cannot expose
+an older deleted fabric. One corrupt fabric or ACL record is discarded without
+destroying its neighbours.
 
-### 4.3 A stored record implies `commissioning_complete`
+The fabric record also carries the fabric's `UpdateFabricLabel` string, which is
+why an image from before that field cannot be restored: `record_read()` rejects
+any record whose stored length is not the length it expects, so a pre-label
+identity is dropped at load and the node comes back uncommissioned. One re-pair,
+once.
 
-**VERIFIED.** Not persisting it meant a restored node looked mid-commissioning, so the
-next commissioner to open a PASE session rolled back the fabrics that had just been
-restored — silently destroying a working pairing on the first failed connection after a
-reboot. Nothing writes a record before `CommissioningComplete`, so the flag is implied.
+The serializer is a bounded 528 B static union, not an object on the
+OpenThread stack. The settings region is 16 KB at `0x7c000`; Zephyr NVS and the
+FreeRTOS log use different media formats but implement this same transaction
+contract.
 
-### 4.4 Never `west flash --erase` once the node has joined Thread
+### 4.3 Completion belongs to an attempt, not the node
 
-**VERIFIED, and it costs up to 14 days.** The SRP host name is the EUI-64 from factory
-FICR and is stable across an erase; the SRP client's **key** lives in OpenThread's
-settings and is not. SRP name ownership is first-come-first-served **by key**, so a new
-key for the same name is refused with `OT_ERROR_DUPLICATED` until the border router's key
-lease expires — default **14 days**.
+The old global `commissioning_complete` boolean made fail-safe rollback a no-op
+as soon as *any* administrator had completed. Two bitsets now distinguish
+committed slots from the slots owned by the active attempt. The persistent
+records contain only committed fabrics, so a reboot cannot promote a half-added
+controller and a later PASE session cannot erase a working one.
 
-Symptom: Thread attaches and gets a routable address, SRP never registers, the
-commissioner cannot resolve the node, and the controller hangs forever on "Adding to
-Home".
+### 4.4 Erase SRP identity as one unit
 
-Use the software clears instead (§7). They wipe everything a controller can see and leave
-OpenThread's settings alone.
+The original failure remains instructive: keeping a stable SRP host name while
+destroying its client key can make a border router reject the new owner as
+`OT_ERROR_DUPLICATED`. The current port persists the SRP key and service-name
+identity together. Its registration slots have `live`, `removing`, and `free`
+lifetimes, and their OpenThread service structures are not reused until the
+asynchronous removal callback returns them. A duplicate registration is retried
+with a fresh service name instead of being logged as false success.
+
+`make flash-erase` still intentionally clears commissioning and reader state.
+Use controller `RemoveFabric` for one administrator and SW2 only for an
+unreachable last-resort reset.
 
 ### 4.5 An erase that cannot fail visibly
 
@@ -342,22 +369,20 @@ that never got far enough to send type 7 — the subscription bug (§3.1) was st
 
 ## 7. A failed pairing used to be a brick
 
-**VERIFIED, hit four times in one evening.** A commissioning that installs a fabric and
-then times out leaves that fabric stored. The advert gate then offers Aliro `0xFFF2`
-instead of commissionable, so the controller can neither discover the node **nor** open a
-commissioning window on an accessory it has already forgotten. There is no way back.
+**VERIFIED on the old design, hit four times in one evening.** A commissioning
+could install and persist a fabric, time out, and leave the advert gate offering
+Aliro `0xFFF2` to a controller that had already forgotten the accessory.
 
-Clearing it needs a debugger, a toolchain and the SWD header. **A user has none of those,
-and the board looks dead.**
+The current design has two recovery levels. Fail-safe expiry rolls back only
+the active attempt, including its staged Thread data, ACL, ICAC ownership, SRP
+service, sessions, and subscriptions. A fabric that did reach
+`CommissioningComplete` can be removed by an authenticated surviving
+administrator; the targeted tombstone is durable before the success response.
 
-The fix is a factory reset on **SW2 held through reset**: `led0` blinks to confirm the
-hold registered, the reader identity, every trust anchor and the Matter fabrics are
-erased, and the boot continues commissionable. Held-through-reset rather than a
-long-press because it matches the provisioning console's existing idiom on the same
-button, needs no timer or thread at 96.7% RAM, and cannot fire during a walk-up.
-
-**It leaves OpenThread's settings alone** — see §4.4 for the 14 days that erasing them
-costs.
+Factory reset on **SW2 held through reset** remains the last resort when no
+administrator can reach the node. `led0` blinks to confirm the hold, the reader
+identity, every trust anchor, and every Matter fabric are erased, and the boot
+continues commissionable. It is no longer the normal response to a failed share.
 
 If you are recovering a board without that button (older images), the equivalent is a
 one-boot clear flag, flashed once and then flashed away.
@@ -404,8 +429,9 @@ the stack regions in the map — an `SP` *below* a stack's base is that stack ov
 
 `dns-sd -B _matter._tcp local` shows the operational services; `dns-sd -Gv6 <host>.local`
 gives the address; `ping6` settles it. **0% loss while the controller reports "No
-Response" means the problem is not the device** — that single check redirected the
-investigation more than once. Expect ~1.2–2.6 s RTT: it is a sleepy end device.
+Response" means the problem is above basic Thread reachability** — that single check
+redirected the investigation more than once. The current DWM image is an rx-on MED, not
+a sleepy end device.
 
 Note the mDNS records are cached by the border router, so stale instances from earlier
 failed pairings linger and are not evidence of anything.
@@ -465,14 +491,18 @@ invisible. Write to a file and test `$?`.
 
 ## 10. What is still open
 
-- **`Sigma3 REJECTED (-6)` on a retransmitted Sigma1.** Latent. An NVS stall made it easy
-  to hit (§2); removing the stall only hid it. Any commissioner that retransmits Sigma1
-  for any reason will meet it.
 - **`CONFIG_ULTRAWIDELOCK_PROV_CLEAR_ON_BOOT` does not apply.** Set in `prj.conf` *or* an overlay
   it still leaves `# CONFIG_… is not set` in `.config`, with **no Kconfig warning**, while
   a symbol added 22 lines later in the same file applies fine. The symbol has no
   `depends on` and no enclosing `if`/`menu`. Unexplained. Workaround: force the
   `#if IS_ENABLED(...)` to `#if 1` for one boot, then revert.
+- **Apple Home plus Home Assistant hardware fault injection.** Five-fabric,
+  rollback, removal, response-replay, persistence, Thread-staging, and SRP
+  behavior are host-tested and the DWM image builds and fits. The live
+  CDK-19 through CDK-26 rows in `hardware-validation.md` have not run.
+- **One ICAC owner.** Five fabrics fit, but the RAM-bounded portable table has
+  one shared ICAC buffer. A second fabric that requires its own intermediate
+  certificate is rejected without mutating the existing owner.
 - **RAM at 90.3%, flash at 96.4%.** Flash is now the tighter of the two: about
   15 KB spare in the `app` partition against roughly 13 KB of RAM. Any further
   work starts by measuring, not by adding, and a new static allocation is now a

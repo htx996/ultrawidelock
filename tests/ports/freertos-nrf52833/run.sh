@@ -405,14 +405,19 @@ MATTER_SETTINGS_BIN="$OUT/freertos_matter_settings_test"
 "${CC:-cc}" -std=c11 -O1 -Wall -Wextra -Werror \
 	-DULTRAWIDELOCK_PORT_FREERTOS \
 	-DULTRAWIDELOCK_FREERTOS_LOG_NO_MACRO=1 \
+	-include "$ROOT/ports/freertos-nrf52833/matter/matter_compat/ultrawidelock_freertos_matter_config.h" \
 	-I"$HERE/fake" \
 	-I"$ROOT/ports/freertos-nrf52833/include" \
 	-I"$ROOT/ports/freertos-nrf52833/matter" \
+	-I"$ROOT/ports/freertos-nrf52833/matter/matter_compat" \
+	-I"$ROOT/modules/ultrawidelock_matter/include" \
+	-I"$ROOT/ports/zephyr/store" \
 	"$HERE/test_matter_settings.c" \
 	"$HERE/fake/fake_flash.c" \
 	"$HERE/fake/fake_freertos.c" \
 	"$ROOT/ports/freertos-nrf52833/storage/kv_flash_freertos.c" \
 	"$ROOT/ports/freertos-nrf52833/matter/matter_settings_freertos.c" \
+	"$ROOT/ports/zephyr/store/matter_fab_settings.c" \
 	-o "$MATTER_SETTINGS_BIN"
 "$MATTER_SETTINGS_BIN"
 

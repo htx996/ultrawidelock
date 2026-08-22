@@ -168,7 +168,7 @@ static otError store_result(int rc)
 
 /*
  * The sensitive-key list asks for a secure area this part does not have: every
- * record lands in the same two pages of internal flash, readable by anything
+ * record lands in the same settings region of internal flash, readable by anything
  * that can read flash. Nothing can be done with the list here, so it is
  * ignored; keeping key material out of an attacker's reach is APPROTECT's job.
  */
@@ -364,7 +364,7 @@ otError otPlatSettingsDelete(otInstance *instance, uint16_t key, int index)
 /*
  * Factory-reset OpenThread and nothing else. This walks the reserved window
  * and deletes key by key; it must never call ultrawidelock_freertos_kv_erase_all(),
- * because the credential provisioning blob lives in the same two pages and erasing
+ * because the credential provisioning blob lives in the same region and erasing
  * it would take the reader's provisioned identity and trust anchors with it —
  * the mirror of the argument in ultrawidelock_prov_erase(), which spares these keys so
  * a credential factory reset cannot cost the SRP client key and the up-to-14-day
