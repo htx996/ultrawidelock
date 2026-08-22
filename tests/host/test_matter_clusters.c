@@ -476,6 +476,39 @@ void test_matter_clusters(void)
 		info.fabric_acls[0].len = acl_len;
 		info.accessing_n_cats = 0u;
 		T_OK("a node-id subject is unaffected", lock_admin_allowed(&srv));
+
+		/*
+		 * CaseAdminSubject is an ACL subject too, and Apple sets it to a
+		 * CAT. Compared by equality it names nobody, so the bootstrap
+		 * authority AddNOC hands out -- the recovery path for a fabric
+		 * whose ACL would otherwise lock everyone out -- was not there
+		 * for the one controller most likely to need it.
+		 *
+		 * Proven with NO usable ACL, so the only thing that can grant is
+		 * the bootstrap check itself.
+		 */
+		info.fabric_acls[0].len = 0u;
+		info.fabrics[0].case_admin_subject = cat_subject;
+
+		info.accessing_n_cats = 0u;
+		T_OK("a CAT admin subject grants nothing without the tag",
+		     !lock_admin_allowed(&srv));
+
+		info.accessing_cats[0] = 0x00AB0002u;
+		info.accessing_n_cats = 1u;
+		T_OK("a CAT admin subject grants the controller holding it",
+		     lock_admin_allowed(&srv));
+
+		info.accessing_cats[0] = 0x00CD0002u;
+		T_OK("and not one holding a different tag", !lock_admin_allowed(&srv));
+
+		/* The node-id form of the same field is untouched. */
+		info.accessing_n_cats = 0u;
+		info.fabrics[0].case_admin_subject = 0x1122334455667788u;
+		T_OK("a node-id admin subject still grants by equality",
+		     lock_admin_allowed(&srv));
+		info.fabrics[0].case_admin_subject = 0x2222222222222222u;
+		T_OK("and a different node id does not", !lock_admin_allowed(&srv));
 	}
 
 	t_group("the ACL entry Apple actually writes");

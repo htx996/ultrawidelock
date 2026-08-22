@@ -394,10 +394,21 @@ static bool fabric_slot_has_privilege(const struct matter_device_info *info, siz
 	if (slot >= MATTER_SUPPORTED_FABRICS || info->accessing_node_id == 0u) {
 		return false;
 	}
-	/* Bootstrap authority from AddNOC. It remains a recovery administrator
-	 * even if a later malformed ACL would otherwise lock every controller out. */
+	/*
+	 * Bootstrap authority from AddNOC. It remains a recovery administrator
+	 * even if a later malformed ACL would otherwise lock every controller out.
+	 *
+	 * Matched the same way an ACL subject is, because CaseAdminSubject IS an
+	 * ACL subject and Apple sets it to a CAT rather than a node id. Compared
+	 * by equality, that hub authenticates as a member of a group whose tag
+	 * never equals any node id, so the recovery path it exists to provide
+	 * silently was not there. acl_subject_matches() falls through to plain
+	 * equality for a node-id subject, so nothing changes for a controller
+	 * that sets one.
+	 */
 	if (info->fabrics[slot].case_admin_subject != 0u &&
-	    info->fabrics[slot].case_admin_subject == info->accessing_node_id) {
+	    acl_subject_matches(info->fabrics[slot].case_admin_subject, info->accessing_node_id,
+				info->accessing_cats, info->accessing_n_cats)) {
 		return true;
 	}
 	if (info->fabric_acls[slot].len == 0u) {
@@ -3290,8 +3301,18 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 
 			if ((info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u &&
 			    f->index == info->accessing_fabric_index &&
+			    /*
+			     * The == 0u escape STAYS. A fabric whose admin
+			     * subject was never recorded has nobody to compare
+			     * against, and refusing there would fail
+			     * CommissioningComplete for a commissioner that
+			     * simply did not send one. Only the second half
+			     * gains CAT matching.
+			     */
 			    (f->case_admin_subject == 0u ||
-			     f->case_admin_subject == info->accessing_node_id)) {
+			     acl_subject_matches(f->case_admin_subject, info->accessing_node_id,
+						 info->accessing_cats,
+						 info->accessing_n_cats))) {
 				break;
 			}
 		}
