@@ -1,7 +1,7 @@
 /**
- * @file test_ultrawidelock_port.c — the OSAL and flash contracts, on the host backend.
+ * @file test_ultrawidelock_port.c — the OSAL, flash and kv contracts, on the host backend.
  *
- * Files under test: tests/host/port/osal_host.c and flash_host.c — the
+ * Files under test: tests/host/port/osal_host.c, flash_host.c and kv_host.c — the
  * backend every converted module's host suite runs on, so its semantics ARE
  * the portability contract: schedule is a no-op while pending, reschedule
  * restarts the delay, a timed sem take walks the virtual clock, flash refuses
@@ -13,6 +13,7 @@
 #include "test.h"
 
 #include "ultrawidelock_flash.h"
+#include "ultrawidelock_kv.h"
 #include "ultrawidelock_osal.h"
 
 /* ---- recorders -------------------------------------------------------------- */
@@ -266,6 +267,71 @@ static void test_flash(void)
 	     (long)ultrawidelock_flash_size(fa), (long)ULTRAWIDELOCK_FLASH_HOST_PRIMARY_SIZE);
 }
 
+/* ---- kv ---------------------------------------------------------------------- */
+
+static void test_kv(void)
+{
+	uint8_t big[ULTRAWIDELOCK_KV_VALUE_MAX];
+	uint8_t out[64];
+	size_t len;
+
+	t_group("kv: get, set, delete");
+	T_EQ("erase_all mounts", ultrawidelock_kv_erase_all(), (long)ULTRAWIDELOCK_KV_OK);
+	T_EQ("init is idempotent", ultrawidelock_kv_init(), (long)ULTRAWIDELOCK_KV_OK);
+	len = sizeof(out);
+	T_EQ("absent key is NOT_FOUND", ultrawidelock_kv_get(0x4000u, out, &len),
+	     (long)ULTRAWIDELOCK_KV_NOT_FOUND);
+	T_EQ("set ok", ultrawidelock_kv_set(0x4000u, "abcd", 4u), (long)ULTRAWIDELOCK_KV_OK);
+	len = sizeof(out);
+	T_EQ("get ok", ultrawidelock_kv_get(0x4000u, out, &len), (long)ULTRAWIDELOCK_KV_OK);
+	T_EQ("length is the stored length", (long)len, 4L);
+	T_OK("value round-trips", memcmp(out, "abcd", 4) == 0);
+	T_EQ("set replaces", ultrawidelock_kv_set(0x4000u, "zy", 2u), (long)ULTRAWIDELOCK_KV_OK);
+	len = sizeof(out);
+	(void)ultrawidelock_kv_get(0x4000u, out, &len);
+	T_EQ("replacement shortened the record", (long)len, 2L);
+	T_OK("replacement value", memcmp(out, "zy", 2) == 0);
+
+	/* The truncation trap this seam exists to close: a caller whose buffer is
+	 * too small must be refused and told the real length, never handed a
+	 * short value it would use as a key. */
+	t_group("kv: undersized read is refused, not truncated");
+	T_EQ("set 40 bytes", ultrawidelock_kv_set(0x4001u, big, 40u), (long)ULTRAWIDELOCK_KV_OK);
+	len = 8u;
+	memset(out, 0xee, sizeof(out));
+	T_EQ("short buffer -> INVALID", ultrawidelock_kv_get(0x4001u, out, &len),
+	     (long)ULTRAWIDELOCK_KV_INVALID);
+	T_EQ("stored length handed back", (long)len, 40L);
+	T_OK("buffer untouched", out[0] == 0xee);
+	len = 0u;
+	T_EQ("NULL asks length only", ultrawidelock_kv_get(0x4001u, NULL, &len),
+	     (long)ULTRAWIDELOCK_KV_OK);
+	T_EQ("length answered", (long)len, 40L);
+
+	t_group("kv: guards");
+	T_EQ("KEY_NONE is not a key",
+	     ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_NONE, "x", 1u),
+	     (long)ULTRAWIDELOCK_KV_INVALID);
+	T_EQ("oversize value refused",
+	     ultrawidelock_kv_set(0x4002u, big, ULTRAWIDELOCK_KV_VALUE_MAX + 1u),
+	     (long)ULTRAWIDELOCK_KV_INVALID);
+	T_EQ("max-size value accepted",
+	     ultrawidelock_kv_set(0x4002u, big, ULTRAWIDELOCK_KV_VALUE_MAX),
+	     (long)ULTRAWIDELOCK_KV_OK);
+
+	t_group("kv: delete and erase_all");
+	T_EQ("delete ok", ultrawidelock_kv_delete(0x4000u), (long)ULTRAWIDELOCK_KV_OK);
+	len = sizeof(out);
+	T_EQ("deleted key is gone", ultrawidelock_kv_get(0x4000u, out, &len),
+	     (long)ULTRAWIDELOCK_KV_NOT_FOUND);
+	T_EQ("second delete is NOT_FOUND", ultrawidelock_kv_delete(0x4000u),
+	     (long)ULTRAWIDELOCK_KV_NOT_FOUND);
+	T_EQ("erase_all ok", ultrawidelock_kv_erase_all(), (long)ULTRAWIDELOCK_KV_OK);
+	len = sizeof(out);
+	T_EQ("erase_all took the survivors too", ultrawidelock_kv_get(0x4001u, out, &len),
+	     (long)ULTRAWIDELOCK_KV_NOT_FOUND);
+}
+
 void test_ultrawidelock_port(void)
 {
 	test_work();
@@ -273,4 +339,5 @@ void test_ultrawidelock_port(void)
 	test_sem();
 	test_thread_and_init();
 	test_flash();
+	test_kv();
 }
