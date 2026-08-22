@@ -23,6 +23,7 @@ extern "C" {
 #define ULTRAWIDELOCK_P256_POINT  65u /* uncompressed point: 0x04 | X32 | Y32 */
 #define ULTRAWIDELOCK_P256_SIG    64u /* raw ECDSA r|s */
 #define ULTRAWIDELOCK_GCM_TAG     16u
+#define ULTRAWIDELOCK_CCM_TAG     16u /* maximum; the sealed link uses 8 */
 
 /* Initialise the backend (idempotent). Call once before any other call. */
 int ultrawidelock_prim_init(void);
@@ -40,6 +41,27 @@ int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce
 
 /* AES-128-ECB, one block (the BLE advertisement Dynamic Tag, ultrawidelock_advtag.c). */
 int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);
+
+/*
+ * AES-128-CCM, one shot, no AAD (the sealed link between the lock and its
+ * satellites and witnesses). Output is ciphertext ‖ tag, which is what goes on
+ * the wire; the GCM pair above hands the tag back separately because it streams
+ * a message that does not fit in RAM, and these messages are tens of bytes.
+ *
+ * No AAD parameter because nothing has one: everything the seal authenticates
+ * is inside the plaintext, and the nonce carries the sender and counter. Add it
+ * when a caller needs it, not before.
+ *
+ * tag_len must be <= ULTRAWIDELOCK_CCM_TAG. *out_len is what the backend wrote.
+ * Decrypt verifies the tag and returns <0 on a mismatch: a hard auth failure,
+ * never a retry.
+ */
+int ultrawidelock_aes128_ccm_encrypt(const uint8_t key[16], const uint8_t *nonce, size_t nonce_len,
+				     const uint8_t *pt, size_t pt_len, size_t tag_len, uint8_t *out,
+				     size_t out_cap, size_t *out_len);
+int ultrawidelock_aes128_ccm_decrypt(const uint8_t key[16], const uint8_t *nonce, size_t nonce_len,
+				     const uint8_t *in, size_t in_len, size_t tag_len, uint8_t *out,
+				     size_t out_cap, size_t *out_len);
 
 /* P-256 ephemeral key pair: priv = 32-byte scalar, pub = 65-byte point. */
 int ultrawidelock_ec_p256_keygen(uint8_t priv[ULTRAWIDELOCK_P256_SCALAR],

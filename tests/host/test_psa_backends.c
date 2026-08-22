@@ -105,6 +105,9 @@ void test_ultrawidelock_prim_psa(void)
 	uint8_t priv[ULTRAWIDELOCK_P256_SCALAR], pub[ULTRAWIDELOCK_P256_POINT];
 	uint8_t shared[ULTRAWIDELOCK_P256_SCALAR], sig[ULTRAWIDELOCK_P256_SIG];
 	static const uint8_t NONCE[12] = {0};
+	/* The sealed link's nonce: role ‖ boot_id ‖ ctr ‖ zeros, 13 bytes. */
+	static const uint8_t CCM_NONCE[13] = {1};
+	size_t olen = 0;
 	static const uint8_t AAD[5] = {1, 2, 3, 4, 5};
 	static const uint8_t MSG[20] = {7};
 	static const uint8_t HASH[32] = {8};
@@ -237,6 +240,68 @@ void test_ultrawidelock_prim_psa(void)
 	psafake_reset();
 	psafake.cipher_ret = PSA_ERROR_GENERIC;
 	T_EQ("cipher fail -> -1", ultrawidelock_aes128_ecb_encrypt(K16, BLK, out16), -1);
+
+	/*
+	 * The sealed link's shape: 13-byte nonce, 8-byte tag, no AAD. psafake is
+	 * a recorder, not AES, so what is provable here is the contract -- the
+	 * algorithm identifier carries the shortened tag, the nonce length
+	 * reaches the backend intact, no AAD is offered, the key is destroyed,
+	 * and every failure the backend can report becomes -1.
+	 */
+	t_group("aes128-ccm (sealed link)");
+	psafake_reset();
+	T_EQ("encrypt ok", ultrawidelock_aes128_ccm_encrypt(K16, CCM_NONCE, sizeof(CCM_NONCE), BLK,
+							    16, 8, ct, sizeof(ct), &olen),
+	     0);
+	T_EQ("bits 128", (long)psafake.attr_bits, 128L);
+	T_EQ("usage ENCRYPT", (long)psafake.attr_usage, (long)PSA_KEY_USAGE_ENCRYPT);
+	T_EQ("alg CCM tag8", (long)psafake.last_alg,
+	     (long)PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, 8));
+	T_EQ("nonce len 13", (long)psafake.last_nonce_len, 13L);
+	T_EQ("no aad", (long)psafake.last_aad_len, 0L);
+	T_EQ("one shot, not multipart", (long)psafake.aead_enc_calls, 1L);
+	T_EQ("no multipart setup", (long)psafake.aead_update_calls, 0L);
+	T_EQ("key destroyed", (long)psafake.destroy_calls, 1L);
+	T_EQ("tag too long -> -1",
+	     ultrawidelock_aes128_ccm_encrypt(K16, CCM_NONCE, 13, BLK, 16, 17, ct, sizeof(ct),
+					      &olen),
+	     -1);
+	psafake_reset();
+	psafake.import_ret = PSA_ERROR_GENERIC;
+	T_EQ("import fail -> -1",
+	     ultrawidelock_aes128_ccm_encrypt(K16, CCM_NONCE, 13, BLK, 16, 8, ct, sizeof(ct), &olen),
+	     -1);
+	psafake_reset();
+	psafake.aead_enc_ret = PSA_ERROR_GENERIC;
+	T_EQ("encrypt fail -> -1",
+	     ultrawidelock_aes128_ccm_encrypt(K16, CCM_NONCE, 13, BLK, 16, 8, ct, sizeof(ct), &olen),
+	     -1);
+	T_EQ("key destroyed after failure", (long)psafake.destroy_calls, 1L);
+
+	psafake_reset();
+	T_EQ("decrypt ok",
+	     ultrawidelock_aes128_ccm_decrypt(K16, CCM_NONCE, sizeof(CCM_NONCE), ct, 24, 8, pt,
+					      sizeof(pt), &olen),
+	     0);
+	T_EQ("usage DECRYPT", (long)psafake.attr_usage, (long)PSA_KEY_USAGE_DECRYPT);
+	T_EQ("alg CCM tag8 on decrypt", (long)psafake.last_alg,
+	     (long)PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, 8));
+	T_EQ("no aad on decrypt", (long)psafake.last_aad_len, 0L);
+	T_EQ("one shot decrypt", (long)psafake.aead_dec_calls, 1L);
+	T_EQ("tag too long -> -1",
+	     ultrawidelock_aes128_ccm_decrypt(K16, CCM_NONCE, 13, ct, 24, 17, pt, sizeof(pt), &olen),
+	     -1);
+	psafake_reset();
+	psafake.import_ret = PSA_ERROR_GENERIC;
+	T_EQ("import fail -> -1",
+	     ultrawidelock_aes128_ccm_decrypt(K16, CCM_NONCE, 13, ct, 24, 8, pt, sizeof(pt), &olen),
+	     -1);
+	psafake_reset();
+	psafake.aead_dec_ret = PSA_ERROR_GENERIC;
+	T_EQ("tag mismatch -> -1",
+	     ultrawidelock_aes128_ccm_decrypt(K16, CCM_NONCE, 13, ct, 24, 8, pt, sizeof(pt), &olen),
+	     -1);
+	T_EQ("key destroyed after mismatch", (long)psafake.destroy_calls, 1L);
 
 	t_group("p256 keygen");
 	psafake_reset();

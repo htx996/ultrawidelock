@@ -189,6 +189,68 @@ int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16]
 	return rc;
 }
 
+// Encrypt and authenticate plaintext with AES-128-CCM via PSA Crypto.
+// Writes ciphertext ‖ tag to out and its length to *out_len. Returns 0 on success, -1 if tag_len
+// exceeds ULTRAWIDELOCK_CCM_TAG, key import fails, or encryption fails.
+int ultrawidelock_aes128_ccm_encrypt(const uint8_t key[16], const uint8_t *nonce, size_t nonce_len,
+				     const uint8_t *pt, size_t pt_len, size_t tag_len, uint8_t *out,
+				     size_t out_cap, size_t *out_len)
+{
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t k = 0;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, tag_len);
+	int rc = -1;
+
+	if (tag_len > ULTRAWIDELOCK_CCM_TAG) {
+		return -1;
+	}
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+	psa_set_key_algorithm(&attr, alg);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, 128);
+	if (psa_import_key(&attr, key, 16, &k) != PSA_SUCCESS) {
+		return -1;
+	}
+	/* One shot: CCM needs the whole message length up front anyway, and the
+	 * sealed link's payloads are tens of bytes. No streaming path exists. */
+	if (psa_aead_encrypt(k, alg, nonce, nonce_len, NULL, 0, pt, pt_len, out, out_cap,
+			     out_len) == PSA_SUCCESS) {
+		rc = 0;
+	}
+	psa_destroy_key(k);
+	return rc;
+}
+
+// Verify and decrypt an AES-128-CCM ciphertext ‖ tag via PSA Crypto.
+// Writes the plaintext to out and its length to *out_len. Returns 0 on success, -1 if tag_len
+// exceeds ULTRAWIDELOCK_CCM_TAG, key import fails, or the tag does not verify.
+int ultrawidelock_aes128_ccm_decrypt(const uint8_t key[16], const uint8_t *nonce, size_t nonce_len,
+				     const uint8_t *in, size_t in_len, size_t tag_len, uint8_t *out,
+				     size_t out_cap, size_t *out_len)
+{
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t k = 0;
+	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, tag_len);
+	int rc = -1;
+
+	if (tag_len > ULTRAWIDELOCK_CCM_TAG) {
+		return -1;
+	}
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
+	psa_set_key_algorithm(&attr, alg);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, 128);
+	if (psa_import_key(&attr, key, 16, &k) != PSA_SUCCESS) {
+		return -1;
+	}
+	if (psa_aead_decrypt(k, alg, nonce, nonce_len, NULL, 0, in, in_len, out, out_cap,
+			     out_len) == PSA_SUCCESS) {
+		rc = 0;
+	}
+	psa_destroy_key(k);
+	return rc;
+}
+
 // Generate a new NIST P-256 key pair via PSA Crypto.
 // Writes the private scalar to priv and the uncompressed public point to pub. Returns 0 on success,
 // -1 if key generation or export fails.

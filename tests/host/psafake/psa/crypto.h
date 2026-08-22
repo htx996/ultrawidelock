@@ -36,6 +36,7 @@ typedef uint32_t psa_key_usage_t;
 
 #define PSA_ALG_ECB_NO_PADDING ((psa_algorithm_t)0x04404400u)
 #define PSA_ALG_GCM            ((psa_algorithm_t)0x05500200u)
+#define PSA_ALG_CCM            ((psa_algorithm_t)0x05500100u)
 #define PSA_ALG_AEAD_WITH_SHORTENED_TAG(alg, tag_len)                                              \
 	((psa_algorithm_t)((alg) | (((psa_algorithm_t)(tag_len) & 0x3fu) << 16)))
 #define PSA_ALG_ECDH           ((psa_algorithm_t)0x09020000u)
