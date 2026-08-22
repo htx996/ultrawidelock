@@ -144,10 +144,13 @@ make flash        # over the board's USB
 
 **A current-schema Apple Home pairing survives this.** `make flash` leaves the
 current settings area alone, so a board already running the `mf2` image keeps
-its fabrics, identity, and keys. Upgrading a v0.3 image is a deliberate clean
-break because the settings layout moved and the old fabric format is not
-trusted: remove the old controller records and pair Apple Home and Home
-Assistant again. You can also set your own setup code at this point, which is
+its fabrics, identity, and keys. Two deliberate exceptions, each costing one
+re-pair. Upgrading a v0.3 image is a clean break because the settings layout
+moved and the old fabric format is not trusted. And moving to a build carrying
+the fabric label field is another: the fabric record grew, and a record whose
+length does not match the one expected is dropped at load rather than
+half-read. Either way, remove the old controller records and pair Apple Home
+and Home Assistant again. You can also set your own setup code at this point, which is
 one line of configuration.
 
 It is a one-way switch by design: the board belongs to whoever last flashed it

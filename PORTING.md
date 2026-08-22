@@ -186,18 +186,29 @@ whether it uses the portable Matter implementation or an SDK-owned CHIP stack:
    until CommissioningComplete is durably stored; fail-safe expiry removes only
    that attempt and never an established Apple Home or Home Assistant fabric.
    Exactly replay bounded state-changing responses when MRP retries a request.
+   That covers CommissioningComplete itself: a retransmission repeats the
+   answer it already gave, never NO_FAIL_SAFE. Mutate the fabric table only
+   under the lock that owns it, fail-safe expiry included, and never take that
+   lock again from the store worker the caller is already waiting on.
 2. Treat the established Thread dataset as node state, not administrator state.
    A later administrator may name the same Extended PAN ID without restarting
    Thread or replacing the committed credentials; a different or malformed
    dataset is refused without detaching the lock.
 3. Scope ACL state, filtered fabric reads, subscriptions, ICAC ownership, and
    cleanup to the fabric that owns them. A removed or PASE session cannot
-   operate the lock or administer another fabric.
+   operate the lock or administer another fabric. Parse stored ACL entries
+   against the spec's field ids, pinned by a real controller's captured bytes,
+   and match a subject in the CASE Authenticated Tag range as a tag under the
+   version rule rather than by equality.
 4. Implement authenticated OperationalCredentials RemoveFabric. The removal
    is durably tombstoned before success, revokes that fabric's sessions and SRP
    service, and leaves every other fabric usable. Removing the last fabric also
    clears Home Key trust and reopens commissioning.
-5. Preserve the SRP client key and host identity together. Service structures
+5. Answer OperationalCredentials UpdateFabricLabel. The label is part of the
+   fabric record, reads back through the Fabrics attribute, persists on its own
+   without rewriting that fabric's network, ICAC or ACL records, and a label
+   another fabric already holds is refused as LabelConflict in the NOCResponse.
+6. Preserve the SRP client key and host identity together. Service structures
    remain allocated until OpenThread returns them in its removal callback, and
    duplicate registration is retried without reporting false success.
 
@@ -206,6 +217,12 @@ The DWM3001CDK Zephyr and FreeRTOS builds share
 the `mf2` record contract in `ports/zephyr/store/matter_fab_settings.c`. The
 ESP32 and nRF5340 ports delegate fabric transactions to their CHIP SDKs; their
 application glue still owns the last-fabric credential cleanup rule.
+
+The fabric record's length is itself the compatibility check: it grew when the
+label field arrived, and the loader drops a record whose stored length is not
+the one it expects rather than half-reading it. `FAB_VERSION` did not move.
+Growing that struct therefore costs one re-pair, and a port that widens it owes
+its users that warning.
 
 `mf2` is a deliberate clean break from the v0.3 custom schema. The loader never
 trusts `mfab/*`, and the flash map moves the custom DWM settings region from

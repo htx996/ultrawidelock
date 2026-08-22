@@ -290,6 +290,13 @@ rows arrive out of order and two lanes can fail in one sweep. `SERIAL=1 make che
 one gate at a time in table order. To re-run a single gate, scope the rest out with
 `SKIP=`.
 
+**A host suite reported green over code that does not compile.** Only on trees before
+`396fee04`. A parallel stage was invoked as `"$fn" || rc=$?`, and bash suppresses
+`errexit` inside a condition context, so a stage whose compile failed carried on and ran
+the *previous* binary. Each stage now runs in its own `(set -e; ...)` subshell and `wait`
+carries its real status. If you are on an older tree and a pass looks too easy, remove
+the build directory and re-run.
+
 **`git pr` cannot run network, Emscripten, user-local tools, or `.venv` gates.**
 Its disposable candidate deliberately has no network, real home directory, user-local
 `PATH`, or gitignored files. Configure

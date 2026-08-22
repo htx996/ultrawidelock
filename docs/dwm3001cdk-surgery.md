@@ -170,13 +170,20 @@ The session role is unchanged, which makes this cheap: keys stay role-relative t
 the exchange role differs — set `I`, use an id of your own, and **do not** write it back
 over the peer's live exchange id.
 
-Two subtleties, both found by tests rather than by reading the code:
+Three subtleties, all found by tests rather than by reading the code:
 
 - **Never piggyback the peer's pending ack onto an exchange you just opened.** An ack
   names a counter *within* an exchange.
 - **Do not clear `ack_pending` on that path.** Clearing an ack that was never encoded
   makes the peer retransmit a message already handled, and the exchange that owes the ack
   stalls.
+- **Acknowledge a subscription report's StatusResponse on the report's OWN exchange,
+  with `I` set.** CHIP matches an inbound message to an exchange by id *and* by the
+  initiator flag being the opposite of its own (`ExchangeContext::MatchExchange`), so an
+  ack framed with `I` clear on the peer's exchange id matches nothing and is dropped as
+  unsolicited -- and the peer retransmits the very message being acknowledged. Every
+  `LockState` report drew the full MRP schedule until `matter_exchange_ack_initiator()`
+  existed.
 
 ### 3.3 Report on change
 
@@ -236,7 +243,13 @@ writes a valid tombstone before returning success, so a power cut cannot expose
 an older deleted fabric. One corrupt fabric or ACL record is discarded without
 destroying its neighbours.
 
-The serializer is a bounded 496 B static union, not an object on the
+The fabric record also carries the fabric's `UpdateFabricLabel` string, which is
+why an image from before that field cannot be restored: `record_read()` rejects
+any record whose stored length is not the length it expects, so a pre-label
+identity is dropped at load and the node comes back uncommissioned. One re-pair,
+once.
+
+The serializer is a bounded 528 B static union, not an object on the
 OpenThread stack. The settings region is 16 KB at `0x7c000`; Zephyr NVS and the
 FreeRTOS log use different media formats but implement this same transaction
 contract.

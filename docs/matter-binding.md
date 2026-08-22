@@ -159,10 +159,13 @@ the client build is the one to watch when anything grows.
 
 About 4 KB of the flash is OpenThread's DNS client, which a default build does
 not carry; the rest is the CASE initiator, the Interaction Model's outbound
-direction, the binding table and the driver. Off, the image is byte for byte
-the one that existed before any of it: the sources are not compiled and the
-two places that could not move into a source file of their own
-(`matter_clusters.c`, `matter_exchange.c`) preprocess away.
+direction, the binding table and the driver. Off, the sources are not compiled
+and the two places that could not move into a source file of their own
+(`matter_clusters.c`, `matter_exchange.c`) preprocess away -- with one
+exception, so the image is no longer byte for byte the one that existed before
+any of it. `matter_exchange_ack_initiator()` is deliberately outside the
+`MATTER_FEATURE_CLIENT` guard, because the server's own subscription reports
+ride exchanges this node opened and every image needs that ack.
 
 Four limits, stated because none of them is visible from the outside:
 

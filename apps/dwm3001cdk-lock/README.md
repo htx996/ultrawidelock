@@ -55,7 +55,9 @@ network after Apple Home has already put it on the Apple network.
 1. Flash the current image. An upgrade from v0.3 uses a new Matter settings
    schema and flash layout, so remove the old accessory from controllers and
    pair it again. The credential reader identity is deliberately not migrated by
-   this clean break.
+   this clean break. Moving to a build carrying the fabric label field costs one
+   further re-pair: the fabric record grew, so records written by earlier images
+   fail the loader's length check.
 2. Add the lock to Apple Home using the code printed by `make build`, then wait
    for the Home Key to appear in Wallet. The full Apple path is in
    [`../../docs/add-the-key.md`](../../docs/add-the-key.md).
@@ -92,7 +94,10 @@ old or new valid record rather than a half-written table.
   failed or successful Home Assistant attempt, selective fail-safe rollback,
   authenticated removal, per-fabric ACL/session/subscription cleanup, Thread
   dataset staging, SRP duplicate recovery, response replay, and power-cut
-  persistence cases.
+  persistence cases. Also `UpdateFabricLabel` and its label conflict, an
+  idempotent CommissioningComplete retransmission, the acknowledgement a
+  subscription report's StatusResponse needs, and a real controller's ACL entry
+  pinned by its captured bytes including a CASE Authenticated Tag subject.
 - The Zephyr production image builds and links for
   `decawave_dwm3001cdk/nrf52833` with NCS v3.3.0 and fits the board.
 - Live Apple Home plus Home Assistant commissioning and fault injection are

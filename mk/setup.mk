@@ -22,6 +22,8 @@ bootstrap:
 
 ## ws-seed: give THIS worktree its own workspace (APFS COW clone, ~0 disk)
 ##   Idempotent. Isolates worktrees so branch-bouncing can't build stale patches.
+##   To seed a worktree whose branch predates this script, run it from a checkout
+##   that has it: scripts/ws-seed.sh <path-to-worktree>
 ws-seed:
 	@$(REPO_ROOT)/scripts/ws-seed.sh
 
