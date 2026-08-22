@@ -327,10 +327,13 @@ static void test_ultrawidelock_prov_settings(void)
 	T_EQ("erase removes exact provisioning key", settingsfake_key_count(), 0);
 }
 
+void test_kv_zephyr(void); /* test_kv_zephyr.c, same stage, same fake */
+
 int main(void)
 {
 	test_matter_fab_settings();
 	test_ultrawidelock_prov_settings();
+	test_kv_zephyr();
 
 	if (t_fail > 0) {
 		printf("  cdk-fab-settings: FAIL (%d of %d)\n", t_fail, t_fail + t_pass);

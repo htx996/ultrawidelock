@@ -166,9 +166,12 @@ stage_cdk_port() {
 		-I"$HOSTD" -I"$HOSTD/settingsfake" -I"$HOSTD/logfake" \
 		-I"$ROOT/modules/ultrawidelock_matter/include" \
 		-I"$ROOT/modules/ultrawidelock_cred/include" -I"$ROOT/ports/zephyr/store" \
+		-I"$ROOT/modules/ultrawidelock_port/include" \
 		"$HOSTD/test.c" "$HOSTD/test_matter_fab_settings.c" \
+		"$HOSTD/test_kv_zephyr.c" \
 		"$HOSTD/settingsfake/settingsfake.c" \
 		"$ROOT/ports/zephyr/store/matter_fab_settings.c" \
+		"$ROOT/ports/zephyr/store/kv_zephyr.c" \
 		"$ROOT/ports/zephyr/store/ultrawidelock_prov_settings.c" \
 		"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prov.c" \
 		-o "$OUT/host_test_cdk"

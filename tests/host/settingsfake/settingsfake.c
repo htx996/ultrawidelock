@@ -16,7 +16,10 @@
 
 #include "settingsfake.h"
 
-#define FAKE_MAX_KEYS 16
+/* Above kv_zephyr.c's ERASE_BATCH, so a store that needs more than one sweep
+ * pass to empty can be built here. At 16 the multi-pass path was unreachable
+ * and a single-pass erase would have looked correct. */
+#define FAKE_MAX_KEYS 64
 #define FAKE_MAX_NAME 64
 #define FAKE_MAX_VAL  768
 

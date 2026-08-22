@@ -112,8 +112,23 @@ length-checks those where they are written.
 | zephyr | key | `wit/ds` | 64 | `examples/zephyr/ble-witness/src/main.c` |
 | zephyr | subtree | `sat` | 64 | `apps/satellite/src/anchor_link.c` |
 | zephyr | key | `sat/lk` | 64 | `apps/satellite/src/anchor_link.c` |
+| zephyr | subtree | `uwl` | 64 | `ports/zephyr/store/kv_zephyr.c` |
 
 <!-- storage-names:end -->
+
+One row above is a subtree with no keys listed under it, deliberately. The
+`uwl` subtree belongs to `ultrawidelock_kv.h`, which addresses records by a
+`uint16_t` rather than by a name and lets each backend derive the storage name
+from the number — `uwl/%04x` under Zephyr settings, namespace `uwl` with key
+`%04x` under NVS. Eight characters and four, for every key in the 16-bit space,
+so neither cap can be reached by any caller and there is nothing per-record to
+list here or to keep in step. A record added through that seam takes an id from
+a window in `ultrawidelock_kv.h`; it does not take a row in this table.
+
+The rows above it are the older spelling, where each record names itself. Those
+call sites have not moved onto the seam, and moving them is a separate decision:
+the names hold provisioned data, and derived names are not the names already on
+the flash.
 
 Where the caps come from, and why they differ:
 
