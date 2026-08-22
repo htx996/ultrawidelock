@@ -84,7 +84,25 @@ There is no QR sticker on this board, so you type the code instead.
 
 Apple issues the key to your iPhone's Wallet automatically once the lock is added.
 
-## 4. Walk up to it
+## 4. Optional: share it with Home Assistant
+
+The lock holds five Matter fabrics. Apple Home normally uses two and Home
+Assistant one. Before sharing, make Home Assistant use the Apple Thread network:
+
+1. In the Home Assistant iOS Companion app, open **Settings > Devices & services
+   > Thread > Configure**, send the phone's Apple Thread credentials to Home
+   Assistant, refresh, and make that network preferred.
+2. If Home Assistant has its own OpenThread Border Router, join it to those
+   credentials. Do not create a second Thread network for the lock.
+3. Open **Settings > Matter > Add device**, answer **Yes, it's already in use**,
+   select Apple Home, and finish the sharing dialog.
+4. Operate the lock in both apps, power-cycle it, and try both again.
+
+Home Assistant keeps the current UI instructions in its
+[Matter](https://www.home-assistant.io/integrations/matter/) and
+[Thread](https://www.home-assistant.io/integrations/thread/) guides.
+
+## 5. Walk up to it
 
 Lock it in Home, walk away about five metres, then walk back with the phone in
 your pocket. The Wallet animation plays and the lock opens. You do not need to
@@ -124,10 +142,16 @@ make build
 make flash        # over the board's USB
 ```
 
-**Your Apple Home pairing survives this.** `make flash` leaves the settings area
-alone, so the lock keeps its fabrics, its identity and its keys, and you do not
-have to add it to Home again. You can also set your own setup code at this
-point, which is one line of configuration.
+**A current-schema Apple Home pairing survives this.** `make flash` leaves the
+current settings area alone, so a board already running the `mf2` image keeps
+its fabrics, identity, and keys. Two deliberate exceptions, each costing one
+re-pair. Upgrading a v0.3 image is a clean break because the settings layout
+moved and the old fabric format is not trusted. And moving to a build carrying
+the fabric label field is another: the fabric record grew, and a record whose
+length does not match the one expected is dropped at load rather than
+half-read. Either way, remove the old controller records and pair Apple Home
+and Home Assistant again. You can also set your own setup code at this point, which is
+one line of configuration.
 
 It is a one-way switch by design: the board belongs to whoever last flashed it
 with a cable.
@@ -187,10 +211,12 @@ Do not secure anything valuable with this.
 |---|---|
 | `nrfutil device list` shows nothing | Use the **J-Link** USB port, not the other one. Try another cable. |
 | Flashing fails to connect | Unplug, wait five seconds, plug back in. On macOS, quit any SEGGER or nRF Connect app first. |
-| Home never finds the accessory | Check your Thread hub or border router is on the same network, then power-cycle the board and retry. |
-| Home sits on "Adding to Home" | Give it two minutes. If it fails, power-cycle the board and start again. |
+| Home never finds the accessory | Check your Thread hub or border router is reachable, then power-cycle the board and retry. |
+| Apple works but Home Assistant cannot find it | Import the Apple Thread credentials into Home Assistant, make them preferred, join the Home Assistant border router to them, then share the existing Apple accessory again. |
+| Home sits on "Adding to Home" | Give it two minutes. If it fails, let the Matter fail-safe expire before retrying; a failed attempt does not erase a working controller. |
+| A controller was removed from its app but still occupies the lock | From a controller that still reaches it, use Home Assistant's **Manage fabrics** action to remove only the stale fabric. |
 | It pairs but never unlocks on approach | Confirm the key is in Wallet (Wallet app, look for the lock), and that the phone has UWB. |
-| You want to start over | Hold **SW2** and tap **RESET**. That clears the pairing so you can add it again. |
+| No controller can reach it and you must start over | Hold **SW2** and tap **RESET**. That clears every Matter and Home Key identity so you can add it again. |
 
 More detail, and the build-it-yourself route, at
 <https://github.com/ultrawidelock/ultrawidelock>.

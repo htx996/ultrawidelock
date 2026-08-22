@@ -41,6 +41,16 @@ enum matter_status {
 	 * not a malfunction to hide.
 	 */
 	MATTER_E_TIMEOUT = -8,
+	/**
+	 * The peer is well formed and is not who it must be.
+	 *
+	 * Distinct from MATTER_E_TYPE, which means a signature or an AEAD tag
+	 * did not check out: those say the crypto diverged, this says it did
+	 * NOT and the identity underneath is the problem. Both look like "CASE
+	 * failed" from outside, and only one of them means somebody answered
+	 * for a node that is not the one this node asked for.
+	 */
+	MATTER_E_ACCESS = -9,
 };
 
 #ifdef __cplusplus

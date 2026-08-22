@@ -73,6 +73,22 @@ static const struct ultrawidelock_matter_setting s_settings[] = {
 	{ "mfab/f0", ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 0u, ULTRAWIDELOCK_SETTING_VARIABLE },
 	{ "mfab/f1", ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 1u, ULTRAWIDELOCK_SETTING_VARIABLE },
 	{ "mfab/f2", ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 2u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mfab/f3", ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 3u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mfab/f4", ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 4u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	/* Atomic per-slot schema used by the shared DWM Matter stack. */
+	{ "mf2/meta", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_META, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/net", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_NET, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/ic", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ICAC, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/f0", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 0u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/f1", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 1u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/f2", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 2u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/f3", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 3u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/f4", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 4u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/a0", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 0u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/a1", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 1u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/a2", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 2u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/a3", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 3u, ULTRAWIDELOCK_SETTING_VARIABLE },
+	{ "mf2/a4", ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 4u, ULTRAWIDELOCK_SETTING_VARIABLE },
 	/*
 	 * Subscriptions held over a reboot, one per CASE session slot ("msub" in
 	 * matter_commission.c). Variable length: the record layout belongs to
@@ -95,12 +111,18 @@ static const struct ultrawidelock_matter_setting s_settings[] = {
 /*
  * The fabric slots are spelled out above rather than generated, so this table
  * is the whole truth about what this node persists. If MATTER_SUPPORTED_FABRICS
- * grows past the slots listed here the store will ask for "mfab/f3", and an
+ * grows past the slots listed here the store will ask for a new `mf2/fN`, and an
  * unknown path is refused and NAMED rather than silently lost -- which is the
  * property this backend is built around.
  */
-_Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 3u <= ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT_LIMIT,
+_Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 + 5u <= ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT_LIMIT,
 	       "fabric slot keys have outgrown their window");
+_Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 5u <=
+		       ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB_LIMIT,
+	       "mf2 fabric slot keys have outgrown their window");
+_Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 5u <=
+		       ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL_LIMIT,
+	       "mf2 ACL slot keys have outgrown their window");
 _Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_SUB_SLOT0 + 6u <= ULTRAWIDELOCK_KV_KEY_MATTER_SUB_SLOT_LIMIT,
 	       "subscription slot keys have outgrown their window");
 

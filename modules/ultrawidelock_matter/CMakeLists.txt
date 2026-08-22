@@ -29,6 +29,38 @@ if(CONFIG_ULTRAWIDELOCK_MATTER)
     ${SRC}/matter_fabric.c
     ${SRC}/matter_case.c)
 
+  # The CASE initiator, and nothing else, rides with the client build.
+  #
+  # A separate file behind its own symbol rather than more of matter_case.c,
+  # because the point of the option is that an image without it is byte for
+  # byte the image that existed before it -- and a preprocessor guard inside a
+  # compiled file cannot promise that as plainly as not compiling the file.
+  if(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
+    zephyr_library_sources(
+      ${SRC}/matter_case_client.c
+      ${SRC}/matter_client_sm.c
+      ${SRC}/matter_im_client.c
+      ${SRC}/matter_binding.c)
+    # The client-role code that has no file of its own to live in: the Binding
+    # cluster's surface inside matter_clusters.{c,h} -- the target list has to
+    # be reachable from a controller and has to sit in struct
+    # matter_device_info -- and the two initiator entry points in
+    # matter_exchange.c. Neither can move to a separate file, so both are
+    # guarded by the macro instead and preprocess away without it.
+    #
+    # Global rather than library-scoped, for the same reason as
+    # MATTER_FEATURE_DL_ALARMS below: the app includes matter_clusters.h, and a
+    # header that means one thing to the module and another to its caller is a
+    # struct layout mismatch waiting to happen.
+    zephyr_compile_definitions(MATTER_FEATURE_CLIENT=1)
+  endif()
+
+  # Same reasoning as the client macro above: it changes struct
+  # matter_device_info, so the app and the module have to agree on it.
+  if(CONFIG_ULTRAWIDELOCK_MATTER_MULTI_ADMIN)
+    zephyr_compile_definitions(MATTER_FEATURE_MULTI_ADMIN=1)
+  endif()
+
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
   # The DoorLockAlarm event, and nothing else, rides with the anchor build.

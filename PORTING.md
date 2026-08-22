@@ -98,7 +98,7 @@ length-checks those where they are written.
 | esp32 | key | `bl` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
 | zephyr | subtree | `ultrawidelock` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |
 | zephyr | key | `ultrawidelock/prov` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |
-| zephyr | subtree | `mfab` | 64 | `ports/zephyr/store/matter_fab_settings.c` |
+| zephyr | subtree | `mf2` | 64 | `ports/zephyr/store/matter_fab_settings.c` |
 | zephyr | subtree | `msub` | 64 | `apps/dwm3001cdk-lock/src/matter_commission.c` |
 | zephyr | key | `srp/hid` | 64 | `ports/zephyr/matter/matter_thread_port.c` |
 | zephyr | subtree | `uwl/latch` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
@@ -193,6 +193,71 @@ Before chipset work, implement the platform services declared by:
 Put that backend under one new `ports/<os>/` tree. Keep conditional operating
 system code out of `modules/`. Add a host compile or fake for each new contract
 before relying on a hardware build.
+
+## Matter/Home Key multi-admin contract
+
+Every Matter/Home Key lock port must present the same controller-visible behavior,
+whether it uses the portable Matter implementation or an SDK-owned CHIP stack:
+
+1. Hold at least five fabrics. A commissioning attempt owns provisional slots
+   until CommissioningComplete is durably stored; fail-safe expiry removes only
+   that attempt and never an established Apple Home or Home Assistant fabric.
+   Exactly replay bounded state-changing responses when MRP retries a request.
+   That covers CommissioningComplete itself: a retransmission repeats the
+   answer it already gave, never NO_FAIL_SAFE. Mutate the fabric table only
+   under the lock that owns it, fail-safe expiry included, and never take that
+   lock again from the store worker the caller is already waiting on.
+2. Treat the established Thread dataset as node state, not administrator state.
+   A later administrator may name the same Extended PAN ID without restarting
+   Thread or replacing the committed credentials; a different or malformed
+   dataset is refused without detaching the lock.
+3. Scope ACL state, filtered fabric reads, subscriptions, ICAC ownership, and
+   cleanup to the fabric that owns them. A removed or PASE session cannot
+   operate the lock or administer another fabric. Parse stored ACL entries
+   against the spec's field ids, pinned by a real controller's captured bytes,
+   and match a subject in the CASE Authenticated Tag range as a tag under the
+   version rule rather than by equality.
+4. Implement authenticated OperationalCredentials RemoveFabric. The removal
+   is durably tombstoned before success, revokes that fabric's sessions and SRP
+   service, and leaves every other fabric usable. Removing the last fabric also
+   clears Home Key trust and reopens commissioning.
+5. Answer OperationalCredentials UpdateFabricLabel. The label is part of the
+   fabric record, reads back through the Fabrics attribute, persists on its own
+   without rewriting that fabric's network, ICAC or ACL records, and a label
+   another fabric already holds is refused as LabelConflict in the NOCResponse.
+6. Preserve the SRP client key and host identity together. Service structures
+   remain allocated until OpenThread returns them in its removal callback, and
+   duplicate registration is retried without reporting false success.
+
+The DWM3001CDK Zephyr and FreeRTOS builds share
+`modules/ultrawidelock_matter/`, `ports/zephyr/matter/matter_thread_port.c`, and
+the `mf2` record contract in `ports/zephyr/store/matter_fab_settings.c`. The
+ESP32 and nRF5340 ports delegate fabric transactions to their CHIP SDKs; their
+application glue still owns the last-fabric credential cleanup rule.
+
+The fabric record's length is itself the compatibility check: it grew when the
+label field arrived, and the loader drops a record whose stored length is not
+the one it expects rather than half-reading it. `FAB_VERSION` did not move.
+Growing that struct therefore costs one re-pair, and a port that widens it owes
+its users that warning.
+
+`mf2` is a deliberate clean break from the v0.3 custom schema. The loader never
+trusts `mfab/*`, and the flash map moves the custom DWM settings region from
+`0x7e000` to `0x7c000`. Upgrading those builds requires re-pairing Matter and
+Home Key; when no current fabric survives, the application also clears the old
+reader provisioning identity so a new home cannot inherit an old Wallet key.
+
+| Port | Fabric owner | Contract status in this tree | Hardware status |
+|---|---|---|---|
+| DWM3001CDK Zephyr | portable stack + Zephyr `mf2` store | implemented and host-tested | production image builds and fits; Apple plus Home Assistant rows are still open |
+| DWM3001CDK FreeRTOS | same portable stack + FreeRTOS `mf2` adapter | implemented and port-tested | Matter multi-admin not hardware-validated |
+| ESP32 | esp-matter/CHIP | delegated to SDK; application handles last-fabric reader cleanup | existing ESP lock evidence does not cover this new cross-controller gate |
+| nRF5340 | NCS/CHIP | delegated to SDK; integration must retain the same externally visible rules | existing Apple evidence does not cover Apple plus Home Assistant |
+
+Operator setup and recovery for the primary target live in
+[`apps/dwm3001cdk-lock/README.md`](apps/dwm3001cdk-lock/README.md#apple-home-plus-home-assistant).
+Port parity means the behavior in this section, not a shared private flash
+format across unrelated SDKs.
 
 ## Verification
 

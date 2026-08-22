@@ -339,6 +339,17 @@ static void fill_info(struct matter_device_info *info)
 	info->supports_concurrent_connection = true;
 }
 
+static void authorize_admin(struct matter_device_info *info)
+{
+	info->fabrics[0].index = 1u;
+	info->fabrics[0].fabric_id = 1u;
+	info->fabrics[0].node_id = 1u;
+	info->fabrics[0].case_admin_subject = 1u;
+	info->committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+	info->accessing_fabric_index = 1u;
+	info->accessing_node_id = 1u;
+}
+
 static void test_read_cursor_owner(void)
 {
 	struct matter_im_read_state slots[2];
@@ -501,6 +512,48 @@ void test_matter_im(void)
 
 	/* And the wildcard genuinely produced nothing at all. */
 	T_OK("wildcard cluster absent from report", find(reps, n, 0x0038, 0) == NULL);
+
+	t_group("FabricFiltered is carried into fabric-scoped values");
+	{
+		struct matter_device_info fabric_info;
+		struct matter_im_server fabric_srv;
+		struct matter_im_read fabric_read;
+		uint8_t all[512];
+		uint8_t own[512];
+		size_t all_len = 0u;
+		size_t own_len = 0u;
+
+		fill_info(&fabric_info);
+		fabric_info.fabrics[0].index = 1u;
+		fabric_info.fabrics[0].fabric_id = 0x1111u;
+		fabric_info.fabrics[0].node_id = 0xaaaa;
+		fabric_info.fabrics[1].index = 2u;
+		fabric_info.fabrics[1].fabric_id = 0x2222u;
+		fabric_info.fabrics[1].node_id = 0xbbbb;
+		fabric_info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u) |
+					      MATTER_FABRIC_SLOT_BIT(1u);
+		fabric_info.accessing_fabric_index = 1u;
+		matter_clusters_init(&fabric_srv, &fabric_info);
+
+		memset(&fabric_read, 0, sizeof(fabric_read));
+		fabric_read.n_paths = 1u;
+		fabric_read.paths[0].endpoint = MATTER_ENDPOINT_ROOT;
+		fabric_read.paths[0].cluster = MATTER_CLUSTER_OPERATIONAL_CREDENTIALS;
+		fabric_read.paths[0].attribute = MATTER_ATTR_OC_FABRICS;
+		fabric_read.paths[0].have_endpoint = true;
+		fabric_read.paths[0].have_cluster = true;
+		fabric_read.paths[0].have_attribute = true;
+		T_EQ("unfiltered fabric list encodes",
+		     matter_im_report_data_encode(&fabric_srv, &fabric_read, all, sizeof(all),
+					  &all_len, NULL),
+		     MATTER_OK);
+		fabric_read.fabric_filtered = true;
+		T_EQ("filtered fabric list encodes",
+		     matter_im_report_data_encode(&fabric_srv, &fabric_read, own, sizeof(own),
+					  &own_len, NULL),
+		     MATTER_OK);
+		T_OK("the filtered read contains only the accessing fabric", own_len < all_len);
+	}
 
 	/* ---------------------------------------------------- status choices --- */
 	{
@@ -1160,6 +1213,7 @@ void test_matter_im_invoke(void)
 	size_t len = 0u;
 
 	fill_info(&info);
+	authorize_admin(&info);
 	matter_clusters_init(&srv, &info);
 
 	t_group("ArmFailSafe, as a real iPhone sent it");
@@ -1176,10 +1230,9 @@ void test_matter_im_invoke(void)
 		T_OK("not timed", !inv.timed_request);
 		T_OK("no command ref", !inv.has_command_ref);
 
-		T_OK("fail-safe not armed yet", !info.failsafe_armed);
-		/* Existing administrators are the rollback baseline for this new
-		 * transaction. Use nonadjacent slots so this proves a mask rather
-		 * than a count. */
+		T_OK("fail-safe not armed yet", !info.attempt.active);
+		/* Existing administrators must not be owned by the new transaction.
+		 * Use nonadjacent slots so this proves a mask rather than a count. */
 		info.fabrics[0].index = 1u;
 		info.fabrics[2].index = 3u;
 		T_EQ("encodes a response",
@@ -1188,11 +1241,14 @@ void test_matter_im_invoke(void)
 		T_OK("response is not empty", len > 0u);
 		/* The command RAN: the effect is the point, and the breadcrumb is
 		 * how the commissioner resumes a half-finished attempt. */
-		T_OK("fail-safe armed", info.failsafe_armed);
-		T_EQ("existing fabric slots captured", info.failsafe_fabric_mask, 0x05u);
+		T_OK("fail-safe armed", info.attempt.active);
+		T_EQ("existing fabrics are not the transaction's to roll back",
+		     info.attempt.owned_slots, 0u);
 		T_EQ("breadcrumb taken from the request", (long)info.breadcrumb, 3L);
-		info.fabrics[0].index = 0u;
 		info.fabrics[2].index = 0u;
+		/* Restore the single authorized administrator the rest of this
+		 * function invokes against. */
+		authorize_admin(&info);
 
 		T_OK("response decodes", walk_invoke_response(out, len, &ir));
 		T_OK("carries a command, not a status", !ir.is_status);
@@ -1476,7 +1532,7 @@ void test_matter_im_invoke(void)
 		     matter_im_invoke_response_encode(&srv, &inv, out, sizeof(out), &len),
 		     MATTER_OK);
 		T_EQ("nothing to send", (long)len, 0L);
-		T_OK("but the command still ran", info.failsafe_armed);
+		T_OK("but the command still ran", info.attempt.active);
 	}
 }
 
@@ -1531,6 +1587,133 @@ static size_t build_write(uint8_t *buf, size_t cap, unsigned int n_requests, boo
 	(void)matter_tlv_end_container(&w);
 	(void)matter_tlv_writer_finish(&w, &len);
 	return len;
+}
+
+/**
+ * A list write the way a real controller sends one: a replace-all block
+ * carrying @p n_seed members, then @p n_append AppendItem blocks that each name
+ * the SAME attribute and carry a ListIndex.
+ *
+ * This is what matter.js put on the wire for a binding write on 2026-08-22, and
+ * what this node used to answer RESOURCE_EXHAUSTED because it counted blocks
+ * and called anything past the first a batch.
+ *
+ * Each member is a one-field structure, standing in for the ACL entries and
+ * binding targets whose real shapes belong to the cluster, not to this layer.
+ */
+static size_t build_chunked_write(uint8_t *buf, size_t cap, unsigned int n_seed,
+				  unsigned int n_append, bool appends_match)
+{
+	struct matter_tlv_writer w;
+	unsigned int i;
+	size_t len = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(0), false);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(1), false);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_ARRAY);
+
+	/* Block one: replace all, with n_seed members already in it. */
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	put_path(&w, MATTER_TLV_CTX(1), true, MATTER_ENDPOINT_ROOT, true,
+		 MATTER_CLUSTER_ACCESS_CONTROL, true, MATTER_ATTR_AC_ACL);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_ARRAY);
+	for (i = 0u; i < n_seed; i++) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1), 100u + i);
+		(void)matter_tlv_end_container(&w);
+	}
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+
+	/* Then one block per appended member. */
+	for (i = 0u; i < n_append; i++) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(1), MATTER_TLV_LIST);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2), MATTER_ENDPOINT_ROOT);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(3), MATTER_CLUSTER_ACCESS_CONTROL);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(4),
+					 appends_match ? MATTER_ATTR_AC_ACL
+						       : MATTER_ATTR_AC_ACL + 1u);
+		/* ListIndex Null: the AppendItem marker. */
+		(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(5));
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1), 200u + i);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_end_container(&w);
+	}
+
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_writer_finish(&w, &len);
+	return len;
+}
+
+/** Count the members of the array @p data holds, or -1 if it is not an array. */
+static int array_members(const uint8_t *data, size_t len)
+{
+	struct matter_tlv_reader r;
+	int n = 0;
+
+	matter_tlv_reader_init(&r, data, len);
+	if (matter_tlv_next(&r) != MATTER_OK || matter_tlv_element_type(&r) != MATTER_TLV_ARRAY) {
+		return -1;
+	}
+	if (matter_tlv_enter(&r) != MATTER_OK) {
+		return -1;
+	}
+	for (;;) {
+		int rc = matter_tlv_next(&r);
+
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return -1;
+		}
+		if (matter_tlv_is_container(&r)) {
+			if (matter_tlv_enter(&r) != MATTER_OK || matter_tlv_exit(&r) != MATTER_OK) {
+				return -1;
+			}
+		}
+		n++;
+	}
+	return n;
+}
+
+/** The first uint64 inside array member @p want, or UINT64_MAX if unreadable. */
+static uint64_t array_member_value(const uint8_t *data, size_t len, int want)
+{
+	struct matter_tlv_reader r;
+	int n = 0;
+
+	matter_tlv_reader_init(&r, data, len);
+	if (matter_tlv_next(&r) != MATTER_OK || matter_tlv_enter(&r) != MATTER_OK) {
+		return UINT64_MAX;
+	}
+	for (;;) {
+		if (matter_tlv_next(&r) != MATTER_OK) {
+			return UINT64_MAX;
+		}
+		if (n == want) {
+			uint64_t v = 0u;
+
+			if (matter_tlv_enter(&r) != MATTER_OK ||
+			    matter_tlv_next(&r) != MATTER_OK ||
+			    matter_tlv_get_u64(&r, &v) != MATTER_OK) {
+				return UINT64_MAX;
+			}
+			return v;
+		}
+		if (matter_tlv_is_container(&r)) {
+			if (matter_tlv_enter(&r) != MATTER_OK || matter_tlv_exit(&r) != MATTER_OK) {
+				return UINT64_MAX;
+			}
+		}
+		n++;
+	}
 }
 
 static size_t build_subscribe(uint8_t *buf, size_t cap, unsigned int n_paths, uint16_t min_s,
@@ -1615,6 +1798,72 @@ void test_matter_im_write(void)
 		T_EQ("decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
 		T_OK("suppression carried", wr.suppress_response);
 		T_OK("timed flag carried", wr.timed_request);
+
+		/*
+		 * A CHUNKED LIST IS NOT A BATCH. Matter writes a list as
+		 * replace-all then one AppendItem per member, so one attribute
+		 * arrives as several blocks. Counting blocks is what answered a
+		 * Home Assistant binding write with RESOURCE_EXHAUSTED and left
+		 * the list empty; these prove the members are put back together
+		 * instead.
+		 */
+		blen = build_chunked_write(buf, sizeof(buf), 0u, 1u, true);
+		T_EQ("a chunked list decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("and is NOT a batch", !wr.truncated);
+		T_EQ("the appended member is there",
+		     (long)array_members(wr.data, wr.data_len), 1L);
+		T_EQ("carrying its own value",
+		     (long)array_member_value(wr.data, wr.data_len, 0), 200L);
+		T_OK("rebuilt into the write's own buffer", wr.data == wr.list_buf);
+
+		/* An empty replace-all with three appends is the shape a
+		 * multi-entry ACL arrives in. */
+		blen = build_chunked_write(buf, sizeof(buf), 0u, 3u, true);
+		T_EQ("three appends decode",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("still not a batch", !wr.truncated);
+		T_EQ("all three are kept", (long)array_members(wr.data, wr.data_len), 3L);
+		T_EQ("in the order they arrived",
+		     (long)array_member_value(wr.data, wr.data_len, 2), 202L);
+
+		/* Members already in the replace-all block lead the list, and
+		 * the appends follow them. */
+		blen = build_chunked_write(buf, sizeof(buf), 2u, 2u, true);
+		T_EQ("a seeded replace-all decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("not a batch either", !wr.truncated);
+		T_EQ("seed and appends are all present",
+		     (long)array_members(wr.data, wr.data_len), 4L);
+		T_EQ("the seed comes first",
+		     (long)array_member_value(wr.data, wr.data_len, 0), 100L);
+		T_EQ("and the appends follow it",
+		     (long)array_member_value(wr.data, wr.data_len, 2), 200L);
+
+		/*
+		 * The cap still exists. A second block naming a DIFFERENT
+		 * attribute is a set, whatever its ListIndex says, and applying
+		 * an arbitrary member of a set is the thing this refuses.
+		 */
+		blen = build_chunked_write(buf, sizeof(buf), 0u, 1u, false);
+		T_EQ("an append for another attribute decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("but is still a batch", wr.truncated);
+
+		/* Enough members to overflow the rebuild buffer: refused whole,
+		 * never stored short. Its own buffer, because the request that
+		 * overflows MATTER_IM_WRITE_LIST_MAX is itself larger than the
+		 * one every other case here fits in. */
+		{
+			static uint8_t big[4096];
+			size_t biglen;
+
+			biglen = build_chunked_write(big, sizeof(big), 0u, 100u, true);
+			T_OK("an oversized list builds", biglen > 0u);
+			T_EQ("it decodes",
+			     matter_im_write_request_decode(big, biglen, &wr), MATTER_OK);
+			T_OK("and is refused rather than truncated silently", wr.truncated);
+		}
 	}
 
 	t_group("WriteResponse");
@@ -1622,20 +1871,25 @@ void test_matter_im_write(void)
 		struct matter_im_write wr;
 
 		blen = build_write(buf, sizeof(buf), 1u, true, false, false);
+		info.fabrics[0].index = 1u;
+		info.fabrics[0].case_admin_subject = 1u;
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		info.accessing_fabric_index = 1u;
+		info.accessing_node_id = 1u;
 		T_EQ("decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
 		T_EQ("response encodes",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_OK("and has content", len > 0u);
-		T_EQ("the ACL reached the device", info.acl_len, wr.data_len);
+		T_EQ("the ACL reached the device", info.fabric_acls[0].len, wr.data_len);
 
 		/* Suppressed: nothing to send, but the write still ran. */
-		info.acl_len = 0u;
+		info.fabric_acls[0].len = 0u;
 		wr.suppress_response = true;
 		len = 1u;
 		T_EQ("suppressed response encodes",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_EQ("nothing to send", (long)len, 0L);
-		T_EQ("but the write still ran", info.acl_len, wr.data_len);
+		T_EQ("but the write still ran", info.fabric_acls[0].len, wr.data_len);
 
 		/*
 		 * A batch gets an ANSWER, and nothing runs. The peer asked for
@@ -1643,14 +1897,14 @@ void test_matter_im_write(void)
 		 * reporting success would be a worse answer than refusing, and
 		 * silence -- what this used to do -- is the worst of the three.
 		 */
-		info.acl_len = 0u;
+		info.fabric_acls[0].len = 0u;
 		blen = build_write(buf, sizeof(buf), 2u, true, false, false);
 		T_EQ("batch decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
 		len = 0u;
 		T_EQ("a truncated batch still encodes a response",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_OK("with something to send", len > 0u);
-		T_EQ("and nothing was written", (long)info.acl_len, 0L);
+		T_EQ("and nothing was written", (long)info.fabric_acls[0].len, 0L);
 		T_OK("status is RESOURCE_EXHAUSTED",
 		     memchr(out, MATTER_IM_STATUS_RESOURCE_EXHAUSTED, len) != NULL);
 	}
@@ -1863,11 +2117,11 @@ void test_matter_im_events(void)
 	t_group("a LockOperation event is recorded when the tile unlocks");
 	{
 		fill_info(&info);
+		authorize_admin(&info);
 		matter_clusters_init(&srv, &info);
 
 		T_EQ("a fresh node holds no events", (long)matter_clusters_event_count(&info), 0L);
 
-		info.accessing_fabric_index = 1u;
 		T_EQ("UnlockDoor accepted", run_lock_command(&srv, MATTER_CMD_DL_UNLOCK_DOOR),
 		     MATTER_IM_STATUS_SUCCESS);
 		T_EQ("and it left an event", (long)matter_clusters_event_count(&info), 1L);

@@ -5,7 +5,7 @@ operations, and release workflows.
 
 | Group | Scripts |
 |---|---|
-| Setup and environment | `bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh` |
+| Setup and environment | `bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh`, `ws-seed.sh` |
 | nRF5340 DK builds | `nrf5340dk-build.sh` |
 | DWM3001CDK operations | `cdk-dfu.sh`, `cdk-find-probe.sh`, `cdk-rtt-elf-check.sh` |
 | Firmware size | `cdk-size.py`, `cdk-size-compare.py`, `cdk-size-baseline.py` |
@@ -22,6 +22,14 @@ wrapped command's own output goes to stdout untouched either way. Set
 `ULTRAWIDELOCK_UI=0` to force the plain form, `1` to force the drawn one, and
 run `scripts/lib/ui.sh --self-test` to check it against a terminal that is
 missing colour, UTF-8, width or `$TERM`.
+
+`ws-seed.sh` gives a worktree its own west workspace as an APFS copy-on-write
+clone, so branch-bouncing cannot build stale patches. `make ws-seed` seeds the
+worktree it runs in. Pass a path to seed a different one -- the way to reach a
+worktree whose branch predates the script, since it needs no files copied into
+the target and no commit on its branch. The target must have an executable
+`scripts/bootstrap.sh`, which is re-run inside it to normalize patches to its
+own branch, and is refused up front when it does not.
 
 Prefer a documented Make target when one exists. Run `make help` to see the
 supported interface and required variables. Use `make hitl` for `hitl-run.sh`;

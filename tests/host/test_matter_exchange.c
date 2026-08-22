@@ -68,6 +68,9 @@ static size_t inbound_ok(uint8_t *buf, size_t cap, uint8_t opcode, uint32_t coun
 
 static void t_matter_exchange_ack_for_self_initiated(void);
 static void t_matter_tx_pool(void);
+#if MATTER_FEATURE_CLIENT
+static void t_matter_exchange_initiator_session(void);
+#endif
 
 void test_matter_exchange(void)
 {
@@ -137,6 +140,10 @@ void test_matter_exchange(void)
 
 	t_group("a retransmission is acknowledged but not acted on twice");
 	{
+		uint8_t first[sizeof(out)];
+		size_t first_len;
+		size_t replay_len = 0u;
+
 		matter_exchange_init(&x, SEED, true);
 		n = inbound_ok(msg, sizeof(msg), 0x20u, 7u, k_payload, sizeof(k_payload));
 		T_EQ("first time", matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)),
@@ -144,6 +151,8 @@ void test_matter_exchange(void)
 		T_EQ("reply",
 		     matter_exchange_reply(&x, 0x21u, NULL, 0u, out, sizeof(out), &out_len),
 		     MATTER_OK);
+		first_len = out_len;
+		memcpy(first, out, first_len);
 		T_OK("ack consumed", !x.ack_pending);
 
 		/* The peer did not hear the reply and sends the same message again. */
@@ -154,6 +163,36 @@ void test_matter_exchange(void)
 		 * that true forever. */
 		T_OK("but it is owed an acknowledgement again", x.ack_pending);
 		T_EQ("for the same counter", (long)x.ack_counter, 7L);
+		T_EQ("the exact response is replayed",
+		     matter_exchange_replay(&x, out, sizeof(out), &replay_len), MATTER_OK);
+		T_EQ("with the original length", (long)replay_len, (long)first_len);
+		T_OK("with the original wire bytes and counter",
+		     memcmp(out, first, first_len) == 0);
+		T_OK("the replay carries the acknowledgement", !x.ack_pending);
+		T_EQ("and cannot be emitted without another duplicate",
+		     matter_exchange_replay(&x, out, sizeof(out), &replay_len), MATTER_E_STATE);
+	}
+
+	t_group("an oversized response falls back to a standalone ack");
+	{
+		uint8_t large[MATTER_EXCHANGE_REPLAY_MAX];
+		size_t replay_len = 0u;
+
+		memset(large, 0xa5, sizeof(large));
+		matter_exchange_init(&x, SEED, true);
+		n = inbound_ok(msg, sizeof(msg), 0x20u, 8u, NULL, 0u);
+		T_EQ("first request", matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)),
+		     MATTER_OK);
+		T_EQ("large reply frames",
+		     matter_exchange_reply(&x, 0x21u, large, sizeof(large), out, sizeof(out),
+				       &out_len),
+		     MATTER_OK);
+		T_EQ("duplicate is suppressed",
+		     matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)), MATTER_E_DUP);
+		T_EQ("oversized reply was not cached",
+		     matter_exchange_replay(&x, out, sizeof(out), &replay_len), MATTER_E_STATE);
+		T_EQ("but the peer can still be acknowledged",
+		     matter_exchange_standalone_ack(&x, out, sizeof(out), &replay_len), MATTER_OK);
 	}
 
 	t_group("what this layer refuses");
@@ -905,7 +944,260 @@ void test_matter_exchange(void)
 
 	t_matter_exchange_ack_for_self_initiated();
 	t_matter_tx_pool();
+#if MATTER_FEATURE_CLIENT
+	t_matter_exchange_initiator_session();
+#endif
 }
+
+#if MATTER_FEATURE_CLIENT
+/*
+ * A session this node OPENED, which is the client role's whole difference.
+ *
+ * Two things separate it from every session above, and both are invisible from
+ * the payload: the exchange has to be usable before the peer has said anything
+ * (nothing has arrived to open it), and the acknowledgement this node owes has
+ * to go out with I SET. CHIP matches an inbound message to an exchange by id
+ * AND by the initiator flag being the opposite of its own, so an ack with I
+ * clear on this node's own exchange matches nothing and the peer keeps
+ * retransmitting -- a failure whose only symptom is a peer that gives up.
+ */
+static void t_matter_exchange_initiator_session(void)
+{
+	struct matter_exchange x;
+	struct matter_exchange_in in;
+	struct matter_session_keys keys;
+	struct matter_msg_header mh;
+	struct matter_msg_header got;
+	struct matter_proto_header ph;
+	uint8_t msg[256];
+	uint8_t out[256];
+	uint8_t pt[256];
+	uint8_t plain[64];
+	uint8_t body[5] = {0x15u, 0x24u, 0x00u, 0x01u, 0x18u};
+	size_t plain_len = 0u;
+	size_t sealed = 0u;
+	size_t opened = 0u;
+	size_t out_len = 0u;
+
+	for (size_t i = 0; i < MATTER_KEY_LEN; i++) {
+		keys.i2r[i] = (uint8_t)(0x10u + i);
+		keys.r2i[i] = (uint8_t)(0x40u + i);
+		keys.attestation_challenge[i] = (uint8_t)(0x70u + i);
+	}
+
+	t_group("a session this node opened, and sends on first");
+
+	memset(&x, 0, sizeof(x));
+	T_EQ("the session installs",
+	     matter_exchange_open_initiator(&x, 0xABCDu, 0x1234u, 0x0055u, &keys, SEED), MATTER_OK);
+	T_OK("secure", x.secure);
+	T_OK("MRP is on, because this only exists over UDP", x.mrp);
+	/*
+	 * The whole point. matter_exchange_promote() leaves this closed, which
+	 * is right for a responder and would refuse the first message an
+	 * initiator has to send before the peer has said anything at all.
+	 */
+	T_OK("and the exchange is already open", x.open);
+	T_EQ("carrying the id this node chose", (long)x.exchange_id, 0x0055L);
+
+	T_EQ("a request sends",
+	     matter_exchange_send_initiator(&x, 0x0055u, MATTER_PROTOCOL_INTERACTION_MODEL, 0x0Au,
+					    body, sizeof(body), out, sizeof(out), &out_len),
+	     MATTER_OK);
+	/* Role-relative keys: as the INITIATOR this node still seals with r2i,
+	 * because matter_case_client_keys() swapped them on the way in. */
+	T_EQ("the peer opens it",
+	     matter_crypto_open(out, out_len, keys.r2i, MATTER_PASE_NODE_ID, &got, pt, sizeof(pt),
+				&opened),
+	     MATTER_OK);
+
+	t_group("the acknowledgement it owes, with I set");
+
+	/* The peer answers on this node's exchange, so I is CLEAR from its side,
+	 * and it asks to be acknowledged. */
+	memset(&ph, 0, sizeof(ph));
+	ph.exchange_flags = MATTER_EX_FLAG_R;
+	ph.opcode = 0x01u;
+	ph.exchange_id = 0x0055u;
+	ph.protocol_id = MATTER_PROTOCOL_INTERACTION_MODEL;
+	plain_len = 0u;
+	T_EQ("proto header", matter_proto_header_encode(&ph, plain, sizeof(plain), &plain_len),
+	     MATTER_OK);
+	memset(&mh, 0, sizeof(mh));
+	mh.flags = MATTER_MSG_DSIZ_NONE;
+	mh.session_id = 0xABCDu;
+	mh.security_flags = MATTER_SESSION_TYPE_UNICAST;
+	mh.message_counter = 4242u;
+	T_EQ("the peer's answer seals",
+	     matter_crypto_seal(&mh, keys.i2r, MATTER_PASE_NODE_ID, plain, plain_len, msg,
+				sizeof(msg), &sealed),
+	     MATTER_OK);
+	T_EQ("and is accepted", matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)),
+	     MATTER_OK);
+	T_OK("an ack is owed", x.ack_pending);
+	/* Consumed through exchange_is_ours(): the id stays this node's. */
+	T_EQ("on the exchange this node opened", (long)x.exchange_id, 0x0055L);
+
+	out_len = 0u;
+	T_EQ("the ack frames",
+	     matter_exchange_ack_initiator(&x, 0x0055u, out, sizeof(out), &out_len), MATTER_OK);
+	T_EQ("and the peer opens it",
+	     matter_crypto_open(out, out_len, keys.r2i, MATTER_PASE_NODE_ID, &got, pt, sizeof(pt),
+				&opened),
+	     MATTER_OK);
+	{
+		struct matter_proto_header rph;
+		size_t rph_len = 0u;
+
+		T_EQ("its proto header decodes",
+		     matter_proto_header_decode(pt, opened, &rph, &rph_len), MATTER_OK);
+		T_EQ("a standalone ack", (long)rph.opcode, (long)MATTER_SC_OP_ACK);
+		T_EQ("on this node's exchange", (long)rph.exchange_id, 0x0055L);
+		T_OK("marked INITIATOR, which is the whole reason this exists",
+		     (rph.exchange_flags & MATTER_EX_FLAG_I) != 0u);
+		T_OK("carrying the acknowledgement", (rph.exchange_flags & MATTER_EX_FLAG_A) != 0u);
+		T_EQ("of the counter that asked for it", (long)rph.ack_counter, 4242L);
+		/* An acknowledgement that asks to be acknowledged never ends. */
+		T_OK("and asking for nothing back", (rph.exchange_flags & MATTER_EX_FLAG_R) == 0u);
+	}
+	T_OK("nothing is owed any more", !x.ack_pending);
+
+	T_EQ("and a second ack has nothing to say",
+	     matter_exchange_ack_initiator(&x, 0x0055u, out, sizeof(out), &out_len),
+	     MATTER_E_STATE);
+
+	t_group("initiator and responder, both real, talking to each other");
+	{
+		/*
+		 * Every other initiator case above hand-builds the peer's side
+		 * of the conversation, so it can only assert that this node
+		 * framed what the test author expected. This one runs a real
+		 * responder against it: the bytes the initiator seals go into
+		 * matter_exchange_recv(), and the bytes the responder seals come
+		 * back. A disagreement about session ids, node ids, the I flag
+		 * or which key seals which direction fails here rather than on a
+		 * bench.
+		 *
+		 * NOT a conformance test. Both halves share this repo's reading
+		 * of the spec, so a misunderstanding they share still passes.
+		 * What it catches is the two of them disagreeing with EACH
+		 * OTHER, which is where both bugs found during development were.
+		 */
+		struct matter_session_keys keys_r;
+		struct matter_session_keys keys_i;
+		struct matter_exchange ini;
+		struct matter_exchange res;
+		struct matter_exchange_in got_req;
+		struct matter_exchange_in got_rsp;
+		uint8_t wire[256];
+		uint8_t plain[256];
+		size_t wire_len = 0u;
+		int rc_loop;
+		static const uint8_t k_req[] = {0x15u, 0x24u, 0x00u, 0x01u, 0x18u};
+		static const uint8_t k_rsp[] = {0x15u, 0x24u, 0x00u, 0x02u, 0x18u};
+
+		for (size_t i = 0; i < MATTER_KEY_LEN; i++) {
+			keys_r.i2r[i] = (uint8_t)(0x10u + i);
+			keys_r.r2i[i] = (uint8_t)(0x40u + i);
+			keys_r.attestation_challenge[i] = (uint8_t)(0x70u + i);
+		}
+		/*
+		 * Mirrored, because matter_exchange.c always seals with r2i and
+		 * opens with i2r whatever role it is playing. The initiator gets
+		 * the swapped pair that matter_case_client_keys() hands it, and
+		 * the two then agree. Give both sides the same struct and every
+		 * message fails to decrypt.
+		 */
+		memcpy(keys_i.i2r, keys_r.r2i, MATTER_KEY_LEN);
+		memcpy(keys_i.r2i, keys_r.i2r, MATTER_KEY_LEN);
+		memcpy(keys_i.attestation_challenge, keys_r.attestation_challenge,
+		       MATTER_KEY_LEN);
+
+		memset(&ini, 0, sizeof(ini));
+		memset(&res, 0, sizeof(res));
+		T_EQ("the initiator opens its session",
+		     matter_exchange_open_initiator(&ini, 0x00A1u, 0x00B2u, 0x0077u, &keys_i, SEED),
+		     MATTER_OK);
+		matter_exchange_init(&res, SEED, true);
+		T_EQ("the responder installs the same session",
+		     matter_exchange_promote(&res, 0x00B2u, 0x00A1u, &keys_r, SEED), MATTER_OK);
+		matter_exchange_set_op_node_ids(&ini, 0xAAAAu, 0xBBBBu);
+		matter_exchange_set_op_node_ids(&res, 0xBBBBu, 0xAAAAu);
+
+		T_EQ("the initiator sends first, which is the whole point",
+		     matter_exchange_send_initiator(&ini, 0x0077u,
+						    MATTER_PROTOCOL_INTERACTION_MODEL, 0x08u,
+						    k_req, sizeof(k_req), wire, sizeof(wire),
+						    &wire_len),
+		     MATTER_OK);
+
+		/*
+		 * Guarded on the return code, because got_req carries no payload
+		 * pointer when the receive failed and reading one crashes the
+		 * runner instead of printing a FAIL row. A test that segfaults
+		 * on regression reports nothing about what regressed.
+		 */
+		rc_loop = matter_exchange_recv(&res, wire, wire_len, &got_req, plain, sizeof(plain));
+		T_EQ("and a real responder accepts it", rc_loop, MATTER_OK);
+		if (rc_loop == MATTER_OK) {
+			T_EQ("with the opcode intact", got_req.opcode, 0x08L);
+			T_EQ("and the payload intact", (long)got_req.payload_len,
+			     (long)sizeof(k_req));
+			T_OK("byte for byte", memcmp(got_req.payload, k_req, sizeof(k_req)) == 0);
+			/* It adopted the id the INITIATOR chose, not one of its own. */
+			T_EQ("on the exchange the initiator named", (long)res.exchange_id, 0x0077L);
+			T_OK("and owes an acknowledgement", res.ack_pending);
+		}
+
+		wire_len = 0u;
+		T_EQ("the responder answers",
+		     matter_exchange_reply(&res, 0x09u, k_rsp, sizeof(k_rsp), wire, sizeof(wire),
+					   &wire_len),
+		     MATTER_OK);
+		T_OK("having paid the acknowledgement it owed", !res.ack_pending);
+
+		rc_loop = matter_exchange_recv(&ini, wire, wire_len, &got_rsp, plain, sizeof(plain));
+		T_EQ("and the initiator accepts that", rc_loop, MATTER_OK);
+		if (rc_loop != MATTER_OK) {
+			got_rsp.opcode = 0;
+			got_rsp.carries_ack = false;
+		} else {
+			T_EQ("with its opcode", got_rsp.opcode, 0x09L);
+			T_OK("and its payload",
+			     memcmp(got_rsp.payload, k_rsp, sizeof(k_rsp)) == 0);
+		}
+		/*
+		 * The reply carried the responder's ack. An initiator that could
+		 * not match it would sit waiting for one and retry a request the
+		 * peer already answered.
+		 */
+		T_OK("the answer acknowledged the request", got_rsp.carries_ack);
+		T_EQ("still this node's exchange", (long)ini.exchange_id, 0x0077L);
+
+		wire_len = 0u;
+		T_EQ("and the initiator can acknowledge in turn",
+		     matter_exchange_ack_initiator(&ini, 0x0077u, wire, sizeof(wire), &wire_len),
+		     MATTER_OK);
+		T_EQ("which the responder accepts as well",
+		     matter_exchange_recv(&res, wire, wire_len, &got_req, plain, sizeof(plain)),
+		     MATTER_OK);
+		T_EQ("as a standalone acknowledgement", got_req.opcode, (long)MATTER_SC_OP_ACK);
+	}
+
+	t_group("neither entry point invents a session");
+
+	T_EQ("no exchange to open",
+	     matter_exchange_open_initiator(NULL, 0xABCDu, 0x1234u, 0x0055u, &keys, SEED),
+	     MATTER_E_INVAL);
+	T_EQ("session id 0 is the unsecured one and can never be this node's",
+	     matter_exchange_open_initiator(&x, MATTER_SESSION_ID_UNSECURED, 0x1234u, 0x0055u,
+					    &keys, SEED),
+	     MATTER_E_INVAL);
+	T_EQ("and an ack with nowhere to go",
+	     matter_exchange_ack_initiator(&x, 0x0055u, NULL, sizeof(out), &out_len),
+	     MATTER_E_INVAL);
+}
+#endif /* MATTER_FEATURE_CLIENT */
 
 /*
  * The acknowledgement for a report this node initiated.
@@ -1019,6 +1311,71 @@ static void t_matter_exchange_ack_for_self_initiated(void)
 	     MATTER_OK);
 	T_EQ("an ack for an exchange nobody opened is still refused",
 	     matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)), MATTER_E_STATE);
+
+	t_group("a retransmitted StatusResponse on this node's exchange");
+	/*
+	 * The peer closes the report exchange with a StatusResponse, R set, I
+	 * clear. If the first acknowledgement is lost the peer retransmits it,
+	 * and the DUP path frames a FRESH initiator ack from what recv left
+	 * behind -- so everything it reads from `in` and from the exchange has
+	 * to be valid on the MATTER_E_DUP return, not only on MATTER_OK.
+	 */
+	memset(&ph, 0, sizeof(ph));
+	ph.exchange_flags = MATTER_EX_FLAG_A | MATTER_EX_FLAG_R;
+	ph.opcode = 0x01u;
+	ph.exchange_id = 0x0042u;
+	ph.protocol_id = MATTER_PROTOCOL_INTERACTION_MODEL;
+	ph.ack_counter = 1u;
+	plain_len = 0u;
+	T_EQ("StatusResponse header",
+	     matter_proto_header_encode(&ph, plain, sizeof(plain), &plain_len), MATTER_OK);
+	mh.message_counter = 903u;
+	sealed = 0u;
+	T_EQ("StatusResponse seals",
+	     matter_crypto_seal(&mh, keys.i2r, MATTER_PASE_NODE_ID, plain, plain_len, msg,
+				sizeof(msg), &sealed),
+	     MATTER_OK);
+	T_EQ("first arrival is accepted",
+	     matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)), MATTER_OK);
+	T_OK("it does not claim to initiate", !in.initiator);
+	T_OK("and asks for an ack", in.ack_requested);
+	T_EQ("on this node's exchange", (long)in.exchange_id, 0x0042L);
+	out_len = 0u;
+	T_EQ("the initiator ack frames",
+	     matter_exchange_ack_initiator(&x, in.exchange_id, out, sizeof(out), &out_len),
+	     MATTER_OK);
+
+	/* The identical bytes again: the ack above was lost on the air. */
+	T_EQ("the retransmit is refused as a duplicate",
+	     matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)), MATTER_E_DUP);
+	T_OK("but still says it does not initiate", !in.initiator);
+	T_OK("still asks for an ack", in.ack_requested);
+	T_EQ("still names the exchange", (long)in.exchange_id, 0x0042L);
+	T_EQ("and its counter", (long)in.message_counter, 903L);
+	T_OK("the owed ack was re-armed", x.ack_pending);
+	out_len = 0u;
+	T_EQ("so a fresh initiator ack frames",
+	     matter_exchange_ack_initiator(&x, in.exchange_id, out, sizeof(out), &out_len),
+	     MATTER_OK);
+	{
+		struct matter_msg_header got;
+		struct matter_proto_header rph;
+		size_t rph_len = 0u;
+		size_t opened = 0u;
+
+		T_EQ("the peer opens it",
+		     matter_crypto_open(out, out_len, keys.r2i, MATTER_PASE_NODE_ID, &got, pt,
+					sizeof(pt), &opened),
+		     MATTER_OK);
+		T_EQ("its proto header decodes",
+		     matter_proto_header_decode(pt, opened, &rph, &rph_len), MATTER_OK);
+		T_EQ("a standalone ack", (long)rph.opcode, (long)MATTER_SC_OP_ACK);
+		T_EQ("on the report's exchange", (long)rph.exchange_id, 0x0042L);
+		T_OK("marked INITIATOR", (rph.exchange_flags & MATTER_EX_FLAG_I) != 0u);
+		T_EQ("acknowledging the retransmitted counter", (long)rph.ack_counter, 903L);
+		T_OK("and asking for nothing back",
+		     (rph.exchange_flags & MATTER_EX_FLAG_R) == 0u);
+	}
 }
 
 static void t_matter_tx_pool(void)

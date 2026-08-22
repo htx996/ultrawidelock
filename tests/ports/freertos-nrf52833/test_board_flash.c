@@ -59,8 +59,8 @@ bool ultrawidelock_freertos_radio_ready(void)
 	return g_radio_ready;
 }
 
-/* The key-value store's two pages, which are the default writable window. */
-#define KV_BASE 0x7e000u
+/* The key-value store's four pages, which are the default writable window. */
+#define KV_BASE 0x7c000u
 #define KV_LIMIT 0x80000u
 #define PAGE 4096u
 
@@ -170,7 +170,7 @@ static void test_write_rejections(void)
 	 * surfaced as "a flash write or erase failed" during a real update,
 	 * months from the decision that caused it. Asked at start-up instead.
 	 *
-	 * This suite compiles the DEFAULT window -- the store's two pages -- so
+	 * This suite compiles the DEFAULT window -- the store's four pages -- so
 	 * the staging partition at 0x74000 is correctly outside it here. The
 	 * target build widens the base to cover staging; what is pinned here is
 	 * that the predicate agrees with the window it was compiled against,
@@ -186,7 +186,7 @@ static void test_write_rejections(void)
 	/* A partition the default window does not cover: the DFU staging area,
 	 * which is exactly the case that shipped broken. */
 	CHECK("a staging partition below the window is reported unwritable",
-	      !ultrawidelock_freertos_flash_writable(0x74000u, 0xa000u));
+	      !ultrawidelock_freertos_flash_writable(0x74000u, 0x8000u));
 }
 
 /* ---- erases ------------------------------------------------------------- */
@@ -224,7 +224,7 @@ static void test_erase_rejections(void)
 	CHECK("an erase below the writable window is refused",
 	      ultrawidelock_freertos_flash_erase(KV_BASE - PAGE, PAGE) != 0);
 	CHECK("an erase past the writable window is refused",
-	      ultrawidelock_freertos_flash_erase(KV_BASE, 3u * PAGE) != 0);
+	      ultrawidelock_freertos_flash_erase(KV_BASE, 5u * PAGE) != 0);
 	CHECK("an erase of the application image is refused",
 	      ultrawidelock_freertos_flash_erase(0x8000u, PAGE) != 0);
 

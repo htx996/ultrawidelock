@@ -403,6 +403,11 @@ static int matter_exchange_recv_impl(struct matter_exchange *x, const uint8_t *m
 	in->ack_requested = (ph.exchange_flags & MATTER_EX_FLAG_R) != 0u;
 	in->carries_ack = (ph.exchange_flags & MATTER_EX_FLAG_A) != 0u;
 	in->acked_counter = ph.ack_counter;
+	in->message_counter = mh.message_counter;
+	if (in->carries_ack && x->replay_len != 0u &&
+	    in->acked_counter == x->replay_out_counter) {
+		x->replay_len = 0u;
+	}
 
 	/*
 	 * A duplicate still has to be acknowledged -- the peer is retransmitting
@@ -471,6 +476,7 @@ int matter_exchange_promote(struct matter_exchange *x, uint16_t local_id, uint16
 	 * secure session, so holding the old id would refuse its first message. */
 	x->open = false;
 	x->ack_pending = false;
+	x->replay_len = 0u;
 
 	return MATTER_OK;
 }
@@ -486,14 +492,17 @@ int matter_exchange_promote(struct matter_exchange *x, uint16_t local_id, uint16
  *        does this; see matter_exchange_send_initiator().
  */
 static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode, bool reliable,
-		 bool as_initiator, uint16_t init_exchange_id, const uint8_t *payload,
-		 size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
+		 bool as_initiator, bool carry_initiator_ack, uint16_t init_exchange_id,
+		 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
+		 size_t *out_len)
 {
 	struct matter_msg_header mh;
 	struct matter_proto_header ph;
 	size_t mh_len = 0u;
 	size_t ph_len = 0u;
 	uint32_t counter;
+	uint32_t reply_to_counter = 0u;
+	bool cache_reply;
 	int rc;
 
 	if (x == NULL || out == NULL || out_len == NULL) {
@@ -504,6 +513,10 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	}
 	if (!x->open) {
 		return MATTER_E_STATE;
+	}
+	cache_reply = reliable && !as_initiator && x->mrp && x->ack_pending;
+	if (cache_reply) {
+		reply_to_counter = x->ack_counter;
 	}
 
 	rc = matter_counter_next(&x->counter, &counter);
@@ -551,13 +564,22 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 		ph.exchange_flags |= MATTER_EX_FLAG_R;
 	}
 	/*
-	 * Never acknowledge on an exchange this node has just opened. An ack
+	 * Never acknowledge on an exchange this node has just OPENED. An ack
 	 * names a counter WITHIN an exchange, so carrying the peer's pending ack
 	 * out here would acknowledge, on a brand new exchange, a message that
 	 * exchange never carried. The pending ack stays pending and leaves on
 	 * the exchange that owes it.
+	 *
+	 * A CONTINUATION is the exception, and it is what carry_initiator_ack
+	 * is for: the second message of an exchange this node opened rides the
+	 * same exchange that owes the ack, so the counter it names is one that
+	 * exchange really did carry. Sending it separately is not merely
+	 * wasteful -- CHIP refuses the payload outright, "Dropping message
+	 * without piggyback ack when we are waiting for an ack", so the
+	 * UnlockDoor after a TimedRequest is discarded and the bound lock
+	 * never opens. Measured against a real peer 2026-08-22.
 	 */
-	if (!as_initiator && x->mrp && x->ack_pending) {
+	if ((!as_initiator || carry_initiator_ack) && x->mrp && x->ack_pending) {
 		ph.exchange_flags |= MATTER_EX_FLAG_A;
 		ph.ack_counter = x->ack_counter;
 	}
@@ -616,6 +638,16 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	} else {
 		*out_len = mh_len + ph_len + payload_len;
 	}
+	if (cache_reply) {
+		if (*out_len <= sizeof(x->replay)) {
+			memcpy(x->replay, out, *out_len);
+			x->replay_len = (uint16_t)*out_len;
+			x->replay_peer_counter = reply_to_counter;
+			x->replay_out_counter = counter;
+		} else {
+			x->replay_len = 0u;
+		}
+	}
 
 	/*
 	 * Only now: an ack that was never encoded is an ack still owed.
@@ -626,7 +658,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	 * message this node has already handled and the exchange that owes the
 	 * ack stalls. The report going out is not the reply that was owed.
 	 */
-	if (!as_initiator) {
+	if (!as_initiator || carry_initiator_ack) {
 		x->ack_pending = false;
 	}
 
@@ -641,7 +673,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 int matter_exchange_reply(struct matter_exchange *x, uint8_t opcode, const uint8_t *payload,
 			  size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, true, false, 0u, payload,
+	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, true, false, false, 0u, payload,
 		     payload_len, out, cap, out_len);
 }
 
@@ -652,7 +684,7 @@ int matter_exchange_send(struct matter_exchange *x, uint16_t protocol_id, uint8_
 			 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
 			 size_t *out_len)
 {
-	return frame(x, protocol_id, opcode, true, false, 0u, payload, payload_len, out, cap,
+	return frame(x, protocol_id, opcode, true, false, false, 0u, payload, payload_len, out, cap,
 		     out_len);
 }
 
@@ -664,8 +696,43 @@ int matter_exchange_send_initiator(struct matter_exchange *x, uint16_t exchange_
 				   uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
 				   size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-	return frame(x, protocol_id, opcode, true, true, exchange_id, payload, payload_len, out,
+	return frame(x, protocol_id, opcode, true, true, false, exchange_id, payload, payload_len, out,
 		     cap, out_len);
+}
+
+/**
+ * Frame a CONTINUATION on an exchange this node opened, carrying the ack it
+ * owes the peer on the very same message.
+ *
+ * The second message of an initiated exchange -- the InvokeRequest that follows
+ * a TimedRequest -- goes out after the peer's answer, which was itself reliable
+ * and is owed an acknowledgement. Sent without it, CHIP does not merely wait:
+ * it DROPS the request, and on this node that presented as "the bound lock
+ * stopped answering mid-unlock" with the command never run.
+ *
+ * Kept separate from matter_exchange_send_initiator() because that one also
+ * OPENS exchanges, and an ack on a brand new exchange names a counter it never
+ * carried. Only the caller knows which of the two it is doing.
+ *
+ * @return MATTER_E_STATE when there is nothing to piggyback, which the caller
+ *         should answer by sending normally rather than by giving up.
+ */
+int matter_exchange_continue_initiator(struct matter_exchange *x, uint16_t exchange_id,
+				       uint16_t protocol_id, uint8_t opcode,
+				       const uint8_t *payload, size_t payload_len, uint8_t *out,
+				       size_t cap, size_t *out_len)
+{
+	/*
+	 * Deliberately NOT guarded on x->exchange_id. On an exchange this node
+	 * opened, that field holds the PEER's exchange id rather than ours, so
+	 * comparing the two would refuse every continuation and quietly restore
+	 * the bug this exists to fix.
+	 */
+	if (x == NULL || !x->open || !x->secure || !x->mrp || !x->ack_pending) {
+		return MATTER_E_STATE;
+	}
+	return frame(x, protocol_id, opcode, true, true, true, exchange_id, payload, payload_len,
+		     out, cap, out_len);
 }
 
 /**
@@ -681,9 +748,126 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
 	if (!x->mrp || !x->ack_pending) {
 		return MATTER_E_STATE;
 	}
-	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, 0u, NULL,
+	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, false, 0u, NULL,
 		     0u, out, cap, out_len);
 }
+
+int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
+			   size_t *out_len)
+{
+	if (x == NULL || out == NULL || out_len == NULL) {
+		return MATTER_E_INVAL;
+	}
+	if (!x->mrp || !x->ack_pending || x->replay_len == 0u ||
+	    x->replay_peer_counter != x->ack_counter) {
+		return MATTER_E_STATE;
+	}
+	if (cap < x->replay_len) {
+		return MATTER_E_NOSPACE;
+	}
+	memcpy(out, x->replay, x->replay_len);
+	*out_len = x->replay_len;
+	x->ack_pending = false;
+	return MATTER_OK;
+}
+
+/* NOT guarded by MATTER_FEATURE_CLIENT: the server's own subscription
+ * reports ride exchanges this node opens (matter_exchange_send_initiator
+ * above), and the StatusResponse that closes one is acknowledged HERE.
+ * Guarded, a non-client image could send a report it can never ack, and
+ * the peer retransmits that StatusResponse for the whole MRP schedule. */
+int matter_exchange_ack_initiator(struct matter_exchange *x, uint16_t exchange_id, uint8_t *out,
+				  size_t cap, size_t *out_len)
+{
+	struct matter_msg_header mh;
+	struct matter_proto_header ph;
+	size_t mh_len = 0u;
+	size_t ph_len = 0u;
+	uint32_t counter;
+	int rc;
+
+	if (x == NULL || out == NULL || out_len == NULL) {
+		return MATTER_E_INVAL;
+	}
+	if (!x->secure || !x->mrp || !x->ack_pending) {
+		return MATTER_E_STATE;
+	}
+
+	rc = matter_counter_next(&x->counter, &counter);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+
+	/* Addressed by session id alone, exactly as frame() does on a secure
+	 * session: no node ids travel in a secure message header. */
+	memset(&mh, 0, sizeof(mh));
+	mh.security_flags = MATTER_SESSION_TYPE_UNICAST;
+	mh.message_counter = counter;
+	mh.session_id = x->peer_session_id;
+	mh.flags = MATTER_MSG_DSIZ_NONE;
+
+	memset(&ph, 0, sizeof(ph));
+	/* I, because this node opened the exchange; A, because that is the
+	 * whole message; and NOT R -- an acknowledgement that asks to be
+	 * acknowledged is an exchange that never ends. */
+	ph.exchange_flags = MATTER_EX_FLAG_I | MATTER_EX_FLAG_A;
+	ph.ack_counter = x->ack_counter;
+	ph.opcode = MATTER_SC_OP_ACK;
+	ph.exchange_id = exchange_id;
+	ph.protocol_id = MATTER_PROTOCOL_SECURE_CHANNEL;
+
+	rc = matter_msg_header_encode(&mh, out, cap, &mh_len);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	rc = matter_proto_header_encode(&ph, out + mh_len, cap - mh_len, &ph_len);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	/* The proto header IS the plaintext; the message header is the AAD.
+	 * Sealed in place for the reason frame() sets out at length. */
+	rc = matter_crypto_seal(&mh, x->keys.r2i, x->local_op_node_id, out + mh_len, ph_len, out,
+				cap, out_len);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+
+	/* Only now: an ack that was never encoded is an ack still owed. */
+	x->ack_pending = false;
+	return MATTER_OK;
+}
+
+#if MATTER_FEATURE_CLIENT
+
+int matter_exchange_open_initiator(struct matter_exchange *x, uint16_t local_id, uint16_t peer_id,
+				   uint16_t exchange_id, const struct matter_session_keys *keys,
+				   uint32_t entropy)
+{
+	int rc;
+
+	if (x == NULL) {
+		return MATTER_E_INVAL;
+	}
+	/* MRP true: this session only ever runs over UDP. */
+	matter_exchange_init(x, entropy, true);
+	rc = matter_exchange_promote(x, local_id, peer_id, keys, entropy);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	/*
+	 * What promote() deliberately withholds. The exchange id is set as well
+	 * as the flag, because the peer's answers arrive with I CLEAR on this
+	 * id: recv_impl() consumes those through exchange_is_ours() without
+	 * adopting the id, so nothing else would ever put it here, and
+	 * matter_exchange_ack_initiator() needs to know which exchange the
+	 * pending acknowledgement belongs to.
+	 */
+	x->open = true;
+	x->exchange_id = exchange_id;
+	return MATTER_OK;
+}
+
+#endif /* MATTER_FEATURE_CLIENT */
 
 /**
  * Set the operational node IDs for this exchange; used to populate node ID fields in secure channel

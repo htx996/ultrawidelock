@@ -24,6 +24,11 @@ THE SHORT VERSION
   Then lock it in Home, walk five metres away, and walk back with the phone in
   your pocket. It opens without you touching anything.
 
+  To add Home Assistant too, first import the Apple Thread credentials into
+  Home Assistant and make that network preferred. Then use the Home Assistant
+  app's Matter > Add device > already in use path to share from Apple Home.
+  Do not create a second Thread network. FLASH.md has the exact steps.
+
 
 WHAT IS IN HERE
 ──────────────────────────────────────────────────────────────────────────────

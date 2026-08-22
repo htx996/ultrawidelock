@@ -56,12 +56,12 @@ config_key = _cmp.config_key
 # headroom, which is large enough not to trip on ordinary work and small enough
 # that spending the rest takes a conversation.
 #
-# The caps are sized as a share of what is left rather than picked round, and on
-# the shipping image the binding region is FLASH (16,356 B free) and not RAM
-# (9,836 B free) -- the reverse of the debug build, because the 8 KB RTT ring
-# RELEASE gives up is RAM. An 8,192 B flash cap would have let one pull request
-# spend half the remaining flash, so it is 4,096 B: about a quarter of the
-# headroom, matching what 2,048 B is to RAM.
+# The caps are explicit review thresholds rather than values derived from the
+# latest image. At the 2026-08-16 shipping measurement, FLASH has 36,304 B free
+# and RAM has 10,332 B free. RELEASE gives up the 8 KB debug RTT ring, so the
+# relative constraint changes between configurations. The fixed 4,096 B flash
+# and 2,048 B RAM caps ensure a single change cannot silently consume a large
+# share of either remaining margin.
 DEFAULT_GATE = {
     "ram_free_floor": 4096,
     "flash_free_floor": 8192,
@@ -145,6 +145,26 @@ def main():
         )
         return 1
 
+    flash = report.get("regions", {}).get("FLASH", {})
+    flash_free = (flash.get("signing") or {}).get("free", flash.get("free"))
+    if flash is not None and flash_free is not None and flash_free < gate["flash_free_floor"]:
+        basis = (
+            "against what MCUboot accepts"
+            if flash.get("signing")
+            else "against the linker region"
+        )
+        sys.stderr.write(
+            f"\n  refusing to record a baseline that is already below its own floor:\n"
+            f"      {flash_free:,} B of FLASH free {basis}, against a "
+            f"{gate['flash_free_floor']:,} B floor.\n"
+            "      Recording this would make the gate pass by lowering the bar to meet the\n"
+            "      image, which is the one failure mode a baseline exists to prevent. Free\n"
+            "      flash first, or pass --flash-free-floor deliberately and say why in the\n"
+            "      commit -- a bench-only profile may legitimately run closer to the edge\n"
+            "      than a shipping one, but that has to be a decision, not a side effect.\n\n"
+        )
+        return 1
+
     doc["baselines"][key] = report
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w") as fh:
@@ -164,8 +184,14 @@ def main():
         name = by_lower.get(low, low.upper())
         r = regions.get(name)
         if r:
+            # The signing budget where there is one: printing the region's free
+            # bytes next to a floor that is checked against a smaller number is
+            # how the two got out of step in the first place.
+            g = r.get("signing") or r
+            note = "  (what MCUboot accepts)" if r.get("signing") else ""
             sys.stderr.write(
-                f"      {name:<12} {r['used']:>9,} used   {r['free']:>8,} free   {r['pct']}%\n"
+                f"      {name:<12} {g['used']:>9,} used   {g['free']:>8,} free   "
+                f"{g['pct']}%{note}\n"
             )
     sys.stderr.write(
         "      floor  " + ", ".join(

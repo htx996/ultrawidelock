@@ -144,6 +144,25 @@ def gate_region(name, base, cur, floor, cap, allow_growth):
         return None, [f"{name}: absent from one of the two reports"]
 
     delta = c["used"] - b["used"]
+
+    # THE FLOOR IS CHECKED AGAINST WHAT MCUBOOT ACCEPTS, not against the linker
+    # region, whenever the report carries that figure. The region is the `app`
+    # partition; the slot also has to hold the image header, the signature TLVs
+    # and the boot trailer, and imgtool refuses at sign time when the total does
+    # not fit. On this board that gap is 1,735 B, so gating on the region passed
+    # images that could not ship -- MEASURED 2026-08-21, when the debug client
+    # image linked with 456 B "free" and then would not sign.
+    #
+    # Optional on purpose: a report produced without signed artifacts, and every
+    # synthetic report in tests/tooling/cdk_size_test.sh, has no `signing` block
+    # and falls back to the region. The gate gets stricter when it can, never
+    # unavailable when it cannot.
+    c_sign = c.get("signing") or {}
+    b_sign = b.get("signing") or {}
+    free_now = c_sign.get("free", c["free"])
+    free_was = b_sign.get("free", b["free"])
+    free_basis = "against what MCUboot accepts" if c_sign else "against the linker region"
+
     row = {
         "region": name,
         "size": c["size"],
@@ -153,6 +172,8 @@ def gate_region(name, base, cur, floor, cap, allow_growth):
         "base_free": b["free"],
         "free": c["free"],
         "pct": c["pct"],
+        "gated_free": free_now,
+        "base_gated_free": free_was,
     }
     fails = []
     if c["size"] != b["size"]:
@@ -160,10 +181,10 @@ def gate_region(name, base, cur, floor, cap, allow_growth):
             f"{name}: the region itself changed size, {fmt(b['size'])} -> {fmt(c['size'])} B. "
             "The partition layout moved, so used/free are not comparable across it."
         )
-    if floor is not None and c["free"] < floor:
+    if floor is not None and free_now < floor:
         fails.append(
-            f"{name}: {fmt(c['free'])} B free, under the {fmt(floor)} B floor "
-            f"(was {fmt(b['free'])} B). This is the gate."
+            f"{name}: {fmt(free_now)} B free {free_basis}, under the "
+            f"{fmt(floor)} B floor (was {fmt(free_was)} B). This is the gate."
         )
     if cap is not None and delta > cap:
         if allow_growth:
