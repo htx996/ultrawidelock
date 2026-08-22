@@ -30,4 +30,27 @@
 #   - no per-role build. Role is provisioned.
 #   - no Raspberry Pi, no J-Link, no UART summaries to a host.
 #
+# THE DIAGNOSTIC OVERLAYS. The nine overlay-* files beside this one -- seven
+# .conf and two devicetree halves -- are not build profiles. They are the
+# bisection that found why this image would not boot, kept because the reasoning
+# in them is worth more than the disk. The answer is in sysbuild.conf: Partition
+# Manager had put settings_storage on the Nordic USB bootloader's ACL-protected
+# MBR params page, and the first NVS erase became a precise bus fault. Every
+# overlay here predates that fix, and most record a suspect that was cleared --
+# CryptoCell, Bluetooth, USB, the 802.15.4 driver, the boot banners. Read one
+# before re-running it: several say outright that their own measurement is void.
+#
+# They are layered by hand, never by a target:
+#
+#   make witness-build TRACE=1 \
+#     WITNESS_CONF="overlay-otmain.conf;overlay-nobt.conf" \
+#     WITNESS_DTC="overlay-nocc3xx.overlay"
+#
+# TRACE=1 adds the boot-milestone LEDs. Two come in pairs and are useless apart:
+# overlay-nocc3xx.conf needs its .overlay or the entropy device dangles, and
+# overlay-uartcon.conf needs its .overlay to move the console off USB. The two
+# that take a radio out -- overlay-nobt.conf and overlay-noradio.conf -- cannot
+# witness anything at all, and their only output is the boot trace. The rest
+# change when or where the boot reports, not what the image does.
+#
 # Design: docs/inside-latch.md
