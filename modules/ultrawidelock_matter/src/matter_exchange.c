@@ -492,8 +492,9 @@ int matter_exchange_promote(struct matter_exchange *x, uint16_t local_id, uint16
  *        does this; see matter_exchange_send_initiator().
  */
 static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode, bool reliable,
-		 bool as_initiator, uint16_t init_exchange_id, const uint8_t *payload,
-		 size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
+		 bool as_initiator, bool carry_initiator_ack, uint16_t init_exchange_id,
+		 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
+		 size_t *out_len)
 {
 	struct matter_msg_header mh;
 	struct matter_proto_header ph;
@@ -563,13 +564,22 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 		ph.exchange_flags |= MATTER_EX_FLAG_R;
 	}
 	/*
-	 * Never acknowledge on an exchange this node has just opened. An ack
+	 * Never acknowledge on an exchange this node has just OPENED. An ack
 	 * names a counter WITHIN an exchange, so carrying the peer's pending ack
 	 * out here would acknowledge, on a brand new exchange, a message that
 	 * exchange never carried. The pending ack stays pending and leaves on
 	 * the exchange that owes it.
+	 *
+	 * A CONTINUATION is the exception, and it is what carry_initiator_ack
+	 * is for: the second message of an exchange this node opened rides the
+	 * same exchange that owes the ack, so the counter it names is one that
+	 * exchange really did carry. Sending it separately is not merely
+	 * wasteful -- CHIP refuses the payload outright, "Dropping message
+	 * without piggyback ack when we are waiting for an ack", so the
+	 * UnlockDoor after a TimedRequest is discarded and the bound lock
+	 * never opens. Measured against a real peer 2026-08-22.
 	 */
-	if (!as_initiator && x->mrp && x->ack_pending) {
+	if ((!as_initiator || carry_initiator_ack) && x->mrp && x->ack_pending) {
 		ph.exchange_flags |= MATTER_EX_FLAG_A;
 		ph.ack_counter = x->ack_counter;
 	}
@@ -648,7 +658,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	 * message this node has already handled and the exchange that owes the
 	 * ack stalls. The report going out is not the reply that was owed.
 	 */
-	if (!as_initiator) {
+	if (!as_initiator || carry_initiator_ack) {
 		x->ack_pending = false;
 	}
 
@@ -663,7 +673,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 int matter_exchange_reply(struct matter_exchange *x, uint8_t opcode, const uint8_t *payload,
 			  size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, true, false, 0u, payload,
+	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, true, false, false, 0u, payload,
 		     payload_len, out, cap, out_len);
 }
 
@@ -674,7 +684,7 @@ int matter_exchange_send(struct matter_exchange *x, uint16_t protocol_id, uint8_
 			 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
 			 size_t *out_len)
 {
-	return frame(x, protocol_id, opcode, true, false, 0u, payload, payload_len, out, cap,
+	return frame(x, protocol_id, opcode, true, false, false, 0u, payload, payload_len, out, cap,
 		     out_len);
 }
 
@@ -686,8 +696,43 @@ int matter_exchange_send_initiator(struct matter_exchange *x, uint16_t exchange_
 				   uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
 				   size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-	return frame(x, protocol_id, opcode, true, true, exchange_id, payload, payload_len, out,
+	return frame(x, protocol_id, opcode, true, true, false, exchange_id, payload, payload_len, out,
 		     cap, out_len);
+}
+
+/**
+ * Frame a CONTINUATION on an exchange this node opened, carrying the ack it
+ * owes the peer on the very same message.
+ *
+ * The second message of an initiated exchange -- the InvokeRequest that follows
+ * a TimedRequest -- goes out after the peer's answer, which was itself reliable
+ * and is owed an acknowledgement. Sent without it, CHIP does not merely wait:
+ * it DROPS the request, and on this node that presented as "the bound lock
+ * stopped answering mid-unlock" with the command never run.
+ *
+ * Kept separate from matter_exchange_send_initiator() because that one also
+ * OPENS exchanges, and an ack on a brand new exchange names a counter it never
+ * carried. Only the caller knows which of the two it is doing.
+ *
+ * @return MATTER_E_STATE when there is nothing to piggyback, which the caller
+ *         should answer by sending normally rather than by giving up.
+ */
+int matter_exchange_continue_initiator(struct matter_exchange *x, uint16_t exchange_id,
+				       uint16_t protocol_id, uint8_t opcode,
+				       const uint8_t *payload, size_t payload_len, uint8_t *out,
+				       size_t cap, size_t *out_len)
+{
+	/*
+	 * Deliberately NOT guarded on x->exchange_id. On an exchange this node
+	 * opened, that field holds the PEER's exchange id rather than ours, so
+	 * comparing the two would refuse every continuation and quietly restore
+	 * the bug this exists to fix.
+	 */
+	if (x == NULL || !x->open || !x->secure || !x->mrp || !x->ack_pending) {
+		return MATTER_E_STATE;
+	}
+	return frame(x, protocol_id, opcode, true, true, true, exchange_id, payload, payload_len,
+		     out, cap, out_len);
 }
 
 /**
@@ -703,7 +748,7 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
 	if (!x->mrp || !x->ack_pending) {
 		return MATTER_E_STATE;
 	}
-	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, 0u, NULL,
+	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, false, 0u, NULL,
 		     0u, out, cap, out_len);
 }
 

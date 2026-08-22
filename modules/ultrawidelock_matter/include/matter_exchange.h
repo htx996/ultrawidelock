@@ -433,6 +433,21 @@ int matter_exchange_send_initiator(struct matter_exchange *x, uint16_t exchange_
 				   uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
 				   size_t payload_len, uint8_t *out, size_t cap, size_t *out_len);
 
+/**
+ * Frame a continuation on an exchange this node opened, piggybacking the
+ * pending MRP acknowledgement onto it.
+ *
+ * Use for the SECOND and later messages of an initiated exchange. The peer may
+ * discard a request that arrives while it is still waiting to be acknowledged,
+ * so the ack has to travel with the payload rather than behind it.
+ *
+ * @return MATTER_E_STATE if nothing is pending; send normally in that case.
+ */
+int matter_exchange_continue_initiator(struct matter_exchange *x, uint16_t exchange_id,
+				       uint16_t protocol_id, uint8_t opcode,
+				       const uint8_t *payload, size_t payload_len, uint8_t *out,
+				       size_t cap, size_t *out_len);
+
 int matter_exchange_send(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode,
 			 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
 			 size_t *out_len);

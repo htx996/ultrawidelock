@@ -1226,8 +1226,13 @@ ultrawidelock_uwb_msg_process_supplementary(struct ultrawidelock_uwb_session *se
 	/* NOLINTBEGIN(clang-analyzer-deadcode.DeadStores) */
 	// codechecker_suppress [deadcode.DeadStores] log-only body, see above
 	while ((attr = ultrawidelock_uwb_msg_next_attribute(&parser))) {
-		LOG_INF("supplementary: attr 0x%02x (%u B)", attr->id, attr->length);
-		LOG_HEXDUMP_INF(attr->value, attr->length, "supplementary attr");
+		/* DBG, not INF: this fires once per attribute -- seven times in
+		 * every ranging setup -- and what it prints is the peer echoing
+		 * defaults back. The decision that matters is logged where the
+		 * session starts. Demoted rather than deleted; the module at DBG
+		 * still shows it. */
+		LOG_DBG("supplementary: attr 0x%02x (%u B)", attr->id, attr->length);
+		LOG_HEXDUMP_DBG(attr->value, attr->length, "supplementary attr");
 	}
 	/* NOLINTEND(clang-analyzer-deadcode.DeadStores) */
 	return ULTRAWIDELOCK_UWB_ERR_NONE;

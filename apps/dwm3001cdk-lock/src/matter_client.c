@@ -572,19 +572,19 @@ static size_t handle_sigma2(const uint8_t *payload, size_t payload_len,
 		 * peer does not hold this fabric's keys, MATTER_E_ACCESS means
 		 * it holds them and is not who this node asked for.
 		 */
+		/*
+		 * The two failures are now separable by CODE, so the message
+		 * only has to name the one number the code cannot carry: which
+		 * node the peer turned out to be. The fabric is not printed --
+		 * a chain that verified is a fabric that matched, and this
+		 * branch is only reached after it did.
+		 */
 		if (rc == MATTER_E_ACCESS) {
-			/* Both sides of the comparison that failed. Which of
-			 * the two differs says whether the binding names the
-			 * wrong node or the peer answered for another fabric,
-			 * and those have completely different fixes. */
-			LOG_WRN("Sigma2 REJECTED (%d) -- identity: peer says node 0x%016llx "
-				"fabric 0x%016llx, we asked for node 0x%016llx fabric 0x%016llx",
-				rc, (unsigned long long)peer.node_id,
-				(unsigned long long)peer.fabric_id,
-				(unsigned long long)s_peer_node,
-				(unsigned long long)s_fabric->fabric_id);
+			LOG_WRN("Sigma2: bound 0x%08x%08x, answered 0x%08x%08x",
+				(unsigned int)(s_peer_node >> 32), (unsigned int)s_peer_node,
+				(unsigned int)(peer.node_id >> 32), (unsigned int)peer.node_id);
 		} else {
-			LOG_WRN("Sigma2 REJECTED (%d) -- chain", rc);
+			LOG_WRN("Sigma2: chain not from this fabric root (%d)", rc);
 		}
 		return 0u;
 	}
@@ -744,7 +744,24 @@ static size_t send_invoke(uint8_t *reply, size_t cap)
 		return 0u;
 	}
 
-	len = send_secure(MATTER_IM_OP_INVOKE_COMMAND_REQUEST, body, body_len, reply, cap);
+	/*
+	 * CONTINUATION, not a fresh send: this rides the exchange the
+	 * TimedRequest opened, and the peer's StatusResponse to that is still
+	 * owed an acknowledgement. CHIP DROPS a request that arrives while it
+	 * waits for one, so the ack has to travel on this message rather than
+	 * behind it -- without that, the walk-up reached "UnlockDoor out" and
+	 * the door stayed shut.
+	 *
+	 * Falls back to a plain send when nothing is pending, which is the
+	 * normal case for a session that was already idle.
+	 */
+	len = 0u;
+	if (matter_exchange_continue_initiator(&s_x, s_exchange_id,
+					       MATTER_PROTOCOL_INTERACTION_MODEL,
+					       MATTER_IM_OP_INVOKE_COMMAND_REQUEST, body, body_len,
+					       reply, cap, &len) != MATTER_OK) {
+		len = send_secure(MATTER_IM_OP_INVOKE_COMMAND_REQUEST, body, body_len, reply, cap);
+	}
 	if (len == 0u) {
 		return 0u;
 	}

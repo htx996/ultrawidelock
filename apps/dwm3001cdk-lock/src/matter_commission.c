@@ -1426,7 +1426,19 @@ static void send_read_chunk(struct matter_im_read_state *s)
 		LOG_WRN("%u wildcard path(s) not expanded; Read report is incomplete",
 			stats.unexpanded_wildcard);
 	}
-	LOG_INF("  Read chunk %u B, %u report(s), %u total, %s",
+/*
+ * PER-DATAGRAM NARRATION SITS AT DBG, not INF, and that is a size decision
+ * taken deliberately. These four fire on every secure message, every read path
+ * and every report chunk; at INF they cost 5.6 KB of format strings in an image
+ * with under a kilobyte to spare once the certificate converter landed.
+ *
+ * They are DEMOTED rather than deleted: `matter_ble` at DBG brings all of them
+ * back, so the traffic view still exists for whoever needs it. What stays at
+ * INF is everything that reports a DECISION -- writes, refusals, unsecured
+ * drops, window changes -- because those are what a walk-up capture is read
+ * for, and losing them was the alternative on the table.
+ */
+	LOG_DBG("  Read chunk %u B, %u report(s), %u total, %s",
 		(unsigned int)report_len, emitted, (unsigned int)(s->sent + emitted),
 		more ? "MORE" : "last");
 	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
@@ -1513,7 +1525,7 @@ static void on_read_request(const struct matter_exchange_in *in)
 				p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
 			continue;
 		}
-		LOG_INF("  read[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
+		LOG_DBG("  read[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
 			p->have_endpoint ? (int)p->endpoint : -1,
 			p->have_cluster ? (unsigned int)p->cluster : 0xFFFFu,
 			p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
@@ -2132,7 +2144,7 @@ static void notify_lock_state(struct sub_state *s)
 	struct matter_thread_peer peer = s->peer;
 
 	rc = matter_thread_send_to(&peer, packet->data, framed);
-	LOG_INF("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
+	LOG_DBG("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
 		(unsigned int)framed, rc);
 	if (rc == MATTER_OK) {
 		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
@@ -2733,7 +2745,7 @@ static void send_report_chunk(struct sub_state *s)
 	 * a report that frames cleanly and is then dropped by the network, and
 	 * debug level is off in every image that gets flashed.
 	 */
-	LOG_INF("  chunk %u B, %u report(s), %u total, %s", (unsigned int)report_len, emitted,
+	LOG_DBG("  chunk %u B, %u report(s), %u total, %s", (unsigned int)report_len, emitted,
 		(unsigned int)(s->sent + emitted), more ? "MORE" : "last");
 	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
 		.kind = TX_EFFECT_SUB_PRIME,
@@ -2831,7 +2843,7 @@ static void on_subscribe_request(const struct matter_exchange_in *in)
 	for (uint8_t i = 0; i < s->read.n_paths; i++) {
 		const struct matter_im_path *p = &s->read.paths[i];
 
-		LOG_INF("  sub[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
+		LOG_DBG("  sub[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
 			p->have_endpoint ? (int)p->endpoint : -1,
 			p->have_cluster ? (unsigned int)p->cluster : 0xFFFFu,
 			p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
@@ -3882,7 +3894,7 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 			LOG_WRN("  CASE message refused (%d)", rc);
 			s_thread_reply_len = 0u;
 		} else {
-			LOG_INF("  CASE in: protocol 0x%04x opcode 0x%02x, %u B, "
+			LOG_DBG("  CASE in: protocol 0x%04x opcode 0x%02x, %u B, "
 				"exchange 0x%04x counter %u",
 				(unsigned int)in.protocol_id, in.opcode,
 				(unsigned int)in.payload_len, (unsigned int)in.exchange_id,
