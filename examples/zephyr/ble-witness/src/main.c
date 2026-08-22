@@ -60,13 +60,18 @@ void witness_boot_trace_phase(unsigned int n); /* src/boot_trace.c, bench only *
 #define TRACE_PHASE(n) ((void)0)
 #endif
 
+/*
+ * The bring-up half only: a dataset, a device role and otIp6SetEnabled are
+ * OpenThread's own lifecycle. Moving bytes is ultrawidelock_dgram.h's job, and
+ * the socket calls left this file with it.
+ */
 #include <openthread/dataset.h>
 #include <openthread/instance.h>
 #include <openthread/link.h>
-#include <openthread/message.h>
 #include <openthread/thread.h>
-#include <openthread/udp.h>
 #include <zephyr/net/openthread.h>
+
+#include "ultrawidelock_dgram.h"
 
 #include <psa/crypto.h>
 
@@ -82,6 +87,10 @@ LOG_MODULE_REGISTER(witness, LOG_LEVEL_INF);
 
 #define WINDOW_MS      CONFIG_WITNESS_WINDOW_MS
 #define WITNESS_PORT   CONFIG_WITNESS_PORT
+/* The longest challenge: version, 8 nonce bytes, and the lock's picked-label
+ * trailer. Named now that the datagram arrives as a pointer and a length rather
+ * than as a local array whose sizeof said the same thing. */
+#define CHALLENGE_MAX  12u
 #define KEY_LEN        16u
 #define CCM_TAG_LEN    8u
 #define CCM_NONCE_LEN  13u
@@ -103,8 +112,6 @@ static struct {
 
 static struct ultrawidelock_witness_core s_core;
 static struct k_mutex s_core_lock;
-static otUdpSocket s_sock;
-static bool s_sock_open;
 static uint32_t s_boot_id;
 static uint32_t s_ctr;
 static uint64_t s_nonce; /* newest challenge heard from the lock */
@@ -277,56 +284,36 @@ static size_t seal(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t 
 
 static void report_send(const uint8_t *buf, size_t len)
 {
-	otInstance *ot = openthread_get_default_instance();
-	otMessageInfo info;
-	otMessage *msg;
-
-	if (!s_sock_open || ot == NULL) {
-		return;
-	}
-	msg = otUdpNewMessage(ot, NULL);
-	if (msg == NULL) {
-		return;
-	}
-	if (otMessageAppend(msg, buf, (uint16_t)len) != OT_ERROR_NONE) {
-		otMessageFree(msg);
-		return;
-	}
-	memset(&info, 0, sizeof(info));
-	/* Mesh-local all-nodes. The witness is not told the lock's address at
-	 * provisioning, so it does not have to be re-provisioned when the lock
-	 * is replaced or its address changes; only a holder of the link key can
-	 * produce a report, so the broadcast costs nothing but a frame. */
-	info.mPeerAddr.mFields.m8[0] = 0xFFu;
-	info.mPeerAddr.mFields.m8[1] = 0x03u;
-	info.mPeerAddr.mFields.m8[15] = 0x01u;
-	info.mPeerPort = WITNESS_PORT;
-	if (otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
-		otMessageFree(msg); /* takes ownership on success only */
-	}
+	/*
+	 * To the group. The witness is not told the lock's address at
+	 * provisioning, so it does not have to be re-provisioned when the lock is
+	 * replaced or its address changes; only a holder of the link key can
+	 * produce a report, so the broadcast costs nothing but a frame.
+	 *
+	 * This used to reach OpenThread without taking openthread_mutex, alone
+	 * among the three senders on this link. The seam takes it on every send,
+	 * so the omission is fixed by moving rather than by remembering.
+	 */
+	(void)ultrawidelock_dgram_send(buf, len);
 }
 
 /* The challenge. Unauthenticated by design: it is a freshness beacon, not a
  * command, and echoing a wrong one costs a clear rather than granting one. */
-static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
+static void link_rx(void *ctx, const uint8_t *body, size_t len)
 {
-	uint8_t body[12];
-	uint16_t len;
-
 	ARG_UNUSED(ctx);
-	ARG_UNUSED(info);
 
 	/* 9 B is the bare challenge; 12 B carries the lock's picked label as a
 	 * trailer, to be kept in every report while the pick lasts (see
 	 * ultrawidelock_witness_core_include). Either length is a valid
 	 * challenge, and a bare one clears any standing hint -- the lock
 	 * sends the trailer on every challenge for as long as it has a pick,
-	 * so a missing trailer means the pick is gone, not lost in the air. */
-	len = otMessageGetLength(msg) - otMessageGetOffset(msg);
-	if (len != 9u && len != sizeof(body)) {
-		return;
-	}
-	if (otMessageRead(msg, otMessageGetOffset(msg), body, len) != len) {
+	 * so a missing trailer means the pick is gone, not lost in the air.
+	 *
+	 * The datagram arrives flattened, so the otMessage offset arithmetic this
+	 * function used to open with is gone; the two exact lengths are this
+	 * protocol's own rule and stay. */
+	if (len != 9u && len != CHALLENGE_MAX) {
 		return;
 	}
 	if (body[0] != ULTRAWIDELOCK_WITNESS_MSG_VER) {
@@ -336,7 +323,7 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 	for (int i = 0; i < 8; i++) {
 		s_nonce = (s_nonce << 8) | body[1 + i];
 	}
-	s_hint = (len == sizeof(body))
+	s_hint = (len == CHALLENGE_MAX)
 			 ? (((uint32_t)body[9] << 16) | ((uint32_t)body[10] << 8) | body[11])
 			 : 0u;
 }
@@ -359,7 +346,6 @@ static void thread_start(void)
 {
 	otInstance *ot = openthread_get_default_instance();
 	otOperationalDatasetTlvs tlvs;
-	otSockAddr bind_addr;
 
 	if (ot == NULL || s_prov.dataset_len == 0u) {
 		return;
@@ -377,16 +363,13 @@ static void thread_start(void)
 	(void)otSetStateChangedCallback(ot, ot_state_changed, ot);
 	(void)otIp6SetEnabled(ot, true);
 	(void)otThreadSetEnabled(ot, true);
-
-	memset(&bind_addr, 0, sizeof(bind_addr));
-	bind_addr.mPort = WITNESS_PORT;
-	if (otUdpOpen(ot, &s_sock, udp_rx, NULL) == OT_ERROR_NONE &&
-	    otUdpBind(ot, &s_sock, &bind_addr, OT_NETIF_THREAD) == OT_ERROR_NONE) {
-		s_sock_open = true;
-	} else {
-		LOG_ERR("could not bind UDP %u", (unsigned)WITNESS_PORT);
-	}
 	openthread_mutex_unlock();
+
+	/* Outside the lock, because the transport takes that lock itself and the
+	 * caller holding it first would be holding it twice. */
+	if (ultrawidelock_dgram_open(WITNESS_PORT, link_rx, NULL) != ULTRAWIDELOCK_DGRAM_OK) {
+		LOG_ERR("could not open port %u", (unsigned)WITNESS_PORT);
+	}
 }
 
 /* ---- scanning and windows --------------------------------------------- */

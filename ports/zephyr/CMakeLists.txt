@@ -14,6 +14,14 @@ if(CONFIG_ULTRAWIDELOCK_UWB)
 	zephyr_include_directories(shell)
 endif()
 
+# The seam headers, published to every image on this OS rather than to this
+# module's own sources. modules/ultrawidelock_uwb also publishes them, which is
+# enough for the three images that carry the ranging engine -- and was not
+# enough for examples/zephyr/ble-witness, which carries no UWB module at all and
+# still opens the sealed link. A contract's headers belong with the tree that
+# implements it, so they are published here and reach every consumer.
+zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../modules/ultrawidelock_port/include)
+
 # ---- ultrawidelock_zephyr_port library: backends of module library contracts ----------
 if(CONFIG_DW3000
    OR CONFIG_ULTRAWIDELOCK_PRETTY_SHELL
@@ -21,7 +29,13 @@ if(CONFIG_DW3000
    OR (CONFIG_ULTRAWIDELOCK_CRED AND CONFIG_SOC_NRF5340_CPUAPP)
    OR CONFIG_ULTRAWIDELOCK_DFU_SMP_IMG
    OR CONFIG_ULTRAWIDELOCK_ANCHOR_SLAM
-   OR CONFIG_ULTRAWIDELOCK_DFU_RECEIVER)
+   OR CONFIG_ULTRAWIDELOCK_DFU_RECEIVER
+   # An image with OpenThread gets the ultrawidelock_dgram.h backend below, and
+   # needs this library to exist to hold it. ble-witness selects none of the
+   # conditions above -- no DW3000, no shell, no DFU -- so before this line it
+   # built no port library at all and would have linked the sealed link's send
+   # against nothing.
+   OR CONFIG_OPENTHREAD)
 
 zephyr_library_named(ultrawidelock_zephyr_port)
 
@@ -41,9 +55,16 @@ zephyr_library_sources(osal/osal_zephyr.c)
 zephyr_library_sources(store/kv_zephyr.c)
 # Zephyr backend of ultrawidelock_dgram.h, on OpenThread UDP. NOT unconditional
 # like the two above: it calls otUdpOpen and takes openthread_mutex, so an image
-# built without the OpenThread L2 has nothing to compile it against. Every board
-# that opens the sealed link has that L2 by definition -- the link IS Thread.
-zephyr_library_sources_ifdef(CONFIG_NET_L2_OPENTHREAD net/dgram_openthread.c)
+# built without OpenThread has nothing to compile it against.
+#
+# CONFIG_OPENTHREAD, not CONFIG_NET_L2_OPENTHREAD, for the reason
+# matter/matter_thread_port.c already states: every call in the backend is
+# either OpenThread's own API or one of the openthread_*() helpers the
+# standalone module provides, and the L2 is not what supplies either. All three
+# images that open the sealed link -- the lock, the satellite and ble-witness --
+# are standalone by choice; each overlay says so at length. Guarding on the L2
+# would have compiled this backend into no image at all.
+zephyr_library_sources_ifdef(CONFIG_OPENTHREAD net/dgram_openthread.c)
 zephyr_library_include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../../modules/ultrawidelock_port/include)
 
