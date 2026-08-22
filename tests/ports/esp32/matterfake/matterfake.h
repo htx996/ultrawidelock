@@ -881,6 +881,8 @@ extern int mfk_may_predict;
 extern unsigned mfk_sat_init_calls;
 extern unsigned mfk_sat_observe_calls;
 extern unsigned mfk_sat_predict_asks;
+/* Called after each gate answer, to change the NEXT one. */
+extern void (*mfk_predict_hook)(void);
 extern int32_t mfk_sat_last_mm;
 extern uint32_t mfk_sat_last_block;
 

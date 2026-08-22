@@ -402,9 +402,18 @@ static void ultrawidelock_reader_task(void *arg)
 			ESP_LOGI(TAG, "passive unlock withheld: second anchor says inside");
 			ultrawidelock_lab_evi("side.veto", "cm",
 					      ultrawidelock_approach_est_cm(&approach));
-			// HOLD, not a relock: the approach is still live and the
-			// phone may yet cross to the outside. Turning a veto into a
-			// relock would fight the controller's own state machine.
+			// Hand the unlock back. Both unlock paths clear `locked`
+			// BEFORE returning the action, so by the time we refuse it
+			// the controller already believes the bolt is open -- and
+			// its own guard is `if (ap->locked && ...)`. Dropping the
+			// action without this would mean one veto, taken before
+			// the satellite had a settled verdict, silently ends
+			// auto-unlock for the whole walk-up. veto() restores
+			// `locked` while deliberately keeping near_dwell and
+			// approach_armed, so the retry does not pay the dwell
+			// again. Same reason apps/dwm3001cdk-lock/src/main.c calls
+			// it on every refusing path.
+			ultrawidelock_approach_veto(&approach);
 			act = ULTRAWIDELOCK_APPROACH_HOLD;
 		}
 

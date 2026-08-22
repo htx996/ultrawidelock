@@ -771,6 +771,7 @@ int mfk_may_predict = 1;
 unsigned mfk_sat_init_calls;
 unsigned mfk_sat_observe_calls;
 unsigned mfk_sat_predict_asks;
+void (*mfk_predict_hook)(void);
 int32_t mfk_sat_last_mm;
 uint32_t mfk_sat_last_block;
 int64_t mfk_now_us;
@@ -1277,9 +1278,19 @@ void sat_fusion_observe(int32_t self_mm, uint32_t self_block, int64_t now_ms)
 
 bool sat_fusion_may_predict(int64_t now_ms)
 {
+	bool answer;
+
 	(void)now_ms;
 	mfk_sat_predict_asks++;
-	return mfk_may_predict;
+	answer = mfk_may_predict;
+	/* Fires AFTER the answer is taken, so a hook that flips mfk_may_predict
+	 * changes the NEXT ask and not this one -- which is what lets a test say
+	 * "refuse once, then relent". The reader task's wake loop blocks in
+	 * ulTaskNotifyTake, not vTaskDelay, so mfk_delay_hook cannot do this. */
+	if (mfk_predict_hook != NULL) {
+		mfk_predict_hook();
+	}
+	return answer;
 }
 
 volatile int ultrawidelock_uwb_diag_on = ULTRAWIDELOCK_UWB_DIAG_DEFAULT;
@@ -1419,6 +1430,7 @@ void mfk_reset(void)
 	mfk_sat_init_calls = 0;
 	mfk_sat_observe_calls = 0;
 	mfk_sat_predict_asks = 0;
+	mfk_predict_hook = NULL;
 	mfk_sat_last_mm = 0;
 	mfk_sat_last_block = 0;
 }

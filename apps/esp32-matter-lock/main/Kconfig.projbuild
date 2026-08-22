@@ -56,21 +56,29 @@ menu "Example Configuration"
 
         config ULTRAWIDELOCK_ANCHOR_TOL_MM
             int "Triangle-inequality slack, mm"
-            default 300
+            default 90
             help
                 Size at 3 sigma of the measured per-link jitter: this gate
                 catches impossible geometry, not ordinary noise. Too tight and
                 every legitimate pair is rejected, which reads on a bench as a
                 dead satellite rather than a misconfiguration.
 
+                This is the DWM3001CDK bench's number, carried over so both
+                locks gate alike. The DWM3000EVB's jitter has not been measured
+                -- re-derive it here from the bench capture.
+
         config ULTRAWIDELOCK_ANCHOR_DEADBAND_MM
             int "Half-width of the UNKNOWN band about the boundary, mm"
-            default 150
+            default 60
             help
                 Size at about 2 sigma. Within it the two distances are not far
                 enough apart for their difference to have a reliable sign, and
                 saying UNKNOWN beats guessing -- a phone in the doorway is
                 genuinely ambiguous and should read that way.
+
+                Carried over from the DWM3001CDK bench, unverified on this
+                radio -- widen it only against a measured spread, since every
+                millimetre added is a millimetre in which the gate permits.
 
         config ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM
             int "Shift of the side boundary toward the inside anchor, mm"
@@ -95,7 +103,7 @@ menu "Example Configuration"
 
         config ULTRAWIDELOCK_ANCHOR_SELF_INSIDE
             bool "This lock is the INSIDE anchor"
-            default n
+            default y
             help
                 Which side of the door THIS board is on. A MOUNTING FACT: it
                 fails no test and crashes nothing when wrong, it silently

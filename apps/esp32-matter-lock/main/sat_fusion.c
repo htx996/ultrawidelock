@@ -58,17 +58,34 @@ static bool s_up;
  * The frontier bias must stay several sigma below the baseline or noise decides
  * every verdict: at bias == baseline the INSIDE locus degenerates. Derived from
  * the baseline rather than configured beside it so a recalibration cannot leave
- * the two describing different geometries. Mirrors baseline_bias() in
+ * the two describing different geometries. What the configured pair fixes is
+ * the gap between the frontier and the inside anchor -- BASELINE - BIAS -- so a
+ * new baseline keeps that gap rather than the raw bias, and at the configured
+ * baseline this returns the configured bias exactly. Mirrors baseline_bias() in
  * apps/dwm3001cdk-lock/src/main.c.
  */
 static int32_t baseline_bias(int32_t baseline_mm)
 {
-	const int32_t gap = CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM;
+	const int32_t gap = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM -
+			    CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM;
 
-	if (gap == 0) {
+	if (CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM == 0) {
 		return 0;
 	}
 	return baseline_mm > gap ? baseline_mm - gap : 0;
+}
+
+/*
+ * The separations a two-anchor install can actually have, in mm. Below 300 the
+ * two anchors are close enough that the delta is noise; above 10000 the number
+ * is a typo, not a doorway. The same window apps/dwm3001cdk-lock/src/main.c
+ * applies to every route a baseline can arrive by -- an unchecked one sizes the
+ * triangle test for a geometry that does not exist and the verdict it returns
+ * means nothing.
+ */
+static bool baseline_sane(int32_t mm)
+{
+	return mm >= 300 && mm <= 10000;
 }
 
 /*
@@ -107,7 +124,7 @@ static void baseline_load(void)
 	if (nvs_open(SATFUSE_NS, NVS_READONLY, &h) != ESP_OK) {
 		return;
 	}
-	if (nvs_get_i32(h, SATFUSE_BL, &mm) == ESP_OK && mm != 0) {
+	if (nvs_get_i32(h, SATFUSE_BL, &mm) == ESP_OK && baseline_sane(mm)) {
 		baseline_apply(mm, false);
 	}
 	nvs_close(h);
@@ -232,11 +249,18 @@ static int cmd_anckey(int argc, char **argv)
 
 static int cmd_baseline(int argc, char **argv)
 {
+	int32_t mm;
+
 	if (argc != 2) {
 		printf("usage: sat_baseline <mm>   (anchor separation, measured at install)\n");
 		return 1;
 	}
-	baseline_apply((int32_t)strtol(argv[1], NULL, 10), true);
+	mm = (int32_t)strtol(argv[1], NULL, 10);
+	if (!baseline_sane(mm)) {
+		printf("baseline must be 300..10000 mm (got %d)\n", (int)mm);
+		return 1;
+	}
+	baseline_apply(mm, true);
 	return 0;
 }
 
