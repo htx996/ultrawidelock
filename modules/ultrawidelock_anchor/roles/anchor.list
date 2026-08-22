@@ -1,0 +1,15 @@
+# ultrawidelock_anchor tier: the two-anchor geometry itself (CONFIG_ULTRAWIDELOCK_ANCHOR) --
+# door swing, inside/outside fusion, the side gate and its log, the satellite
+# report pairing, and the impact detector's portable half. Pure integer C over
+# caller-owned structs: no allocation, no threads, no platform, so it links
+# under Zephyr, ESP-IDF and the host cc alike. The wire codec is NOT here; it
+# has its own role because a satellite encodes a report and fuses nothing.
+# Consumers: modules/ultrawidelock_anchor/CMakeLists.txt, tests/host/sources.sh.
+# Sorted; add HERE and nowhere else.
+modules/ultrawidelock_anchor/src/ultrawidelock_door.c
+modules/ultrawidelock_anchor/src/ultrawidelock_fusion.c
+modules/ultrawidelock_anchor/src/ultrawidelock_report.c
+modules/ultrawidelock_anchor/src/ultrawidelock_satellite.c
+modules/ultrawidelock_anchor/src/ultrawidelock_side.c
+modules/ultrawidelock_anchor/src/ultrawidelock_side_log.c
+modules/ultrawidelock_anchor/src/ultrawidelock_slam.c

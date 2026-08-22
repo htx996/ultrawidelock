@@ -1,0 +1,36 @@
+# ESP32-S3 satellite. Deliberately close to examples/esp32/reader's defaults --
+# the two boards run the same ranging engine and any timing difference between
+# them shows up as a distance difference, which is the one thing this pair
+# exists to measure.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 1 kHz tick so millisecond sleeps have millisecond granularity (default 100 Hz).
+CONFIG_FREERTOS_HZ=1000
+
+# Match the reader and the shipping lock. The engine's ~1836 us arm deadline is
+# dominated by CPU-side fixed overhead, so a board clocked lower than its peer
+# does not merely run slower -- it ranges differently.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# The DS-TWR bring-up and the codec's allocations run on the main task.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# No BLE. This board never authenticates a credential -- it is told the session
+# keys over the sealed link -- and leaving NimBLE out is most of why its image
+# is smaller than the reader's.
+CONFIG_BT_ENABLED=n
+
+# AES-CCM through the mbedTLS PSA provider, which is what the sealed link's
+# envelope (modules/ultrawidelock_anchor/src/ultrawidelock_seal.c) runs on.
+# Named explicitly rather than left to the default: if either is ever turned
+# off, the link fails to build here instead of sealing datagrams no peer can
+# open.
+CONFIG_MBEDTLS_CCM_C=y
+CONFIG_MBEDTLS_AES_C=y
+
+# Colored log levels + colored console prompt.
+CONFIG_LOG_COLORS=y

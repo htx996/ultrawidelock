@@ -1,7 +1,0 @@
-# ultrawidelock_anchor role: the inside-latch state machine, CONFIG_ULTRAWIDELOCK_INSIDE_LATCH.
-# Separate from anchor_core.list because a lock with no inside handle has no use
-# for it and should carry none of it. Consumers:
-# modules/ultrawidelock_anchor/CMakeLists.txt,
-# ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
-# One repo-root-relative path per line, sorted.
-modules/ultrawidelock_anchor/src/ultrawidelock_latch.c

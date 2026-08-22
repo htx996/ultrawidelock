@@ -38,3 +38,15 @@ target_sources(app PRIVATE
 # The sealed link needs Thread. Without it the board still ranges and still
 # prints, it simply has nobody to tell.
 target_sources_ifdef(CONFIG_OPENTHREAD app PRIVATE src/anchor_link.c)
+
+# The seal itself is shared (modules/ultrawidelock_anchor/roles/seal.list): ONE
+# AES-CCM envelope, so this board and the lock cannot drift apart about what a
+# sealed datagram looks like. Read here rather than left to the module, because
+# this image is ULTRAWIDELOCK_ANCHOR_MSG without ULTRAWIDELOCK_ANCHOR -- it
+# encodes a report and fuses nothing -- and the module's copy is gated on the
+# ANCHOR tier this node deliberately does not have.
+if(CONFIG_OPENTHREAD)
+	include("${REPO_ROOT}/cmake/ultrawidelock_roles.cmake")
+	ultrawidelock_role_sources("${REPO_ROOT}/modules/ultrawidelock_anchor/roles/seal.list" SEAL_SRCS)
+	target_sources(app PRIVATE ${SEAL_SRCS})
+endif()

@@ -1,0 +1,28 @@
+# Satellite responder options. Mirrors apps/satellite/Kconfig so the two ports
+# describe the same board the same way.
+
+menu "UltraWideLock satellite"
+
+config ULTRAWIDELOCK_ANCHOR_ROLE
+	int "Which side of the door this anchor is mounted on"
+	default 2
+	range 1 3
+	help
+	  1 = inside, 2 = outside, 3 = threshold, matching
+	  enum ultrawidelock_witness_role, which the sealed link's role field
+	  reuses so one demultiplexer serves every peer on the link.
+
+	  A MOUNTING FACT, and the lock reads it to decide which distance is the
+	  inside one. Getting it backwards does not crash and fails no geometry
+	  test -- it silently inverts the side verdict, withholding from people
+	  indoors and granting to people on the doorstep.
+
+	  Build-time rather than provisioned: this board is screwed to one side
+	  of one door, unlike the interchangeable witnesses it replaces.
+
+	  It is also the nonce prefix this board seals with, which is why the
+	  range is 1..3 and not wider: the lock claims 0xFF for its own
+	  direction, and one key is safe in both directions only while those two
+	  spaces cannot meet (ULTRAWIDELOCK_LINK_HANDOFF_ROLE).
+
+endmenu

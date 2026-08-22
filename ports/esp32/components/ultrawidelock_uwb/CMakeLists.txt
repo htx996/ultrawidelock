@@ -105,6 +105,25 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     CONFIG_DW3000_CHIP_DW3000=1
 )
 
+# Two-anchor rounds. A project sets these before including project.cmake, so
+# ONE engine serves the lock (responder 0 of 1, the validated baseline) and the
+# satellite (responder 1 of 2, transmitting Response_1 at POLL+2 slots).
+# See modules/ultrawidelock_uwb/src/ccc/cred_round_config.h: the count appears
+# in the M3 attribute and in rcfg[12] and MUST agree, or every derived STS
+# diverges and nothing decodes.
+#
+# Added ONLY when set. The header already defaults to 1 and 0, so an app that
+# says nothing gets the definitions it got before this existed — the reader and
+# matter-lock images cannot move because of it.
+if(DEFINED ULTRAWIDELOCK_NUM_RESPONDERS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=${ULTRAWIDELOCK_NUM_RESPONDERS})
+endif()
+if(DEFINED ULTRAWIDELOCK_RESPONDER_INDEX)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=${ULTRAWIDELOCK_RESPONDER_INDEX})
+endif()
+
 # The CCC STS seam is modules/ultrawidelock_uwb/include/uwb_seam.h: every caller reaches
 # the radio through ultrawidelock_uwb_arm_rx / _set_sts_iv / _set_callbacks / _configure_phy,
 # so there is no link-time interposition to declare here. ccc_shim_rx.c and

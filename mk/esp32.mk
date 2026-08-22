@@ -131,7 +131,7 @@ endef
 
 # Fail before idf.py does, naming the variable that fixes it.
 define ESP_CHECK_ENV
-@[ -d "$(ESP_APP_DIR)" ] || { echo "  no such app: APP=$(APP)  ·  try matter-lock, reader or initiator" >&2; exit 1; }
+@[ -d "$(ESP_APP_DIR)" ] || { echo "  no such app: APP=$(APP)  ·  try matter-lock, reader, satellite or initiator" >&2; exit 1; }
 @[ -f "$(IDF_EXPORT)" ] || { echo "  ESP-IDF export.sh not found at $(IDF_EXPORT)" >&2; \
   echo "  set it: make <target> IDF_EXPORT=/path/to/esp-idf/export.sh" >&2; exit 1; }
 endef
@@ -169,7 +169,7 @@ esp-check-env:
 	$(ESP_CHECK_ENV)
 	$(ESP_CHECK_MATTER)
 
-##@ ESP32  ·  APP=matter-lock|reader|initiator  TARGET=esp32s3|esp32c5|esp32c6
+##@ ESP32  ·  APP=matter-lock|reader|satellite|initiator  TARGET=esp32s3|esp32c5|esp32c6
 ## esp-set-target: regenerate this build's sdkconfig from scratch for TARGET
 esp-set-target: esp-check-env
 	@cd "$(ESP_APP_DIR)" && $(IDFPY) set-target $(TARGET)

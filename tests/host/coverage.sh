@@ -266,8 +266,23 @@ cov_cc "${psa_flags[@]}" -c -Dcrypto_aes_ecb_encrypt=ultrawidelock_test_psa_ecb 
 	"$SRC/ccc/ccc_crypto_psa.c" -o "$OUT/ccc_crypto_psa_cov.o"
 cov_cc "${psa_flags[@]}" -c -Dcrypto_aes_ecb_encrypt=ultrawidelock_test_mbedtls_ecb \
 	"$SRC/ccc/ccc_crypto_mbedtls.c" -o "$OUT/ccc_crypto_mbedtls_cov.o"
+# ultrawidelock_seal.c rides this stage for the same reason it does in run.sh:
+# it is a PSA seam, and the shared-core binary has no psa/crypto.h. Read from
+# the role manifest, like every other consumer of it.
+seal_srcs=()
+for _r in seal link anchor_msg; do
+	while IFS= read -r _l; do
+		_l="${_l%%#*}"
+		_l="${_l#"${_l%%[![:space:]]*}"}"
+		_l="${_l%"${_l##*[![:space:]]}"}"
+		[ -n "$_l" ] && seal_srcs+=("$ROOT/$_l")
+	done < "$ROOT/modules/ultrawidelock_anchor/roles/$_r.list"
+done
 cov_cc "${psa_flags[@]}" -I"$HOSTD" -I"$CRED/include" \
+	-I"$ROOT/modules/ultrawidelock_anchor/include" \
 	"$HOSTD/test.c" "$HOSTD/test_psa_backends.c" "$HOSTD/psafake/psafake.c" \
+	"$HOSTD/test_ultrawidelock_seal.c" "$HOSTD/test_ultrawidelock_link.c" \
+	"${seal_srcs[@]}" \
 	"$CRED/src/ultrawidelock_prim_psa.c" \
 	"$OUT/ccc_crypto_psa_cov.o" "$OUT/ccc_crypto_mbedtls_cov.o" -o "$OUT/cov_psa"
 run_suite psa "$OUT/cov_psa"

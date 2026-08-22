@@ -92,6 +92,8 @@ length-checks those where they are written.
 | esp32 | key | `auth9a` | 15 | `ports/esp32/components/piv_ccid/piv_identity.c` |
 | esp32 | key | `key9d` | 15 | `ports/esp32/components/piv_ccid/piv_identity.c` |
 | esp32 | namespace | `ha_mqtt` | 15 | `apps/esp32-matter-lock/main/ha_mqtt.c` |
+| esp32 | namespace | `satlink` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
+| esp32 | key | `lk` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | zephyr | subtree | `ultrawidelock` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |
 | zephyr | key | `ultrawidelock/prov` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |
 | zephyr | subtree | `mfab` | 64 | `ports/zephyr/store/matter_fab_settings.c` |

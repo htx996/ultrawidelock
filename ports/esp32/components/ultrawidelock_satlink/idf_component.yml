@@ -1,0 +1,3 @@
+description: sealed anchor link over ESP-NOW (carrier and key storage)
+dependencies:
+  idf: ">=5.5"

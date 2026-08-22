@@ -36,9 +36,22 @@ typedef uint32_t psa_key_usage_t;
 
 #define PSA_ALG_ECB_NO_PADDING ((psa_algorithm_t)0x04404400u)
 #define PSA_ALG_GCM            ((psa_algorithm_t)0x05500200u)
+/* The sealed peer link's AEAD (modules/ultrawidelock_anchor/src/ultrawidelock_seal.c).
+ * Real PSA value, and distinct from GCM above in the low byte, so a suite that
+ * asserts the spelling would catch the two being swapped. */
 #define PSA_ALG_CCM            ((psa_algorithm_t)0x05500100u)
+/* Real PSA CLEARS the tag-length field before writing the new one. The fake
+ * used to only OR, which left the base algorithm's own tag length mixed in:
+ * CCM (0x05500100, tag field 0x10 = 16) shortened to 8 came out as 24, and any
+ * fake that derived a tag length from the algorithm got a number no real
+ * backend would produce. Masking first makes the spelling faithful, which is
+ * the only thing these suites can check about it. */
 #define PSA_ALG_AEAD_WITH_SHORTENED_TAG(alg, tag_len)                                              \
-	((psa_algorithm_t)((alg) | (((psa_algorithm_t)(tag_len) & 0x3fu) << 16)))
+	((psa_algorithm_t)(((alg) & ~(psa_algorithm_t)0x003f0000u) |                                \
+			   (((psa_algorithm_t)(tag_len) & 0x3fu) << 16)))
+
+/** Tag length an AEAD algorithm encodes, in bytes. Real PSA's own layout. */
+#define PSAFAKE_TAG_LEN(alg) ((size_t)(((alg) >> 16) & 0x3fu))
 #define PSA_ALG_ECDH           ((psa_algorithm_t)0x09020000u)
 #define PSA_ALG_SHA_256        ((psa_algorithm_t)0x02000009u)
 #define PSA_ALG_ECDSA(hash)    ((psa_algorithm_t)(0x06000600u | ((hash) & 0xffu)))

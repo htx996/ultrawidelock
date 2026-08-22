@@ -935,12 +935,13 @@ check_patch_symbols() {
 #
 # Trees whose every tracked .c must be assigned to a role. Deliberately not the
 # whole of modules/: the vendored decadriver is reached BY manifests (core.list
-# points into it) but is not ours to enumerate, and single-consumer modules
-# (ultrawidelock_matter, ultrawidelock_ml, ...) would get a manifest that is a second copy of a
-# list that exists once. ultrawidelock_anchor is here because it has three: the Zephyr
-# module and the host suite that is its whole correctness story spelled the
-# same eleven files out twice, and a role each is what stopped that before the
-# ESP-IDF component became the third reader.
+# points into it) but is not ours to enumerate, and single-port modules
+# (ultrawidelock_matter, ultrawidelock_ml, ...) have one consumer each, so a manifest
+# would be a second copy of a list that exists once.
+#
+# ultrawidelock_anchor joined the list when the satellite went to ESP32: the same geometry
+# and the same WV3 codec now compile under Zephyr, ESP-IDF and the host cc, and
+# a second consumer is exactly the condition a manifest exists to serve.
 MANIFEST_ROOTS=(
 	modules/ultrawidelock_anchor/src
 	modules/ultrawidelock_cred/src

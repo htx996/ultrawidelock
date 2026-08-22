@@ -66,13 +66,15 @@ UNIT_SRCS=(
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_log2.c"
 )
 
-# ultrawidelock_anchor roles. Every one of them: the module is pure integer
-# arithmetic over caller-owned structs, so the host suite compiles what the
-# Zephyr module compiles across all four Kconfig gates at once.
-unit_srcs_from_role "$ANCHOR/roles/anchor_core.list"
-unit_srcs_from_role "$ANCHOR/roles/latch.list"
-unit_srcs_from_role "$ANCHOR/roles/witness.list"
-unit_srcs_from_role "$ANCHOR/roles/wire_codec.list"
+# ultrawidelock_anchor roles. Platform-free integer logic throughout, so the host
+# suite takes every tier: the geometry and fusion, the WV2/WV3 wire codec, the
+# witness label core and picker, and the inside latch. The ESP satellite and
+# the Zephyr apps read the same lists, so they cannot disagree about what a
+# tier contains.
+unit_srcs_from_role "$ANCHOR/roles/anchor.list"
+unit_srcs_from_role "$ANCHOR/roles/anchor_msg.list"
+unit_srcs_from_role "$ANCHOR/roles/witness_codec.list"
+unit_srcs_from_role "$ANCHOR/roles/inside_latch.list"
 
 # ultrawidelock_cred roles. wire_codecs = the shared step-up/assert codecs (one source;
 # ultrawidelock_cred_stack compiles the same files on target) — crypto-free, so no
