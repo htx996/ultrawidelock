@@ -32,4 +32,75 @@ menu "Example Configuration"
             a contiguous 16 KiB input record next to Matter, NimBLE and Wi-Fi,
             and every connection fails with -0x7F00 before the handshake.
 
+    menu "Two-anchor inside/outside gate"
+
+        config ULTRAWIDELOCK_ANCHOR_BASELINE_MM
+            int "Anchor separation, mm (role 1)"
+            default 0
+            help
+                Distance between this lock and the second anchor. MEASURE IT at
+                install; it is not derivable and every triangle test is sized
+                from it. 0 means no satellite mounted, which leaves the verdict
+                UNKNOWN and the door behaving exactly as a single-anchor lock.
+
+                `sat_baseline <mm>` overwrites this at runtime and persists it,
+                which is how the bench calibrates.
+
+        config ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM
+            int "Anchor separation, mm (role 2)"
+            default 0
+
+        config ULTRAWIDELOCK_ANCHOR_BASELINE_3_MM
+            int "Anchor separation, mm (role 3)"
+            default 0
+
+        config ULTRAWIDELOCK_ANCHOR_TOL_MM
+            int "Triangle-inequality slack, mm"
+            default 300
+            help
+                Size at 3 sigma of the measured per-link jitter: this gate
+                catches impossible geometry, not ordinary noise. Too tight and
+                every legitimate pair is rejected, which reads on a bench as a
+                dead satellite rather than a misconfiguration.
+
+        config ULTRAWIDELOCK_ANCHOR_DEADBAND_MM
+            int "Half-width of the UNKNOWN band about the boundary, mm"
+            default 150
+            help
+                Size at about 2 sigma. Within it the two distances are not far
+                enough apart for their difference to have a reliable sign, and
+                saying UNKNOWN beats guessing -- a phone in the doorway is
+                genuinely ambiguous and should read that way.
+
+        config ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM
+            int "Shift of the side boundary toward the inside anchor, mm"
+            default 0
+            help
+                0 keeps the boundary on the perpendicular bisector, which is the
+                door plane when the anchors straddle the door -- the shipping
+                install. A positive value is for a bench where both anchors sit
+                on the same side of the walkway.
+
+                IT MUST STAY SEVERAL SIGMA BELOW THE BASELINE. At bias ==
+                baseline the INSIDE locus degenerates and noise decides every
+                verdict.
+
+        config ULTRAWIDELOCK_ANCHOR_STALE_MS
+            int "How long a peer report stays usable, ms"
+            default 1500
+            help
+                Past this, the satellite's distance is no longer evidence about
+                where the phone is now. Expiry yields UNKNOWN, which permits --
+                absence is not evidence of insideness.
+
+        config ULTRAWIDELOCK_ANCHOR_SELF_INSIDE
+            bool "This lock is the INSIDE anchor"
+            default n
+            help
+                Which side of the door THIS board is on. A MOUNTING FACT: it
+                fails no test and crashes nothing when wrong, it silently
+                inverts the side verdict.
+
+    endmenu
+
 endmenu

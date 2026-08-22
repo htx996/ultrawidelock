@@ -202,11 +202,6 @@ int ultrawidelock_satlink_init(uint8_t role)
 	ultrawidelock_link_init(&s_link, role, esp_random());
 	key_load();
 
-	/*
-	 * Wi-Fi in station mode and never associated. ESP-NOW needs the radio
-	 * initialised, not a network: no AP, no DHCP, no IP stack. Storage is
-	 * RAM so this leaves no Wi-Fi credentials in NVS beside the link key.
-	 */
 	e = esp_netif_init();
 	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
 		return e;
@@ -215,17 +210,35 @@ int ultrawidelock_satlink_init(uint8_t role)
 	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
 		return e;
 	}
+	/*
+	 * WHOEVER OWNS THE RADIO KEEPS IT. On the satellite this is the only
+	 * user of Wi-Fi and the block below brings it up. On the Matter lock,
+	 * Matter may already have initialised, configured and started it -- and
+	 * forcing STA mode, RAM storage or a restart there would disconnect a
+	 * commissioned node to deliver a distance report. ESP-NOW rides whatever
+	 * interface is already up, so the right move is to touch nothing.
+	 *
+	 * esp_wifi_init returning ESP_ERR_INVALID_STATE is the signal that
+	 * someone got here first; it is not an error and not our radio.
+	 */
 	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 
 	e = esp_wifi_init(&cfg);
-	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+	if (e == ESP_ERR_INVALID_STATE) {
+		ESP_LOGI(TAG, "Wi-Fi already up; riding it rather than reconfiguring");
+	} else if (e != ESP_OK) {
 		return e;
-	}
-	(void)esp_wifi_set_storage(WIFI_STORAGE_RAM);
-	(void)esp_wifi_set_mode(WIFI_MODE_STA);
-	e = esp_wifi_start();
-	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
-		return e;
+	} else {
+		/* Ours to configure. Storage in RAM so this leaves no Wi-Fi
+		 * credentials in NVS beside the link key, and STA mode without
+		 * ever associating: ESP-NOW needs the radio initialised, not a
+		 * network. */
+		(void)esp_wifi_set_storage(WIFI_STORAGE_RAM);
+		(void)esp_wifi_set_mode(WIFI_MODE_STA);
+		e = esp_wifi_start();
+		if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+			return e;
+		}
 	}
 
 	e = esp_now_init();
