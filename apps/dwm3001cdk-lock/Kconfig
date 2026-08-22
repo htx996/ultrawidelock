@@ -312,8 +312,9 @@ config ULTRAWIDELOCK_MATTER_CLEAR_ON_BOOT
 	depends on ULTRAWIDELOCK_MATTER_BLE
 	default n
 	help
-	  Deletes the `mfab/*` settings keys before they are read, so the board
-	  comes up with no fabric and advertises commissionable.
+	  Atomically advances the `mf2` identity epoch before it is read, so the
+	  board comes up with no fabric and advertises commissionable. With no
+	  administering fabric, the Home Key identity is cleared too.
 
 	  The other half of a factory reset, and why this pair is still worth
 	  preferring over `west flash --erase`: together they clear everything a
@@ -595,6 +596,15 @@ config ULTRAWIDELOCK_MATTER_BLE_WQ_PRIO
 
 module = ULTRAWIDELOCK_MATTER_BLE
 module-str = matter_ble
+source "subsys/logging/Kconfig.template.log_config"
+
+# The CLIENT logs separately from everything else Matter does, and that split is
+# what makes a debug client image fit at all. matter_ble is the largest log
+# module on the board; the client's own narration is a few dozen lines inside
+# it. Sharing one level meant the only way to buy flash was to silence the very
+# thing being brought up. See overlay-client-debug.conf.
+module = ULTRAWIDELOCK_MATTER_CLIENT
+module-str = matter_client
 source "subsys/logging/Kconfig.template.log_config"
 
 endif # ULTRAWIDELOCK_MATTER_BLE

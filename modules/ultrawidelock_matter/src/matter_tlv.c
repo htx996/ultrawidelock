@@ -967,3 +967,56 @@ int matter_tlv_put_encoded(struct matter_tlv_writer *w, matter_tlv_tag_t tag, co
 	w->len += len;
 	return MATTER_TLV_OK;
 }
+
+int matter_tlv_put_encoded_anon(struct matter_tlv_writer *w, const uint8_t *elem, size_t len)
+{
+	if (w == NULL) {
+		return MATTER_TLV_E_INVAL;
+	}
+	if (w->rc != MATTER_TLV_OK) {
+		return w->rc;
+	}
+	if (elem == NULL || len < 2u || (elem[0] & 0xE0u) != TC_CONTEXT) {
+		w->rc = MATTER_TLV_E_INVAL;
+		return w->rc;
+	}
+	/*
+	 * One byte SHORTER than the source, which is the whole difference from
+	 * the context-tagged case: an anonymous element is control then value,
+	 * with no tag byte between them. The control byte keeps its type and
+	 * length bits and loses only its tag control.
+	 */
+	if (w->buf == NULL || w->cap - w->len < len - 1u) {
+		w->rc = MATTER_TLV_E_NOSPACE;
+		return w->rc;
+	}
+
+	w->buf[w->len] = (uint8_t)((elem[0] & 0x1Fu) | TC_ANON);
+	memcpy(w->buf + w->len + 1u, elem + 2u, len - 2u);
+	w->len += len - 1u;
+	return MATTER_TLV_OK;
+}
+
+int matter_tlv_put_raw(struct matter_tlv_writer *w, const uint8_t *bytes, size_t len)
+{
+	if (w == NULL) {
+		return MATTER_TLV_E_INVAL;
+	}
+	if (w->rc != MATTER_TLV_OK) {
+		return w->rc;
+	}
+	if (bytes == NULL) {
+		w->rc = MATTER_TLV_E_INVAL;
+		return w->rc;
+	}
+	if (len == 0u) {
+		return MATTER_TLV_OK;
+	}
+	if (w->buf == NULL || w->cap - w->len < len) {
+		w->rc = MATTER_TLV_E_NOSPACE;
+		return w->rc;
+	}
+
+	put_raw(w, bytes, len);
+	return MATTER_TLV_OK;
+}

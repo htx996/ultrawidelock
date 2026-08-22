@@ -115,8 +115,8 @@ void test_kv_zephyr(void)
 	T_EQ("a kv record", ultrawidelock_kv_set(0x4000u, "v", 1u), (long)ULTRAWIDELOCK_KV_OK);
 	/* Matter's fabric table and OpenThread's settings share this partition;
 	 * a factory reset of this store must not take them with it. */
-	T_EQ("a foreign record", settings_save_one("mfab/0", "v", 1u), 0L);
+	T_EQ("a foreign record", settings_save_one("mf2/f0", "v", 1u), 0L);
 	T_EQ("erase_all ok", ultrawidelock_kv_erase_all(), (long)ULTRAWIDELOCK_KV_OK);
 	T_EQ("the foreign record survived", settingsfake_key_count(), 1);
-	T_OK("and it is the right one", settingsfake_has("mfab/0"));
+	T_OK("and it is the right one", settingsfake_has("mf2/f0"));
 }

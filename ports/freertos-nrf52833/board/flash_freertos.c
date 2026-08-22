@@ -52,7 +52,7 @@
 #define FLASH_DEVICE_SIZE (512u * 1024u)
 
 /*
- * What may be written or erased. The default is the two pages the key-value
+ * What may be written or erased. The default is the four pages the key-value
  * store owns; a board that adds a DFU slot widens it deliberately.
  *
  * AND ONE DID, WITHOUT WIDENING IT. The image links a DFU receiver, advertises
@@ -71,7 +71,7 @@
  * line rather than a failed update months later.
  */
 #ifndef ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_BASE
-#define ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_BASE 0x0007e000u
+#define ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_BASE 0x0007c000u
 #endif
 #ifndef ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_LIMIT
 #define ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_LIMIT 0x00080000u

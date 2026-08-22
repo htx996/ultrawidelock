@@ -43,7 +43,7 @@ They live beside the application in [`../apps/dwm3001cdk-lock`](../apps/dwm3001c
 selected by the options above:
 
 - `overlay-thread.conf`: always applied by `make build`. The Matter node,
-  OpenThread MTD/SED and SRP. `make reader` omits it, which is the whole
+  OpenThread MTD/MED and SRP. `make reader` omits it, which is the whole
   difference between the two images.
 - `overlay-release.conf`, `overlay-smp.conf`, `overlay-lto.conf`: `RELEASE=1`,
   `SMP=1` and the default `LTO=1`. Ordered so that later files win.
@@ -117,7 +117,7 @@ Set on the command line, e.g. `make nrf-build PRETTY=1 CHIP=dw3720`:
 | `PRETTY=1` | curated, quiet serial console |
 | `SELFTEST=1` | radio TX/RX self-test at boot, no iPhone needed |
 | `STRICT=1` | drop suspect UWB range blocks |
-| `HA=1` | Home Assistant variant; needs `make bootstrap HA=1` too |
+| `HA=1` | nRF5340-only Home Assistant generated-data-model variant; needs `make bootstrap HA=1` too. It is not needed to share a DWM3001CDK with Home Assistant |
 | `ULTRAWIDELOCK_SOURCE=0` | use the legacy Nordic Aliro binary instead of the default in-tree stack; diagnostic comparison only |
 | `ULTRAWIDELOCK_TRACE=1` | declared temporary BLE/session boundary trace; currently unavailable because the required vendor integration patch is absent; see [Capture safety](#capture-safety) |
 | `NFC=st25r` | use the default X-NUCLEO-NFC12A1/ST25R300 RFAL path; hardware-validated |

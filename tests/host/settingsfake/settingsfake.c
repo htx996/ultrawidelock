@@ -96,6 +96,17 @@ bool settingsfake_has(const char *name)
 	return find(name) != NULL;
 }
 
+bool settingsfake_corrupt(const char *name)
+{
+	struct fake_entry *e = find(name);
+
+	if (e == NULL || e->len == 0u) {
+		return false;
+	}
+	e->val[e->len - 1u] ^= 0x80u;
+	return true;
+}
+
 int settings_subsys_init(void)
 {
 	return 0;

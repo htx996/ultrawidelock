@@ -26,6 +26,9 @@
 #include <ultrawidelock/reader.h>
 #include <ultrawidelock/uwb.h>
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
+#include "matter_client.h"
+#endif
 #include "matter_commission.h"
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
 #include <matter_thread.h> /* bench-only dataset disclosure; see the main loop */
@@ -916,6 +919,9 @@ int main(void)
 				ultrawidelock_reader_notify_unlock(false);
 				status_led_signal(STATUS_LED_UNLOCKED, false);
 				granted = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+				matter_client_want(false);
+#endif
 				/* Same state repair as a refusal: the controller still
 				 * believes the bolt it opened is open. Without this it
 				 * never offers again until a departure past relock_cm,
@@ -1354,6 +1360,19 @@ int main(void)
 			ultrawidelock_reader_notify_unlock(true); /* Reader Status -> Unsecured (animate) */
 			status_led_signal(STATUS_LED_UNLOCKED, true);
 			granted = true;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			/*
+			 * And the lock this one is bound to, if there is one.
+			 * Both symbols, matching the CMakeLists: the client's
+			 * routing hooks live in matter_commission.c, which is
+			 * the file CONFIG_ULTRAWIDELOCK_MATTER_BLE compiles.
+			 * AFTER the two lines above, which are this board's
+			 * entire idea of a bolt: whatever happens on the mesh
+			 * must not delay them, and matter_client_want() returns
+			 * without waiting for anything at all.
+			 */
+			matter_client_want(true);
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 			/* The door is open, so assume the phone goes in. This
 			 * is the pessimism the whole module rests on. */
@@ -1373,6 +1392,12 @@ int main(void)
 			ultrawidelock_reader_notify_unlock(false); /* Reader Status -> Secured */
 			status_led_signal(STATUS_LED_UNLOCKED, false);
 			granted = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			/* And close the lock this one opened. Same shape as the
+			 * grant above: after this board's own bolt, never
+			 * before it. */
+			matter_client_want(false);
+#endif
 			break;
 		default:
 			break;
@@ -1435,6 +1460,9 @@ int main(void)
 				ultrawidelock_reader_notify_unlock(false);
 				status_led_signal(STATUS_LED_UNLOCKED, false);
 				granted = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+				matter_client_want(false);
+#endif
 			}
 			present = false;
 		}

@@ -36,6 +36,14 @@ UNIT_SRCS=(
 	# where it stands describes the behaviour all three are supposed to have,
 	# without moving anything yet.
 	"$ROOT/apps/dwm3001cdk-lock-freertos/src/grant.c"
+	# App-layer for the same reason, and a sharper one. Everything the Matter
+	# client needs is a pure function in modules/ultrawidelock_matter and is tested
+	# there; this file is the part that SEQUENCES them, owns the one session
+	# and holds the clock. That sequencing is where its two known bugs were,
+	# neither of which any module test could have caught. It builds here
+	# because it asks the portable layers for the clock, the deferred work and
+	# the lock -- see tests/host/matterfake/ for the radio underneath it.
+	"$ROOT/apps/dwm3001cdk-lock/src/matter_client.c"
 	"$ROOT/modules/ultrawidelock_cred_stack/src/advertising_core.c"
 	"$ROOT/modules/ultrawidelock_cred_stack/src/protocol/ble_message.c"
 	"$ROOT/modules/ultrawidelock_cred_stack/src/protocol/ble_timeout.c"
@@ -59,6 +67,10 @@ UNIT_SRCS=(
 	"$ROOT/modules/ultrawidelock_matter/src/matter_attest.c"
 	"$ROOT/modules/ultrawidelock_matter/src/matter_fabric.c"
 	"$ROOT/modules/ultrawidelock_matter/src/matter_case.c"
+	"$ROOT/modules/ultrawidelock_matter/src/matter_case_client.c"
+	"$ROOT/modules/ultrawidelock_matter/src/matter_client_sm.c"
+	"$ROOT/modules/ultrawidelock_matter/src/matter_im_client.c"
+	"$ROOT/modules/ultrawidelock_matter/src/matter_binding.c"
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_los.c"
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_lin.c"
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_feat.c"
@@ -117,6 +129,10 @@ TEST_SRCS=(
 	"$HOST/test_matter_fabric.c"
 	"$HOST/test_matter_thread_stub.c"
 	"$HOST/test_matter_case.c"
+	"$HOST/test_matter_case_client.c"
+	"$HOST/test_matter_client_sm.c"
+	"$HOST/test_matter_im_client.c"
+	"$HOST/test_matter_binding.c"
 	"$HOST/test_matter_case_stub.c"
 	"$HOST/test_matter_clusters.c"
 	"$HOST/test_ultrawidelock_advertising.c"
@@ -165,6 +181,7 @@ TEST_SRCS=(
 	"$HOST/fr_replay.c"
 	"$HOST/test_ultrawidelock_ml.c"
 	"$HOST/test_ultrawidelock_port.c"
+	"$HOST/test_matter_client.c"
 )
 
 SHIM_SRCS=(
@@ -174,6 +191,7 @@ SHIM_SRCS=(
 	"$HOST/spakefake/spakefake.c"
 	# The host OSAL/flash/kv backends double as the test fakes (ultrawidelock_osal.h).
 	"$ROOT/tests/host/port/osal_host.c"
+	"$ROOT/tests/host/matterfake/thread_host.c"
 	"$ROOT/tests/host/port/flash_host.c"
 	"$ROOT/tests/host/port/kv_host.c"
 )
@@ -207,6 +225,8 @@ INCS=(
 	-I"$ROOT/modules/ultrawidelock_dw3000/include"
 	# grant.h, still in the FreeRTOS app tree. See the note on UNIT_SRCS.
 	-I"$ROOT/apps/dwm3001cdk-lock-freertos/src"
+	# matter_client.h, in the Zephyr app tree. Same arrangement.
+	-I"$ROOT/apps/dwm3001cdk-lock/src"
 )
 
 # The credential path is Kconfig-gated in-tree; the normal build has it on.
@@ -220,7 +240,16 @@ INCS=(
 # exist to pin down and the alternative is a feature whose only proof is on a
 # board. The LockOperation path is compiled identically either way, so the
 # suites covering it still describe the default image.
-DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1)
+# MATTER_FEATURE_CLIENT: the same arrangement for the Binding cluster, which
+# the firmware compiles in only for CONFIG_ULTRAWIDELOCK_MATTER_CLIENT. On here
+# always, because the fabric scoping of that list is the part that is invisible
+# when it is wrong and a board proves nothing about it.
+# MATTER_FEATURE_MULTI_ADMIN: required by the line above -- a client build with
+# no second administrator is configurable by nobody, and matter_clusters.h
+# refuses the combination. On here for the same reason as the other two: the
+# per-fabric access control this turns on is what the cluster tests assert.
+# The off-topology is NOT covered by this pass; see the multi-admin-off suite.
+DEFS=(-DCONFIG_ULTRAWIDELOCK_CRED=1 -DCONFIG_ULTRAWIDELOCK_ML_LOS=1 -DCONFIG_ULTRAWIDELOCK_FLIGHT_RECORDER=1 -D_DEFAULT_SOURCE -DULTRAWIDELOCK_PORT_HOST -DMATTER_FEATURE_DL_ALARMS=1 -DMATTER_FEATURE_CLIENT=1 -DMATTER_FEATURE_MULTI_ADMIN=1)
 
 # PY — the interpreter the python-side suites run under: the repo-local .venv
 # when one exists, else the system python3.

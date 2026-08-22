@@ -81,6 +81,16 @@ static const uint32_t k_lock_servers[] = {
 	MATTER_CLUSTER_DESCRIPTOR,
 	MATTER_CLUSTER_DOOR_LOCK,
 	MATTER_CLUSTER_APPROACH_DIRECTION,
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * Advertised as a SERVER even though the point of it is to make this
+	 * node a client. Not a contradiction: the Binding cluster's server is
+	 * the thing an administrator writes the target list into, and a
+	 * controller that cannot find it here has no way to configure the
+	 * client at all.
+	 */
+	MATTER_CLUSTER_BINDING,
+#endif
 };
 
 /* NetworkInfoStruct (python clusters/Objects.py, NetworkInfoStruct). */
@@ -95,21 +105,337 @@ static const uint32_t k_lock_servers[] = {
  * with a root but no index yet is that one. NULL when every slot is taken,
  * which is what AddNOC reports as TABLE_FULL.
  */
-static struct matter_fabric *fabric_pending(struct matter_device_info *info)
+static size_t fabric_pending_slot(struct matter_device_info *info)
 {
 	size_t i;
 
 	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (info->fabrics[i].have_root && info->fabrics[i].index == 0u) {
-			return &info->fabrics[i];
+		if ((info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u &&
+		    info->fabrics[i].have_root && info->fabrics[i].index == 0u) {
+			return i;
 		}
 	}
 	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (!info->fabrics[i].have_root && info->fabrics[i].index == 0u) {
-			return &info->fabrics[i];
+		if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(i)) == 0u &&
+		    (info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(i)) == 0u &&
+		    !info->fabrics[i].have_root && info->fabrics[i].index == 0u) {
+			return i;
 		}
 	}
-	return NULL;
+	return MATTER_SUPPORTED_FABRICS;
+}
+
+static struct matter_fabric *fabric_pending(struct matter_device_info *info, size_t *slot)
+{
+	size_t i = fabric_pending_slot(info);
+
+	if (i >= MATTER_SUPPORTED_FABRICS) {
+		return NULL;
+	}
+	if (slot != NULL) {
+		*slot = i;
+	}
+	return &info->fabrics[i];
+}
+
+static size_t fabric_slot_for_index(const struct matter_device_info *info, uint8_t index)
+{
+	size_t i;
+
+	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (info->fabrics[i].index == index &&
+		    (info->committed_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u) {
+			return i;
+		}
+	}
+	return MATTER_SUPPORTED_FABRICS;
+}
+
+static size_t fabric_slot_for_request(const struct matter_device_info *info, uint8_t index)
+{
+	size_t i;
+	uint8_t visible = info->committed_slots | info->attempt.owned_slots;
+
+	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if ((visible & MATTER_FABRIC_SLOT_BIT(i)) != 0u &&
+		    info->fabrics[i].index == index) {
+			return i;
+		}
+	}
+	return MATTER_SUPPORTED_FABRICS;
+}
+
+#define MATTER_AC_PRIVILEGE_OPERATE     3u
+#define MATTER_AC_PRIVILEGE_ADMINISTER  5u
+#define MATTER_AC_AUTH_MODE_CASE        2u
+/**
+ * The high half of a subject id that names a CASE Authenticated Tag.
+ *
+ * Operational node ids never reach it, so both subject kinds share one field
+ * without ambiguity: below the prefix a subject is a node, at it a tag group.
+ */
+#define MATTER_ACL_CAT_PREFIX           0xFFFFFFFDu
+/*
+ * AccessControlEntryStruct numbers its fields from 1 (Privilege=1, AuthMode=2,
+ * Subjects=3, Targets=4) -- verified against the entry a real commissioner
+ * writes. Numbered from 0 these matched nothing, so every entry silently
+ * granted nobody and all access fell through to the case-admin bootstrap.
+ */
+#define MATTER_AC_ENTRY_PRIVILEGE_TAG   1u
+#define MATTER_AC_ENTRY_AUTH_MODE_TAG   2u
+#define MATTER_AC_ENTRY_SUBJECTS_TAG    3u
+#define MATTER_AC_ENTRY_TARGETS_TAG     4u
+#define MATTER_AC_TARGET_CLUSTER_TAG    0u
+#define MATTER_AC_TARGET_ENDPOINT_TAG   1u
+#define MATTER_AC_TARGET_DEVICE_TAG     2u
+#define MATTER_TLV_NULL_TYPE            0x14u
+#define MATTER_DEVICE_TYPE_ROOT_NODE    0x0016u
+#define MATTER_DEVICE_TYPE_DOOR_LOCK    0x000Au
+
+/**
+ * Does @p subject, read out of an ACL entry, name this accessor?
+ *
+ * Two kinds of subject live in the same 64-bit field. Below the CAT range it is
+ * an operational node id and the test is equality. Inside the range
+ * 0xFFFFFFFD_00000000..0xFFFFFFFD_FFFFFFFF the low 32 bits are a CASE
+ * Authenticated Tag: identifier in the high half, version in the low.
+ *
+ * A CAT matches when the accessor's NOC carries the SAME identifier at a
+ * version at least the one the entry asks for -- greater-or-equal, so that
+ * re-issuing controllers at a higher version keeps old entries working while
+ * bumping the entry's version retires every controller below it. Equality
+ * would make the version field pointless; less-than would invert it.
+ */
+static bool acl_subject_matches(uint64_t subject, uint64_t node_id, const uint32_t *cats,
+				uint8_t n_cats)
+{
+	uint32_t tag;
+	uint16_t want_id;
+	uint16_t want_ver;
+	uint8_t i;
+
+	if ((subject >> 32) != MATTER_ACL_CAT_PREFIX) {
+		return subject == node_id;
+	}
+	tag = (uint32_t)subject;
+	want_id = (uint16_t)(tag >> 16);
+	want_ver = (uint16_t)tag;
+	/* Version 0 is not a valid tag; an entry carrying one matches nothing
+	 * rather than everything. */
+	if (want_ver == 0u || cats == NULL) {
+		return false;
+	}
+	for (i = 0u; i < n_cats && i < MATTER_MAX_CATS; i++) {
+		if ((uint16_t)(cats[i] >> 16) == want_id && (uint16_t)cats[i] >= want_ver) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id,
+			       const uint32_t *cats, uint8_t n_cats)
+{
+	bool match = false;
+
+	if (matter_tlv_element_type(r) == MATTER_TLV_NULL_TYPE) {
+		return true;
+	}
+	if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		uint64_t subject;
+		int rc = matter_tlv_next(r);
+
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return false;
+		}
+		if (matter_tlv_get_u64(r, &subject) == MATTER_OK &&
+		    acl_subject_matches(subject, node_id, cats, n_cats)) {
+			match = true;
+		}
+	}
+	return matter_tlv_exit(r) == MATTER_OK && match;
+}
+
+static uint32_t endpoint_device_type(uint16_t endpoint)
+{
+	if (endpoint == MATTER_ENDPOINT_ROOT) {
+		return MATTER_DEVICE_TYPE_ROOT_NODE;
+	}
+	if (endpoint == MATTER_ENDPOINT_LOCK) {
+		return MATTER_DEVICE_TYPE_DOOR_LOCK;
+	}
+	return 0u;
+}
+
+static bool acl_target_match(struct matter_tlv_reader *r, uint16_t endpoint, uint32_t cluster)
+{
+	bool match = true;
+
+	if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		uint64_t value;
+		matter_tlv_tag_t tag;
+		int rc = matter_tlv_next(r);
+
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return false;
+		}
+		tag = matter_tlv_tag(r);
+		if (tag != MATTER_TLV_CTX(MATTER_AC_TARGET_CLUSTER_TAG) &&
+		    tag != MATTER_TLV_CTX(MATTER_AC_TARGET_ENDPOINT_TAG) &&
+		    tag != MATTER_TLV_CTX(MATTER_AC_TARGET_DEVICE_TAG)) {
+			continue;
+		}
+		/* Null means this dimension is unrestricted. */
+		if (matter_tlv_element_type(r) == MATTER_TLV_NULL_TYPE) {
+			continue;
+		}
+		if (matter_tlv_get_u64(r, &value) != MATTER_OK) {
+			match = false;
+			continue;
+		}
+		if (tag == MATTER_TLV_CTX(MATTER_AC_TARGET_CLUSTER_TAG)) {
+			match = match && value == cluster;
+		} else if (tag == MATTER_TLV_CTX(MATTER_AC_TARGET_ENDPOINT_TAG)) {
+			match = match && value == endpoint;
+		} else {
+			match = match && endpoint_device_type(endpoint) != 0u &&
+				value == endpoint_device_type(endpoint);
+		}
+	}
+	return matter_tlv_exit(r) == MATTER_OK && match;
+}
+
+static bool acl_targets_match(struct matter_tlv_reader *r, uint16_t endpoint, uint32_t cluster)
+{
+	bool match = false;
+
+	if (matter_tlv_element_type(r) == MATTER_TLV_NULL_TYPE) {
+		return true;
+	}
+	if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		int rc = matter_tlv_next(r);
+
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return false;
+		}
+		if (acl_target_match(r, endpoint, cluster)) {
+			match = true;
+		}
+	}
+	return matter_tlv_exit(r) == MATTER_OK && match;
+}
+
+static bool acl_entry_grants(struct matter_tlv_reader *r, uint64_t node_id,
+			     const uint32_t *cats, uint8_t n_cats, uint8_t required_privilege,
+			     uint16_t endpoint, uint32_t cluster)
+{
+	uint64_t privilege = 0u;
+	uint64_t auth_mode = 0u;
+	bool have_privilege = false;
+	bool have_auth_mode = false;
+	bool subjects_match = false;
+	bool targets_match = false;
+
+	if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		matter_tlv_tag_t tag;
+		int rc = matter_tlv_next(r);
+
+		if (rc == MATTER_END) {
+			break;
+		}
+		if (rc != MATTER_OK) {
+			return false;
+		}
+		tag = matter_tlv_tag(r);
+		if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_PRIVILEGE_TAG)) {
+			have_privilege = matter_tlv_get_u64(r, &privilege) == MATTER_OK;
+		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_AUTH_MODE_TAG)) {
+			have_auth_mode = matter_tlv_get_u64(r, &auth_mode) == MATTER_OK;
+		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_SUBJECTS_TAG)) {
+			subjects_match = acl_subjects_match(r, node_id, cats, n_cats);
+		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_TARGETS_TAG)) {
+			targets_match = acl_targets_match(r, endpoint, cluster);
+		}
+	}
+	if (matter_tlv_exit(r) != MATTER_OK) {
+		return false;
+	}
+	return have_privilege && privilege >= required_privilege && have_auth_mode &&
+	       auth_mode == MATTER_AC_AUTH_MODE_CASE && subjects_match && targets_match;
+}
+
+static bool fabric_slot_has_privilege(const struct matter_device_info *info, size_t slot,
+			      uint8_t required_privilege, uint16_t endpoint,
+			      uint32_t cluster)
+{
+	struct matter_tlv_reader r;
+
+	if (slot >= MATTER_SUPPORTED_FABRICS || info->accessing_node_id == 0u) {
+		return false;
+	}
+	/*
+	 * Bootstrap authority from AddNOC. It remains a recovery administrator
+	 * even if a later malformed ACL would otherwise lock every controller out.
+	 *
+	 * Matched the same way an ACL subject is, because CaseAdminSubject IS an
+	 * ACL subject and Apple sets it to a CAT rather than a node id. Compared
+	 * by equality, that hub authenticates as a member of a group whose tag
+	 * never equals any node id, so the recovery path it exists to provide
+	 * silently was not there. acl_subject_matches() falls through to plain
+	 * equality for a node-id subject, so nothing changes for a controller
+	 * that sets one.
+	 */
+	if (info->fabrics[slot].case_admin_subject != 0u &&
+	    acl_subject_matches(info->fabrics[slot].case_admin_subject, info->accessing_node_id,
+				info->accessing_cats, info->accessing_n_cats)) {
+		return true;
+	}
+	if (info->fabric_acls[slot].len == 0u) {
+		return false;
+	}
+	matter_tlv_reader_init(&r, info->fabric_acls[slot].data,
+			       info->fabric_acls[slot].len);
+	if (matter_tlv_next(&r) != MATTER_OK || !matter_tlv_is_container(&r) ||
+	    matter_tlv_enter(&r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		int rc = matter_tlv_next(&r);
+
+		if (rc == MATTER_END) {
+			(void)matter_tlv_exit(&r);
+			return false;
+		}
+		if (rc != MATTER_OK) {
+			return false;
+		}
+		if (acl_entry_grants(&r, info->accessing_node_id, info->accessing_cats,
+				     info->accessing_n_cats, required_privilege, endpoint,
+				     cluster)) {
+			return true;
+		}
+	}
 }
 
 /** How many fabrics hold a complete identity. */
@@ -119,11 +445,60 @@ static uint8_t fabric_count(const struct matter_device_info *info)
 	size_t i;
 
 	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if (info->fabrics[i].index != 0u) {
+		if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u &&
+		    info->fabrics[i].index != 0u) {
 			n++;
 		}
 	}
 	return n;
+}
+
+static int fabric_store(struct matter_device_info *info,
+			enum matter_fabric_store_operation operation, size_t slot,
+			const uint8_t *value, size_t value_len)
+{
+	if (info->commissioning_hooks == NULL ||
+	    info->commissioning_hooks->fabric_store == NULL) {
+		return MATTER_OK;
+	}
+	return info->commissioning_hooks->fabric_store(
+		info->commissioning_hooks->ctx, info, operation, (uint8_t)slot, value,
+		value_len);
+}
+
+static void fabric_slot_clear(struct matter_device_info *info, size_t slot)
+{
+	struct matter_fabric *f;
+
+	if (slot >= MATTER_SUPPORTED_FABRICS) {
+		return;
+	}
+	f = &info->fabrics[slot];
+	if (f->index != 0u) {
+		char iname[MATTER_INSTANCE_NAME_LEN];
+
+		if (matter_fabric_instance_name(f, iname, sizeof(iname)) == MATTER_OK) {
+			(void)matter_thread_unadvertise(iname);
+		}
+	}
+	if (info->icac.owner_index == f->index) {
+		memset(&info->icac, 0, sizeof(info->icac));
+	}
+	memset(&info->fabric_acls[slot], 0, sizeof(info->fabric_acls[slot]));
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * And the bindings this administrator wrote. A binding that outlives
+	 * the fabric it belongs to is this lock still unlocking another lock on
+	 * behalf of somebody who has been removed from the system -- and there
+	 * is nothing left in the table to say who asked for it. Here rather
+	 * than at RemoveFabric because a rolled-back attempt wipes a slot too,
+	 * and a provisional administrator can write a binding before it fails.
+	 */
+	matter_binding_forget_fabric(&info->binding, f->index);
+#endif
+	memset(f, 0, sizeof(*f));
+	info->attempt.owned_slots &= (uint8_t)~MATTER_FABRIC_SLOT_BIT(slot);
+	info->committed_slots &= (uint8_t)~MATTER_FABRIC_SLOT_BIT(slot);
 }
 
 /**
@@ -163,6 +538,9 @@ static bool has_cluster(void *ctx, uint16_t endpoint, uint32_t cluster)
 	if (endpoint == MATTER_ENDPOINT_LOCK) {
 		return cluster == MATTER_CLUSTER_DESCRIPTOR ||
 		       cluster == MATTER_CLUSTER_DOOR_LOCK ||
+#if MATTER_FEATURE_CLIENT
+		       cluster == MATTER_CLUSTER_BINDING ||
+#endif
 		       cluster == MATTER_CLUSTER_APPROACH_DIRECTION;
 	}
 	if (endpoint != MATTER_ENDPOINT_ROOT) {
@@ -229,6 +607,36 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
 			}
 		}
+#if MATTER_FEATURE_CLIENT
+		if (cluster == MATTER_CLUSTER_BINDING) {
+			const struct matter_device_info *info =
+				(const struct matter_device_info *)ctx;
+
+			/*
+			 * The one place in this function that reads ctx, and it
+			 * has to: the PIN attribute's id is built from this
+			 * node's vendor id (MATTER_ATTR_BINDING_PIN), so there
+			 * is no constant to put in a case label. A node with no
+			 * vendor id has no such attribute rather than one at
+			 * 0x0000, which is the standard list.
+			 */
+			if (info != NULL && info->vendor_id != 0u &&
+			    attribute == MATTER_ATTR_BINDING_PIN(info->vendor_id)) {
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			switch (attribute) {
+			case MATTER_ATTR_BINDING_LIST:
+			case MATTER_ATTR_FEATURE_MAP:
+			case MATTER_ATTR_CLUSTER_REVISION:
+			case MATTER_ATTR_ATTRIBUTE_LIST:
+			case MATTER_ATTR_ACCEPTED_CMD_LIST:
+			case MATTER_ATTR_GENERATED_CMD_LIST:
+				return MATTER_IM_STATUS_SUCCESS;
+			default:
+				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
+			}
+		}
+#endif
 		if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			switch (attribute) {
 			case MATTER_ATTR_APPROACH_DIRECTION:
@@ -476,6 +884,26 @@ static const uint32_t k_approach_attrs[] = {
 	MATTER_ATTR_GENERATED_CMD_LIST,
 };
 
+#if MATTER_FEATURE_CLIENT
+/*
+ * The manufacturer-specific PIN attribute is deliberately NOT in this list.
+ *
+ * Its id depends on info->vendor_id and so could not sit in a static array
+ * anyway, but the reason to leave it out is the better one: it never reads back
+ * (see matter_binding_read_pin), and an AttributeList naming an attribute whose
+ * every read is empty invites a controller to keep asking a question this node
+ * has already decided not to answer.
+ */
+static const uint32_t k_binding_attrs[] = {
+	MATTER_ATTR_BINDING_LIST,
+	MATTER_ATTR_FEATURE_MAP,
+	MATTER_ATTR_CLUSTER_REVISION,
+	MATTER_ATTR_ATTRIBUTE_LIST,
+	MATTER_ATTR_ACCEPTED_CMD_LIST,
+	MATTER_ATTR_GENERATED_CMD_LIST,
+};
+#endif
+
 /** An array attribute whose members are bare unsigned ids; NULL/0 is legal
  * and encodes the empty list, which is how a cluster says "no commands". */
 static void put_id_list(struct matter_tlv_writer *w, matter_tlv_tag_t tag, const uint32_t *ids,
@@ -498,7 +926,8 @@ static void put_id_list(struct matter_tlv_writer *w, matter_tlv_tag_t tag, const
  * cluster would answer the root's Descriptor for the lock.
  */
 static void lock_attr_value(const struct matter_device_info *info, uint32_t cluster,
-			    uint32_t attribute, struct matter_tlv_writer *w, matter_tlv_tag_t tag)
+			    uint32_t attribute, bool fabric_filtered,
+			    struct matter_tlv_writer *w, matter_tlv_tag_t tag)
 {
 	size_t i;
 
@@ -532,6 +961,57 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 			return;
 		}
 	}
+
+#if MATTER_FEATURE_CLIENT
+	if (cluster == MATTER_CLUSTER_BINDING) {
+		/*
+		 * The list first, so a node whose vendor id is still 0 cannot
+		 * have MATTER_ATTR_BINDING_PIN(0) -- which is 0x0000 -- shadow
+		 * the standard attribute that shares that number.
+		 */
+		if (attribute == MATTER_ATTR_BINDING_LIST) {
+			/*
+			 * Zero means every fabric. A controller building its
+			 * device model reads wildcards unfiltered, and a
+			 * fabric-scoped list that answered those with one
+			 * fabric's entries would describe this cluster as empty
+			 * to everybody who did not already know what to ask
+			 * for. Nothing is protected by refusing: the privilege
+			 * gate above already required Administer, and a peer
+			 * holding that can write this list and unlock the door.
+			 */
+			matter_binding_read(&info->binding,
+					    fabric_filtered ? info->accessing_fabric_index : 0u,
+					    w, tag);
+			return;
+		}
+		if (info->vendor_id != 0u &&
+		    attribute == MATTER_ATTR_BINDING_PIN(info->vendor_id)) {
+			matter_binding_read_pin(&info->binding, w, tag);
+			return;
+		}
+		switch (attribute) {
+		case MATTER_ATTR_FEATURE_MAP:
+			/* The cluster defines no features. */
+			(void)matter_tlv_put_u64(w, tag, 0u);
+			return;
+		case MATTER_ATTR_CLUSTER_REVISION:
+			(void)matter_tlv_put_u64(w, tag, MATTER_BINDING_CLUSTER_REV);
+			return;
+		case MATTER_ATTR_ATTRIBUTE_LIST:
+			put_id_list(w, tag, k_binding_attrs,
+				    sizeof(k_binding_attrs) / sizeof(k_binding_attrs[0]));
+			return;
+		case MATTER_ATTR_ACCEPTED_CMD_LIST:
+		case MATTER_ATTR_GENERATED_CMD_LIST:
+			/* A list and nothing else: the cluster has no commands. */
+			put_id_list(w, tag, NULL, 0u);
+			return;
+		default:
+			return;
+		}
+	}
+#endif
 
 	if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 		switch (attribute) {
@@ -692,7 +1172,7 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
  * Operational Credentials, Admin Commissioning, and General Commissioning.
  */
 static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t attribute,
-		       struct matter_tlv_writer *w, matter_tlv_tag_t tag)
+		       bool fabric_filtered, struct matter_tlv_writer *w, matter_tlv_tag_t tag)
 {
 	const struct matter_device_info *info = (const struct matter_device_info *)ctx;
 
@@ -702,7 +1182,7 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 	 * endpoint that is neither.
 	 */
 	if (endpoint == MATTER_ENDPOINT_LOCK) {
-		lock_attr_value(info, cluster, attribute, w, tag);
+		lock_attr_value(info, cluster, attribute, fabric_filtered, w, tag);
 		return;
 	}
 
@@ -830,14 +1310,16 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 			 * false: nothing here has joined anything.
 			 */
 			(void)matter_tlv_start_container(w, tag, MATTER_TLV_ARRAY);
-			if (info->have_thread_xpanid) {
+			if (info->attempt.have_thread_candidate || info->have_thread_xpanid) {
+				const uint8_t *xpanid = info->attempt.have_thread_candidate
+							? info->attempt.thread_xpanid
+							: info->thread_xpanid;
 				(void)matter_tlv_start_container(w, MATTER_TLV_ANON,
 								 MATTER_TLV_STRUCTURE);
 				(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NETINFO_ID),
-							   info->thread_xpanid,
-							   sizeof(info->thread_xpanid));
+							   xpanid, MATTER_THREAD_XPANID_LEN);
 				(void)matter_tlv_put_bool(w, MATTER_TLV_CTX(TAG_NETINFO_CONNECTED),
-							  false);
+							  matter_thread_attached_to(xpanid));
 				(void)matter_tlv_end_container(w);
 			}
 			(void)matter_tlv_end_container(w);
@@ -921,15 +1403,19 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 	}
 
 	if (cluster == MATTER_CLUSTER_ACCESS_CONTROL) {
+		size_t slot = fabric_slot_for_request(info, info->accessing_fabric_index);
+
 		switch (attribute) {
 		case MATTER_ATTR_AC_ACL:
 			/*
-			 * Handed straight back as it arrived. Nothing here has
-			 * decoded it -- see the note on matter_device_info.acl:
-			 * this list is RECORDED, NOT ENFORCED.
+			 * Handed straight back as it arrived. Authorization decodes
+			 * the stored form in place, but preserving the exact element
+			 * avoids rebuilding fields this implementation does not alter.
 			 */
-			if (info->acl_len > 0u) {
-				(void)matter_tlv_put_encoded(w, tag, info->acl, info->acl_len);
+			if (slot < MATTER_SUPPORTED_FABRICS &&
+			    info->fabric_acls[slot].len > 0u) {
+				(void)matter_tlv_put_encoded(w, tag, info->fabric_acls[slot].data,
+							     info->fabric_acls[slot].len);
 			} else {
 				(void)matter_tlv_start_container(w, tag, MATTER_TLV_ARRAY);
 				(void)matter_tlv_end_container(w);
@@ -953,23 +1439,12 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 
 		switch (attribute) {
 		case MATTER_ATTR_OC_FABRICS:
-			/*
-			 * EVERY fabric, not just the first. A commissioner
-			 * reads this to confirm the fabric it created is one
-			 * this node joined -- and with two administrators there
-			 * are two, so reporting one tells the other it was
-			 * never adopted.
-			 *
-			 * Fabric-scoped in the spec: the answer should be
-			 * filtered to the reading session's fabric. This does
-			 * not filter, which over-reports rather than under-
-			 * reports, and is written down because it is a gap.
-			 */
 			(void)matter_tlv_start_container(w, tag, MATTER_TLV_ARRAY);
 			for (fi = 0u; fi < MATTER_SUPPORTED_FABRICS; fi++) {
 				const struct matter_fabric *f = &info->fabrics[fi];
 
-				if (f->index == 0u) {
+				if (f->index == 0u ||
+				    (fabric_filtered && f->index != info->accessing_fabric_index)) {
 					continue;
 				}
 				(void)matter_tlv_start_container(w, MATTER_TLV_ANON,
@@ -983,9 +1458,8 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 							 f->fabric_id);
 				(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_NODE_ID),
 							 f->node_id);
-				/* Empty until a commissioner writes one. */
-				(void)matter_tlv_put_utf8(w, MATTER_TLV_CTX(TAG_FABRIC_LABEL), "",
-							  0u);
+				(void)matter_tlv_put_utf8(w, MATTER_TLV_CTX(TAG_FABRIC_LABEL),
+							  f->label, f->label_len);
 				(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_INDEX),
 							 f->index);
 				(void)matter_tlv_end_container(w);
@@ -993,25 +1467,22 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 			(void)matter_tlv_end_container(w);
 			return;
 		case MATTER_ATTR_OC_NOCS:
-			/*
-			 * The certificates themselves. Fabric-scoped AND
-			 * restricted to Administer in the spec; this node
-			 * enforces neither, the same gap the ACL note records.
-			 * Nothing here is secret -- a NOC is public -- but the
-			 * restriction exists and is not honoured.
-			 */
+			/* The certificates themselves. FabricFiltered limits the
+			 * list to the CASE session's fabric. */
 			(void)matter_tlv_start_container(w, tag, MATTER_TLV_ARRAY);
 			for (fi = 0u; fi < MATTER_SUPPORTED_FABRICS; fi++) {
 				const struct matter_fabric *f = &info->fabrics[fi];
 
-				if (f->index == 0u) {
+				if (f->index == 0u ||
+				    (fabric_filtered && f->index != info->accessing_fabric_index)) {
 					continue;
 				}
 				(void)matter_tlv_start_container(w, MATTER_TLV_ANON,
 								 MATTER_TLV_STRUCTURE);
 				(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_NOC), f->noc,
 							   f->noc_len);
-				if (f->icac_len > 0u) {
+				if (f->icac_len > 0u && info->icac.owner_index == f->index &&
+				    info->icac.len == f->icac_len) {
 					(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_ICAC),
 								   info->icac.buf, f->icac_len);
 				} else {
@@ -1212,6 +1683,12 @@ static size_t list_attrs(void *ctx, uint16_t endpoint, uint32_t cluster, const u
 			*out = k_approach_attrs;
 			return sizeof(k_approach_attrs) / sizeof(k_approach_attrs[0]);
 		}
+#if MATTER_FEATURE_CLIENT
+		if (cluster == MATTER_CLUSTER_BINDING) {
+			*out = k_binding_attrs;
+			return sizeof(k_binding_attrs) / sizeof(k_binding_attrs[0]);
+		}
+#endif
 		return 0u;
 	}
 	if (endpoint != MATTER_ENDPOINT_ROOT) {
@@ -1305,6 +1782,9 @@ static bool field_u64(const struct matter_im_invoke *inv, uint8_t tag, uint64_t 
 #define TAG_NOCRESP_STATUS       0u
 #define TAG_NOCRESP_FABRIC_INDEX 1u
 
+/* UpdateFabricLabel's one argument. */
+#define TAG_UPDATE_LABEL 0u
+
 /** Borrow one octet-string field out of a command's arguments. */
 /**
  * Read an unsigned field from INSIDE a nested structure field.
@@ -1381,6 +1861,32 @@ static bool field_bytes(const struct matter_im_invoke *inv, uint8_t tag, const u
 	}
 }
 
+/** The UTF-8 twin: a Label is a string element, which get_bytes refuses. */
+static bool field_utf8(const struct matter_im_invoke *inv, uint8_t tag, const char **out,
+		       size_t *len)
+{
+	struct matter_tlv_reader r;
+
+	if (!inv->has_fields || inv->fields == NULL) {
+		return false;
+	}
+	matter_tlv_reader_init(&r, inv->fields, inv->fields_len);
+	if (matter_tlv_next(&r) != MATTER_OK || !matter_tlv_is_container(&r)) {
+		return false;
+	}
+	if (matter_tlv_enter(&r) != MATTER_OK) {
+		return false;
+	}
+	for (;;) {
+		if (matter_tlv_next(&r) != MATTER_OK) {
+			return false;
+		}
+		if (matter_tlv_tag(&r) == MATTER_TLV_CTX(tag)) {
+			return matter_tlv_get_utf8(&r, out, len) == MATTER_OK;
+		}
+	}
+}
+
 /* --------------------------------------- NetworkCommissioning --- */
 
 /* AddOrUpdateThreadNetwork / ConnectNetwork field tags, and the two responses. */
@@ -1398,7 +1904,31 @@ static bool field_bytes(const struct matter_im_invoke *inv, uint8_t tag, const u
  * value -- a different encoding from everything else here, and unrelated to
  * Matter TLV.
  */
-#define MESHCOP_TLV_EXTENDED_PANID 0x02u
+#define MESHCOP_TLV_CHANNEL           0x00u
+#define MESHCOP_TLV_PANID             0x01u
+#define MESHCOP_TLV_EXTENDED_PANID    0x02u
+#define MESHCOP_TLV_NETWORK_NAME      0x03u
+#define MESHCOP_TLV_PSKC              0x04u
+#define MESHCOP_TLV_NETWORK_KEY       0x05u
+#define MESHCOP_TLV_MESH_LOCAL_PREFIX 0x07u
+#define MESHCOP_TLV_SECURITY_POLICY   0x0cu
+#define MESHCOP_TLV_ACTIVE_TIMESTAMP  0x0eu
+#define MESHCOP_TLV_CHANNEL_MASK      0x35u
+
+static bool dataset_channel_mask_valid(const uint8_t *value, size_t len)
+{
+	size_t i = 0u;
+
+	while (i + 2u <= len) {
+		size_t mask_len = value[i + 1u];
+
+		if (mask_len == 0u || i + 2u + mask_len > len) {
+			return false;
+		}
+		i += 2u + mask_len;
+	}
+	return i == len && i != 0u;
+}
 
 /**
  * Find the Extended PAN ID in a Thread operational dataset.
@@ -1407,24 +1937,108 @@ static bool field_bytes(const struct matter_im_invoke *inv, uint8_t tag, const u
  * length that runs past the end is a malformed dataset rather than a reason to
  * read past the buffer.
  */
-static bool dataset_xpanid(const uint8_t *ds, size_t len, uint8_t out[MATTER_THREAD_XPANID_LEN])
+static bool dataset_validate(const uint8_t *ds, size_t len,
+			     uint8_t out[MATTER_THREAD_XPANID_LEN])
 {
 	size_t i = 0u;
+	uint8_t seen[32] = { 0 };
+	uint16_t required = 0u;
+	enum {
+		HAVE_ACTIVE_TIMESTAMP = 1u << 0,
+		HAVE_CHANNEL = 1u << 1,
+		HAVE_CHANNEL_MASK = 1u << 2,
+		HAVE_XPANID = 1u << 3,
+		HAVE_MESH_LOCAL_PREFIX = 1u << 4,
+		HAVE_NETWORK_KEY = 1u << 5,
+		HAVE_NETWORK_NAME = 1u << 6,
+		HAVE_PANID = 1u << 7,
+		HAVE_PSKC = 1u << 8,
+		HAVE_SECURITY_POLICY = 1u << 9,
+		HAVE_ALL = (1u << 10) - 1u,
+	};
 
+	if (ds == NULL || len == 0u || len > MATTER_THREAD_DATASET_MAX) {
+		return false;
+	}
 	while (i + 2u <= len) {
 		uint8_t type = ds[i];
 		size_t vlen = ds[i + 1u];
 
-		if (i + 2u + vlen > len) {
+		if (vlen == 0u || i + 2u + vlen > len ||
+		    (seen[type / 8u] & (uint8_t)(1u << (type % 8u))) != 0u) {
 			return false;
 		}
-		if (type == MESHCOP_TLV_EXTENDED_PANID && vlen == MATTER_THREAD_XPANID_LEN) {
+		seen[type / 8u] |= (uint8_t)(1u << (type % 8u));
+		switch (type) {
+		case MESHCOP_TLV_ACTIVE_TIMESTAMP:
+			if (vlen != 8u) {
+				return false;
+			}
+			required |= HAVE_ACTIVE_TIMESTAMP;
+			break;
+		case MESHCOP_TLV_CHANNEL:
+			if (vlen != 3u || ds[i + 2u] != 0u ||
+			    (((uint16_t)ds[i + 3u] << 8) | ds[i + 4u]) < 11u ||
+			    (((uint16_t)ds[i + 3u] << 8) | ds[i + 4u]) > 26u) {
+				return false;
+			}
+			required |= HAVE_CHANNEL;
+			break;
+		case MESHCOP_TLV_PANID:
+			if (vlen != 2u) {
+				return false;
+			}
+			required |= HAVE_PANID;
+			break;
+		case MESHCOP_TLV_EXTENDED_PANID:
+			if (vlen != MATTER_THREAD_XPANID_LEN) {
+				return false;
+			}
 			memcpy(out, &ds[i + 2u], MATTER_THREAD_XPANID_LEN);
-			return true;
+			required |= HAVE_XPANID;
+			break;
+		case MESHCOP_TLV_NETWORK_NAME:
+			if (vlen == 0u || vlen > 16u) {
+				return false;
+			}
+			required |= HAVE_NETWORK_NAME;
+			break;
+		case MESHCOP_TLV_PSKC:
+			if (vlen != 16u) {
+				return false;
+			}
+			required |= HAVE_PSKC;
+			break;
+		case MESHCOP_TLV_NETWORK_KEY:
+			if (vlen != 16u) {
+				return false;
+			}
+			required |= HAVE_NETWORK_KEY;
+			break;
+		case MESHCOP_TLV_MESH_LOCAL_PREFIX:
+			if (vlen != 8u) {
+				return false;
+			}
+			required |= HAVE_MESH_LOCAL_PREFIX;
+			break;
+		case MESHCOP_TLV_SECURITY_POLICY:
+			if (vlen != 3u && vlen != 4u) {
+				return false;
+			}
+			required |= HAVE_SECURITY_POLICY;
+			break;
+		case MESHCOP_TLV_CHANNEL_MASK:
+			if (!dataset_channel_mask_valid(&ds[i + 2u], vlen)) {
+				return false;
+			}
+			required |= HAVE_CHANNEL_MASK;
+			break;
+		default:
+			break;
 		}
 		i += 2u + vlen;
 	}
-	return false;
+	return i == len && required == HAVE_ALL;
 }
 
 /**
@@ -1579,58 +2193,65 @@ static uint8_t network_command(struct matter_device_info *info, const struct mat
 {
 	const uint8_t *v = NULL;
 	size_t v_len = 0u;
+	uint8_t xpanid[MATTER_THREAD_XPANID_LEN];
 
-	if (!info->failsafe_armed) {
+	if (!info->attempt.active) {
 		return MATTER_IM_STATUS_FAILSAFE_REQUIRED;
 	}
 
 	switch (inv->command) {
 	case MATTER_CMD_NC_ADD_OR_UPDATE_THREAD_NETWORK:
 		*response_command = MATTER_CMD_NC_NETWORK_CONFIG_RESPONSE;
-		if (!field_bytes(inv, TAG_ADDTHREAD_DATASET, &v, &v_len) || v_len == 0u ||
-		    v_len > MATTER_THREAD_DATASET_MAX) {
+		if (!field_bytes(inv, TAG_ADDTHREAD_DATASET, &v, &v_len) ||
+		    !dataset_validate(v, v_len, xpanid)) {
 			info->last_network_status = MATTER_NC_STATUS_OUT_OF_RANGE;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
-		memcpy(info->thread_dataset, v, v_len);
-		info->thread_dataset_len = v_len;
-		info->have_thread_xpanid =
-			dataset_xpanid(info->thread_dataset, v_len, info->thread_xpanid);
-		/*
-		 * A SECOND administrator sends the dataset of the network this
-		 * node is already on, and restarting the stack for that is not
-		 * free: it detaches, spends tens of seconds re-attaching, and
-		 * takes the BLE commissioning link down with it while the
-		 * commissioner sits waiting for a ConnectNetwork reply that
-		 * cannot come. Measured 2026-08-07 -- "Thread still detached
-		 * after 20000 ms" on this side, a BTP ack timeout on the other,
-		 * and the fabric added but the commissioning never completed.
-		 *
-		 * The first administrator never meets this: a node being
-		 * commissioned for the first time is not attached, so the
-		 * restart is the thing that puts it on the network.
-		 */
-		if (info->have_thread_xpanid && matter_thread_attached_to(info->thread_xpanid)) {
-			info->thread_started = true;
-			info->last_network_status = MATTER_NC_STATUS_SUCCESS;
-			return MATTER_IM_STATUS_SUCCESS;
+		/* A second administrator may adopt the existing network, never
+		 * silently move a working lock away from its current controllers.
+		 * The Extended PAN ID is the network identity. Once it matches,
+		 * retain the already-committed credentials instead of accepting a
+		 * controller's differing timestamp, policy, or key material. */
+		if (info->committed_slots != 0u) {
+			if (!info->have_thread_xpanid ||
+			    memcmp(xpanid, info->thread_xpanid, MATTER_THREAD_XPANID_LEN) != 0) {
+				info->last_network_status = MATTER_NC_STATUS_BOUNDS_EXCEEDED;
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			memcpy(info->attempt.thread_dataset, info->thread_dataset,
+			       info->thread_dataset_len);
+			info->attempt.thread_dataset_len = info->thread_dataset_len;
+			memcpy(info->attempt.thread_xpanid, info->thread_xpanid,
+			       MATTER_THREAD_XPANID_LEN);
+		} else {
+			memcpy(info->attempt.thread_dataset, v, v_len);
+			info->attempt.thread_dataset_len = v_len;
+			memcpy(info->attempt.thread_xpanid, xpanid, sizeof(xpanid));
 		}
-		/*
-		 * Start attaching HERE rather than at ConnectNetwork. The
-		 * commissioner sends ArmFailSafe in between and a Thread attach
-		 * costs seconds, so the round trip is free progress. Storing the
-		 * dataset succeeds either way: the commissioner asked this node
-		 * to remember a network, and it has.
-		 */
-		info->thread_started = matter_thread_start(v, v_len) == MATTER_OK;
+		info->attempt.have_thread_candidate = true;
 		info->last_network_status = MATTER_NC_STATUS_SUCCESS;
 		return MATTER_IM_STATUS_SUCCESS;
 
 	case MATTER_CMD_NC_CONNECT_NETWORK:
 		*response_command = MATTER_CMD_NC_CONNECT_NETWORK_RESPONSE;
+		if (!field_bytes(inv, TAG_CONNECT_NETWORK_ID, &v, &v_len) ||
+		    v_len != MATTER_THREAD_XPANID_LEN || !info->attempt.have_thread_candidate ||
+		    memcmp(v, info->attempt.thread_xpanid, MATTER_THREAD_XPANID_LEN) != 0) {
+			info->last_network_status = MATTER_NC_STATUS_NETWORK_ID_NOT_FOUND;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		if (matter_thread_attached_to(info->attempt.thread_xpanid)) {
+			info->thread_started = true;
+		} else {
+			/* start() may install the dataset before a later stack step
+			 * fails. Mark it applied before the call so fail-safe rollback
+			 * restores the committed network on every failure path. */
+			info->attempt.thread_applied = true;
+			info->thread_started =
+				matter_thread_start(info->attempt.thread_dataset,
+						    info->attempt.thread_dataset_len) == MATTER_OK;
+		}
 		if (!info->thread_started) {
-			/* Nothing is attaching, so nothing will finish. Said now
-			 * rather than after a pointless wait. */
 			info->last_network_status = MATTER_NC_STATUS_OTHER_CONNECTION_FAILUR;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
@@ -1657,12 +2278,24 @@ static uint8_t network_command(struct matter_device_info *info, const struct mat
 
 	case MATTER_CMD_NC_REMOVE_NETWORK:
 		*response_command = MATTER_CMD_NC_NETWORK_CONFIG_RESPONSE;
-		if (!info->have_thread_xpanid) {
+		if (!field_bytes(inv, TAG_CONNECT_NETWORK_ID, &v, &v_len) ||
+		    v_len != MATTER_THREAD_XPANID_LEN || !info->attempt.have_thread_candidate ||
+		    memcmp(v, info->attempt.thread_xpanid, MATTER_THREAD_XPANID_LEN) != 0) {
 			info->last_network_status = MATTER_NC_STATUS_NETWORK_ID_NOT_FOUND;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
-		info->thread_dataset_len = 0u;
-		info->have_thread_xpanid = false;
+		/* Removing an established network is a migration operation, not
+		 * part of adding an administrator. Keep it out of this path. */
+		if (info->committed_slots != 0u) {
+			info->last_network_status = MATTER_NC_STATUS_BOUNDS_EXCEEDED;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		if (info->attempt.thread_applied) {
+			(void)matter_thread_clear();
+		}
+		info->attempt.have_thread_candidate = false;
+		info->attempt.thread_applied = false;
+		info->attempt.thread_dataset_len = 0u;
 		info->last_network_status = MATTER_NC_STATUS_SUCCESS;
 		return MATTER_IM_STATUS_SUCCESS;
 
@@ -1715,7 +2348,8 @@ static uint8_t add_trusted_root(struct matter_device_info *info, const struct ma
 	}
 
 	{
-		struct matter_fabric *f = fabric_pending(info);
+		size_t slot = MATTER_SUPPORTED_FABRICS;
+		struct matter_fabric *f = fabric_pending(info, &slot);
 
 		/* Every slot already holds a complete fabric. Refused here
 		 * rather than at AddNOC, so the commissioner learns before it
@@ -1725,6 +2359,7 @@ static uint8_t add_trusted_root(struct matter_device_info *info, const struct ma
 		}
 		memcpy(f->root_public_key, ci.public_key, sizeof(ci.public_key));
 		f->have_root = true;
+		info->attempt.owned_slots |= MATTER_FABRIC_SLOT_BIT(slot);
 	}
 	return MATTER_IM_STATUS_SUCCESS;
 }
@@ -1746,14 +2381,17 @@ static uint8_t add_noc(struct matter_device_info *info, const struct matter_im_i
 	size_t ipk_len = 0u;
 	struct matter_cert_info ci;
 	struct matter_fabric *fab;
-	uint64_t v = 0u;
+	size_t slot = MATTER_SUPPORTED_FABRICS;
+	uint8_t new_index;
+	uint64_t admin_subject = 0u;
+	uint64_t admin_vendor = 0u;
 
 	if (!info->have_op_key) {
 		/* No CSR, so there is no private key behind whatever public key
 		 * this NOC certifies. */
 		return MATTER_NOC_STATUS_MISSING_CSR;
 	}
-	fab = fabric_pending(info);
+	fab = fabric_pending(info, &slot);
 	if (fab == NULL) {
 		/* Every slot holds a complete fabric already. This is what a
 		 * second administrator sees on a node built for one, and it is
@@ -1766,7 +2404,10 @@ static uint8_t add_noc(struct matter_device_info *info, const struct matter_im_i
 	}
 
 	if (!field_bytes(inv, TAG_ADDNOC_NOC, &noc, &noc_len) || noc_len > MATTER_NOC_MAX ||
-	    !field_bytes(inv, TAG_ADDNOC_IPK, &ipk, &ipk_len) || ipk_len != MATTER_IPK_LEN) {
+	    !field_bytes(inv, TAG_ADDNOC_IPK, &ipk, &ipk_len) || ipk_len != MATTER_IPK_LEN ||
+	    !field_u64(inv, TAG_ADDNOC_CASE_ADMIN_SUBJECT, &admin_subject) || admin_subject == 0u ||
+	    !field_u64(inv, TAG_ADDNOC_ADMIN_VENDOR_ID, &admin_vendor) ||
+	    admin_vendor > UINT16_MAX) {
 		return MATTER_NOC_STATUS_INVALID_NOC;
 	}
 	if (matter_cert_parse(noc, noc_len, &ci) != MATTER_OK || !ci.have_node_id ||
@@ -1788,13 +2429,23 @@ static uint8_t add_noc(struct matter_device_info *info, const struct matter_im_i
 	if (icac_len > MATTER_CERT_MAX) {
 		return MATTER_NOC_STATUS_INVALID_NOC;
 	}
+	new_index = fabric_next_index(info);
+	if (new_index == 0u) {
+		return MATTER_NOC_STATUS_TABLE_FULL;
+	}
+	/* The constrained target has one ICAC buffer. Refuse a second owner
+	 * before mutating either fabric so no certificate is silently replaced. */
+	if (icac_len != 0u && info->icac.owner_index != 0u &&
+	    info->icac.owner_index != new_index) {
+		return MATTER_NOC_STATUS_TABLE_FULL;
+	}
 
 	memcpy(fab->noc, noc, noc_len);
 	fab->noc_len = noc_len;
 	if (icac_len != 0u) {
 		memcpy(info->icac.buf, icac, icac_len);
 		info->icac.len = icac_len;
-		info->icac.owner_index = fabric_next_index(info);
+		info->icac.owner_index = new_index;
 	}
 	fab->icac_len = icac_len;
 	memcpy(fab->ipk, ipk, ipk_len);
@@ -1808,13 +2459,9 @@ static uint8_t add_noc(struct matter_device_info *info, const struct matter_im_i
 	memcpy(fab->op_priv, info->op_priv, sizeof(fab->op_priv));
 	fab->node_id = ci.node_id;
 	fab->fabric_id = ci.fabric_id;
-	if (field_u64(inv, TAG_ADDNOC_CASE_ADMIN_SUBJECT, &v)) {
-		fab->case_admin_subject = v;
-	}
-	if (field_u64(inv, TAG_ADDNOC_ADMIN_VENDOR_ID, &v) && v <= UINT16_MAX) {
-		fab->admin_vendor_id = (uint16_t)v;
-	}
-	fab->index = fabric_next_index(info);
+	fab->case_admin_subject = admin_subject;
+	fab->admin_vendor_id = (uint16_t)admin_vendor;
+	fab->index = new_index;
 	/*
 	 * Findable on the new fabric, immediately. A second administrator adds
 	 * its fabric over an EXISTING CASE session and then has to open a new
@@ -1823,7 +2470,7 @@ static uint8_t add_noc(struct matter_device_info *info, const struct matter_im_i
 	 * ConnectNetwork covers the first fabric only; that is where the second
 	 * administrator stopped, with the fabric accepted and nothing to reach.
 	 */
-	advertise_operational(info);
+	advertise_one(fab);
 	/* Held for the response, which is serialised after this has run. */
 	info->last_noc_index = fab->index;
 	return MATTER_NOC_STATUS_OK;
@@ -1936,7 +2583,7 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 		 * to be able to undo. Doing either outside one would leave a
 		 * half-installed identity with nothing scheduled to remove it.
 		 */
-		if (!info->failsafe_armed) {
+		if (!info->attempt.active) {
 			return MATTER_IM_STATUS_FAILSAFE_REQUIRED;
 		}
 		/* No response command: the reply is a bare SUCCESS status. */
@@ -1944,7 +2591,7 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 		return add_trusted_root(info, inv);
 
 	case MATTER_CMD_OC_ADD_NOC:
-		if (!info->failsafe_armed) {
+		if (!info->attempt.active) {
 			return MATTER_IM_STATUS_FAILSAFE_REQUIRED;
 		}
 		info->last_noc_status = add_noc(info, inv);
@@ -1955,6 +2602,12 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 
 	case MATTER_CMD_OC_REMOVE_FABRIC: {
 		size_t i;
+		size_t accessing_slot;
+
+		/* Reset the response latch before any validation. A rejected request
+		 * must never leave a prior successful removal visible to its caller. */
+		info->last_noc_status = MATTER_NOC_STATUS_INVALID_FABRIC_INDEX;
+		info->last_noc_index = 0u;
 
 		/*
 		 * NOT gated on the fail-safe, unlike the additions above: a
@@ -1964,20 +2617,24 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 		 * table whose orphaned owners can never be removed leaves a
 		 * factory wipe as the only way to commission again.
 		 *
-		 * Removal does NOT touch the credential trust store. An anchor is
-		 * named by credential index and the fabric that installed it is
-		 * not recorded (see ultrawidelock_reader_provision_add_trust), so
-		 * revoking "this fabric's" anchors here would be a guess --
-		 * and the anchor a walk-up depends on may outlive the
-		 * commissioning fabric that posted it on purpose.
+		 * Portable removal does not guess which credential anchor belongs to
+		 * this fabric. Anchors are named by credential index and do not record
+		 * their installing fabric. The owning port may still clear the whole
+		 * Home Key trust store when this is the last fabric, as the DWM app
+		 * does inside its durable-store hook.
 		 */
 		if (!field_u64(inv, TAG_REMOVE_FABRIC_INDEX, &v)) {
 			return MATTER_IM_STATUS_INVALID_COMMAND;
 		}
+		accessing_slot = fabric_slot_for_index(info, info->accessing_fabric_index);
+		if (!fabric_slot_has_privilege(info, accessing_slot,
+					 MATTER_AC_PRIVILEGE_ADMINISTER, MATTER_ENDPOINT_ROOT,
+					 MATTER_CLUSTER_OPERATIONAL_CREDENTIALS)) {
+			return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+		}
 		/* An index this table cannot hold and an index it merely does
 		 * not hold answer the same way: through the NOCResponse, which
 		 * is where a commissioner looks for the verdict. */
-		info->last_noc_status = MATTER_NOC_STATUS_INVALID_FABRIC_INDEX;
 		for (i = 0u;
 		     v >= 1u && v <= MATTER_SUPPORTED_FABRICS && i < MATTER_SUPPORTED_FABRICS;
 		     i++) {
@@ -1986,36 +2643,75 @@ static uint8_t opcred_command(struct matter_device_info *info, const struct matt
 			if (f->index != (uint8_t)v) {
 				continue;
 			}
-			/* The ICAC area is shared and owned by index; freeing
-			 * the owner frees the area, or the next fabric to send
-			 * an intermediate inherits 400 B of someone else's
-			 * certificate. */
-			if (info->icac.owner_index == f->index) {
-				info->icac.len = 0u;
-				info->icac.owner_index = 0u;
+			/* A successful response must survive reset. Write the targeted
+			 * tombstone before dropping keys or withdrawing discovery. */
+			if (fabric_store(info, MATTER_FABRIC_STORE_REMOVE, i, NULL, 0u) !=
+			    MATTER_OK) {
+				*response_command = MATTER_IM_NO_RESPONSE;
+				return MATTER_IM_STATUS_FAILURE;
 			}
-			/*
-			 * Withdraw the SRP record BEFORE the slot is wiped --
-			 * the instance name derives from the root key and
-			 * fabric id about to be erased. Left registered, the
-			 * border router keeps resolving this fabric to a live
-			 * address whose node answers Sigma1 with "destination
-			 * matches NO fabric" until the lease expires.
-			 */
-			{
-				char iname[MATTER_INSTANCE_NAME_LEN];
-
-				if (matter_fabric_instance_name(f, iname, sizeof(iname)) ==
-				    MATTER_OK) {
-					(void)matter_thread_unadvertise(iname);
-				}
-			}
-			memset(f, 0, sizeof(*f));
+			fabric_slot_clear(info, i);
 			info->last_noc_status = MATTER_NOC_STATUS_OK;
 			info->last_noc_index = (uint8_t)v;
 			break;
 		}
 		*response_command = MATTER_CMD_OC_NOC_RESPONSE;
+		return MATTER_IM_STATUS_SUCCESS;
+	}
+
+	case MATTER_CMD_OC_UPDATE_FABRIC_LABEL: {
+		const char *label = NULL;
+		size_t label_len = 0u;
+		size_t slot = fabric_slot_for_request(info, info->accessing_fabric_index);
+		struct matter_fabric *f;
+		char prev[sizeof(info->fabrics[0].label)];
+		uint8_t prev_len;
+
+		/* Fabric-scoped: the label belongs to the session's own fabric,
+		 * and the answer is a NOCResponse exactly as for AddNOC. */
+		*response_command = MATTER_CMD_OC_NOC_RESPONSE;
+		info->last_noc_status = MATTER_NOC_STATUS_INVALID_FABRIC_INDEX;
+		info->last_noc_index = 0u;
+
+		if (!field_utf8(inv, TAG_UPDATE_LABEL, &label, &label_len)) {
+			return MATTER_IM_STATUS_INVALID_COMMAND;
+		}
+		if (label_len > sizeof(f->label)) {
+			return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+		}
+		if (slot >= MATTER_SUPPORTED_FABRICS) {
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		/* A non-empty label taken by ANOTHER fabric is refused in the
+		 * response body; every fabric starts empty and empty never
+		 * conflicts, or the second commissioner could not exist. */
+		if (label_len != 0u) {
+			for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+				if (i != slot && info->fabrics[i].index != 0u &&
+				    info->fabrics[i].label_len == label_len &&
+				    memcmp(info->fabrics[i].label, label, label_len) == 0) {
+					info->last_noc_status = MATTER_NOC_STATUS_LABEL_CONFLICT;
+					return MATTER_IM_STATUS_SUCCESS;
+				}
+			}
+		}
+		f = &info->fabrics[slot];
+		prev_len = f->label_len;
+		memcpy(prev, f->label, sizeof(prev));
+		memcpy(f->label, label, label_len);
+		f->label_len = (uint8_t)label_len;
+		/* The store reads the slot's record from RAM, so the mutation
+		 * comes first -- and is unwound if durability is refused, per
+		 * the hooks contract: no committed RAM change on failure. */
+		if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u &&
+		    fabric_store(info, MATTER_FABRIC_STORE_UPDATE, slot, NULL, 0u) != MATTER_OK) {
+			memcpy(f->label, prev, sizeof(prev));
+			f->label_len = prev_len;
+			*response_command = MATTER_IM_NO_RESPONSE;
+			return MATTER_IM_STATUS_FAILURE;
+		}
+		info->last_noc_status = MATTER_NOC_STATUS_OK;
+		info->last_noc_index = info->accessing_fabric_index;
 		return MATTER_IM_STATUS_SUCCESS;
 	}
 
@@ -2299,6 +2995,27 @@ static uint8_t clear_user(struct matter_device_info *info, const struct matter_i
 							     : MATTER_IM_STATUS_FAILURE;
 }
 
+/**
+ * True when @p index names a fabric this node has COMMITTED (not merely staged
+ * inside a live fail-safe). Used to decide whether a repeated
+ * CommissioningComplete is a retransmission of one that already succeeded.
+ */
+static bool fabric_index_committed(const struct matter_device_info *info, uint8_t index)
+{
+	size_t i;
+
+	if (index == 0u) {
+		return false;
+	}
+	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u &&
+		    info->fabrics[i].index == index) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *response_command)
 {
 	struct matter_device_info *info = (struct matter_device_info *)ctx;
@@ -2317,11 +3034,24 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 	 * on an endpoint that claims to exist and not exist at once.
 	 */
 	if (inv->endpoint == MATTER_ENDPOINT_LOCK) {
+		size_t accessing_slot =
+			fabric_slot_for_index(info, info->accessing_fabric_index);
+
 		if (inv->cluster != MATTER_CLUSTER_DOOR_LOCK) {
 			return MATTER_IM_STATUS_UNSUPPORTED_CLUSTER;
 		}
+		/* PASE, a removed fabric, and a provisional identity cannot operate
+		 * the lock or mutate its credential database. */
+		if (accessing_slot >= MATTER_SUPPORTED_FABRICS || info->accessing_node_id == 0u) {
+			return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+		}
 		if (inv->command == MATTER_CMD_DL_LOCK_DOOR ||
 		    inv->command == MATTER_CMD_DL_UNLOCK_DOOR) {
+			if (!fabric_slot_has_privilege(info, accessing_slot,
+						 MATTER_AC_PRIVILEGE_OPERATE, MATTER_ENDPOINT_LOCK,
+						 MATTER_CLUSTER_DOOR_LOCK)) {
+				return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+			}
 			/*
 			 * The tile's two buttons. Answered with a bare status,
 			 * which is what DoorLock defines for both -- there is no
@@ -2352,6 +3082,11 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 					: MATTER_DL_LOCK_OP_LOCK,
 				MATTER_DL_OP_SOURCE_REMOTE, info->accessing_fabric_index, 0u);
 			return MATTER_IM_STATUS_SUCCESS;
+		}
+		if (!fabric_slot_has_privilege(info, accessing_slot,
+					 MATTER_AC_PRIVILEGE_ADMINISTER, MATTER_ENDPOINT_LOCK,
+					 MATTER_CLUSTER_DOOR_LOCK)) {
+			return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
 		}
 		if (inv->command == MATTER_CMD_DL_SET_ALIRO_READER_CONFIG) {
 			return set_ultrawidelock_reader_config(info, inv);
@@ -2436,6 +3171,14 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		return MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT;
 	}
 	if (inv->cluster == MATTER_CLUSTER_ADMIN_COMMISSIONING) {
+		size_t accessing_slot =
+			fabric_slot_for_index(info, info->accessing_fabric_index);
+
+		if (!fabric_slot_has_privilege(info, accessing_slot,
+					 MATTER_AC_PRIVILEGE_ADMINISTER, MATTER_ENDPOINT_ROOT,
+					 MATTER_CLUSTER_ADMIN_COMMISSIONING)) {
+			return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+		}
 		return admin_command(inv, response_command);
 	}
 	if (inv->cluster == MATTER_CLUSTER_OPERATIONAL_CREDENTIALS) {
@@ -2455,18 +3198,46 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		 * sets it here and reads it back if it has to resume, so losing
 		 * it makes a retry restart from nothing.
 		 */
-		if (field_u64(inv, 1u, &v)) {
-			info->breadcrumb = v;
-		}
-		if (!info->failsafe_armed) {
-			info->failsafe_fabric_mask = 0u;
-			for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-				if (info->fabrics[i].index != 0u) {
-					info->failsafe_fabric_mask |= (uint8_t)(1u << i);
+		{
+			uint64_t expiry = 0u;
+			bool new_attempt = !info->attempt.active;
+
+			if (!field_u64(inv, 0u, &expiry) || expiry > info->failsafe_max_s) {
+				info->last_commissioning_error =
+					MATTER_COMMISSIONING_VALUE_OUTSIDE_RANGE;
+				*response_command = MATTER_CMD_GC_ARM_FAIL_SAFE_RESPONSE;
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			if (field_u64(inv, 1u, &v)) {
+				info->breadcrumb = v;
+			}
+			if (expiry == 0u) {
+				matter_clusters_failsafe_expire(info);
+				info->last_commissioning_error = MATTER_COMMISSIONING_OK;
+				*response_command = MATTER_CMD_GC_ARM_FAIL_SAFE_RESPONSE;
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			if (!info->attempt.active) {
+				memset(&info->attempt, 0, sizeof(info->attempt));
+				info->attempt.active = true;
+				/* A new transaction: whatever completed before
+				 * is no longer what a repeat would be asking
+				 * about. */
+				info->last_completed_fabric_index = 0u;
+			}
+			if (info->commissioning_hooks != NULL &&
+			    info->commissioning_hooks->failsafe_arm != NULL &&
+			    info->commissioning_hooks->failsafe_arm(
+				    info->commissioning_hooks->ctx, (uint16_t)expiry) != MATTER_OK) {
+				if (new_attempt) {
+					memset(&info->attempt, 0, sizeof(info->attempt));
 				}
+				info->last_commissioning_error =
+					MATTER_COMMISSIONING_BUSY_WITH_OTHER;
+				*response_command = MATTER_CMD_GC_ARM_FAIL_SAFE_RESPONSE;
+				return MATTER_IM_STATUS_SUCCESS;
 			}
 		}
-		info->failsafe_armed = true;
 		info->last_commissioning_error = MATTER_COMMISSIONING_OK;
 		*response_command = MATTER_CMD_GC_ARM_FAIL_SAFE_RESPONSE;
 		return MATTER_IM_STATUS_SUCCESS;
@@ -2493,6 +3264,9 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		return MATTER_IM_STATUS_SUCCESS;
 
 	case MATTER_CMD_GC_COMMISSIONING_COMPLETE:
+	{
+		size_t slot;
+
 		*response_command = MATTER_CMD_GC_COMMISSIONING_COMPLETE_RESPONSE;
 		/*
 		 * Refused over anything but CASE, and NO_FAIL_SAFE rather than
@@ -2502,8 +3276,54 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		 * commissioner fail cleanly instead of believing it owns a node
 		 * it cannot reach.
 		 */
-		if (!info->case_established) {
+		if (!info->attempt.active || info->accessing_fabric_index == 0u ||
+		    info->accessing_node_id == 0u) {
+			/*
+			 * A retransmission of the command that just succeeded,
+			 * not a new one. MRP cannot absorb it: the commissioner
+			 * re-sends under a fresh message counter once its retry
+			 * timer expires, so the replay window lets it through
+			 * and it lands here with the fail-safe already disarmed.
+			 * Answering OK repeats the answer that was lost; the
+			 * command is idempotent and its whole effect is done.
+			 */
+			if (info->accessing_fabric_index != 0u &&
+			    info->accessing_fabric_index == info->last_completed_fabric_index &&
+			    fabric_index_committed(info, info->accessing_fabric_index)) {
+				info->last_commissioning_error = MATTER_COMMISSIONING_OK;
+				return MATTER_IM_STATUS_SUCCESS;
+			}
 			info->last_commissioning_error = MATTER_COMMISSIONING_NO_FAIL_SAFE;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		for (slot = 0u; slot < MATTER_SUPPORTED_FABRICS; slot++) {
+			const struct matter_fabric *f = &info->fabrics[slot];
+
+			if ((info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u &&
+			    f->index == info->accessing_fabric_index &&
+			    /*
+			     * The == 0u escape STAYS. A fabric whose admin
+			     * subject was never recorded has nobody to compare
+			     * against, and refusing there would fail
+			     * CommissioningComplete for a commissioner that
+			     * simply did not send one. Only the second half
+			     * gains CAT matching.
+			     */
+			    (f->case_admin_subject == 0u ||
+			     acl_subject_matches(f->case_admin_subject, info->accessing_node_id,
+						 info->accessing_cats,
+						 info->accessing_n_cats))) {
+				break;
+			}
+		}
+		if (slot >= MATTER_SUPPORTED_FABRICS ||
+		    (info->committed_slots == 0u && !info->attempt.have_thread_candidate)) {
+			info->last_commissioning_error = MATTER_COMMISSIONING_INVALID_AUTH;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		if (fabric_store(info, MATTER_FABRIC_STORE_COMMIT_ATTEMPT, slot, NULL, 0u) !=
+		    MATTER_OK) {
+			info->last_commissioning_error = MATTER_COMMISSIONING_BUSY_WITH_OTHER;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
 		/*
@@ -2512,11 +3332,24 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		 * every key and the whole operational identity are provisional
 		 * and matter_clusters_failsafe_expire() will erase them.
 		 */
-		info->commissioning_complete = true;
-		info->failsafe_armed = false;
-		info->failsafe_fabric_mask = 0u;
+		if (info->attempt.have_thread_candidate) {
+			memcpy(info->thread_dataset, info->attempt.thread_dataset,
+			       info->attempt.thread_dataset_len);
+			info->thread_dataset_len = info->attempt.thread_dataset_len;
+			memcpy(info->thread_xpanid, info->attempt.thread_xpanid,
+			       MATTER_THREAD_XPANID_LEN);
+			info->have_thread_xpanid = true;
+		}
+		info->committed_slots |= info->attempt.owned_slots;
+		memset(&info->attempt, 0, sizeof(info->attempt));
+		if (info->commissioning_hooks != NULL &&
+		    info->commissioning_hooks->failsafe_cancel != NULL) {
+			info->commissioning_hooks->failsafe_cancel(info->commissioning_hooks->ctx);
+		}
+		info->last_completed_fabric_index = info->accessing_fabric_index;
 		info->last_commissioning_error = MATTER_COMMISSIONING_OK;
 		return MATTER_IM_STATUS_SUCCESS;
+	}
 
 	default:
 		return MATTER_IM_STATUS_UNSUPPORTED_COMMAND;
@@ -2701,7 +3534,9 @@ int matter_clusters_resume(struct matter_device_info *info)
  */
 void matter_clusters_failsafe_expire(struct matter_device_info *info)
 {
-	if (info == NULL || !info->failsafe_armed) {
+	size_t slot;
+
+	if (info == NULL || !info->attempt.active) {
 		return;
 	}
 
@@ -2711,14 +3546,22 @@ void matter_clusters_failsafe_expire(struct matter_device_info *info)
 	 * survive a later administrator abandoning its own AddNOC. Wipe each new
 	 * slot in full because it holds the private key its NOC certifies.
 	 */
-	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-		if ((info->failsafe_fabric_mask & (uint8_t)(1u << i)) == 0u) {
-			uint8_t removed_index = info->fabrics[i].index;
-
-			memset(&info->fabrics[i], 0, sizeof(info->fabrics[i]));
-			if (removed_index != 0u && info->icac.owner_index == removed_index) {
-				memset(&info->icac, 0, sizeof(info->icac));
+	for (slot = 0u; slot < MATTER_SUPPORTED_FABRICS; slot++) {
+		if ((info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u) {
+			fabric_slot_clear(info, slot);
+		}
+	}
+	if (info->attempt.thread_applied) {
+		if (info->committed_slots != 0u && info->thread_dataset_len != 0u) {
+			info->thread_started =
+				matter_thread_start(info->thread_dataset, info->thread_dataset_len) ==
+				MATTER_OK;
+			if (info->thread_started) {
+				advertise_operational(info);
 			}
+		} else {
+			(void)matter_thread_clear();
+			info->thread_started = false;
 		}
 	}
 	memset(info->op_priv, 0, sizeof(info->op_priv));
@@ -2726,9 +3569,7 @@ void matter_clusters_failsafe_expire(struct matter_device_info *info)
 	info->have_op_key = false;
 	info->last_noc_status = MATTER_NOC_STATUS_OK;
 
-	/* Not the dataset or the attachment -- see matter_clusters.h. */
-	info->failsafe_armed = false;
-	info->failsafe_fabric_mask = 0u;
+	memset(&info->attempt, 0, sizeof(info->attempt));
 	info->breadcrumb = 0u;
 	info->last_commissioning_error = MATTER_COMMISSIONING_OK;
 }
@@ -2741,18 +3582,27 @@ void matter_clusters_failsafe_expire(struct matter_device_info *info)
  * a home app that finished commissioning and then cannot record that it owns
  * the node -- which is what "Adding to home" is waiting on.
  *
- * The value is stored as the TLV that arrived. Nothing decodes it and nothing
- * consults it; see the note on matter_device_info.acl.
+ * The value is stored byte-for-byte so it can be reported back. The bounded
+ * access checker above decodes only the fields needed for CASE authorization.
  */
 static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const uint8_t *data,
 			  size_t data_len)
 {
 	struct matter_device_info *info = (struct matter_device_info *)ctx;
+	size_t slot;
 
 	if (info == NULL) {
 		return MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT;
 	}
 	if (path->endpoint == MATTER_ENDPOINT_LOCK) {
+		size_t accessing_slot =
+			fabric_slot_for_index(info, info->accessing_fabric_index);
+
+		if (!fabric_slot_has_privilege(info, accessing_slot,
+					 MATTER_AC_PRIVILEGE_ADMINISTER, path->endpoint,
+					 path->cluster)) {
+			return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+		}
 		if (path->cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			struct matter_tlv_reader r;
 			uint64_t v = 0u;
@@ -2774,6 +3624,60 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 			info->approach_direction = (uint8_t)v;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
+#if MATTER_FEATURE_CLIENT
+		if (path->cluster == MATTER_CLUSTER_BINDING) {
+			int rc;
+
+			if (data == NULL || data_len == 0u) {
+				return MATTER_IM_STATUS_INVALID_COMMAND;
+			}
+			/*
+			 * The PIN before the list, and only for a node that has
+			 * a vendor id: MATTER_ATTR_BINDING_PIN(0) is 0x0000,
+			 * which is the standard list attribute, and answering a
+			 * list write by storing its bytes as a PIN is the kind
+			 * of mistake nothing downstream can detect.
+			 */
+			if (info->vendor_id != 0u &&
+			    path->attribute == MATTER_ATTR_BINDING_PIN(info->vendor_id)) {
+				struct matter_tlv_reader r;
+				const uint8_t *pin = NULL;
+				size_t pin_len = 0u;
+
+				matter_tlv_reader_init(&r, data, data_len);
+				if (matter_tlv_next(&r) != MATTER_OK ||
+				    matter_tlv_get_bytes(&r, &pin, &pin_len) != MATTER_OK) {
+					return MATTER_IM_STATUS_INVALID_COMMAND;
+				}
+				if (matter_binding_write_pin(&info->binding, pin, pin_len) !=
+				    MATTER_OK) {
+					return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+				}
+				return MATTER_IM_STATUS_SUCCESS;
+			}
+			if (path->attribute != MATTER_ATTR_BINDING_LIST) {
+				return MATTER_IM_STATUS_UNSUPPORTED_WRITE;
+			}
+			/*
+			 * The fabric index comes from the SESSION, which the
+			 * port put here before dispatching. Zero means no
+			 * session chose one, and a fabric-scoped write with no
+			 * fabric behind it has no list to replace.
+			 */
+			if (info->accessing_fabric_index == 0u) {
+				return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+			}
+			rc = matter_binding_write(&info->binding, info->accessing_fabric_index,
+						  data, data_len);
+			if (rc == MATTER_E_NOSPACE) {
+				return MATTER_IM_STATUS_RESOURCE_EXHAUSTED;
+			}
+			if (rc != MATTER_OK) {
+				return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+			}
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+#endif
 		if (path->cluster != MATTER_CLUSTER_DOOR_LOCK) {
 			return has_cluster(ctx, path->endpoint, path->cluster)
 				       ? MATTER_IM_STATUS_UNSUPPORTED_WRITE
@@ -2818,17 +3722,25 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 	if (data == NULL || data_len == 0u) {
 		return MATTER_IM_STATUS_INVALID_COMMAND;
 	}
+	slot = fabric_slot_for_request(info, info->accessing_fabric_index);
+	if (!fabric_slot_has_privilege(info, slot, MATTER_AC_PRIVILEGE_ADMINISTER,
+				       path->endpoint, path->cluster)) {
+		return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+	}
 	/*
 	 * Refused rather than truncated. A half-stored ACL would be read back as
 	 * a shorter list than the commissioner wrote, and it would look like the
 	 * node had silently dropped entries it was asked to grant.
 	 */
-	if (data_len > sizeof(info->acl)) {
+	if (data_len > sizeof(info->fabric_acls[slot].data)) {
 		return MATTER_IM_STATUS_RESOURCE_EXHAUSTED;
 	}
-
-	memcpy(info->acl, data, data_len);
-	info->acl_len = data_len;
+	if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u &&
+	    fabric_store(info, MATTER_FABRIC_STORE_ACL, slot, data, data_len) != MATTER_OK) {
+		return MATTER_IM_STATUS_FAILURE;
+	}
+	memcpy(info->fabric_acls[slot].data, data, data_len);
+	info->fabric_acls[slot].len = data_len;
 	return MATTER_IM_STATUS_SUCCESS;
 }
 

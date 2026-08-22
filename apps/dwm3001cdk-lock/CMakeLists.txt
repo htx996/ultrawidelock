@@ -42,7 +42,7 @@ endif()
 
 # APPROTECT must never be locked on this board. SystemInit() re-asserts the lock
 # on every boot and the only way out is `nrfjprog --recover`, which mass-erases
-# flash AND UICR -- taking settings_storage at 0x7e000 with it, and with that the
+# flash AND UICR -- taking settings_storage at 0x7c000 with it, and with that the
 # reader private key and every iPhone key already provisioned against this board.
 #
 # This is the configure-time half of the guard: it fails the build of THIS image
@@ -142,6 +142,13 @@ target_sources_ifdef(CONFIG_ULTRAWIDELOCK_BLE_CENTRAL app PRIVATE ${ULTRAWIDELOC
 # The commissioning policy half; its transport, Thread/fabric ports and fabric
 # table store live in ports/zephyr/{matter,store} under the same gate.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_MATTER_BLE app PRIVATE src/matter_commission.c)
+# The client role: what turns the four protocol files in ultrawidelock_matter
+# into a lock that unlocks another lock. Both symbols, not just the client one,
+# for the same reason door_alarm.c needs both above: the routing hooks it
+# depends on live in matter_commission.c.
+if(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT AND CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	target_sources(app PRIVATE src/matter_client.c)
+endif()
 
 # CONFIG_MBEDTLS_MEMORY_DEBUG=y is a NO-OP in this build and sets no define.
 # nrf_security only wires that symbol through configs/legacy_crypto_config.h.template

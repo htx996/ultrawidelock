@@ -43,6 +43,15 @@ extern "C" {
 int matter_thread_start(const uint8_t *dataset, size_t len);
 
 /**
+ * Detach and discard the active Thread dataset.
+ *
+ * Used only to roll back a first commissioning attempt which applied its
+ * candidate network and then expired. A multi-admin attempt never calls this:
+ * its candidate must match the already committed network.
+ */
+int matter_thread_clear(void);
+
+/**
  * Whether this node is ALREADY attached to the network @p xpanid names.
  *
  * Exists for one caller: AddOrUpdateThreadNetwork, which a second administrator
@@ -219,6 +228,36 @@ void matter_thread_peer_current(struct matter_thread_peer *out);
  *         never captured.
  */
 int matter_thread_send_to(const struct matter_thread_peer *peer, const uint8_t *msg, size_t len);
+
+/**
+ * The answer to a resolve, or the news that there was not one.
+ *
+ * @param peer where the node is, or NULL when it could not be found. A NULL is
+ *        an ANSWER and not a malfunction: a bound lock that is unplugged, on
+ *        another network, or whose SRP registration has lapsed is exactly this,
+ *        and the client backs off rather than retrying into it.
+ */
+typedef void (*matter_thread_resolve_fn)(void *ctx, const struct matter_thread_peer *peer);
+
+/**
+ * Find a node on this Thread network by its operational instance name.
+ *
+ * Matter nodes register themselves with the network's SRP server, which makes
+ * them resolvable as `<instance>._matter._tcp`. The instance name is derived,
+ * not discovered -- matter_fabric_instance_name() builds it out of the
+ * compressed fabric id and the node id -- so a client that knows who it wants
+ * to talk to can ask for exactly that and nothing else. There is no browsing
+ * here and no need for any.
+ *
+ * ASYNCHRONOUS, and that is the point: this returns as soon as the query is
+ * away, and @p cb runs later on OpenThread's own thread. The caller is the
+ * unlock path, which has already opened the local lock and may not wait for a
+ * network round trip.
+ *
+ * @return MATTER_OK when the query went out, MATTER_E_STATE when the stack is
+ *         not up or a query is already outstanding, or MATTER_E_INVAL.
+ */
+int matter_thread_resolve(const char *instance_name, matter_thread_resolve_fn cb, void *ctx);
 
 /**
  * Release every SRP registration this node holds.

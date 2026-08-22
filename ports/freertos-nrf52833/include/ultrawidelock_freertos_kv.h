@@ -5,8 +5,8 @@
  *
  * Two consumers need one on this part: the reader's provisioning blob and
  * OpenThread's settings. Both want small named values that survive a reset and
- * a firmware update, which is what this provides, on the same two flash pages
- * the Zephyr oracle reserves for its settings partition.
+ * a firmware update, which is what this provides, in the same four physical
+ * flash pages the Zephyr oracle reserves for its settings partition.
  *
  * Values are addressed by a 16-bit key. Keys are namespaced by their consumer
  * rather than by a string path, because a path costs flash on every write and
@@ -40,9 +40,8 @@
  * writes. Numbered explicitly rather than hashed: a hash could alias two
  * records, and the set is small and fixed.
  *
- * ULTRAWIDELOCK_KV_KEY_MATTER_FAB_OK is written LAST and erased FIRST by the
- * store, which is what makes a half-written identity detectable rather than
- * merely unlikely.
+ * These keys describe only the retired v0.3 schema. They remain mapped so the
+ * mf2 clean-break loader can reclaim them; it never treats them as identity.
  */
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_VER 0x2010u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_OK 0x2011u
@@ -50,7 +49,7 @@
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_XP 0x2013u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_ICLEN 0x2014u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_ICAC 0x2015u
-/* One per fabric slot; MATTER_SUPPORTED_FABRICS is 3, the window holds 16. */
+/* Legacy fabric slots. The clean-break mf2 records have their own window. */
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0 0x2020u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT_LIMIT 0x2030u
 /* One per persisted subscription ("msub/N"); one per CASE session, the window
@@ -63,6 +62,14 @@
  */
 #define ULTRAWIDELOCK_KV_KEY_MATTER_DL_AUTO_RELOCK 0x2060u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_DL_APPROACH 0x2061u
+/* Clean-break, per-record Matter identity schema ("mf2"). */
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_META 0x2070u
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_NET 0x2071u
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ICAC 0x2072u
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 0x2080u
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB_LIMIT 0x2085u
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 0x2090u
+#define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL_LIMIT 0x2095u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_LIMIT 0x2100u
 
 /*

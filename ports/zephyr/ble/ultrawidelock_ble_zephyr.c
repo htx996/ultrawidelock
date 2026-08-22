@@ -38,7 +38,14 @@
 #include "matter_commission.h" /* the commissionable payload, when unprovisioned */
 #endif
 
-LOG_MODULE_REGISTER(ultrawidelock_ble, CONFIG_LOG_DEFAULT_LEVEL);
+/*
+ * Under the credential module's level, not the global default. This is the
+ * credential transport: ultrawidelock_reader.c and ultrawidelock_ranging.c beside it already
+ * log under ULTRAWIDELOCK_CRED, and so does the NimBLE build of this same
+ * transport (ultrawidelock_ble_nimble.c). This copy was the odd one out, which
+ * meant it could only be turned down by turning the whole board down.
+ */
+LOG_MODULE_REGISTER(ultrawidelock_ble, CONFIG_ULTRAWIDELOCK_CRED_LOG_LEVEL);
 
 /* Same value the ESP32-S3 backend publishes (ports/esp32/components/ultrawidelock_ble/
  * ultrawidelock_ble.c:42). The dynamic-PSM range is 0x0080..0x00FF and the peer learns

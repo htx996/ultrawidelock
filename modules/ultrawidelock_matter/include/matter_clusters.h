@@ -401,6 +401,65 @@ struct matter_user {
 #define MATTER_FEATURE_DL_ALARMS 0
 #endif
 
+/*
+ * The Matter CLIENT role, off unless the build asks for it.
+ *
+ * Same shape and the same reason as MATTER_FEATURE_DL_ALARMS above: a portable
+ * macro, defined by this module's CMakeLists when
+ * CONFIG_ULTRAWIDELOCK_MATTER_CLIENT is set, so the host suite and the firmware
+ * agree about it without either one seeing a Kconfig. Off, every source file
+ * here preprocesses to what it was before the client existed -- which is what
+ * keeps the default image byte-identical -- and the four client sources are
+ * not compiled at all.
+ *
+ * It reaches two files that have no client-only source of their own to hide in:
+ * the Binding cluster's surface here (the target list has to be reachable from
+ * a controller and has to live in struct matter_device_info), and the two
+ * initiator-side entry points in matter_exchange.h.
+ *
+ * The cluster is on the LOCK endpoint rather than the root, because a binding
+ * belongs to the endpoint that will act as the client, and the endpoint that
+ * unlocks another lock is the one carrying this one's Door Lock.
+ */
+#ifndef MATTER_FEATURE_CLIENT
+#define MATTER_FEATURE_CLIENT 0
+#endif
+
+/**
+ * Multi-administrator commissioning: more than one ecosystem on this lock.
+ *
+ * Off, the node is the single-administrator Matter server it has always been.
+ * Apple Home commissions it, controls it, and nothing else can be added. On, it
+ * holds five fabrics, keeps access control per fabric, and can hand a second
+ * ecosystem an administrator identity of its own.
+ *
+ * Defaulted here rather than in the build system for the reason
+ * MATTER_FEATURE_CLIENT is: this header declares struct matter_device_info, and
+ * a header that means one thing to the module and another to its caller is a
+ * struct layout mismatch that links cleanly and fails at run time.
+ */
+#ifndef MATTER_FEATURE_MULTI_ADMIN
+#define MATTER_FEATURE_MULTI_ADMIN 0
+#endif
+
+/*
+ * A binding is written by an administrator over an attribute write, and Apple
+ * Home does not write bindings. So the client role is only reachable on a node
+ * that can hold a SECOND administrator to do the writing -- the dependency is
+ * not stylistic, and a client build without it would compile, run, and never be
+ * configurable by anybody.
+ */
+#if MATTER_FEATURE_CLIENT && !MATTER_FEATURE_MULTI_ADMIN
+#error "MATTER_FEATURE_CLIENT requires MATTER_FEATURE_MULTI_ADMIN: no second administrator can write a binding"
+#endif
+
+#if MATTER_FEATURE_CLIENT
+#include "matter_binding.h"
+
+/** Binding cluster spec, 9.6.4: revision 1, and it has had no other. */
+#define MATTER_BINDING_CLUSTER_REV 1u
+#endif
+
 #if MATTER_FEATURE_DL_ALARMS
 /*
  * The DoorLockAlarm event (door-lock-cluster.xml:709-713).
@@ -617,6 +676,7 @@ struct matter_lock_event {
 #define MATTER_COMMISSIONING_VALUE_OUTSIDE_RANGE 1u
 #define MATTER_COMMISSIONING_INVALID_AUTH        2u
 #define MATTER_COMMISSIONING_NO_FAIL_SAFE        3u
+#define MATTER_COMMISSIONING_BUSY_WITH_OTHER     4u
 
 /* NetworkCommissioning attributes (MTRClusterConstants.h:1165-1169). */
 #define MATTER_ATTR_NC_MAX_NETWORKS           0x0000u
@@ -639,6 +699,7 @@ struct matter_lock_event {
 /* NetworkCommissioningStatusEnum, the values this node returns. */
 #define MATTER_NC_STATUS_SUCCESS                 0x00u
 #define MATTER_NC_STATUS_OUT_OF_RANGE            0x01u
+#define MATTER_NC_STATUS_BOUNDS_EXCEEDED          0x02u
 #define MATTER_NC_STATUS_NETWORK_ID_NOT_FOUND    0x03u
 #define MATTER_NC_STATUS_OTHER_CONNECTION_FAILUR 0x09u
 
@@ -670,6 +731,7 @@ struct matter_lock_event {
 #define MATTER_CMD_OC_CSR_RESPONSE                 0x0005u
 #define MATTER_CMD_OC_ADD_NOC                      0x0006u
 #define MATTER_CMD_OC_NOC_RESPONSE                 0x0008u
+#define MATTER_CMD_OC_UPDATE_FABRIC_LABEL          0x0009u
 #define MATTER_CMD_OC_REMOVE_FABRIC                0x000Au
 #define MATTER_CMD_OC_ADD_TRUSTED_ROOT_CERTIFICATE 0x000Bu
 
@@ -689,18 +751,87 @@ struct matter_lock_event {
  * operational key, and a node that advertises one answers the second AddNOC
  * with TABLE_FULL and is never adopted.
  *
- * Three, because two means Apple Home fills the table and NO other ecosystem
- * can ever be added. Measured on hardware: a controller got through ten
- * commissioning stages -- attestation, DAC chain, CSR, NOC generation -- and
- * was refused at AddTrustedRootCertificate with RESOURCE_EXHAUSTED, which is
- * the correct answer to a full table and a useless one to be stuck at.
+ * Five is the Matter floor and leaves two spare administrators after the two
+ * Apple Home identities and one Home Assistant identity observed on hardware.
+ * Failed attempts do not consume one of these slots: they are attempt-owned
+ * until CommissioningComplete durably promotes them.
  *
- * The spec's floor is five. Each entry is 488 B of RAM (sizeof(struct
- * matter_fabric), measured, not estimated) and this part has 128 KB in total,
- * so the number is a budget decision rather than a protocol one. Raising it
- * again costs 488 B of RAM and 488 B of the 8 KB settings partition.
+ * Three without MATTER_FEATURE_MULTI_ADMIN, which is what a single Apple Home
+ * needs (two identities) plus one spare, and which is what this node shipped
+ * with before multi-administrator support existed. The count is the ONLY thing
+ * the flag changes here: every array below is sized from it, so both builds are
+ * the same code over a different number of slots rather than two code paths.
+ * Each slot costs sizeof(struct matter_fabric) plus one struct
+ * matter_fabric_acl, so the difference is real RAM rather than a policy knob.
  */
+#if MATTER_FEATURE_MULTI_ADMIN
+#define MATTER_SUPPORTED_FABRICS 5u
+#else
 #define MATTER_SUPPORTED_FABRICS 3u
+#endif
+
+/** One byte is enough for the five physical fabric-slot ownership bits. */
+#define MATTER_FABRIC_SLOT_BIT(slot) ((uint8_t)(1u << (slot)))
+
+/** Durable mutations the portable cluster asks the owning port to commit. */
+enum matter_fabric_store_operation {
+	MATTER_FABRIC_STORE_COMMIT_ATTEMPT = 1,
+	MATTER_FABRIC_STORE_REMOVE = 2,
+	MATTER_FABRIC_STORE_ACL = 3,
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * The binding table, which is node-wide rather than per-slot: one
+	 * table holds every fabric's entries and is scoped inside itself.
+	 * The slot argument is unused.
+	 */
+	MATTER_FABRIC_STORE_BINDING = 4,
+#endif
+	/*
+	 * Re-store one COMMITTED slot's fabric record after a field of it
+	 * changed in place -- UpdateFabricLabel. Only the fabric record: the
+	 * network, ICAC, and ACL records are untouched by such a change, and
+	 * rewriting them would spend flash on bytes that did not move.
+	 */
+	MATTER_FABRIC_STORE_UPDATE = 5,
+};
+
+struct matter_device_info;
+
+/**
+ * Port-owned operations that cannot live in the OS-neutral cluster module.
+ *
+ * The store callback is a durability boundary. It returns only after the
+ * requested mutation is on stable storage. The cluster emits no success
+ * response and changes no committed RAM state when it fails.
+ */
+struct matter_commissioning_hooks {
+	int (*failsafe_arm)(void *ctx, uint16_t expiry_s);
+	void (*failsafe_cancel)(void *ctx);
+	int (*fabric_store)(void *ctx, const struct matter_device_info *info,
+			    enum matter_fabric_store_operation operation, uint8_t slot,
+			    const uint8_t *value, size_t value_len);
+	void *ctx;
+};
+
+/** State owned by one ArmFailSafe lifetime. Never persisted. */
+struct matter_commissioning_attempt {
+	bool active;
+	/** Physical fabrics[] slots created by this attempt. */
+	uint8_t owned_slots;
+	/** A validated candidate dataset was supplied during this attempt. */
+	bool have_thread_candidate;
+	/** The candidate was applied to OpenThread and must be undone on abort. */
+	bool thread_applied;
+	uint8_t thread_dataset[MATTER_THREAD_DATASET_MAX];
+	size_t thread_dataset_len;
+	uint8_t thread_xpanid[MATTER_THREAD_XPANID_LEN];
+};
+
+/** Access-control data belongs to one fabric, never to the node globally. */
+struct matter_fabric_acl {
+	uint8_t data[MATTER_ACL_MAX];
+	size_t len;
+};
 
 /*
  * NodeOperationalCertStatusEnum, the verdicts this node actually returns
@@ -714,6 +845,7 @@ struct matter_lock_event {
 #define MATTER_NOC_STATUS_INVALID_NOC          3u
 #define MATTER_NOC_STATUS_MISSING_CSR          4u
 #define MATTER_NOC_STATUS_TABLE_FULL           5u
+#define MATTER_NOC_STATUS_LABEL_CONFLICT       10u
 #define MATTER_NOC_STATUS_INVALID_FABRIC_INDEX 11u
 
 /** Every Matter node's root endpoint is 0. */
@@ -767,8 +899,8 @@ struct matter_device_info {
 	 * attribute and improvises without it -- observed on hardware as an
 	 * unrequested LockDoor a few seconds after every UnlockDoor. The node
 	 * itself enforces nothing here yet: the value is reported and writable
-	 * so the controller owns the policy. NOT persisted yet; a reboot
-	 * returns it to 0.
+	 * so the controller owns the policy. The application persists it after
+	 * a successful write response.
 	 */
 	uint32_t auto_relock_time_s;
 	/**
@@ -777,7 +909,7 @@ struct matter_device_info {
 	 * The port initialises it to MATTER_APPROACH_DIRECTION_ALL, the same
 	 * default the CHIP builds declare in their metadata; zero is a value a
 	 * controller could legally write, so it cannot double as "never set".
-	 * NOT persisted yet; a reboot returns it to the default.
+	 * The application persists it after a successful write response.
 	 */
 	uint8_t approach_direction;
 	/**
@@ -903,30 +1035,39 @@ struct matter_device_info {
 	 * yet, so false would promise a reappearance that never comes.
 	 */
 	bool supports_concurrent_connection;
-	/**
-	 * True once ArmFailSafe has been accepted and not yet expired.
-	 *
-	 * The application currently enforces rollback at the next commissioning
-	 * session boundary, not from an ExpiryLengthSeconds timer. The rollback is
-	 * real: fabric slots created after this flag was armed and their pending
-	 * operational key are wiped. A wall-clock expiry remains a port-level gap.
-	 */
-	bool failsafe_armed;
-	/**
-	 * Fabric slots that existed when the current fail-safe was armed.
-	 *
-	 * A later administrator commissions against an already working node. If
-	 * that attempt dies after AddNOC, only its newly added slots are
-	 * provisional; erasing the pre-existing slots would revoke every working
-	 * administrator because a newcomer disappeared mid-flow.
-	 */
-	uint8_t failsafe_fabric_mask;
+	/** The one in-flight fail-safe transaction. */
+	struct matter_commissioning_attempt attempt;
+	/** Port timer and durable-store implementation. */
+	const struct matter_commissioning_hooks *commissioning_hooks;
 	/**
 	 * The CommissioningErrorEnum the last GeneralCommissioning command
 	 * produced, held between running it and serialising its response --
 	 * matter_im_command_fields_fn is pure and cannot recompute it.
 	 */
 	uint8_t last_commissioning_error;
+	/**
+	 * The CASE Authenticated Tags of whoever is asking, from the NOC it
+	 * proved in Sigma3. Empty over PASE, which has no operational identity.
+	 *
+	 * An ACL subject in the CAT range names a GROUP, so a controller is only
+	 * matched against these -- never against its node id, which no CAT
+	 * subject can ever equal.
+	 */
+	uint32_t accessing_cats[MATTER_MAX_CATS];
+	uint8_t accessing_n_cats;
+	/**
+	 * The fabric index whose CommissioningComplete last succeeded, or 0.
+	 *
+	 * Exists so a RETRANSMITTED CommissioningComplete can be answered the
+	 * same way as the one it repeats. The command disarms the fail-safe as
+	 * its substance, so the second copy arrives to a node that no longer has
+	 * one and would otherwise be told NO_FAIL_SAFE -- a controller reads
+	 * that as the commissioning having failed and abandons the fabric it
+	 * just finished building. Cleared when a new fail-safe is armed, which
+	 * is the point a fresh transaction begins and the old answer stops being
+	 * the truth.
+	 */
+	uint8_t last_completed_fabric_index;
 
 	/*
 	 * ---- attestation --------------------------------------------------
@@ -968,8 +1109,12 @@ struct matter_device_info {
 	 * ---- operational identity ------------------------------------------
 	 */
 
-	/** The one fabric this node can hold. Empty until AddNOC succeeds. */
+	/** Fabric identities, including at most one provisional attempt-owned slot. */
 	struct matter_fabric fabrics[MATTER_SUPPORTED_FABRICS];
+	/** Physical slots whose identities are durable and authoritative. */
+	uint8_t committed_slots;
+	/** Fabric-scoped ACL data, indexed by the same physical slot. */
+	struct matter_fabric_acl fabric_acls[MATTER_SUPPORTED_FABRICS];
 	/**
 	 * The node's single intermediate-certificate slot, shared by every
 	 * fabric because at most one has ever needed it. See the note on
@@ -981,11 +1126,10 @@ struct matter_device_info {
 	 * ---- the operational network ---------------------------------------
 	 *
 	 * The commissioner hands over a Thread operational dataset -- network
-	 * key, channel, PAN ids, the lot -- and expects the node to go and join
-	 * with it. This node stores it and cannot yet join, so ConnectNetwork
-	 * is answered with a real failure rather than a success it would not
-	 * back up. Storing it is still the point: the dataset is the thing
-	 * OpenThread needs, and there is no other way to obtain it.
+	 * key, channel, PAN ids, the lot -- and expects the node to join with
+	 * it. A candidate is staged until ConnectNetwork succeeds, then becomes
+	 * the durable dataset restored after reboot. Later administrators may
+	 * name the same Extended PAN ID but cannot replace these credentials.
 	 */
 	uint8_t thread_dataset[MATTER_THREAD_DATASET_MAX];
 	size_t thread_dataset_len;
@@ -996,39 +1140,9 @@ struct matter_device_info {
 	bool thread_started;
 	/** NetworkCommissioningStatusEnum from the last network command. */
 	uint8_t last_network_status;
-	/**
-	 * True once a commissioner has finished, which is what makes everything
-	 * above permanent. Until then the fail-safe owns it all.
-	 */
-	bool commissioning_complete;
-	/**
-	 * True once a CASE session is running, which is the one precondition
-	 * CommissioningComplete has.
-	 *
-	 * The spec will not accept that command over anything else
-	 * (general-commissioning-cluster.cpp:548-556 answers
-	 * kInvalidAuthentication), and the reason is not ceremony: the command
-	 * asserts the commissioner can reach this node operationally, and only
-	 * a CASE session is evidence of that. The port sets it; this module has
-	 * no way to see a session.
-	 */
-	bool case_established;
+	/** Operational node id of the CASE peer serving the current request. */
+	uint64_t accessing_node_id;
 
-	/*
-	 * ---- access control -----------------------------------------------
-	 *
-	 * The commissioner's last act is writing itself an ACL entry granting
-	 * Administer over CASE. Stored as the TLV that arrived, because the
-	 * only thing this node does with it is hand it back on a read.
-	 *
-	 * RECORDED, NOT ENFORCED. Nothing consults this before serving a
-	 * request; every peer that completes CASE is already trusted with
-	 * everything. Storing it is what makes the commissioner's write
-	 * truthful, and enforcing it is a separate piece of work that this
-	 * comment exists so nobody assumes is done.
-	 */
-	uint8_t acl[MATTER_ACL_MAX];
-	size_t acl_len;
 	/**
 	 * The NodeOperationalCertStatusEnum the last AddNOC produced, held for
 	 * the same reason as last_commissioning_error: the reply is serialised
@@ -1043,6 +1157,19 @@ struct matter_device_info {
 	 * is no longer the same thing as "the only one".
 	 */
 	uint8_t last_noc_index;
+
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * ---- binding --------------------------------------------------------
+	 *
+	 * Who this node, as a CLIENT, sends commands to. Everything above
+	 * describes what this node SERVES; this is the one thing it originates,
+	 * and matter_client.c walks the table on every granted unlock. See
+	 * matter_binding.h for the fabric scoping, which is the part that is
+	 * invisible when it is wrong.
+	 */
+	struct matter_binding_table binding;
+#endif
 };
 
 /**
@@ -1148,15 +1275,8 @@ size_t matter_clusters_event_count(const struct matter_device_info *info);
  * went wrong. The caller decides when: this port rolls the transaction back at
  * the beginning of the next commissioning session.
  *
- * Fabric slots that existed when ArmFailSafe ran survive. Only slots added by
- * the unfinished transaction are wiped. Once CommissioningComplete disarms the
- * fail-safe, this function does nothing.
- *
- * The THREAD attachment is deliberately kept. Strictly the fail-safe owns the
- * network config too, but the commissioner re-sends the identical dataset on
- * the next attempt, and staying attached turns the following attach from two
- * seconds into none. Nothing secret is retained that the next commissioner
- * would not immediately re-supply.
+ * Only slots and network changes owned by the current attempt are undone.
+ * Earlier committed fabrics and their Thread network are restored unchanged.
  */
 void matter_clusters_failsafe_expire(struct matter_device_info *info);
 

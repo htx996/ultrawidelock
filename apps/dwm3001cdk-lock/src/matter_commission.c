@@ -45,10 +45,15 @@
 #include <ultrawidelock/reader.h>
 #include "ultrawidelock_prim.h" /* ultrawidelock_random, the CSPRNG the reader already uses */
 #include "ultrawidelock_port.h" /* ultrawidelock_uptime_ms, an event's SystemTimestamp */
+#include <ultrawidelock_osal.h>
 #include "matter_ble_zephyr.h"
 #include "matter_attest.h"
 #include "matter_case.h"
 #include "matter_clusters.h"
+/* AFTER matter_clusters.h, which is where MATTER_FEATURE_CLIENT is defaulted. */
+#if MATTER_FEATURE_CLIENT
+#include "matter_client.h"
+#endif
 #include "matter_commission.h"
 #include "matter_exchange.h"
 #include "matter_fab_settings.h" /* the fabric table, across a reboot */
@@ -125,6 +130,28 @@ static void fabric_snapshot_refresh_owned(void)
 	atomic_set(&s_has_fabric_snapshot, present ? 1 : 0);
 }
 static struct matter_im_server s_im;
+
+/*
+ * A refused command is invisible in this log: the "invoke:" line prints for
+ * every request, the refusal travels as an IM status the encoder writes and
+ * nothing here reads. That hid ADMINISTER denials for a whole bench evening --
+ * a controller whose SetAliroReaderConfig and GetUser are refused just stops
+ * enrolling, and the log looks exactly like the controller losing interest.
+ */
+static matter_im_command_fn s_cluster_command;
+
+static uint8_t command_status_logged(void *ctx, const struct matter_im_invoke *inv,
+				     uint32_t *response_command)
+{
+	uint8_t st = s_cluster_command(ctx, inv, response_command);
+
+	if (st != MATTER_IM_STATUS_SUCCESS) {
+		LOG_WRN("  -> refused, status 0x%02x (node %08x%08x)", st,
+			(unsigned int)(s_info.accessing_node_id >> 32),
+			(unsigned int)s_info.accessing_node_id);
+	}
+	return st;
+}
 
 /**
  * Framed reply: both headers, the largest message, and the AEAD tag.
@@ -419,7 +446,7 @@ static void srp_sign_self_test(void)
 	 *
 	 * A persistent key is a completely different set of moving parts: the
 	 * material goes through TRUSTED_STORAGE, is sealed with
-	 * ChaCha20-Poly1305, and lands in NVS in the 8 KB settings partition.
+	 * ChaCha20-Poly1305, and lands in NVS in the 16 KB settings partition.
 	 * None of that is touched by a volatile key, so a volatile-only test
 	 * passes while the real path fails -- which is worse than no test,
 	 * because it reads like an all-clear.
@@ -776,20 +803,8 @@ static int begin_session(void)
 	 * object retired until OpenThread returns it through the callback, and a
 	 * replacement name uses another free slot or waits in the desired table.
 	 */
-	if (s_info.failsafe_armed) {
-		LOG_INF("new commissioner; rolling back provisional fabrics");
-		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-			if (s_info.fabrics[i].index != 0u &&
-			    (s_info.failsafe_fabric_mask & (uint8_t)(1u << i)) == 0u) {
-				char instance[MATTER_INSTANCE_NAME_LEN];
-
-				if (matter_fabric_instance_name(&s_info.fabrics[i], instance,
-								sizeof(instance)) == MATTER_OK) {
-					(void)matter_thread_unadvertise(instance);
-				}
-			}
-		}
-		matter_clusters_failsafe_expire(&s_info);
+	if (s_info.attempt.active) {
+		LOG_INF("new commissioner; rolling back the abandoned attempt");
 	}
 	fabric_snapshot_refresh_owned();
 
@@ -867,6 +882,14 @@ static bool s_case_ready[MATTER_CASE_SESSIONS];
  * fabric tells a controller it is not on the fabric it just joined.
  */
 static uint8_t s_case_fabric[MATTER_CASE_SESSIONS];
+/**
+ * The CASE Authenticated Tags each peer proved in its Sigma3.
+ *
+ * Kept per slot rather than on the exchange: the exchange carries what framing
+ * needs, and this is only ever read when a command is judged against the ACL.
+ */
+static uint32_t s_case_cats[MATTER_CASE_SESSIONS][MATTER_MAX_CATS];
+static uint8_t s_case_n_cats[MATTER_CASE_SESSIONS];
 /**
  * The slot serving the datagram in flight. Valid only while s_thread_reply is
  * set, which is the whole time a reply can be built.
@@ -1146,79 +1169,151 @@ static void send_framed(uint8_t opcode, const uint8_t *payload, size_t len)
  * anywhere, and a commissioner left waiting for an answer that went out a
  * different door.
  */
-/*
- * Persisting the fabric table, off the OpenThread work queue.
- *
- * s_info is not passed through the work item: there is one of it, it outlives
- * every handshake, and the only writer by the time this runs is the
- * commissioning that has already finished.
- */
 /* Defined with the subscription table it walks; see notify_lock_state(). */
 static void notify_lock_state_changed(void);
 /* Re-arms the periodic report; defined with the table it walks. */
 static void subscription_heartbeat_arm(void);
 
-/*
- * Storing the operational identity, with the failure NOT swallowed.
- *
- * matter_fab_store() checks every settings_save_one() and logs each one, but
- * its return was discarded here -- so a failed NVS write left s_info saying
- * commissioning_complete while flash held nothing. Apple Home believed it was
- * paired, this node believed it was paired, and the divergence surfaced one
- * reboot later as an accessory that had silently vanished.
- *
- * Retried rather than merely reported, because the likely cause is transient: a
- * garbage-collection pass on a two-sector 8 KB partition this shares with
- * OpenThread's own keys. Bounded at three, because a partition that is actually
- * full does not improve by being asked again, and a retry loop on a work queue
- * is a worse outcome than a lost pairing.
- */
-#define FAB_STORE_ATTEMPTS   3u
-#define FAB_STORE_BACKOFF_MS 2000
+/* Storage runs on the system work queue, not OpenThread's small callback
+ * stack. The caller waits for durability before the cluster emits success. */
+#define FAB_STORE_ATTEMPTS 3u
+#define FAB_STORE_TIMEOUT_MS 10000
 
-static void fab_store_work_fn(struct k_work *w);
-static K_WORK_DELAYABLE_DEFINE(s_fab_store_work, fab_store_work_fn);
+struct fab_store_request {
+	enum matter_fabric_store_operation operation;
+	uint8_t slot;
+	uint8_t value[MATTER_ACL_MAX];
+	size_t value_len;
+	int result;
+	bool busy;
+	bool clear_reader;
+};
 
-/**
- * Work function to persist the operational Matter fabric identity to settings storage. Retry
- * FAB_STORE_ATTEMPTS times with FAB_STORE_BACKOFF_MS delay between retries. If successful, reset
- * the attempt counter. If all retries fail, log an error that the fabric was not stored and the
- * node will come back commissionable on the next boot, then reset the attempt counter.
- */
+static struct fab_store_request s_fab_request;
+static ultrawidelock_sem_t s_fab_done;
+
 static void fab_store_work_fn(struct k_work *w)
 {
-	static uint8_t attempts;
-	int rc;
-
 	ARG_UNUSED(w);
-	ultrawidelock_mutex_lock(&s_owner_lock);
-
-	rc = matter_fab_store(&s_info);
-	if (rc == 0) {
-		attempts = 0u;
-		goto out;
+	/* Deliberately does not take s_owner_lock. Every caller of
+	 * commissioning_fabric_store() is an Interaction Model command or
+	 * attribute write, which run under that lock, and the caller then
+	 * blocks on s_fab_done until this returns. Taking the lock here would
+	 * wait on the one thread that is waiting on us: a self-deadlock that
+	 * expired as FAB_STORE_TIMEOUT_MS and failed CommissioningComplete.
+	 * The submitter's lock IS this worker's mutual exclusion -- the baton
+	 * is handed over for the duration, not shared. */
+	s_fab_request.result = -EIO;
+	for (uint8_t attempt = 0u; attempt < FAB_STORE_ATTEMPTS; attempt++) {
+		if (s_fab_request.clear_reader) {
+			s_fab_request.result = ultrawidelock_reader_provision_clear();
+		} else {
+			s_fab_request.result = 0;
+		}
+		if (s_fab_request.result == 0) {
+			s_fab_request.result = matter_fab_commit(
+				&s_info, s_fab_request.operation, s_fab_request.slot,
+				s_fab_request.value_len != 0u ? s_fab_request.value : NULL,
+				s_fab_request.value_len);
+		}
+		if (s_fab_request.result == 0) {
+			break;
+		}
 	}
+	ultrawidelock_sem_give(&s_fab_done);
+}
+static K_WORK_DEFINE(s_fab_store_work, fab_store_work_fn);
 
-	attempts++;
-	if (attempts >= FAB_STORE_ATTEMPTS) {
-		/*
-		 * ERR, and it says what the user will see rather than only what
-		 * failed: the next boot comes up commissionable and Apple Home
-		 * shows this accessory as unresponsive.
-		 */
-		LOG_ERR("operational identity NOT stored after %u attempts (%d) -- this node will "
-			"come back commissionable and need re-pairing",
-			attempts, rc);
-		attempts = 0u;
-		goto out;
+static int commissioning_fabric_store(void *ctx, const struct matter_device_info *info,
+			      enum matter_fabric_store_operation operation, uint8_t slot,
+			      const uint8_t *value, size_t value_len)
+{
+	ARG_UNUSED(ctx);
+	if (s_fab_request.busy || value_len > sizeof(s_fab_request.value)) {
+		return MATTER_E_STATE;
 	}
-	LOG_WRN("storing the operational identity failed (%d); attempt %u of %u in %d ms", rc,
-		attempts, FAB_STORE_ATTEMPTS, FAB_STORE_BACKOFF_MS);
-	(void)k_work_reschedule(&s_fab_store_work, K_MSEC(FAB_STORE_BACKOFF_MS));
-out:
-	ultrawidelock_mutex_unlock(&s_owner_lock);
+	s_fab_request.busy = true;
+	s_fab_request.operation = operation;
+	s_fab_request.slot = slot;
+	s_fab_request.value_len = value_len;
+	s_fab_request.clear_reader =
+		operation == MATTER_FABRIC_STORE_REMOVE &&
+		info->committed_slots == MATTER_FABRIC_SLOT_BIT(slot);
+	if (value_len != 0u) {
+		memcpy(s_fab_request.value, value, value_len);
+	}
+	ultrawidelock_sem_reset(&s_fab_done);
+	if (k_work_submit(&s_fab_store_work) < 0) {
+		LOG_ERR("Matter identity durability work was not queued");
+		s_fab_request.busy = false;
+		return MATTER_E_STATE;
+	}
+	if (ultrawidelock_sem_take(&s_fab_done, FAB_STORE_TIMEOUT_MS) != 0) {
+		LOG_ERR("Matter identity durability boundary timed out");
+		/* Fail closed. The worker may still own the static request after a
+		 * wait timeout, so reusing it could commit a mixed operation. A reboot
+		 * is the safe recovery if the system work queue is stuck this long. */
+		return MATTER_E_STATE;
+	}
+	s_fab_request.busy = false;
+	if (s_fab_request.result != 0) {
+		LOG_ERR("Matter identity mutation not persisted (%d)", s_fab_request.result);
+		return MATTER_E_STATE;
+	}
+	if (operation == MATTER_FABRIC_STORE_ACL) {
+		/* The record a reboot must bring back; its absence at the next
+		 * boot is a store/restore bug, not a controller that never
+		 * granted anything. */
+	/*
+ * SUBSCRIPTION AND STORAGE NARRATION SITS AT DBG for the same reason the
+ * per-datagram lines above do: it reports bookkeeping rather than a decision,
+ * and this image has under two kilobytes of slot left. What stays at INF is
+ * anything a capture is read FOR -- writes, invokes, AddNOC, the whole CASE
+ * handshake, refusals and unsecured drops. Raise matter_ble to DBG to get the
+ * rest back; nothing here was deleted.
+ */
+	LOG_DBG("  ACL persisted for slot %u (%u B)", slot, (unsigned int)value_len);
+	}
+	return MATTER_OK;
 }
 
+static void failsafe_work_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	/* matter_clusters_failsafe_expire() wipes fabric slots and the
+	 * operational key, the same state every IM handler mutates under the
+	 * owner lock. This runs on the system work queue rather than a
+	 * transport thread, so it has to take that lock instead of racing
+	 * them. Blocking is safe here: the only direction taken is owner ->
+	 * OpenThread, which is the order the expiry path itself follows when
+	 * it restarts Thread. */
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	matter_clusters_failsafe_expire(&s_info);
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+static K_WORK_DELAYABLE_DEFINE(s_failsafe_work, failsafe_work_fn);
+
+static int commissioning_failsafe_arm(void *ctx, uint16_t expiry_s)
+{
+	ARG_UNUSED(ctx);
+	return k_work_reschedule(&s_failsafe_work, K_SECONDS(expiry_s)) < 0 ? MATTER_E_STATE
+									 : MATTER_OK;
+}
+
+static void commissioning_failsafe_cancel(void *ctx)
+{
+	ARG_UNUSED(ctx);
+	(void)k_work_cancel_delayable(&s_failsafe_work);
+}
+
+static const struct matter_commissioning_hooks k_commissioning_hooks = {
+	.failsafe_arm = commissioning_failsafe_arm,
+	.failsafe_cancel = commissioning_failsafe_cancel,
+	.fabric_store = commissioning_fabric_store,
+};
+
+/* Defined with the CASE and subscription tables it invalidates. */
+static void case_drop_fabric(uint8_t fabric_index);
 
 static int send_standalone_ack(struct matter_exchange *x)
 {
@@ -1238,6 +1333,41 @@ static int send_standalone_ack(struct matter_exchange *x)
 		owner->retryable = x->mrp && x->ack_pending;
 	}
 	rc = matter_exchange_standalone_ack(x, slot->data, slot->capacity, &framed);
+	if (rc != MATTER_OK) {
+		tx_abort_build(slot);
+		return rc;
+	}
+	return tx_publish(slot, framed);
+}
+
+/*
+ * The acknowledgement that ends an exchange THIS node opened -- a subscription
+ * report's StatusResponse. send_standalone_ack() would stamp the peer's
+ * current exchange id onto it with I clear, which the peer's exchange matcher
+ * (id AND opposite initiator flag) drops as unsolicited, so the peer would
+ * retransmit that StatusResponse for the whole MRP schedule. It did: every
+ * LockState report after 16:10:40 drew a DUP storm on hardware.
+ */
+static int send_initiator_ack(struct matter_exchange *x, uint16_t exchange_id)
+{
+	struct matter_tx_slot *slot = tx_acquire();
+	size_t framed = 0u;
+	int rc;
+
+	if (slot == NULL) {
+		return MATTER_E_NOSPACE;
+	}
+	if (slot->transport == TX_TRANSPORT_THREAD) {
+		struct tx_thread_owner *owner = &s_tx_thread_owner[tx_slot_index(slot)];
+
+		owner->session_id = x->secure ? x->local_session_id : 0u;
+		owner->exchange_id = exchange_id;
+		owner->request_counter = x->ack_counter;
+		/* A retransmit is answered by framing a FRESH ack (the DUP path
+		 * below), not by replaying this one. */
+		owner->retryable = false;
+	}
+	rc = matter_exchange_ack_initiator(x, exchange_id, slot->data, slot->capacity, &framed);
 	if (rc != MATTER_OK) {
 		tx_abort_build(slot);
 		return rc;
@@ -1304,7 +1434,19 @@ static void send_read_chunk(struct matter_im_read_state *s)
 		LOG_WRN("%u wildcard path(s) not expanded; Read report is incomplete",
 			stats.unexpanded_wildcard);
 	}
-	LOG_INF("  Read chunk %u B, %u report(s), %u total, %s",
+/*
+ * PER-DATAGRAM NARRATION SITS AT DBG, not INF, and that is a size decision
+ * taken deliberately. These four fire on every secure message, every read path
+ * and every report chunk; at INF they cost 5.6 KB of format strings in an image
+ * with under a kilobyte to spare once the certificate converter landed.
+ *
+ * They are DEMOTED rather than deleted: `matter_ble` at DBG brings all of them
+ * back, so the traffic view still exists for whoever needs it. What stays at
+ * INF is everything that reports a DECISION -- writes, refusals, unsecured
+ * drops, window changes -- because those are what a walk-up capture is read
+ * for, and losing them was the alternative on the table.
+ */
+	LOG_DBG("  Read chunk %u B, %u report(s), %u total, %s",
 		(unsigned int)report_len, emitted, (unsigned int)(s->sent + emitted),
 		more ? "MORE" : "last");
 	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
@@ -1391,7 +1533,7 @@ static void on_read_request(const struct matter_exchange_in *in)
 				p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
 			continue;
 		}
-		LOG_INF("  read[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
+		LOG_DBG("  read[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
 			p->have_endpoint ? (int)p->endpoint : -1,
 			p->have_cluster ? (unsigned int)p->cluster : 0xFFFFu,
 			p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
@@ -1409,6 +1551,7 @@ static void on_read_request(const struct matter_exchange_in *in)
 static void on_invoke_request(const struct matter_exchange_in *in)
 {
 	static struct matter_im_invoke inv;
+	bool removed = false;
 	struct matter_tx_slot *slot;
 	uint8_t *payload;
 	size_t payload_cap;
@@ -1429,6 +1572,12 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 			inv.endpoint, (unsigned int)inv.cluster, (unsigned int)inv.command,
 			(unsigned int)inv.fields_len);
 	}
+	if (inv.cluster == MATTER_CLUSTER_OPERATIONAL_CREDENTIALS &&
+	    inv.command == MATTER_CMD_OC_REMOVE_FABRIC) {
+		/* Prevent a rejected request from observing a previous success. */
+		s_info.last_noc_status = MATTER_NOC_STATUS_INVALID_FABRIC_INDEX;
+		s_info.last_noc_index = 0u;
+	}
 
 	slot = tx_acquire();
 	if (slot == NULL) {
@@ -1441,6 +1590,18 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	 * encoding their response. Publish their result before any readvertise
 	 * request can rebuild the payload on another context. */
 	fabric_snapshot_refresh_owned();
+	/* The IM status of a commissioning command is SUCCESS even when the
+	 * command itself failed -- the reason travels in the response body,
+	 * which nothing here prints. A controller that walks away after a
+	 * clean-looking exchange is otherwise unexplainable from this log. */
+	if (s_thread_reply != NULL && s_info.last_commissioning_error != MATTER_COMMISSIONING_OK) {
+		LOG_WRN("  commissioning error %u after cluster 0x%04x command 0x%04x "
+			"(fabric %u, %u committed)",
+			(unsigned int)s_info.last_commissioning_error,
+			(unsigned int)inv.cluster, (unsigned int)inv.command,
+			(unsigned int)s_info.accessing_fabric_index,
+			(unsigned int)s_info.committed_slots);
+	}
 	if (rc != MATTER_OK) {
 		LOG_ERR("cannot build InvokeResponse (%d)", rc);
 		tx_abort_build(slot);
@@ -1505,6 +1666,9 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 			added ? (unsigned int)(added->fabric_id >> 32) : 0u,
 			added ? (unsigned int)added->fabric_id : 0u);
 	}
+	removed = inv.cluster == MATTER_CLUSTER_OPERATIONAL_CREDENTIALS &&
+		  inv.command == MATTER_CMD_OC_REMOVE_FABRIC &&
+		  s_info.last_noc_status == MATTER_NOC_STATUS_OK && s_info.last_noc_index != 0u;
 	/*
 	 * ONLY at CommissioningComplete, never at AddNOC.
 	 *
@@ -1520,44 +1684,13 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	 * Apple runs commissioning TWICE, once per administrator, so both
 	 * fabrics are still captured -- each round ends here.
 	 */
-	if (inv.cluster == MATTER_CLUSTER_GENERAL_COMMISSIONING &&
-	    inv.command == MATTER_CMD_GC_COMMISSIONING_COMPLETE && s_info.commissioning_complete) {
-		/*
-		 * Off this thread. Matter datagrams arrive through the
-		 * OpenThread UDP callback, so everything here runs on
-		 * ot_work_q's ~3.2 KB stack, and a settings write through NVS
-		 * does not fit under what the IM path has already spent: it
-		 * overflowed exactly here, after both fabrics were accepted,
-		 * with "Stack overflow on CPU 0" and a halt -- so the pairing
-		 * completed on the wire and still failed.
-		 *
-		 * The system work queue has 6,144 B against a measured 3,872 B
-		 * peak, and that peak belongs to the credential unlock path, which
-		 * never runs while a commissioner is finishing.
-		 */
-		(void)k_work_schedule(&s_fab_store_work, K_NO_WAIT);
-	}
-	if (inv.cluster == MATTER_CLUSTER_OPERATIONAL_CREDENTIALS &&
-	    inv.command == MATTER_CMD_OC_REMOVE_FABRIC &&
-	    s_info.last_noc_status == MATTER_NOC_STATUS_OK) {
-		/*
-		 * Same stack constraint as above, so the same deferral -- which
-		 * means the NOCResponse says OK before flash agrees. That is
-		 * the shape test_ultrawidelock_reader's revocation sweep forbids for
-		 * trust anchors, accepted here because this path CANNOT write
-		 * synchronously (the overflow above was measured, not feared)
-		 * and the failure mode is bounded: the store retries three
-		 * times, and a fabric that outlives its removal by one reboot
-		 * is re-removable, not resurrected as an authority the
-		 * controller believes gone -- its operator already discarded
-		 * its own keys.
-		 */
-		(void)k_work_schedule(&s_fab_store_work, K_NO_WAIT);
-	}
 	if (resp_len == 0u) {
 		/* The command ran; the peer asked not to be told. */
 		LOG_INF("invoke done, response suppressed");
 		tx_abort_build(slot);
+		if (removed) {
+			case_drop_fabric(s_info.last_noc_index);
+		}
 		return;
 	}
 
@@ -1565,6 +1698,10 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 		       (s_thread_reply != NULL && !s_thread_pase) ? &s_case_x[s_case_cur] : &s_exchange,
 		       MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_INVOKE_COMMAND_RESPONSE, payload,
 		       resp_len, false, 0u);
+	/* The response is framed before its own session can be destroyed. */
+	if (removed) {
+		case_drop_fabric(s_info.last_noc_index);
+	}
 	LOG_DBG("InvokeResponse: %u B", (unsigned int)resp_len);
 }
 
@@ -1595,6 +1732,11 @@ static void on_write_request(const struct matter_exchange_in *in)
 	LOG_INF("  write: endpoint %u cluster 0x%04x attribute 0x%04x, %u B", wr.path.endpoint,
 		(unsigned int)wr.path.cluster, (unsigned int)wr.path.attribute,
 		(unsigned int)wr.data_len);
+	/* The ACL decides which controller may enroll credentials; its raw
+	 * bytes are the only way to see WHICH subject Apple granted. */
+	if (wr.path.cluster == MATTER_CLUSTER_ACCESS_CONTROL && wr.path.attribute == 0u) {
+		LOG_HEXDUMP_INF(wr.data, wr.data_len, "  ACL bytes:");
+	}
 
 	/*
 	 * Persisted by VALUE CHANGE rather than by write status: the encoder
@@ -1618,9 +1760,21 @@ static void on_write_request(const struct matter_exchange_in *in)
 		return;
 	}
 	(void)matter_dl_attr_store(&s_info, prev_relock_s, prev_approach);
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * Keyed on the CLUSTER rather than on the write status: the encoder
+	 * above only mutates s_info for a write it accepted, and re-storing an
+	 * unchanged table costs one flash record against a binding that is
+	 * silently gone after the next reboot. The slot argument is unused --
+	 * the table is node-wide and carries its own fabric scoping.
+	 */
+	if (wr.path.cluster == MATTER_CLUSTER_BINDING) {
+		(void)matter_fab_commit(&s_info, MATTER_FABRIC_STORE_BINDING, 0u, NULL, 0u);
+	}
+#endif
 	if (resp_len == 0u) {
 		/* The write ran; the peer asked not to be told. */
-		LOG_INF("  write done, response suppressed");
+		LOG_DBG("  write done, response suppressed");
 		tx_abort_build(slot);
 		return;
 	}
@@ -1723,6 +1877,7 @@ static uint8_t s_sub_next_victim;
  */
 struct sub_persist {
 	uint64_t peer_node;
+	uint64_t fabric_id;
 	uint32_t id;
 	uint16_t max_interval_s;
 	uint8_t fabric_index;
@@ -1760,7 +1915,15 @@ static void sub_persist_save(uint8_t slot, const struct sub_state *s, uint64_t p
 	};
 	char key[SUB_KEY_MAX];
 
-	if (peer_node == 0u || fabric_index == 0u) {
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (s_info.fabrics[i].index == fabric_index &&
+		    (s_info.committed_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u) {
+			p.fabric_id = s_info.fabrics[i].fabric_id;
+			break;
+		}
+	}
+
+	if (peer_node == 0u || fabric_index == 0u || p.fabric_id == 0u) {
 		/* Nothing to match on later, so storing it would only produce a
 		 * record no CASE session can ever claim. */
 		return;
@@ -1821,6 +1984,7 @@ static void sub_persist_load(void)
 static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric_index,
 			   uint16_t session_id)
 {
+	uint64_t fabric_id = 0u;
 	struct matter_thread_peer peer;
 
 	ARG_UNUSED(case_slot);
@@ -1828,12 +1992,23 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 	if (peer_node == 0u || fabric_index == 0u) {
 		return;
 	}
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (s_info.fabrics[i].index == fabric_index &&
+		    (s_info.committed_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u) {
+			fabric_id = s_info.fabrics[i].fabric_id;
+			break;
+		}
+	}
+	if (fabric_id == 0u) {
+		return;
+	}
 	matter_thread_peer_current(&peer);
 	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
 		struct sub_state *s = &s_subs[i];
 
 		if (!s_dormant[i].used || s_dormant[i].peer_node != peer_node ||
-		    s_dormant[i].fabric_index != fabric_index) {
+		    s_dormant[i].fabric_index != fabric_index ||
+		    s_dormant[i].fabric_id != fabric_id) {
 			continue;
 		}
 		if (s->in_use && s->active && s->id == s_dormant[i].id) {
@@ -1852,7 +2027,7 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 		s->peer = peer;
 		s_dormant[i].used = 0u;
 
-		LOG_INF("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
+		LOG_DBG("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
 			(unsigned int)s->id, (unsigned int)session_id);
 		subscription_heartbeat_arm();
 	}
@@ -1977,6 +2152,13 @@ static void notify_lock_state(struct sub_state *s)
 	struct matter_thread_peer peer = s->peer;
 
 	rc = matter_thread_send_to(&peer, packet->data, framed);
+	/*
+	 * BACK AT INF after a spell at DBG, and the demotion was a mistake worth
+	 * recording: this line reports whether a controller was TOLD, and rc is
+	 * how a dead subscription is told apart from one that never matched. It
+	 * reads like bookkeeping and is the only evidence that the state a
+	 * person can see on a hub came from the state the bolt is actually in.
+	 */
 	LOG_INF("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
 		(unsigned int)framed, rc);
 	if (rc == MATTER_OK) {
@@ -2448,6 +2630,53 @@ static void sub_drop_session(uint16_t session_id)
 	}
 }
 
+static void reader_readback_clear(void)
+{
+	memset(s_info.users, 0, sizeof(s_info.users));
+	memset(s_info.ultrawidelock_verification_key, 0,
+	       sizeof(s_info.ultrawidelock_verification_key));
+	memset(s_info.ultrawidelock_group_id, 0, sizeof(s_info.ultrawidelock_group_id));
+	memset(s_info.ultrawidelock_group_resolving_key, 0,
+	       sizeof(s_info.ultrawidelock_group_resolving_key));
+	s_info.have_ultrawidelock_group_resolving_key = false;
+	s_info.have_ultrawidelock_reader_config = false;
+}
+
+/** Revoke every live and persisted session resource owned by one removed fabric. */
+static void case_drop_fabric(uint8_t fabric_index)
+{
+	struct sub_persist tombstone = {0};
+
+	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
+		char key[SUB_KEY_MAX];
+
+		if (s_case_ready[i] && s_case_fabric[i] == fabric_index) {
+			uint16_t session_id = s_case_x[i].local_session_id;
+
+			sub_drop_session(session_id);
+			memset(&s_case_x[i], 0, sizeof(s_case_x[i]));
+			s_case_ready[i] = false;
+			s_case_fabric[i] = 0u;
+		}
+		if (!s_dormant[i].used || s_dormant[i].fabric_index != fabric_index) {
+			continue;
+		}
+		memset(&s_dormant[i], 0, sizeof(s_dormant[i]));
+		(void)snprintf(key, sizeof(key), SUB_KEY_FMT, (unsigned int)i);
+		if (settings_save_one(key, &tombstone, sizeof(tombstone)) != 0) {
+			LOG_WRN("  removed fabric %u subscription tombstone not persisted",
+				(unsigned int)fabric_index);
+		}
+	}
+	if (!matter_commission_has_fabric()) {
+		/* The storage worker already reverted the reader core before it
+		 * made the last-fabric tombstone authoritative. Clear the cluster's
+		 * readback copy too, so the next home cannot observe the old one. */
+		reader_readback_clear();
+	}
+	ultrawidelock_ble_readvertise();
+}
+
 /**
  * The slot for a new subscription from @p session_id.
  *
@@ -2512,7 +2741,16 @@ static void send_report_chunk(struct sub_state *s)
 	if (emitted == 0u && more) {
 		/* Not a chunk boundary -- one report is larger than a whole
 		 * message, and no number of chunks will help. */
-		LOG_ERR("a single attribute does not fit a message; giving up");
+		if (stats.have_stuck) {
+			LOG_ERR("endpoint %u cluster 0x%04x attribute 0x%04x does not fit "
+				"a %u B message; giving up",
+				(unsigned int)stats.stuck_endpoint,
+				(unsigned int)stats.stuck_cluster,
+				(unsigned int)stats.stuck_attribute,
+				(unsigned int)payload_cap);
+		} else {
+			LOG_ERR("a single attribute does not fit a message; giving up");
+		}
 		tx_abort_build(slot);
 		s->more = false;
 		return;
@@ -2522,7 +2760,7 @@ static void send_report_chunk(struct sub_state *s)
 	 * a report that frames cleanly and is then dropped by the network, and
 	 * debug level is off in every image that gets flashed.
 	 */
-	LOG_INF("  chunk %u B, %u report(s), %u total, %s", (unsigned int)report_len, emitted,
+	LOG_DBG("  chunk %u B, %u report(s), %u total, %s", (unsigned int)report_len, emitted,
 		(unsigned int)(s->sent + emitted), more ? "MORE" : "last");
 	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
 		.kind = TX_EFFECT_SUB_PRIME,
@@ -2608,7 +2846,7 @@ static void on_subscribe_request(const struct matter_exchange_in *in)
 	s->priming = true;
 	s->active = false;
 
-	LOG_INF("  subscribe: %u path(s), %u..%u s, id 0x%08x, session 0x%04x", s->read.n_paths,
+	LOG_DBG("  subscribe: %u path(s), %u..%u s, id 0x%08x, session 0x%04x", s->read.n_paths,
 		sub.min_interval_s, sub.max_interval_s, (unsigned int)s->id,
 		(unsigned int)s->session_id);
 	/*
@@ -2620,7 +2858,7 @@ static void on_subscribe_request(const struct matter_exchange_in *in)
 	for (uint8_t i = 0; i < s->read.n_paths; i++) {
 		const struct matter_im_path *p = &s->read.paths[i];
 
-		LOG_INF("  sub[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
+		LOG_DBG("  sub[%u] endpoint %d cluster 0x%04x attribute 0x%04x", i,
 			p->have_endpoint ? (int)p->endpoint : -1,
 			p->have_cluster ? (unsigned int)p->cluster : 0xFFFFu,
 			p->have_attribute ? (unsigned int)p->attribute : 0xFFFFu);
@@ -2827,7 +3065,7 @@ static void on_timed_request(const struct matter_exchange_in *in)
 		LOG_WRN("  malformed TimedRequest");
 		return;
 	}
-	LOG_INF("  timed request: %u ms, answering SUCCESS", (unsigned int)timeout_ms);
+	LOG_DBG("  timed request: %u ms, answering SUCCESS", (unsigned int)timeout_ms);
 
 	slot = tx_acquire();
 	if (slot == NULL) {
@@ -2916,7 +3154,7 @@ static void on_status_response(const struct matter_exchange_in *in)
 		s->in_use = false;
 		return;
 	}
-	LOG_INF("  subscription 0x%08x ESTABLISHED on session 0x%04x, max interval %u s",
+	LOG_DBG("  subscription 0x%08x ESTABLISHED on session 0x%04x, max interval %u s",
 		(unsigned int)s->id, (unsigned int)s->session_id, s->max_interval_s);
 	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
 		.kind = TX_EFFECT_SUB_RESPONSE,
@@ -3073,6 +3311,12 @@ static size_t send_sigma2(const struct matter_case_sigma1 *s1, const uint8_t *ip
 	size_t ph_len = 0u;
 	bool repeat;
 	int rc;
+
+	if (f->icac_len > 0u &&
+	    (s_info.icac.owner_index != f->index || s_info.icac.len != f->icac_len)) {
+		LOG_ERR("  fabric %u references an unavailable ICAC", (unsigned int)f->index);
+		return 0u;
+	}
 
 	/*
 	 * A repeat of the Sigma1 already answered, recognised by the initiator's
@@ -3450,13 +3694,23 @@ static size_t handle_sigma3(const uint8_t *sigma3, size_t sigma3_len, const uint
 	}
 	s_case_ready[slot] = true;
 	s_case_fabric[slot] = s_case.fabric->index;
+	memcpy(s_case_cats[slot], peer.cats, sizeof(s_case_cats[slot]));
+	s_case_n_cats[slot] = peer.n_cats;
+	/* An ACL subject in the CAT range is matched against these, not against
+	 * the node id. Print them: a peer denied ADMINISTER while presenting no
+	 * tags is a different bug from one denied while presenting them. */
+	if (peer.n_cats == 0u) {
+		LOG_INF("  CASE peer presents no CASE Authenticated Tags");
+	} else {
+		for (uint8_t i = 0u; i < peer.n_cats; i++) {
+			LOG_INF("  CASE peer CAT id 0x%04x version %u",
+				(unsigned)(peer.cats[i] >> 16), (unsigned)(peer.cats[i] & 0xFFFFu));
+		}
+	}
 	/* Replies to THIS Sigma3 are sealed on the unsecured exchange, but the
 	 * StatusReport that follows is the last thing that session sends before
 	 * the peer starts using the new one, so point the current slot at it. */
 	s_case_cur = slot;
-	/* What unblocks CommissioningComplete. The cluster layer cannot see a
-	 * session, so this is the only place that can say so. */
-	s_info.case_established = true;
 	/*
 	 * Now that a fabric exists, the advert can stop being the Matter
 	 * commissionable payload and become the credential reader tag. Nothing else
@@ -3613,6 +3867,18 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 				s_thread_reply = NULL;
 				return s_thread_reply_len;
 			}
+#if MATTER_FEATURE_CLIENT
+			/*
+			 * A session this node INITIATED is in none of the tables
+			 * above: those hold the sessions it answered. Without
+			 * this the bound lock's InvokeResponse is reported as
+			 * somebody else's and dropped, and the unlock that was
+			 * sent looks from here exactly like one that was ignored.
+			 */
+			if (matter_client_owns_session(mh.session_id)) {
+				return matter_client_on_secure(msg, len, reply, cap);
+			}
+#endif
 			LOG_WRN("  encrypted for session 0x%04x, which is not ours",
 				(unsigned int)mh.session_id);
 			return 0u;
@@ -3620,23 +3886,47 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 		s_case_cur = slot;
 		/* Whose fabric is asking, for the fabric-scoped attributes. */
 		s_info.accessing_fabric_index = s_case_fabric[slot];
+		s_info.accessing_node_id = s_case_x[slot].peer_op_node_id;
+		memcpy(s_info.accessing_cats, s_case_cats[slot], sizeof(s_info.accessing_cats));
+		s_info.accessing_n_cats = s_case_n_cats[slot];
 		s_thread_reply = reply;
 		s_thread_reply_cap = cap;
 		s_thread_reply_len = 0u;
 
 		rc = matter_exchange_recv_in_place(&s_case_x[slot], msg, len, &in);
 		if (rc == MATTER_E_DUP) {
-			if (!tx_thread_retry(&s_case_x[slot])) {
+			LOG_INF("  DUP exchange 0x%04x counter %u; replaying the answer",
+				(unsigned int)in.exchange_id, (unsigned int)in.message_counter);
+			/* I clear on a duplicate means it closes an exchange
+			 * this node opened; recv_impl() re-armed the pending
+			 * ack for it before refusing the payload. */
+			if (!in.initiator && in.ack_requested) {
+				(void)send_initiator_ack(&s_case_x[slot], in.exchange_id);
+			} else if (!tx_thread_retry(&s_case_x[slot])) {
 				(void)send_standalone_ack(&s_case_x[slot]);
 			}
 		} else if (rc != MATTER_OK) {
 			LOG_WRN("  CASE message refused (%d)", rc);
 			s_thread_reply_len = 0u;
 		} else {
-			LOG_DBG("  CASE in: protocol 0x%04x opcode 0x%02x, %u B",
+			LOG_DBG("  CASE in: protocol 0x%04x opcode 0x%02x, %u B, "
+				"exchange 0x%04x counter %u",
 				(unsigned int)in.protocol_id, in.opcode,
-				(unsigned int)in.payload_len);
+				(unsigned int)in.payload_len, (unsigned int)in.exchange_id,
+				(unsigned int)in.message_counter);
 			on_secure(&in);
+			/*
+			 * Nothing to say back and the peer asked for an ack on
+			 * an exchange this node opened: the StatusResponse that
+			 * closes an update report. Every reply above carries
+			 * the ack for the peer's own exchanges; this one has no
+			 * reply to ride, so it goes out alone -- or the peer
+			 * retransmits into the DUP path until MRP gives up and
+			 * declares the session dead.
+			 */
+			if (s_thread_reply_len == 0u && in.ack_requested && !in.initiator) {
+				(void)send_initiator_ack(&s_case_x[slot], in.exchange_id);
+			}
 		}
 
 		s_thread_reply = NULL;
@@ -3706,6 +3996,23 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 		return s_thread_reply_len;
 	}
 
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * The other half of a handshake THIS node started. Routed by exchange
+	 * id, because the unsecured session is session 0 for everybody and the
+	 * exchange is the only thing separating an answer to this node's Sigma1
+	 * from a Sigma1 somebody is sending it. Without this both the Sigma2 and
+	 * the StatusReport that ends CASE fall into the drop below, which is
+	 * where a client handshake dies with its evidence logged as a curiosity.
+	 */
+	if (ph.protocol_id == MATTER_PROTOCOL_SECURE_CHANNEL &&
+	    (ph.opcode == MATTER_OP_CASE_SIGMA2 || ph.opcode == MATTER_SC_OP_STATUS_REPORT) &&
+	    matter_client_owns_exchange(ph.exchange_id)) {
+		return matter_client_on_unsecured(msg + mh_len + ph_len, len - mh_len - ph_len, &mh,
+						  &ph, reply, cap);
+	}
+#endif
+
 	if (ph.protocol_id != MATTER_PROTOCOL_SECURE_CHANNEL ||
 	    (ph.opcode != MATTER_OP_CASE_SIGMA1 && ph.opcode != MATTER_OP_CASE_SIGMA3)) {
 		/*
@@ -3727,7 +4034,7 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 		return 0u;
 	}
 
-	if (s_info.fabrics[0].index == 0u) {
+	if (!matter_commission_has_fabric()) {
 		LOG_WRN("  no fabric to match it against");
 		return 0u;
 	}
@@ -3864,6 +4171,16 @@ static void on_message_owned(uint8_t *msg, size_t len)
 	uint8_t pase_op = 0u;
 	int rc;
 
+	/* PASE and unsecured traffic cannot inherit authority from the last CASE
+	 * datagram handled on the shared data model. The tags go with the node
+	 * id: leaving them would hand a PASE session the GROUP authority of
+	 * whoever last spoke over CASE, which is worse than the node id alone
+	 * because a group entry is the one an administrator actually grants. */
+	s_info.accessing_fabric_index = 0u;
+	s_info.accessing_node_id = 0u;
+	s_info.accessing_n_cats = 0u;
+	memset(s_info.accessing_cats, 0, sizeof(s_info.accessing_cats));
+
 	if (!s_verifier_ok) {
 		LOG_ERR("no usable SPAKE2P verifier; dropping %u bytes", (unsigned int)len);
 		return;
@@ -3997,6 +4314,8 @@ bool matter_commission_take_deliberate_unlock(void)
 
 int matter_commission_init(void)
 {
+	ultrawidelock_sem_init(&s_fab_done, 0u, 1u);
+	s_info.commissioning_hooks = &k_commissioning_hooks;
 	ultrawidelock_mutex_init(&s_owner_lock);
 	if (matter_tx_pool_init(&s_tx_pool, s_tx_slots, &s_tx_backing[0][0], MATTER_TX_SLOTS,
 				sizeof(s_tx_backing[0])) != MATTER_OK) {
@@ -4078,6 +4397,18 @@ int matter_commission_init(void)
 			s_info.have_ultrawidelock_group_resolving_key = true;
 			s_info.have_ultrawidelock_reader_config = true;
 			LOG_INF("credential reader configuration restored; attributes readable");
+		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+			if (s_info.fabric_acls[i].len == 0u) {
+				continue;
+			}
+			LOG_INF("  fabric %u ACL %u B, case admin subject %08x%08x",
+				(unsigned int)s_info.fabrics[i].index,
+				(unsigned int)s_info.fabric_acls[i].len,
+				(unsigned int)(s_info.fabrics[i].case_admin_subject >> 32),
+				(unsigned int)s_info.fabrics[i].case_admin_subject);
+			LOG_HEXDUMP_INF(s_info.fabric_acls[i].data, s_info.fabric_acls[i].len,
+					"  ACL bytes:");
+		}
 		} else if (rc != -ENOENT) {
 			/* -ENOENT is the dev identity and is not news. Anything
 			 * else means a stored identity exists and could not be
@@ -4094,6 +4425,8 @@ int matter_commission_init(void)
 	s_info.ultrawidelock_user_clear_cb = on_ultrawidelock_user_clear;
 
 	matter_clusters_init(&s_im, &s_info);
+	s_cluster_command = s_im.command;
+	s_im.command = command_status_logged;
 	fabric_snapshot_refresh_owned();
 	/* Without this the cluster still APPEARS in ServerList -- which is the
 	 * point, a node that hides it can never be shared with a second
@@ -4108,13 +4441,20 @@ int matter_commission_init(void)
 	 * not survive -- the next commissioner reads what the last one set.
 	 */
 	(void)matter_dl_attr_load(&s_info);
+#if MATTER_FEATURE_CLIENT
+	/*
+	 * AFTER matter_clusters_init, which zeroes the binding table this
+	 * borrows, and BEFORE matter_fab_load below, which fills it in.
+	 */
+	matter_client_init(&s_info);
+#endif
 	matter_ble_set_link_handler(on_link_reset);
 	matter_ble_set_tx_handler(matter_commission_ble_tx_complete);
 	matter_ble_set_msg_handler(on_message);
 	ultrawidelock_reader_set_lock_state_listener(on_ultrawidelock_lock_state);
 
 	/*
-	 * AFTER matter_clusters_init, which zeroes the parts of s_info it owns.
+	 * After the data model has been wired to s_info.
 	 *
 	 * A restored identity is not enough on its own: nothing has handed the
 	 * Thread dataset to the stack and no SRP instance exists, so the node
@@ -4153,6 +4493,19 @@ int matter_commission_init(void)
 			 */
 			ultrawidelock_ble_readvertise();
 		} else if (rc > 0) {
+			/* The custom Matter schema is a clean break. Do not leave a
+			 * credential identity with no administering fabric: old Home Keys
+			 * would still authenticate and the next home would inherit them. */
+			if (s_info.have_ultrawidelock_reader_config) {
+				int clear_rc = ultrawidelock_reader_provision_clear();
+
+				if (clear_rc == 0) {
+					reader_readback_clear();
+				} else {
+					LOG_ERR("no Matter administrator, but Home Key identity clear failed (%d)",
+						clear_rc);
+				}
+			}
 			LOG_INF("no stored fabric; commissionable");
 		}
 	}

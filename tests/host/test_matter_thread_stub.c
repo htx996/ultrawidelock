@@ -10,9 +10,11 @@
 uint8_t g_thread_last_dataset[512];
 size_t g_thread_last_len;
 int g_thread_start_calls;
+int g_thread_clear_calls;
 int g_thread_wait_calls;
 uint32_t g_thread_last_timeout_ms;
 int g_thread_start_fail;
+int g_thread_clear_fail;
 int g_thread_attached;
 int g_thread_attached_to;
 uint8_t g_thread_attached_to_xpanid[8];
@@ -28,9 +30,11 @@ void test_matter_thread_stub_reset(void)
 	memset(g_thread_last_dataset, 0, sizeof(g_thread_last_dataset));
 	g_thread_last_len = 0u;
 	g_thread_start_calls = 0;
+	g_thread_clear_calls = 0;
 	g_thread_wait_calls = 0;
 	g_thread_last_timeout_ms = 0u;
 	g_thread_start_fail = 0;
+	g_thread_clear_fail = 0;
 	g_thread_attached = 0;
 	g_thread_attached_to = 0;
 	memset(g_thread_attached_to_xpanid, 0, sizeof(g_thread_attached_to_xpanid));
@@ -40,6 +44,12 @@ void test_matter_thread_stub_reset(void)
 	g_thread_advertise_calls = 0;
 	g_thread_unadvertise_calls = 0;
 	memset(g_thread_last_unadvertised, 0, sizeof(g_thread_last_unadvertised));
+}
+
+int matter_thread_clear(void)
+{
+	g_thread_clear_calls++;
+	return g_thread_clear_fail ? MATTER_E_STATE : MATTER_OK;
 }
 
 int matter_thread_start(const uint8_t *dataset, size_t len)

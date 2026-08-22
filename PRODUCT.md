@@ -55,8 +55,9 @@ facts a neighboring project could not truthfully copy:
 - The default board is the Qorvo DWM3001CDK (nRF52833 plus DW3110 plus J-Link on
   one part, nothing to wire). Other targets are the nRF5340 DK with DWM3000EVB
   and NFC12A1, and ESP32-S3 / C5 / C6 with DWM3000EVB.
-- The console is RTT, not UART. `make flash-erase` costs the Apple Home
-  commissioning. These are bench defaults and the project says so.
+- The console is RTT, not UART. `make flash-erase` costs every Matter fabric
+  and the Home Key commissioning. These are bench defaults and the project
+  says so.
 - The flasher needs a WebSerial capable browser and a USB connected ESP32. The
   twin needs the WASM bundle, which is built from `web/twin/twin_glue.c` when
   emscripten is present; when it is absent the page says so plainly.
@@ -158,9 +159,11 @@ Real captures, all in `assets/`:
 Real, re-derivable numbers already on the surfaces:
 
 - One timestamp tick is about 15.65 ps, which light crosses in 4.692 mm.
-- Flash 379,332 of 433,664 B (87.5%); RAM 111,012 of 131,072 B (84.7%).
+- Shipping DWM3001CDK image: flash 397,360 of 433,664 B (91.63%); RAM
+  120,740 of 131,072 B (92.12%), measured with NCS v3.3.0 and
+  `RELEASE=1 SMP=1`.
 - The obstruction classifier costs 776 B flash, 0 B RAM, 28 B stack.
-- 7,766 host tests, no hardware required.
+- 7,979 host tests, no hardware required.
 - The unlock bound is 1.00 m, from `ULTRAWIDELOCK_UNLOCK_RANGE_CM`.
 
 The landing hero computes its scope from the firmware's own constants in

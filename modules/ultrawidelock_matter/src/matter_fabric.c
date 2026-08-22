@@ -27,6 +27,13 @@
  */
 #define DN_TAG_MATTER_NODE_ID   17u
 #define DN_TAG_MATTER_FABRIC_ID 21u
+/*
+ * 22 is matter-noc-cat (gen_asn1oid.py:146). A CASE Authenticated Tag names a
+ * GROUP of controllers rather than one node, which is how a home hub and a
+ * phone share one administrator entry in an ACL. Skipping it here is why such
+ * an entry matches nobody and the hub is refused every command it sends.
+ */
+#define DN_TAG_MATTER_NOC_CAT   22u
 
 /** Pull the node and fabric ids out of a subject DN the reader is sitting on. */
 static int parse_subject(struct matter_tlv_reader *r, struct matter_cert_info *out)
@@ -60,9 +67,24 @@ static int parse_subject(struct matter_tlv_reader *r, struct matter_cert_info *o
 			}
 			out->fabric_id = v;
 			out->have_fabric_id = true;
+		} else if (matter_tlv_tag(r) == MATTER_TLV_CTX(DN_TAG_MATTER_NOC_CAT)) {
+			if (matter_tlv_get_u64(r, &v) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+			/*
+			 * A version of 0 is not a valid tag and must never match
+			 * an ACL subject, so it is dropped here rather than
+			 * carried and special-cased at every use. Beyond the cap
+			 * the certificate is malformed; the extras are ignored
+			 * rather than treated as a parse failure, because the
+			 * ones already read are still true.
+			 */
+			if ((v & 0xffffu) != 0u && out->n_cats < MATTER_MAX_CATS) {
+				out->cats[out->n_cats++] = (uint32_t)v;
+			}
 		}
 		/* Every other attribute -- the common name a commissioner may
-		 * add, the CASE authenticated tags -- is skipped by next(). */
+		 * add -- is skipped by next(). */
 	}
 
 	return matter_tlv_exit(r);

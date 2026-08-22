@@ -67,6 +67,18 @@ extern "C" {
  */
 #define MATTER_IM_STATUS_SUCCESS               0x00u /* line 31 */
 #define MATTER_IM_STATUS_FAILURE               0x01u /* line 32 */
+/**
+ * The peer knows the command and will not let this node run it (line 34).
+ *
+ * Both directions need it. As a server this node answers it when the
+ * accessing fabric's access control list grants too little for the request.
+ * As a client it is what a bound lock answers when ITS list has no entry for
+ * this node, and it is the single most likely way a binding fails once
+ * everything else is right. Reported as itself rather than as a generic
+ * failure, because the fix is specific and the log line is the only place it
+ * can be named.
+ */
+#define MATTER_IM_STATUS_UNSUPPORTED_ACCESS    0x7Eu
 #define MATTER_IM_STATUS_UNSUPPORTED_ENDPOINT  0x7Fu /* line 35 */
 #define MATTER_IM_STATUS_UNSUPPORTED_COMMAND   0x81u /* line 37 */
 #define MATTER_IM_STATUS_INVALID_COMMAND       0x85u /* line 41 */
@@ -112,6 +124,15 @@ struct matter_im_path {
 	bool have_endpoint;
 	bool have_cluster;
 	bool have_attribute;
+	/**
+	 * A ListIndex was present, which on a write means AppendItem.
+	 *
+	 * The VALUE is deliberately not kept: Matter's append encodes it as
+	 * Null, and this node has no use for a numeric index -- it only needs
+	 * to tell "another member of the list I am already assembling" from
+	 * "a second attribute", which presence alone answers.
+	 */
+	bool have_list_index;
 };
 
 /** True when any component is wildcarded (app/AttributePathParams.h:57-59). */
@@ -327,7 +348,8 @@ typedef uint8_t (*matter_im_status_fn)(void *ctx, uint16_t endpoint, uint32_t cl
  *          latches them and the encoder reports them once at the end.
  */
 typedef void (*matter_im_value_fn)(void *ctx, uint16_t endpoint, uint32_t cluster,
-				   uint32_t attribute, struct matter_tlv_writer *w,
+				   uint32_t attribute, bool fabric_filtered,
+				   struct matter_tlv_writer *w,
 				   matter_tlv_tag_t tag);
 
 /**
@@ -511,11 +533,21 @@ struct matter_im_server {
  *         malformed message, or whatever the TLV decoder returned.
  */
 /**
+ * Room to rebuild a chunked list write. Matches MATTER_ACL_MAX, the largest
+ * list any cluster on this node will store; a binding list is far smaller.
+ * Stated here rather than included from matter_clusters.h, which is the layer
+ * above this one.
+ */
+#define MATTER_IM_WRITE_LIST_MAX 256u
+
+/**
  * One attribute write.
  *
- * Exactly one per message, the same restriction matter_im_invoke has and for
- * the same reason: a commissioner that sent two and saw one status would be
- * entitled to assume both applied.
+ * Exactly one ATTRIBUTE per message, the same restriction matter_im_invoke has
+ * and for the same reason: a commissioner that sent two and saw one status
+ * would be entitled to assume both applied. That is a cap on attributes, not
+ * on data blocks -- one list attribute may arrive as several. See
+ * @ref matter_im_write::list_buf.
  */
 struct matter_im_write {
 	struct matter_im_path path;
@@ -540,8 +572,32 @@ struct matter_im_write {
 	 * RESOURCE_EXHAUSTED and runs NOTHING: the peer asked for a set, and
 	 * applying an arbitrary member of it is a worse answer than refusing --
 	 * and either way it gets an answer, where it used to get silence.
+	 *
+	 * A CHUNKED LIST IS NOT A SET, and does not set this. See @ref list_buf.
 	 */
 	bool truncated;
+	/**
+	 * Where a list arriving in several AttributeDataIBs is put back together.
+	 *
+	 * Matter writes a list as replace-all followed by one AppendItem per
+	 * member (Interaction Model, "Writing a list"), so ONE attribute
+	 * legitimately arrives as several data blocks -- all naming the same
+	 * path, the appends carrying a ListIndex. Counting blocks and calling
+	 * that a batch is what made a Home Assistant binding write come back
+	 * RESOURCE_EXHAUSTED with an empty 3-byte replace-all as the only thing
+	 * this node had parsed. Measured against matter.js 0.17.9, 2026-08-22.
+	 *
+	 * So they are coalesced here into the single array the cluster would
+	 * have seen from an unchunked controller, and @ref data points at this
+	 * rather than into the message. Cluster code is unchanged and never
+	 * learns a list was chunked, which is the point: every list attribute
+	 * is fixed at once rather than the binding alone.
+	 *
+	 * Sized to the largest list any cluster here accepts (the ACL). A list
+	 * that overflows it is refused rather than truncated, on the same
+	 * reasoning as everything else in this file.
+	 */
+	uint8_t list_buf[MATTER_IM_WRITE_LIST_MAX];
 };
 
 /**
@@ -592,6 +648,17 @@ struct matter_im_report_stats {
 	 * looking to the commissioner like an empty cluster.
 	 */
 	uint8_t unexpanded_wildcard;
+	/**
+	 * The path whose report did not fit an entire empty message.
+	 *
+	 * Only set when a chunk emitted nothing at all, which is the one case
+	 * chunking cannot rescue. Naming it is the difference between a bug
+	 * report and a re-subscribe loop with no stated cause.
+	 */
+	bool have_stuck;
+	uint16_t stuck_endpoint;
+	uint32_t stuck_cluster;
+	uint32_t stuck_attribute;
 };
 
 /**
