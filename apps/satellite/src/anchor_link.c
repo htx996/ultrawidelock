@@ -145,7 +145,7 @@ static bool unseal(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_ca
 /**
  * Two different things arrive on this socket.
  *
- * A 9-byte CHALLENGE is unauthenticated on purpose -- a freshness beacon, not a
+ * A 9- or 12-byte CHALLENGE is unauthenticated on purpose -- a freshness beacon, not a
  * command; echoing the wrong one costs a report its standing and nothing more.
  * A sealed HANDOFF is the opposite: it carries a key and this board acts on it,
  * so it must prove the link key and clear the replay window first.
@@ -169,7 +169,12 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 		return;
 	}
 
-	if (len == 9u && body[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
+	/* 9 B is the bare challenge; 12 B carries the lock's picked label as a
+	 * trailer. Both are valid, and the witness reference parse accepts both
+	 * (examples/zephyr/ble-witness). This board ignores the trailer -- it
+	 * reports a distance, not a label -- but it must still accept the
+	 * length, or it hears no challenge at all and echoes a zero nonce. */
+	if ((len == 9u || len == 12u) && body[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
 		s_echo_nonce = 0u;
 		for (int i = 0; i < 8; i++) {
 			s_echo_nonce = (s_echo_nonce << 8) | (uint64_t)body[1 + i];
