@@ -39,8 +39,6 @@
 #include <openthread/udp.h>
 #include <zephyr/net/openthread.h>
 
-#include <psa/crypto.h>
-
 #include "side_feed.h"
 /* struct ultrawidelock_uwb_handoff, whose members the sealed handoff reads --
  * the header only forward-declares it. */
@@ -52,6 +50,7 @@
  * layer -- the witness-only configuration -- compiles this file too. */
 #include "ultrawidelock_satellite.h"
 #endif
+#include "ultrawidelock_seal.h"
 #include "ultrawidelock_witness_msg.h"
 #include "ultrawidelock_witness_pick.h"
 
@@ -60,11 +59,17 @@ LOG_MODULE_REGISTER(witness_link, LOG_LEVEL_INF);
 #define WITNESS_MAX   CONFIG_ULTRAWIDELOCK_WITNESS_MAX
 #define WITNESS_PORT  CONFIG_ULTRAWIDELOCK_WITNESS_PORT
 #define NONCE_MS      CONFIG_ULTRAWIDELOCK_WITNESS_NONCE_MS
-#define CCM_TAG_LEN   8u
-#define CCM_NONCE_LEN 13u
+/* The envelope's own constants, from the ONE definition of it
+ * (ultrawidelock_seal.h). Aliased rather than redefined: this file used to
+ * carry its own copies, which is how a wire format grows two versions. */
+#define CCM_TAG_LEN   ULTRAWIDELOCK_SEAL_TAG_LEN
+#define CCM_NONCE_LEN ULTRAWIDELOCK_SEAL_NONCE_LEN
 /* From witness_link.h, so the reader build's `ultrawidelock witkey` writes the
- * same name and length this reads. */
+ * same name and length this reads. The seal is sized independently and must
+ * agree, or a key would be truncated or over-read on its way into PSA. */
 #define KEY_LEN       WITNESS_LINK_KEY_LEN
+BUILD_ASSERT(WITNESS_LINK_KEY_LEN == ULTRAWIDELOCK_SEAL_KEY_LEN,
+	     "witness link key width must match the seal's");
 
 /* One report must fit a single 802.15.4 frame with room for the seal. */
 #define SEALED_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN + CCM_TAG_LEN + CCM_NONCE_LEN)
@@ -214,31 +219,13 @@ static void nonce_send(void)
 	s_nonce_sent_ms = k_uptime_get();
 }
 
-/* Takes the KEY, not a witness slot: the second anchor holds its own key and is
- * not enrolled as a witness, so the seal cannot be tied to that slot type. */
-static bool unseal_key(const uint8_t *k, const uint8_t *in, size_t in_len, uint8_t *out,
-		       size_t out_cap, size_t *out_len)
-{
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t key = PSA_KEY_ID_NULL;
-	psa_status_t st;
-
-	if (in_len <= CCM_NONCE_LEN + CCM_TAG_LEN) {
-		return false;
-	}
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
-	psa_set_key_algorithm(&attr, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN));
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, KEY_LEN * 8u);
-	if (psa_import_key(&attr, k, KEY_LEN, &key) != PSA_SUCCESS) {
-		return false;
-	}
-	st = psa_aead_decrypt(key, PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN), in,
-			      CCM_NONCE_LEN, NULL, 0, in + CCM_NONCE_LEN, in_len - CCM_NONCE_LEN,
-			      out, out_cap, out_len);
-	(void)psa_destroy_key(key);
-	return st == PSA_SUCCESS;
-}
+/*
+ * The seal and its inverse are ultrawidelock_seal.h's, shared with the
+ * satellite: ONE AES-CCM envelope, so the two ends cannot drift apart about
+ * what a sealed datagram looks like. Both take the KEY, not a witness slot --
+ * the second anchor holds its own key and is not enrolled as a witness, so the
+ * seal cannot be tied to that slot type.
+ */
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 /*
@@ -264,37 +251,6 @@ static bool unseal_key(const uint8_t *k, const uint8_t *in, size_t in_len, uint8
  * that legitimately restarts at zero distinguishable from a replay. */
 static uint32_t s_lock_boot_id;
 static uint32_t s_handoff_ctr;
-
-/** Seal under an explicit key: nonce ‖ ciphertext ‖ tag, what the peer unseals. */
-static size_t seal_key(const uint8_t *k, const uint8_t *nonce, const uint8_t *plain,
-		       size_t plain_len, uint8_t *out, size_t cap)
-{
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t key = PSA_KEY_ID_NULL;
-	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN);
-	size_t ct_len = 0;
-	psa_status_t st;
-
-	if (cap < CCM_NONCE_LEN + plain_len + CCM_TAG_LEN) {
-		return 0;
-	}
-	memcpy(out, nonce, CCM_NONCE_LEN);
-
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
-	psa_set_key_algorithm(&attr, alg);
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, KEY_LEN * 8u);
-	if (psa_import_key(&attr, k, KEY_LEN, &key) != PSA_SUCCESS) {
-		return 0;
-	}
-	st = psa_aead_encrypt(key, alg, out, CCM_NONCE_LEN, NULL, 0, plain, plain_len,
-			      out + CCM_NONCE_LEN, cap - CCM_NONCE_LEN, &ct_len);
-	(void)psa_destroy_key(key);
-	if (st != PSA_SUCCESS) {
-		return 0;
-	}
-	return CCM_NONCE_LEN + ct_len;
-}
 
 void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
 {
@@ -337,18 +293,10 @@ void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
 		return;
 	}
 
-	memset(nonce, 0, sizeof(nonce));
-	nonce[0] = HANDOFF_NONCE_ROLE;
-	nonce[1] = (uint8_t)(s_lock_boot_id >> 24);
-	nonce[2] = (uint8_t)(s_lock_boot_id >> 16);
-	nonce[3] = (uint8_t)(s_lock_boot_id >> 8);
-	nonce[4] = (uint8_t)s_lock_boot_id;
-	nonce[5] = (uint8_t)(jm.ctr >> 24);
-	nonce[6] = (uint8_t)(jm.ctr >> 16);
-	nonce[7] = (uint8_t)(jm.ctr >> 8);
-	nonce[8] = (uint8_t)jm.ctr;
+	ultrawidelock_seal_nonce(HANDOFF_NONCE_ROLE, s_lock_boot_id, jm.ctr, nonce);
 
-	sealed_len = seal_key(s_anchor_key, nonce, plain, plain_len, sealed, sizeof(sealed));
+	sealed_len = ultrawidelock_seal(s_anchor_key, nonce, plain, plain_len, sealed,
+					sizeof(sealed));
 	sent_ctr = jm.ctr;
 	/* The URSK is in here; do not leave a copy on the stack for the rest of
 	 * the frame. */
@@ -564,7 +512,8 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 		if (!s_wit[i].provisioned) {
 			continue;
 		}
-		if (unseal_key(s_wit[i].key, sealed, len, plain, sizeof(plain), &plain_len)) {
+		if (ultrawidelock_unseal(s_wit[i].key, sealed, len, plain, sizeof(plain),
+					 &plain_len)) {
 			goto opened;
 		}
 	}
@@ -572,7 +521,7 @@ static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
 	/* The second anchor's own key, tried after the witnesses and enrolled
 	 * separately from them. */
 	if (s_anchor_provisioned &&
-	    unseal_key(s_anchor_key, sealed, len, plain, sizeof(plain), &plain_len)) {
+	    ultrawidelock_unseal(s_anchor_key, sealed, len, plain, sizeof(plain), &plain_len)) {
 		goto opened;
 	}
 #endif

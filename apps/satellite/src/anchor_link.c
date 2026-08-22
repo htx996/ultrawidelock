@@ -35,16 +35,18 @@
 #include <openthread/udp.h>
 #include <zephyr/net/openthread.h>
 
-#include <psa/crypto.h>
-
 #include "anchor_link.h"
+#include "ultrawidelock_seal.h"
 #include "ultrawidelock_witness_msg.h"
 
 LOG_MODULE_REGISTER(anclink, LOG_LEVEL_INF);
 
-#define KEY_LEN        16u
-#define CCM_NONCE_LEN  13u
-#define CCM_TAG_LEN    8u
+/* The envelope's own constants, from the ONE definition of it. Aliased rather
+ * than redefined: this file used to carry its own copies, which is how a wire
+ * format grows two versions of itself. */
+#define KEY_LEN        ULTRAWIDELOCK_SEAL_KEY_LEN
+#define CCM_NONCE_LEN  ULTRAWIDELOCK_SEAL_NONCE_LEN
+#define CCM_TAG_LEN    ULTRAWIDELOCK_SEAL_TAG_LEN
 #define ANCHOR_PORT    CONFIG_ULTRAWIDELOCK_WITNESS_PORT
 
 static otUdpSocket s_sock;
@@ -69,77 +71,27 @@ static uint64_t s_echo_nonce;
 static anchor_link_join_cb s_join_cb;
 static struct ultrawidelock_witness_seen s_lock_seen;
 
-/** Seal a payload: nonce ‖ ciphertext ‖ tag, exactly what the lock unseals. */
+/**
+ * Seal one report under the link key.
+ *
+ * The envelope is ultrawidelock_seal.h's; what stays here is the nonce, because
+ * only this file knows which counter value the caller just committed to. The
+ * report path pre-increments s_ctr and then builds the nonce from the new
+ * value, so the two can never disagree.
+ */
 static size_t seal(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t cap)
 {
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t key = PSA_KEY_ID_NULL;
-	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN);
-	size_t ct_len = 0;
-	psa_status_t st;
+	uint8_t nonce[ULTRAWIDELOCK_SEAL_NONCE_LEN];
 
-	if (cap < CCM_NONCE_LEN + plain_len + CCM_TAG_LEN) {
-		return 0;
-	}
-	/*
-	 * Explicit nonce, and it must never repeat under one key: role, boot_id,
-	 * counter, then zeros. The counter is what makes it unique within a boot
-	 * and the boot_id across boots.
-	 */
-	memset(out, 0, CCM_NONCE_LEN);
-	out[0] = (uint8_t)CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE;
-	out[1] = (uint8_t)(s_boot_id >> 24);
-	out[2] = (uint8_t)(s_boot_id >> 16);
-	out[3] = (uint8_t)(s_boot_id >> 8);
-	out[4] = (uint8_t)s_boot_id;
-	out[5] = (uint8_t)(s_ctr >> 24);
-	out[6] = (uint8_t)(s_ctr >> 16);
-	out[7] = (uint8_t)(s_ctr >> 8);
-	out[8] = (uint8_t)s_ctr;
-
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
-	psa_set_key_algorithm(&attr, alg);
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, KEY_LEN * 8u);
-	if (psa_import_key(&attr, s_key, KEY_LEN, &key) != PSA_SUCCESS) {
-		return 0;
-	}
-	st = psa_aead_encrypt(key, alg, out, CCM_NONCE_LEN, NULL, 0, plain, plain_len,
-			      out + CCM_NONCE_LEN, cap - CCM_NONCE_LEN, &ct_len);
-	(void)psa_destroy_key(key);
-	if (st != PSA_SUCCESS) {
-		return 0;
-	}
-	return CCM_NONCE_LEN + ct_len;
+	ultrawidelock_seal_nonce((uint8_t)CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE, s_boot_id, s_ctr,
+				 nonce);
+	return ultrawidelock_seal(s_key, nonce, plain, plain_len, out, cap);
 }
 
-/**
- * The lock's challenge. Unauthenticated on purpose: it is a freshness beacon,
- * not a command. Echoing the wrong one costs this report its standing; it
- * cannot make the lock do anything.
- */
 /** Unseal under the link key: the inverse of seal() above. */
 static bool unseal(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_len)
 {
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t key = PSA_KEY_ID_NULL;
-	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, CCM_TAG_LEN);
-	psa_status_t st;
-
-	if (in_len <= CCM_NONCE_LEN + CCM_TAG_LEN) {
-		return false;
-	}
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
-	psa_set_key_algorithm(&attr, alg);
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, KEY_LEN * 8u);
-	if (psa_import_key(&attr, s_key, KEY_LEN, &key) != PSA_SUCCESS) {
-		return false;
-	}
-	st = psa_aead_decrypt(key, alg, in, CCM_NONCE_LEN, NULL, 0, in + CCM_NONCE_LEN,
-			      in_len - CCM_NONCE_LEN, out, out_cap, out_len);
-	(void)psa_destroy_key(key);
-	return st == PSA_SUCCESS;
+	return ultrawidelock_unseal(s_key, in, in_len, out, out_cap, out_len);
 }
 
 /**
