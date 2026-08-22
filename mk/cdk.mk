@@ -381,13 +381,63 @@ CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_S
         dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
 
+# ---- the CMake argument tail ---------------------------------------------------
+# WEST RE-RUNS CMAKE WHENEVER ANYTHING FOLLOWS `--`, and it does not care that
+# the build directory is already configured: `west build` sets run_cmake from a
+# non-empty cmake_opts alone, in the branch it takes for an existing Zephyr build
+# (workspace/zephyr/scripts/west_commands/build.py). These recipes always passed a
+# tail, so every one of these six targets reconfigured sysbuild and both of its
+# images on every invocation, whether or not anything had changed.
+#
+# MEASURED 2026-08-23, same tree and same warm caches, tail forced against tail
+# skipped: a `make build` with nothing changed went 50.2 s -> 2.8 s, and one that
+# rebuilds a single app source file went 53.0 s -> 21.5 s. The ~47 s is three
+# CMake configures -- sysbuild, mcuboot and the lock image -- each regenerating
+# what it had already written. PRISTINE=1 is unaffected and is meant to be: it
+# passes the tail unconditionally, because the directory the cache lives in is
+# about to be deleted.
+#
+# So the tail is passed only when it can matter: no configured build directory,
+# PRISTINE=1, or the arguments changed since the last successful build. CMake
+# keeps them in CMakeCache.txt, and ninja re-runs CMake on its own when a Kconfig
+# fragment, an overlay or a CMakeLists file changes -- that is what
+# CMAKE_CONFIGURE_DEPENDS is for. VERIFIED by touching overlay-thread.conf with no
+# tail: exactly one reconfigure, and a zephyr/.config byte-identical to the one
+# the always-reconfigure recipe writes.
+#
+# The stamp holds a checksum rather than the arguments themselves so the
+# comparison stays a single make word -- the real value carries a
+# semicolon-separated list, quotes and absolute paths, none of which survive
+# make's word splitting intact. cksum because it is POSIX and is therefore also
+# in the NCS container CI builds in.
+#
+# $(call cdk_tail,<args variable>,<build-dir variable>) yields the tail or
+# nothing, and $(call cdk_stamp,...) records what was passed. Both take the NAMES
+# of the two variables, never their values: $(call) splits its arguments on
+# commas, and every one of these argument lists carries absolute paths.
+#
+# Recursive `=` throughout, so the two sub-shells run only while the one recipe
+# being built expands -- `:=` would run them for all six on every `make` in this
+# repo, `make help` included. $(strip) on the freshness test is load-bearing: a
+# line continuation expands to a space, and a lone space is a true condition for
+# $(if), which would skip the tail forever.
+cdk_args_id  = $(firstword $(shell printf '%s' '$($(1))' | cksum))
+cdk_stamp_at = $($(2))/.ultrawidelock-cmake-args
+cdk_fresh    = $(strip $(if $(PRISTINE),,$(if $(wildcard $($(2))/CMakeCache.txt),\
+                 $(filter $(call cdk_args_id,$(1)),\
+                   $(firstword $(shell cat '$(call cdk_stamp_at,$(1),$(2))' 2>/dev/null))))))
+cdk_tail     = $(if $(call cdk_fresh,$(1),$(2)),,-- $($(1)))
+cdk_stamp    = printf '%s\n' '$(call cdk_args_id,$(1))' > '$(call cdk_stamp_at,$(1),$(2))'
+
 ##@ DWM3001CDK  ·  the lock (bare targets mean this board)
 ## build: the DWM3001CDK lock, reader + Matter over Thread  -> build/cdk-matter
+CDK_BUILD_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF)" -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
+                 $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 build:
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_BUILD) $(CDK_APP) \
-	  -- -DEXTRA_CONF_FILE="$(CDK_CONF)" -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
-	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
+	  $(call cdk_tail,CDK_BUILD_ARGS,CDK_BUILD)
+	@$(call cdk_stamp,CDK_BUILD_ARGS,CDK_BUILD)
 	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
 	  --from-config $(CDK_BUILD)/$(CDK_IMAGE)/zephyr/.config
 
@@ -417,16 +467,20 @@ rebuild:
 	@$(MAKE) --no-print-directory build PRISTINE=1
 
 ## reader: the same board WITHOUT Matter        -> build/cdk-reader
+CDK_READER_ARGS = $(CDK_SIGN)
 reader:
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_READER_BUILD) $(CDK_APP) \
-	  -- $(CDK_SIGN)
+	  $(call cdk_tail,CDK_READER_ARGS,CDK_READER_BUILD)
+	@$(call cdk_stamp,CDK_READER_ARGS,CDK_READER_BUILD)
 
 ## selftest: one-shot UWB init self-test at boot  -> build/cdk-selftest
+CDK_SELFTEST_ARGS = -DEXTRA_CONF_FILE=overlays/uwb-selftest.conf $(CDK_SIGN)
 selftest:
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_SELFTEST_BUILD) $(CDK_APP) \
-	  -- -DEXTRA_CONF_FILE=overlays/uwb-selftest.conf $(CDK_SIGN)
+	  $(call cdk_tail,CDK_SELFTEST_ARGS,CDK_SELFTEST_BUILD)
+	@$(call cdk_stamp,CDK_SELFTEST_ARGS,CDK_SELFTEST_BUILD)
 
 ## cirdiag: the Matter image plus an unattended CIR capture cycle  -> build/cdk-cirdiag
 #   Flash it with `flash`, NEVER `flash-erase`: the erase takes the commissioned
@@ -435,12 +489,14 @@ selftest:
 #   dropping $(CDK_DFU) alone silently built an image with no ultrawidelock_dfu module at
 #   all, which is a different image from the one being characterised and cannot
 #   be updated over Bluetooth. If `build` gains a flag, this needs it too.
+CDK_CIRDIAG_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF);overlays/cirdiag.conf" \
+                   -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y $(CDK_CIRDIAG_WINDOWS) \
+                   $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 cirdiag:
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_CIRDIAG_BUILD) $(CDK_APP) \
-	  -- -DEXTRA_CONF_FILE="$(CDK_CONF);overlays/cirdiag.conf" \
-	     -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y $(CDK_CIRDIAG_WINDOWS) \
-	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
+	  $(call cdk_tail,CDK_CIRDIAG_ARGS,CDK_CIRDIAG_BUILD)
+	@$(call cdk_stamp,CDK_CIRDIAG_ARGS,CDK_CIRDIAG_BUILD)
 	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
 	  --from-config $(CDK_CIRDIAG_BUILD)/$(CDK_IMAGE)/zephyr/.config
 
@@ -448,12 +504,14 @@ cirdiag:
 #   Same repetition rule as `cirdiag`: every flag `build` passes is repeated
 #   here on purpose, because dropping one silently characterises a different
 #   image.
+CDK_MLGATE_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF);overlays/mlgate.conf" \
+                  -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
+                  $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 mlgate:
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_MLGATE_BUILD) $(CDK_APP) \
-	  -- -DEXTRA_CONF_FILE="$(CDK_CONF);overlays/mlgate.conf" \
-	     -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
-	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
+	  $(call cdk_tail,CDK_MLGATE_ARGS,CDK_MLGATE_BUILD)
+	@$(call cdk_stamp,CDK_MLGATE_ARGS,CDK_MLGATE_BUILD)
 	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
 	  --from-config $(CDK_MLGATE_BUILD)/$(CDK_IMAGE)/zephyr/.config
 
@@ -462,12 +520,14 @@ mlgate:
 #   Flash this with `make flash CDK_BUILD=build/cdk-anchorlink` and NEVER
 #   flash-erase: the anchor key enrolled from the reader image lives in the
 #   settings partition a full erase takes with it.
+CDK_ANCHORLINK_ARGS = -DEXTRA_CONF_FILE="$(CDK_ANCHORLINK_CONF)" \
+                      -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
+                      $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 anchorlink:
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_ANCHORLINK_BUILD) $(CDK_APP) \
-	  -- -DEXTRA_CONF_FILE="$(CDK_ANCHORLINK_CONF)" \
-	     -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
-	     $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
+	  $(call cdk_tail,CDK_ANCHORLINK_ARGS,CDK_ANCHORLINK_BUILD)
+	@$(call cdk_stamp,CDK_ANCHORLINK_ARGS,CDK_ANCHORLINK_BUILD)
 	@python3 $(REPO_ROOT)/scripts/spake2p_verifier.py \
 	  --from-config $(CDK_ANCHORLINK_BUILD)/$(CDK_IMAGE)/zephyr/.config
 
