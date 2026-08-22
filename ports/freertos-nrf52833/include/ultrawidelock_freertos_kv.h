@@ -1,16 +1,20 @@
 /* SPDX-License-Identifier: ISC */
 
 /*
- * The port's persistent key-value store.
+ * This port's persistent key-value store: the key ids it assigns, and the one
+ * call that is not part of the contract.
  *
- * Two consumers need one on this part: the reader's provisioning blob and
- * OpenThread's settings. Both want small named values that survive a reset and
- * a firmware update, which is what this provides, in the same four physical
- * flash pages the Zephyr oracle reserves for its settings partition.
+ * The contract itself -- the result codes, the key windows, and the five
+ * operations -- lives in modules/ultrawidelock_port/include/ultrawidelock_kv.h
+ * and is the same on every port. It was derived from this file, which reached
+ * the numeric-key design first, so the move onto the seam is a deletion rather
+ * than a translation: what stood here was already the same enum and the same
+ * window bases, spelled twice.
  *
- * Values are addressed by a 16-bit key. Keys are namespaced by their consumer
- * rather than by a string path, because a path costs flash on every write and
- * neither consumer has more than a handful of keys.
+ * The store is four physical flash pages, the same region the Zephyr oracle
+ * reserves for its settings partition. Two consumers need one on this part: the
+ * reader's provisioning blob and OpenThread's settings, with Matter's records
+ * and PSA's trusted storage above them.
  */
 #ifndef ULTRAWIDELOCK_FREERTOS_KV_H
 #define ULTRAWIDELOCK_FREERTOS_KV_H
@@ -18,22 +22,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ultrawidelock_kv.h"
+
 /*
- * Key ranges. The two consumers must not collide, and a range is cheaper to
- * reason about than a registry.
+ * Ids inside the windows ultrawidelock_kv.h reserves. They are assigned here
+ * because this port owns the Matter and PSA storage backends that read them; a
+ * port that implements neither needs none of this file.
  */
-#define ULTRAWIDELOCK_KV_KEY_CRED_PROV 0x0001u
-/* OpenThread's own settings keys are 0x0000..0x00ff; they are offset into this
- * range so they cannot land on a credential key. */
-#define ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE 0x1000u
-#define ULTRAWIDELOCK_KV_KEY_OPENTHREAD_LIMIT 0x1100u
+
 /*
  * Matter's own records, above OpenThread's window. Only the shared Thread
- * transport's SRP host-name suffix lives here so far; it is deliberately NOT
+ * transport's SRP host-name suffix lives at the base: it is deliberately NOT
  * under a tree the factory reset clears, because the SRP client's ECDSA key
  * survives that too and the two have to be erased together or not at all.
  */
-#define ULTRAWIDELOCK_KV_KEY_MATTER_BASE 0x2000u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_SRP_HOST_ID 0x2000u
 /*
  * The operational identity, one record per settings path the fabric store
@@ -70,7 +72,6 @@
 #define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB_LIMIT 0x2085u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 0x2090u
 #define ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL_LIMIT 0x2095u
-#define ULTRAWIDELOCK_KV_KEY_MATTER_LIMIT 0x2100u
 
 /*
  * PSA Internal Trusted Storage, which exists for exactly one reason: OpenThread
@@ -86,62 +87,14 @@
 #define ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR 0x3000u
 #define ULTRAWIDELOCK_KV_KEY_PSA_ITS_SLOT0 0x3001u
 #define ULTRAWIDELOCK_KV_KEY_PSA_ITS_SLOTS 8u
-#define ULTRAWIDELOCK_KV_KEY_PSA_ITS_LIMIT 0x3100u
 
-/* A key no record can carry: erased flash reads as all ones. */
-#define ULTRAWIDELOCK_KV_KEY_NONE 0xffffu
-
-/* The largest single value. Sized by the credential provisioning blob, the biggest
- * thing either consumer stores. */
-#define ULTRAWIDELOCK_KV_VALUE_MAX 768u
-
-enum ultrawidelock_kv_result {
-	ULTRAWIDELOCK_KV_OK = 0,
-	/* No record for that key. Not an error; the caller decides. */
-	ULTRAWIDELOCK_KV_NOT_FOUND = -1,
-	/* The key or length is outside what this store accepts. */
-	ULTRAWIDELOCK_KV_INVALID = -2,
-	/* The live set no longer fits one page, even after compaction. */
-	ULTRAWIDELOCK_KV_FULL = -3,
-	/* The flash refused a read, write, or erase. */
-	ULTRAWIDELOCK_KV_IO = -4,
-	/* Both pages are unreadable or unformatted and could not be recovered. */
-	ULTRAWIDELOCK_KV_CORRUPT = -5,
-};
-
-/**
- * Mount the store, formatting it if no valid page is found.
+/*
+ * Bytes of the active page still available, for headroom reporting.
  *
- * Safe to call more than once; later calls are no-ops. Returns ULTRAWIDELOCK_KV_OK or a
- * negative ultrawidelock_kv_result.
+ * Off the seam on purpose: "the active page" is this backend's own structure,
+ * and a store built on settings or on NVS has no page to report. A caller that
+ * needs it is already writing to this port.
  */
-int ultrawidelock_freertos_kv_init(void);
-
-/**
- * Read a value. On ULTRAWIDELOCK_KV_OK, *length carries the stored length; on entry it
- * carries the capacity of the buffer. A value larger than the buffer is
- * refused with ULTRAWIDELOCK_KV_INVALID and *length set to the stored length, so a
- * caller can size a second attempt.
- *
- * value may be NULL with *length zero to ask only for the stored length.
- */
-int ultrawidelock_freertos_kv_get(uint16_t key, void *value, size_t *length);
-
-/** Write a value, replacing any earlier one for that key. */
-int ultrawidelock_freertos_kv_set(uint16_t key, const void *value, size_t length);
-
-/** Forget one key. ULTRAWIDELOCK_KV_NOT_FOUND if it was not stored. */
-int ultrawidelock_freertos_kv_delete(uint16_t key);
-
-/**
- * Forget everything, leaving a formatted store.
- *
- * This is a factory reset of what this port owns. It is not an erase of the
- * flash region: a caller that wants only its own keys gone must delete them.
- */
-int ultrawidelock_freertos_kv_erase_all(void);
-
-/** Bytes of the active page still available, for headroom reporting. */
 size_t ultrawidelock_freertos_kv_free_bytes(void);
 
 #endif /* ULTRAWIDELOCK_FREERTOS_KV_H */

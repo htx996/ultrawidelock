@@ -114,12 +114,12 @@ static size_t record_well_formed(const uint8_t *record, size_t length)
 static int record_load(uint16_t kv_key, size_t *used)
 {
 	size_t length = sizeof(s_record);
-	int rc = ultrawidelock_freertos_kv_init();
+	int rc = ultrawidelock_kv_init();
 
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		return rc;
 	}
-	rc = ultrawidelock_freertos_kv_get(kv_key, s_record, &length);
+	rc = ultrawidelock_kv_get(kv_key, s_record, &length);
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		return rc;
 	}
@@ -181,7 +181,7 @@ void otPlatSettingsInit(otInstance *instance, const uint16_t *sensitive_keys,
 	(void)sensitive_keys;
 	(void)sensitive_keys_length;
 
-	rc = ultrawidelock_freertos_kv_init();
+	rc = ultrawidelock_kv_init();
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		/*
 		 * Init returns void, so the failure cannot be reported here; it
@@ -267,7 +267,7 @@ otError otPlatSettingsSet(otInstance *instance, uint16_t key, const uint8_t *val
 		memcpy(s_record + ENTRY_HEADER, value, value_length);
 	}
 	return store_result(
-		ultrawidelock_freertos_kv_set(kv_key, s_record, ENTRY_HEADER + (size_t)value_length));
+		ultrawidelock_kv_set(kv_key, s_record, ENTRY_HEADER + (size_t)value_length));
 }
 
 otError otPlatSettingsAdd(otInstance *instance, uint16_t key, const uint8_t *value,
@@ -304,7 +304,7 @@ otError otPlatSettingsAdd(otInstance *instance, uint16_t key, const uint8_t *val
 		memcpy(s_record + used + ENTRY_HEADER, value, value_length);
 	}
 	return store_result(
-		ultrawidelock_freertos_kv_set(kv_key, s_record, used + ENTRY_HEADER + (size_t)value_length));
+		ultrawidelock_kv_set(kv_key, s_record, used + ENTRY_HEADER + (size_t)value_length));
 }
 
 otError otPlatSettingsDelete(otInstance *instance, uint16_t key, int index)
@@ -322,11 +322,11 @@ otError otPlatSettingsDelete(otInstance *instance, uint16_t key, int index)
 	}
 
 	if (index == -1) {
-		rc = ultrawidelock_freertos_kv_init();
+		rc = ultrawidelock_kv_init();
 		if (rc != ULTRAWIDELOCK_KV_OK) {
 			return OT_ERROR_FAILED;
 		}
-		rc = ultrawidelock_freertos_kv_delete(kv_key);
+		rc = ultrawidelock_kv_delete(kv_key);
 		if (rc == ULTRAWIDELOCK_KV_NOT_FOUND) {
 			return OT_ERROR_NOT_FOUND;
 		}
@@ -356,14 +356,14 @@ otError otPlatSettingsDelete(otInstance *instance, uint16_t key, int index)
 		 * it empty, so the key reads as fully deleted — the state the
 		 * stack's Set-after-Delete guarantee is worded around.
 		 */
-		return store_result(ultrawidelock_freertos_kv_delete(kv_key));
+		return store_result(ultrawidelock_kv_delete(kv_key));
 	}
-	return store_result(ultrawidelock_freertos_kv_set(kv_key, s_record, used));
+	return store_result(ultrawidelock_kv_set(kv_key, s_record, used));
 }
 
 /*
  * Factory-reset OpenThread and nothing else. This walks the reserved window
- * and deletes key by key; it must never call ultrawidelock_freertos_kv_erase_all(),
+ * and deletes key by key; it must never call ultrawidelock_kv_erase_all(),
  * because the credential provisioning blob lives in the same region and erasing
  * it would take the reader's provisioned identity and trust anchors with it —
  * the mirror of the argument in ultrawidelock_prov_erase(), which spares these keys so
@@ -377,7 +377,7 @@ void otPlatSettingsWipe(otInstance *instance)
 
 	(void)instance;
 
-	rc = ultrawidelock_freertos_kv_init();
+	rc = ultrawidelock_kv_init();
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_ERROR, OT_SETTINGS_TAG,
 				 "kv init rc=%d; nothing wiped", rc);
@@ -385,7 +385,7 @@ void otPlatSettingsWipe(otInstance *instance)
 	}
 	for (kv_key = ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE;
 	     kv_key < ULTRAWIDELOCK_KV_KEY_OPENTHREAD_LIMIT; kv_key++) {
-		rc = ultrawidelock_freertos_kv_delete(kv_key);
+		rc = ultrawidelock_kv_delete(kv_key);
 		if (rc != ULTRAWIDELOCK_KV_OK && rc != ULTRAWIDELOCK_KV_NOT_FOUND) {
 			ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, OT_SETTINGS_TAG,
 					 "wipe: delete 0x%04x rc=%d", (unsigned)kv_key, rc);

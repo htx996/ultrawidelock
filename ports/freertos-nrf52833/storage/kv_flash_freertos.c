@@ -642,7 +642,7 @@ size_t ultrawidelock_freertos_kv_free_bytes(void)
  * short read, a stale value from the page about to disappear, or an IO error
  * for a key that is present and intact.
  */
-int ultrawidelock_freertos_kv_init(void)
+int ultrawidelock_kv_init(void)
 {
 	bool held = kv_lock_take();
 	int rc = kv_init_unlocked();
@@ -651,7 +651,7 @@ int ultrawidelock_freertos_kv_init(void)
 	return rc;
 }
 
-int ultrawidelock_freertos_kv_get(uint16_t key, void *value, size_t *length)
+int ultrawidelock_kv_get(uint16_t key, void *value, size_t *length)
 {
 	bool held = kv_lock_take();
 	int rc = kv_get_unlocked(key, value, length);
@@ -660,7 +660,7 @@ int ultrawidelock_freertos_kv_get(uint16_t key, void *value, size_t *length)
 	return rc;
 }
 
-int ultrawidelock_freertos_kv_set(uint16_t key, const void *value, size_t length)
+int ultrawidelock_kv_set(uint16_t key, const void *value, size_t length)
 {
 	bool held = kv_lock_take();
 	int rc = kv_set_unlocked(key, value, length);
@@ -669,7 +669,7 @@ int ultrawidelock_freertos_kv_set(uint16_t key, const void *value, size_t length
 	return rc;
 }
 
-int ultrawidelock_freertos_kv_delete(uint16_t key)
+int ultrawidelock_kv_delete(uint16_t key)
 {
 	bool held = kv_lock_take();
 	int rc = kv_delete_unlocked(key);
@@ -678,7 +678,7 @@ int ultrawidelock_freertos_kv_delete(uint16_t key)
 	return rc;
 }
 
-int ultrawidelock_freertos_kv_erase_all(void)
+int ultrawidelock_kv_erase_all(void)
 {
 	bool held = kv_lock_take();
 	int rc = kv_erase_all_unlocked();

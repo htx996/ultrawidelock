@@ -541,9 +541,15 @@ add_library(ultrawidelock_storage STATIC
   # role, below: naming it in two places would put one object in two archives.
 )
 # The provisioning backend implements a contract owned by the shared credential
-# module, not by this port, so the module's public headers are on the path.
+# module, not by this port, so the module's public headers are on the path. The
+# key-value store is the same arrangement one layer down: ultrawidelock_kv.h is
+# the seam every port implements, and ultrawidelock_freertos_kv.h now includes
+# it. PUBLIC because everything that reaches the store -- the credential
+# backend, OpenThread's settings, Matter's fabric records, PSA's trusted
+# storage -- links this target to get there.
 target_include_directories(ultrawidelock_storage PUBLIC
   "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_cred/include"
+  "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_port/include"
 )
 target_link_libraries(ultrawidelock_storage PUBLIC ultrawidelock_radio)
 

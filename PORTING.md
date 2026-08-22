@@ -140,9 +140,12 @@ Where the caps come from, and why they differ:
   `zephyr/include/zephyr/settings/settings.h`, with at most 8 `/`-separated
   levels. Roomy enough that no name here is close to it.
 - **freertos-nrf52833** — no row, because that port has no name to cap. Records
-  are numeric ids (`ULTRAWIDELOCK_KV_KEY_CRED_PROV` = `0x0001u`) in windowed
-  ranges declared in `ports/freertos-nrf52833/include/ultrawidelock_freertos_kv.h`.
-  A new record there takes an id from the right window, not a string.
+  are numeric ids (`ULTRAWIDELOCK_KV_KEY_CRED_PROV` = `0x0001u`) in the windows
+  `modules/ultrawidelock_port/include/ultrawidelock_kv.h` reserves; this port
+  reached that design first and the seam was derived from it.
+  `ports/freertos-nrf52833/include/ultrawidelock_freertos_kv.h` now assigns only
+  the ids inside those windows that this port's own Matter and PSA backends
+  read. A new record takes an id from the right window, not a string.
 
 The three ports share `ultrawidelock_prov.h` and the portable serializer, not
 these names. A single spelling across all three is neither possible nor wanted;

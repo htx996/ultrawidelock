@@ -93,7 +93,7 @@ static int prov_load_locked(struct ultrawidelock_reader_identity *id,
 			    struct ultrawidelock_trust_store *ts)
 {
 	size_t len = sizeof(s_blob);
-	int rc = ultrawidelock_freertos_kv_init();
+	int rc = ultrawidelock_kv_init();
 
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, PROV_TAG,
@@ -102,7 +102,7 @@ static int prov_load_locked(struct ultrawidelock_reader_identity *id,
 		return -1;
 	}
 
-	rc = ultrawidelock_freertos_kv_get(ULTRAWIDELOCK_KV_KEY_CRED_PROV, s_blob, &len);
+	rc = ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_CRED_PROV, s_blob, &len);
 	if (rc == ULTRAWIDELOCK_KV_NOT_FOUND) {
 		/* Never provisioned. Not an error. */
 		ultrawidelock_prov_dev_default(id, ts);
@@ -156,7 +156,7 @@ static int prov_store_locked(const struct ultrawidelock_reader_identity *id,
 			     const struct ultrawidelock_trust_store *ts)
 {
 	size_t len = 0;
-	int rc = ultrawidelock_freertos_kv_init();
+	int rc = ultrawidelock_kv_init();
 
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, PROV_TAG, "kv init rc=%d", rc);
@@ -166,7 +166,7 @@ static int prov_store_locked(const struct ultrawidelock_reader_identity *id,
 		return -1;
 	}
 
-	rc = ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, s_blob, len);
+	rc = ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, s_blob, len);
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, PROV_TAG, "kv set rc=%d", rc);
 		return rc;
@@ -200,7 +200,7 @@ int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,
  */
 static int prov_erase_locked(void)
 {
-	int rc = ultrawidelock_freertos_kv_init();
+	int rc = ultrawidelock_kv_init();
 
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_ERROR, PROV_TAG,
@@ -208,7 +208,7 @@ static int prov_erase_locked(void)
 		return rc;
 	}
 
-	rc = ultrawidelock_freertos_kv_delete(ULTRAWIDELOCK_KV_KEY_CRED_PROV);
+	rc = ultrawidelock_kv_delete(ULTRAWIDELOCK_KV_KEY_CRED_PROV);
 	if (rc == ULTRAWIDELOCK_KV_NOT_FOUND) {
 		/* Already absent. A reset that had nothing to undo succeeded. */
 		rc = ULTRAWIDELOCK_KV_OK;
