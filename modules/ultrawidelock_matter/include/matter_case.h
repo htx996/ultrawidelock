@@ -28,6 +28,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* MATTER_MAX_CATS: the Sigma3 result carries the tags out of the NOC it opened. */
+#include "matter_fabric.h"
+
 #include "matter_status.h"
 
 #ifdef __cplusplus
@@ -189,6 +192,9 @@ struct matter_case_sigma3_out {
 	uint64_t fabric_id;
 	/** The initiator's operational public key, out of the NOC it sent. */
 	uint8_t public_key[MATTER_CASE_PUBKEY_LEN];
+	/** Its CASE Authenticated Tags, which decide what an ACL grants it. */
+	uint32_t cats[MATTER_MAX_CATS];
+	uint8_t n_cats;
 };
 
 /** What opening a Sigma3 needs, all of it already in hand by then. */

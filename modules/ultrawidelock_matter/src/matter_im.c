@@ -605,6 +605,8 @@ struct chunk_ctx {
 	uint16_t emitted; /**< reports written into this chunk */
 	bool full;        /**< the next report did not fit; stop */
 	size_t reserve;   /**< bytes to keep free for the message's tail */
+	bool have_stuck;  /**< a report overflowed an otherwise empty chunk */
+	struct matter_im_path stuck; /**< and this is the path that did it */
 };
 
 static int report_encode(const struct matter_im_server *srv, const struct matter_im_read *req,
@@ -655,6 +657,14 @@ static void emit(struct matter_tlv_writer *w, const struct matter_im_server *srv
 		w->rc = save_rc;
 		w->depth = save_depth;
 		cc->full = true;
+		/* Nothing emitted yet means this chunk started empty, so the
+		 * report is larger than a whole message and no later chunk can
+		 * carry it either. Keep the path: it is the only evidence of
+		 * WHICH attribute is oversized. */
+		if (cc->emitted == 0u && !cc->have_stuck) {
+			cc->stuck = *p;
+			cc->have_stuck = true;
+		}
 		return;
 	}
 	cc->emitted++;
@@ -854,6 +864,12 @@ int matter_im_report_data_chunk(const struct matter_im_server *srv,
 	rc = report_encode(srv, req, out, cap, out_len, stats, &cc);
 	*more = cc.full;
 	*emitted = cc.emitted;
+	if (stats != NULL && cc.have_stuck && cc.emitted == 0u) {
+		stats->have_stuck = true;
+		stats->stuck_endpoint = cc.stuck.endpoint;
+		stats->stuck_cluster = cc.stuck.cluster;
+		stats->stuck_attribute = cc.stuck.attribute;
+	}
 	return rc;
 }
 

@@ -1036,6 +1036,29 @@ struct matter_device_info {
 	 * matter_im_command_fields_fn is pure and cannot recompute it.
 	 */
 	uint8_t last_commissioning_error;
+	/**
+	 * The CASE Authenticated Tags of whoever is asking, from the NOC it
+	 * proved in Sigma3. Empty over PASE, which has no operational identity.
+	 *
+	 * An ACL subject in the CAT range names a GROUP, so a controller is only
+	 * matched against these -- never against its node id, which no CAT
+	 * subject can ever equal.
+	 */
+	uint32_t accessing_cats[MATTER_MAX_CATS];
+	uint8_t accessing_n_cats;
+	/**
+	 * The fabric index whose CommissioningComplete last succeeded, or 0.
+	 *
+	 * Exists so a RETRANSMITTED CommissioningComplete can be answered the
+	 * same way as the one it repeats. The command disarms the fail-safe as
+	 * its substance, so the second copy arrives to a node that no longer has
+	 * one and would otherwise be told NO_FAIL_SAFE -- a controller reads
+	 * that as the commissioning having failed and abandons the fabric it
+	 * just finished building. Cleared when a new fail-safe is armed, which
+	 * is the point a fresh transaction begins and the old answer stops being
+	 * the truth.
+	 */
+	uint8_t last_completed_fabric_index;
 
 	/*
 	 * ---- attestation --------------------------------------------------

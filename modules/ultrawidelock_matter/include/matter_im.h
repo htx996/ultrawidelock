@@ -605,6 +605,17 @@ struct matter_im_report_stats {
 	 * looking to the commissioner like an empty cluster.
 	 */
 	uint8_t unexpanded_wildcard;
+	/**
+	 * The path whose report did not fit an entire empty message.
+	 *
+	 * Only set when a chunk emitted nothing at all, which is the one case
+	 * chunking cannot rescue. Naming it is the difference between a bug
+	 * report and a re-subscribe loop with no stated cause.
+	 */
+	bool have_stuck;
+	uint16_t stuck_endpoint;
+	uint32_t stuck_cluster;
+	uint32_t stuck_attribute;
 };
 
 /**

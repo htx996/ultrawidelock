@@ -168,10 +168,23 @@ static size_t fabric_slot_for_request(const struct matter_device_info *info, uin
 #define MATTER_AC_PRIVILEGE_OPERATE     3u
 #define MATTER_AC_PRIVILEGE_ADMINISTER  5u
 #define MATTER_AC_AUTH_MODE_CASE        2u
-#define MATTER_AC_ENTRY_PRIVILEGE_TAG   0u
-#define MATTER_AC_ENTRY_AUTH_MODE_TAG   1u
-#define MATTER_AC_ENTRY_SUBJECTS_TAG    2u
-#define MATTER_AC_ENTRY_TARGETS_TAG     3u
+/**
+ * The high half of a subject id that names a CASE Authenticated Tag.
+ *
+ * Operational node ids never reach it, so both subject kinds share one field
+ * without ambiguity: below the prefix a subject is a node, at it a tag group.
+ */
+#define MATTER_ACL_CAT_PREFIX           0xFFFFFFFDu
+/*
+ * AccessControlEntryStruct numbers its fields from 1 (Privilege=1, AuthMode=2,
+ * Subjects=3, Targets=4) -- verified against the entry a real commissioner
+ * writes. Numbered from 0 these matched nothing, so every entry silently
+ * granted nobody and all access fell through to the case-admin bootstrap.
+ */
+#define MATTER_AC_ENTRY_PRIVILEGE_TAG   1u
+#define MATTER_AC_ENTRY_AUTH_MODE_TAG   2u
+#define MATTER_AC_ENTRY_SUBJECTS_TAG    3u
+#define MATTER_AC_ENTRY_TARGETS_TAG     4u
 #define MATTER_AC_TARGET_CLUSTER_TAG    0u
 #define MATTER_AC_TARGET_ENDPOINT_TAG   1u
 #define MATTER_AC_TARGET_DEVICE_TAG     2u
@@ -179,7 +192,49 @@ static size_t fabric_slot_for_request(const struct matter_device_info *info, uin
 #define MATTER_DEVICE_TYPE_ROOT_NODE    0x0016u
 #define MATTER_DEVICE_TYPE_DOOR_LOCK    0x000Au
 
-static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id)
+/**
+ * Does @p subject, read out of an ACL entry, name this accessor?
+ *
+ * Two kinds of subject live in the same 64-bit field. Below the CAT range it is
+ * an operational node id and the test is equality. Inside the range
+ * 0xFFFFFFFD_00000000..0xFFFFFFFD_FFFFFFFF the low 32 bits are a CASE
+ * Authenticated Tag: identifier in the high half, version in the low.
+ *
+ * A CAT matches when the accessor's NOC carries the SAME identifier at a
+ * version at least the one the entry asks for -- greater-or-equal, so that
+ * re-issuing controllers at a higher version keeps old entries working while
+ * bumping the entry's version retires every controller below it. Equality
+ * would make the version field pointless; less-than would invert it.
+ */
+static bool acl_subject_matches(uint64_t subject, uint64_t node_id, const uint32_t *cats,
+				uint8_t n_cats)
+{
+	uint32_t tag;
+	uint16_t want_id;
+	uint16_t want_ver;
+	uint8_t i;
+
+	if ((subject >> 32) != MATTER_ACL_CAT_PREFIX) {
+		return subject == node_id;
+	}
+	tag = (uint32_t)subject;
+	want_id = (uint16_t)(tag >> 16);
+	want_ver = (uint16_t)tag;
+	/* Version 0 is not a valid tag; an entry carrying one matches nothing
+	 * rather than everything. */
+	if (want_ver == 0u || cats == NULL) {
+		return false;
+	}
+	for (i = 0u; i < n_cats && i < MATTER_MAX_CATS; i++) {
+		if ((uint16_t)(cats[i] >> 16) == want_id && (uint16_t)cats[i] >= want_ver) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id,
+			       const uint32_t *cats, uint8_t n_cats)
 {
 	bool match = false;
 
@@ -199,7 +254,8 @@ static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id)
 		if (rc != MATTER_OK) {
 			return false;
 		}
-		if (matter_tlv_get_u64(r, &subject) == MATTER_OK && subject == node_id) {
+		if (matter_tlv_get_u64(r, &subject) == MATTER_OK &&
+		    acl_subject_matches(subject, node_id, cats, n_cats)) {
 			match = true;
 		}
 	}
@@ -288,7 +344,8 @@ static bool acl_targets_match(struct matter_tlv_reader *r, uint16_t endpoint, ui
 }
 
 static bool acl_entry_grants(struct matter_tlv_reader *r, uint64_t node_id,
-			     uint8_t required_privilege, uint16_t endpoint, uint32_t cluster)
+			     const uint32_t *cats, uint8_t n_cats, uint8_t required_privilege,
+			     uint16_t endpoint, uint32_t cluster)
 {
 	uint64_t privilege = 0u;
 	uint64_t auth_mode = 0u;
@@ -316,7 +373,7 @@ static bool acl_entry_grants(struct matter_tlv_reader *r, uint64_t node_id,
 		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_AUTH_MODE_TAG)) {
 			have_auth_mode = matter_tlv_get_u64(r, &auth_mode) == MATTER_OK;
 		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_SUBJECTS_TAG)) {
-			subjects_match = acl_subjects_match(r, node_id);
+			subjects_match = acl_subjects_match(r, node_id, cats, n_cats);
 		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_TARGETS_TAG)) {
 			targets_match = acl_targets_match(r, endpoint, cluster);
 		}
@@ -362,8 +419,9 @@ static bool fabric_slot_has_privilege(const struct matter_device_info *info, siz
 		if (rc != MATTER_OK) {
 			return false;
 		}
-		if (acl_entry_grants(&r, info->accessing_node_id, required_privilege,
-				     endpoint, cluster)) {
+		if (acl_entry_grants(&r, info->accessing_node_id, info->accessing_cats,
+				     info->accessing_n_cats, required_privilege, endpoint,
+				     cluster)) {
 			return true;
 		}
 	}
@@ -2842,6 +2900,27 @@ static uint8_t clear_user(struct matter_device_info *info, const struct matter_i
 							     : MATTER_IM_STATUS_FAILURE;
 }
 
+/**
+ * True when @p index names a fabric this node has COMMITTED (not merely staged
+ * inside a live fail-safe). Used to decide whether a repeated
+ * CommissioningComplete is a retransmission of one that already succeeded.
+ */
+static bool fabric_index_committed(const struct matter_device_info *info, uint8_t index)
+{
+	size_t i;
+
+	if (index == 0u) {
+		return false;
+	}
+	for (i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if ((info->committed_slots & MATTER_FABRIC_SLOT_BIT(i)) != 0u &&
+		    info->fabrics[i].index == index) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *response_command)
 {
 	struct matter_device_info *info = (struct matter_device_info *)ctx;
@@ -3046,6 +3125,10 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 			if (!info->attempt.active) {
 				memset(&info->attempt, 0, sizeof(info->attempt));
 				info->attempt.active = true;
+				/* A new transaction: whatever completed before
+				 * is no longer what a repeat would be asking
+				 * about. */
+				info->last_completed_fabric_index = 0u;
 			}
 			if (info->commissioning_hooks != NULL &&
 			    info->commissioning_hooks->failsafe_arm != NULL &&
@@ -3100,6 +3183,21 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		 */
 		if (!info->attempt.active || info->accessing_fabric_index == 0u ||
 		    info->accessing_node_id == 0u) {
+			/*
+			 * A retransmission of the command that just succeeded,
+			 * not a new one. MRP cannot absorb it: the commissioner
+			 * re-sends under a fresh message counter once its retry
+			 * timer expires, so the replay window lets it through
+			 * and it lands here with the fail-safe already disarmed.
+			 * Answering OK repeats the answer that was lost; the
+			 * command is idempotent and its whole effect is done.
+			 */
+			if (info->accessing_fabric_index != 0u &&
+			    info->accessing_fabric_index == info->last_completed_fabric_index &&
+			    fabric_index_committed(info, info->accessing_fabric_index)) {
+				info->last_commissioning_error = MATTER_COMMISSIONING_OK;
+				return MATTER_IM_STATUS_SUCCESS;
+			}
 			info->last_commissioning_error = MATTER_COMMISSIONING_NO_FAIL_SAFE;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
@@ -3143,6 +3241,7 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 		    info->commissioning_hooks->failsafe_cancel != NULL) {
 			info->commissioning_hooks->failsafe_cancel(info->commissioning_hooks->ctx);
 		}
+		info->last_completed_fabric_index = info->accessing_fabric_index;
 		info->last_commissioning_error = MATTER_COMMISSIONING_OK;
 		return MATTER_IM_STATUS_SUCCESS;
 	}

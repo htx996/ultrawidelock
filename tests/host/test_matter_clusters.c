@@ -143,6 +143,47 @@ static void fill_info(struct matter_device_info *info)
 
 /* A byte pattern that differs per field, so a handler that mixes two of them up
  * fails rather than passing on two buffers that happen to match. */
+/**
+ * One ACL entry granting @p privilege to @p subject over every target.
+ *
+ * Targets are null, which the spec reads as "all", so a test built on this
+ * turns entirely on whether the SUBJECT matched -- which is the thing under
+ * test and the thing that was wrong.
+ */
+static size_t acl_one_entry(uint8_t *buf, size_t cap, uint64_t subject, uint8_t privilege)
+{
+	struct matter_tlv_writer w;
+	size_t n = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_ARRAY);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1u), privilege);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2u), 2u); /* auth mode CASE */
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(3u), MATTER_TLV_ARRAY);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_ANON, subject);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(4u));
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+	T_EQ("acl encoded", matter_tlv_writer_finish(&w, &n), MATTER_OK);
+	return n;
+}
+
+/** Is the accessor allowed an ADMINISTER-gated Door Lock command right now? */
+static bool lock_admin_allowed(struct matter_im_server *srv)
+{
+	struct matter_im_invoke inv;
+	uint32_t response = 0u;
+
+	memset(&inv, 0, sizeof(inv));
+	inv.endpoint = MATTER_ENDPOINT_LOCK;
+	inv.cluster = MATTER_CLUSTER_DOOR_LOCK;
+	inv.command = MATTER_CMD_DL_GET_USER;
+	inv.has_fields = false;
+	return srv->command(srv->ctx, &inv, &response) != MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
+}
+
 static void pattern(uint8_t *dst, size_t len, uint8_t seed)
 {
 	size_t i;
@@ -273,20 +314,20 @@ static size_t build_acl(uint8_t *buf, size_t cap, uint8_t privilege, uint64_t su
 	matter_tlv_writer_init(&w, buf, cap);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2u), MATTER_TLV_ARRAY);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
-	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), privilege);
-	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1u), 2u); /* CASE */
-	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2u), MATTER_TLV_ARRAY);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1u), privilege);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2u), 2u); /* CASE */
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(3u), MATTER_TLV_ARRAY);
 	(void)matter_tlv_put_u64(&w, MATTER_TLV_ANON, subject);
 	(void)matter_tlv_end_container(&w);
 	if (scoped) {
-		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(3u), MATTER_TLV_ARRAY);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(4u), MATTER_TLV_ARRAY);
 		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
 		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), cluster);
 		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1u), endpoint);
 		(void)matter_tlv_end_container(&w);
 		(void)matter_tlv_end_container(&w);
 	} else {
-		(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(3u));
+		(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(4u));
 	}
 	(void)matter_tlv_end_container(&w);
 	(void)matter_tlv_end_container(&w);
@@ -346,6 +387,122 @@ void test_matter_clusters(void)
 	pattern(verification, sizeof(verification), 0x40u);
 	pattern(group_id, sizeof(group_id), 0x80u);
 	pattern(grk, sizeof(grk), 0xC0u);
+
+	t_group("an ACL subject naming a CASE Authenticated Tag");
+	{
+		/*
+		 * Apple grants its controllers as a GROUP: one ACL entry whose
+		 * subject is a CAT, shared by the phone and the home hub. Matched
+		 * by equality against a node id it names nobody, so the hub was
+		 * refused every Door Lock command -- which stopped it installing
+		 * the endpoint key, and no phone could ever open the lock.
+		 */
+		uint8_t acl[128];
+		size_t acl_len;
+		const uint64_t cat_subject = (UINT64_C(0xFFFFFFFD) << 32) | 0x00AB0002u;
+
+		reset_doubles();
+		fill_info(&info);
+		matter_clusters_init(&srv, &info);
+		info.fabrics[0].index = 1u;
+		info.fabrics[0].case_admin_subject = 0u; /* no bootstrap shortcut */
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		info.accessing_fabric_index = 1u;
+		info.accessing_node_id = 0x1122334455667788u;
+
+		acl_len = acl_one_entry(acl, sizeof(acl), cat_subject, 5u /* ADMINISTER */);
+		memcpy(info.fabric_acls[0].data, acl, acl_len);
+		info.fabric_acls[0].len = acl_len;
+
+		info.accessing_n_cats = 0u;
+		T_OK("no tags at all is refused", !lock_admin_allowed(&srv));
+
+		info.accessing_cats[0] = 0x00AB0002u;
+		info.accessing_n_cats = 1u;
+		T_OK("the same identifier at the same version is allowed",
+		     lock_admin_allowed(&srv));
+
+		/* Greater-or-equal: re-issuing a controller at a higher version
+		 * must not orphan the entries already granted to it. */
+		info.accessing_cats[0] = 0x00AB0009u;
+		T_OK("a higher version still satisfies the entry", lock_admin_allowed(&srv));
+
+		/* And the other way is what makes the version field useful: raising
+		 * an entry's version retires every controller below it. */
+		info.accessing_cats[0] = 0x00AB0001u;
+		T_OK("a lower version does not", !lock_admin_allowed(&srv));
+
+		info.accessing_cats[0] = 0x00CD0002u;
+		T_OK("a different identifier does not", !lock_admin_allowed(&srv));
+
+		/* Version 0 is not a valid tag; an entry carrying one must match
+		 * nothing rather than everything. */
+		acl_len = acl_one_entry(acl, sizeof(acl), (UINT64_C(0xFFFFFFFD) << 32) | 0x00AB0000u,
+					5u);
+		memcpy(info.fabric_acls[0].data, acl, acl_len);
+		info.fabric_acls[0].len = acl_len;
+		info.accessing_cats[0] = 0x00AB0000u;
+		T_OK("version 0 matches nothing", !lock_admin_allowed(&srv));
+
+		/* A plain node-id subject still works exactly as before. */
+		acl_len = acl_one_entry(acl, sizeof(acl), 0x1122334455667788u, 5u);
+		memcpy(info.fabric_acls[0].data, acl, acl_len);
+		info.fabric_acls[0].len = acl_len;
+		info.accessing_n_cats = 0u;
+		T_OK("a node-id subject is unaffected", lock_admin_allowed(&srv));
+	}
+
+	t_group("the ACL entry Apple actually writes");
+	{
+		/*
+		 * Captured on the bench, byte for byte: one entry, ADMINISTER,
+		 * CASE, subjects [the admin tag 0x41ED v1, the home hub by node
+		 * id], targets null. The encoder-built entries above cannot
+		 * catch a parser that disagrees with the spec about the field
+		 * ids, because the helper and the parser would share the
+		 * mistake -- and they did: privilege is field 1 on the wire,
+		 * and a parser reading field 0 granted nothing to anybody.
+		 */
+		static const uint8_t k_wire_acl[] = {
+			0x36, 0x02,			/* list, the write's data tag */
+			0x15,				/* entry */
+			0x24, 0x01, 0x05,		/* privilege 5 ADMINISTER */
+			0x24, 0x02, 0x02,		/* auth mode 2 CASE */
+			0x36, 0x03,			/* subjects */
+			0x07, 0x01, 0x00, 0xed, 0x41, 0xfd, 0xff, 0xff, 0xff,
+			0x06, 0xb0, 0x5a, 0xf0, 0x4e,
+			0x18,
+			0x34, 0x04,			/* targets: null, all */
+			0x18, 0x18,
+		};
+
+		reset_doubles();
+		fill_info(&info);
+		matter_clusters_init(&srv, &info);
+		info.fabrics[0].index = 1u;
+		info.fabrics[0].case_admin_subject = 0u; /* no bootstrap shortcut */
+		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u);
+		info.accessing_fabric_index = 1u;
+		memcpy(info.fabric_acls[0].data, k_wire_acl, sizeof(k_wire_acl));
+		info.fabric_acls[0].len = sizeof(k_wire_acl);
+
+		/* The home hub, named by plain node id. */
+		info.accessing_node_id = 0x4EF05AB0u;
+		info.accessing_n_cats = 0u;
+		T_OK("the node its subjects name is allowed", lock_admin_allowed(&srv));
+
+		/* The phone's controller, named by the tag. */
+		info.accessing_node_id = 0xA8946EF9u;
+		info.accessing_cats[0] = 0x41ED0001u;
+		info.accessing_n_cats = 1u;
+		T_OK("a controller presenting the named tag is allowed",
+		     lock_admin_allowed(&srv));
+
+		/* Anyone else. */
+		info.accessing_node_id = 0x1234u;
+		info.accessing_n_cats = 0u;
+		T_OK("a stranger is refused", !lock_admin_allowed(&srv));
+	}
 
 	t_group("SetAliroReaderConfig accepts a well-formed identity");
 	{

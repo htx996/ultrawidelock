@@ -218,6 +218,14 @@ struct matter_exchange_in {
 	/** True when the peer acknowledged something of ours. */
 	bool carries_ack;
 	uint32_t acked_counter;
+	/**
+	 * This message's own counter, the value the replay window judges.
+	 *
+	 * Exposed so a caller can say whether a repeated request was a
+	 * retransmission of one message or a genuinely new one -- the two look
+	 * identical at the application and want opposite answers.
+	 */
+	uint32_t message_counter;
 };
 
 /** Lifecycle of one caller-owned outbound packet slot. */
@@ -460,9 +468,10 @@ int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
  * functions below are for the one case where it was not: a CASE session this
  * node started, so it could send a command to another node.
  *
- * Compiled only into a client build (see matter_clusters.h on
- * MATTER_FEATURE_CLIENT), so an image without the client preprocesses this
- * file to exactly what it was before. That is why they are here rather than in
+ * matter_exchange_open_initiator() is compiled only into a client build (see
+ * matter_clusters.h on MATTER_FEATURE_CLIENT); matter_exchange_ack_initiator()
+ * is not guarded, because subscription reports ride initiator exchanges in
+ * every image. That is why they are here rather than in
  * a file of their own: they need frame()'s neighbours -- the header encoders
  * and the seal -- and everything in this file is already about that.
  */
@@ -475,6 +484,28 @@ int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
 #ifndef MATTER_FEATURE_CLIENT
 #define MATTER_FEATURE_CLIENT 0
 #endif
+
+/*
+ * Unguarded, unlike its neighbours below: the server's subscription reports
+ * also ride exchanges this node opens, so every image needs this ack.
+ */
+/**
+ * Frame a standalone acknowledgement on an exchange this node OPENED.
+ *
+ * matter_exchange_standalone_ack() cannot do this and must not be taught to:
+ * it frames with I clear, which is right for every exchange the peer opened
+ * and wrong for one this node did. CHIP matches an incoming message to an
+ * exchange by id AND by the initiator flag being the opposite of its own
+ * (ExchangeContext::MatchExchange), so an acknowledgement sent with I clear on
+ * this node's own exchange matches nothing at the peer and is dropped as
+ * unsolicited -- and the peer goes on retransmitting the message it is meant to
+ * be acknowledging.
+ *
+ * @return MATTER_OK; MATTER_E_STATE when nothing is pending or the session is
+ *         not secure; MATTER_E_NOSPACE; or MATTER_E_INVAL.
+ */
+int matter_exchange_ack_initiator(struct matter_exchange *x, uint16_t exchange_id, uint8_t *out,
+				  size_t cap, size_t *out_len);
 
 #if MATTER_FEATURE_CLIENT
 
@@ -501,23 +532,6 @@ int matter_exchange_open_initiator(struct matter_exchange *x, uint16_t local_id,
 				   uint16_t exchange_id, const struct matter_session_keys *keys,
 				   uint32_t entropy);
 
-/**
- * Frame a standalone acknowledgement on an exchange this node OPENED.
- *
- * matter_exchange_standalone_ack() cannot do this and must not be taught to:
- * it frames with I clear, which is right for every exchange the peer opened
- * and wrong for one this node did. CHIP matches an incoming message to an
- * exchange by id AND by the initiator flag being the opposite of its own
- * (ExchangeContext::MatchExchange), so an acknowledgement sent with I clear on
- * this node's own exchange matches nothing at the peer and is dropped as
- * unsolicited -- and the peer goes on retransmitting the message it is meant to
- * be acknowledging.
- *
- * @return MATTER_OK; MATTER_E_STATE when nothing is pending or the session is
- *         not secure; MATTER_E_NOSPACE; or MATTER_E_INVAL.
- */
-int matter_exchange_ack_initiator(struct matter_exchange *x, uint16_t exchange_id, uint8_t *out,
-				  size_t cap, size_t *out_len);
 
 #endif /* MATTER_FEATURE_CLIENT */
 

@@ -63,9 +63,20 @@
 #define MATTER_INSTANCE_NAME_LEN 34u
 
 /** What matter_cert_parse() found. Absent fields leave their have_* flag false. */
+/**
+ * CASE Authenticated Tags a NOC may carry.
+ *
+ * Three is the spec's cap (credentials/CHIPCert.h, kMaxSubjectCATAttributeCount).
+ * Each is a uint32: identifier in the high 16 bits, version in the low 16.
+ */
+#define MATTER_MAX_CATS 3u
+
 struct matter_cert_info {
 	uint64_t node_id;
 	uint64_t fabric_id;
+	/** CASE Authenticated Tags out of the subject DN, in the order found. */
+	uint32_t cats[MATTER_MAX_CATS];
+	uint8_t n_cats;
 	uint8_t public_key[MATTER_FABRIC_PUBKEY_LEN];
 	bool have_node_id;
 	bool have_fabric_id;

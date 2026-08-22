@@ -235,6 +235,20 @@ static size_t fields_bytes(uint8_t *buf, size_t cap, uint8_t tag, const uint8_t 
 	return n;
 }
 
+/** ArmFailSafe's expiry seconds, its only argument this node reads. */
+static size_t fields_failsafe(uint8_t *buf, size_t cap, uint16_t expiry_s)
+{
+	struct matter_tlv_writer w;
+	size_t n = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(1u), MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), expiry_s);
+	(void)matter_tlv_end_container(&w);
+	T_EQ("fields encoded", matter_tlv_writer_finish(&w, &n), MATTER_OK);
+	return n;
+}
+
 /** AddNOC's five arguments, with the ICAC omitted the way Apple omits it. */
 static size_t fields_addnoc(uint8_t *buf, size_t cap, const uint8_t *noc, size_t noc_len,
 			    const uint8_t *ipk, size_t ipk_len)
@@ -563,6 +577,56 @@ void test_matter_addnoc(void)
 		T_OK("successful durability disarms the attempt", !dev.attempt.active);
 		T_EQ("both fabrics are now committed", dev.committed_slots,
 		     MATTER_FABRIC_SLOT_BIT(0u) | MATTER_FABRIC_SLOT_BIT(1u));
+	}
+
+	t_group("a retransmitted CommissioningComplete repeats its answer");
+	{
+		/*
+		 * Measured against a real controller: the response to the first
+		 * copy was slower than the commissioner's retry timer, so it
+		 * re-sent under a NEW message counter -- past the replay window,
+		 * into a node whose fail-safe the first copy had already
+		 * disarmed. Answering NO_FAIL_SAFE there made it abandon the
+		 * fabric it had just finished building, and every later step
+		 * (the reader config, the endpoint key, the walk-up) never ran.
+		 */
+		invoke_init(&inv, MATTER_CMD_GC_COMMISSIONING_COMPLETE, NULL, 0u);
+		inv.cluster = MATTER_CLUSTER_GENERAL_COMMISSIONING;
+		inv.has_fields = false;
+
+		T_OK("the fail-safe is already disarmed", !dev.attempt.active);
+		T_EQ("the repeat is answered", srv.command(srv.ctx, &inv, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and answered OK, not NO_FAIL_SAFE", dev.last_commissioning_error,
+		     MATTER_COMMISSIONING_OK);
+		T_EQ("without disturbing what is committed", dev.committed_slots,
+		     MATTER_FABRIC_SLOT_BIT(0u) | MATTER_FABRIC_SLOT_BIT(1u));
+
+		/* Only for the fabric that actually completed. */
+		dev.accessing_fabric_index = 1u;
+		T_EQ("a different fabric is answered", srv.command(srv.ctx, &inv, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("but still told NO_FAIL_SAFE", dev.last_commissioning_error,
+		     MATTER_COMMISSIONING_NO_FAIL_SAFE);
+		dev.accessing_fabric_index = 2u;
+
+		/* And only until the next transaction begins. */
+		{
+			uint8_t fs[32];
+			size_t fs_len = fields_failsafe(fs, sizeof(fs), 60u);
+
+			/* The group memsets dev, so the ceiling ArmFailSafe
+			 * checks the expiry against is 0 until it is set. */
+			dev.failsafe_max_s = 900u;
+			invoke_init(&inv, MATTER_CMD_GC_ARM_FAIL_SAFE, fs, fs_len);
+			inv.cluster = MATTER_CLUSTER_GENERAL_COMMISSIONING;
+			T_EQ("arming a new fail-safe is answered",
+			     srv.command(srv.ctx, &inv, &response), MATTER_IM_STATUS_SUCCESS);
+			T_EQ("it armed", (long)dev.last_commissioning_error,
+			     (long)MATTER_COMMISSIONING_OK);
+			T_EQ("which forgets the completed fabric",
+			     dev.last_completed_fabric_index, 0u);
+		}
 	}
 	dev = saved_dev;
 

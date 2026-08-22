@@ -539,6 +539,8 @@ int matter_case_sigma3_open(const struct matter_case_sigma3_in *in, const uint8_
 
 	out->node_id = cert.node_id;
 	out->fabric_id = cert.fabric_id;
+	memcpy(out->cats, cert.cats, sizeof(out->cats));
+	out->n_cats = cert.n_cats;
 	memcpy(out->public_key, cert.public_key, MATTER_CASE_PUBKEY_LEN);
 	return MATTER_OK;
 }

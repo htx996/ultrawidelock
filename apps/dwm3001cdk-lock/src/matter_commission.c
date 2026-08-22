@@ -129,6 +129,28 @@ static void fabric_snapshot_refresh_owned(void)
 }
 static struct matter_im_server s_im;
 
+/*
+ * A refused command is invisible in this log: the "invoke:" line prints for
+ * every request, the refusal travels as an IM status the encoder writes and
+ * nothing here reads. That hid ADMINISTER denials for a whole bench evening --
+ * a controller whose SetAliroReaderConfig and GetUser are refused just stops
+ * enrolling, and the log looks exactly like the controller losing interest.
+ */
+static matter_im_command_fn s_cluster_command;
+
+static uint8_t command_status_logged(void *ctx, const struct matter_im_invoke *inv,
+				     uint32_t *response_command)
+{
+	uint8_t st = s_cluster_command(ctx, inv, response_command);
+
+	if (st != MATTER_IM_STATUS_SUCCESS) {
+		LOG_WRN("  -> refused, status 0x%02x (node %08x%08x)", st,
+			(unsigned int)(s_info.accessing_node_id >> 32),
+			(unsigned int)s_info.accessing_node_id);
+	}
+	return st;
+}
+
 /**
  * Framed reply: both headers, the largest message, and the AEAD tag.
  *
@@ -859,6 +881,14 @@ static bool s_case_ready[MATTER_CASE_SESSIONS];
  */
 static uint8_t s_case_fabric[MATTER_CASE_SESSIONS];
 /**
+ * The CASE Authenticated Tags each peer proved in its Sigma3.
+ *
+ * Kept per slot rather than on the exchange: the exchange carries what framing
+ * needs, and this is only ever read when a command is judged against the ACL.
+ */
+static uint32_t s_case_cats[MATTER_CASE_SESSIONS][MATTER_MAX_CATS];
+static uint8_t s_case_n_cats[MATTER_CASE_SESSIONS];
+/**
  * The slot serving the datagram in flight. Valid only while s_thread_reply is
  * set, which is the whole time a reply can be built.
  *
@@ -1163,7 +1193,14 @@ static ultrawidelock_sem_t s_fab_done;
 static void fab_store_work_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
-	ultrawidelock_mutex_lock(&s_owner_lock);
+	/* Deliberately does not take s_owner_lock. Every caller of
+	 * commissioning_fabric_store() is an Interaction Model command or
+	 * attribute write, which run under that lock, and the caller then
+	 * blocks on s_fab_done until this returns. Taking the lock here would
+	 * wait on the one thread that is waiting on us: a self-deadlock that
+	 * expired as FAB_STORE_TIMEOUT_MS and failed CommissioningComplete.
+	 * The submitter's lock IS this worker's mutual exclusion -- the baton
+	 * is handed over for the duration, not shared. */
 	s_fab_request.result = -EIO;
 	for (uint8_t attempt = 0u; attempt < FAB_STORE_ATTEMPTS; attempt++) {
 		if (s_fab_request.clear_reader) {
@@ -1181,7 +1218,6 @@ static void fab_store_work_fn(struct k_work *w)
 			break;
 		}
 	}
-	ultrawidelock_mutex_unlock(&s_owner_lock);
 	ultrawidelock_sem_give(&s_fab_done);
 }
 static K_WORK_DEFINE(s_fab_store_work, fab_store_work_fn);
@@ -1222,13 +1258,28 @@ static int commissioning_fabric_store(void *ctx, const struct matter_device_info
 		LOG_ERR("Matter identity mutation not persisted (%d)", s_fab_request.result);
 		return MATTER_E_STATE;
 	}
+	if (operation == MATTER_FABRIC_STORE_ACL) {
+		/* The record a reboot must bring back; its absence at the next
+		 * boot is a store/restore bug, not a controller that never
+		 * granted anything. */
+		LOG_INF("  ACL persisted for slot %u (%u B)", slot, (unsigned int)value_len);
+	}
 	return MATTER_OK;
 }
 
 static void failsafe_work_fn(struct k_work *w)
 {
 	ARG_UNUSED(w);
+	/* matter_clusters_failsafe_expire() wipes fabric slots and the
+	 * operational key, the same state every IM handler mutates under the
+	 * owner lock. This runs on the system work queue rather than a
+	 * transport thread, so it has to take that lock instead of racing
+	 * them. Blocking is safe here: the only direction taken is owner ->
+	 * OpenThread, which is the order the expiry path itself follows when
+	 * it restarts Thread. */
+	ultrawidelock_mutex_lock(&s_owner_lock);
 	matter_clusters_failsafe_expire(&s_info);
+	ultrawidelock_mutex_unlock(&s_owner_lock);
 }
 static K_WORK_DELAYABLE_DEFINE(s_failsafe_work, failsafe_work_fn);
 
@@ -1272,6 +1323,41 @@ static int send_standalone_ack(struct matter_exchange *x)
 		owner->retryable = x->mrp && x->ack_pending;
 	}
 	rc = matter_exchange_standalone_ack(x, slot->data, slot->capacity, &framed);
+	if (rc != MATTER_OK) {
+		tx_abort_build(slot);
+		return rc;
+	}
+	return tx_publish(slot, framed);
+}
+
+/*
+ * The acknowledgement that ends an exchange THIS node opened -- a subscription
+ * report's StatusResponse. send_standalone_ack() would stamp the peer's
+ * current exchange id onto it with I clear, which the peer's exchange matcher
+ * (id AND opposite initiator flag) drops as unsolicited, so the peer would
+ * retransmit that StatusResponse for the whole MRP schedule. It did: every
+ * LockState report after 16:10:40 drew a DUP storm on hardware.
+ */
+static int send_initiator_ack(struct matter_exchange *x, uint16_t exchange_id)
+{
+	struct matter_tx_slot *slot = tx_acquire();
+	size_t framed = 0u;
+	int rc;
+
+	if (slot == NULL) {
+		return MATTER_E_NOSPACE;
+	}
+	if (slot->transport == TX_TRANSPORT_THREAD) {
+		struct tx_thread_owner *owner = &s_tx_thread_owner[tx_slot_index(slot)];
+
+		owner->session_id = x->secure ? x->local_session_id : 0u;
+		owner->exchange_id = exchange_id;
+		owner->request_counter = x->ack_counter;
+		/* A retransmit is answered by framing a FRESH ack (the DUP path
+		 * below), not by replaying this one. */
+		owner->retryable = false;
+	}
+	rc = matter_exchange_ack_initiator(x, exchange_id, slot->data, slot->capacity, &framed);
 	if (rc != MATTER_OK) {
 		tx_abort_build(slot);
 		return rc;
@@ -1482,6 +1568,18 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	 * encoding their response. Publish their result before any readvertise
 	 * request can rebuild the payload on another context. */
 	fabric_snapshot_refresh_owned();
+	/* The IM status of a commissioning command is SUCCESS even when the
+	 * command itself failed -- the reason travels in the response body,
+	 * which nothing here prints. A controller that walks away after a
+	 * clean-looking exchange is otherwise unexplainable from this log. */
+	if (s_thread_reply != NULL && s_info.last_commissioning_error != MATTER_COMMISSIONING_OK) {
+		LOG_WRN("  commissioning error %u after cluster 0x%04x command 0x%04x "
+			"(fabric %u, %u committed)",
+			(unsigned int)s_info.last_commissioning_error,
+			(unsigned int)inv.cluster, (unsigned int)inv.command,
+			(unsigned int)s_info.accessing_fabric_index,
+			(unsigned int)s_info.committed_slots);
+	}
 	if (rc != MATTER_OK) {
 		LOG_ERR("cannot build InvokeResponse (%d)", rc);
 		tx_abort_build(slot);
@@ -1609,6 +1707,11 @@ static void on_write_request(const struct matter_exchange_in *in)
 	LOG_INF("  write: endpoint %u cluster 0x%04x attribute 0x%04x, %u B", wr.path.endpoint,
 		(unsigned int)wr.path.cluster, (unsigned int)wr.path.attribute,
 		(unsigned int)wr.data_len);
+	/* The ACL decides which controller may enroll credentials; its raw
+	 * bytes are the only way to see WHICH subject Apple granted. */
+	if (wr.path.cluster == MATTER_CLUSTER_ACCESS_CONTROL && wr.path.attribute == 0u) {
+		LOG_HEXDUMP_INF(wr.data, wr.data_len, "  ACL bytes:");
+	}
 
 	/*
 	 * Persisted by VALUE CHANGE rather than by write status: the encoder
@@ -2606,7 +2709,16 @@ static void send_report_chunk(struct sub_state *s)
 	if (emitted == 0u && more) {
 		/* Not a chunk boundary -- one report is larger than a whole
 		 * message, and no number of chunks will help. */
-		LOG_ERR("a single attribute does not fit a message; giving up");
+		if (stats.have_stuck) {
+			LOG_ERR("endpoint %u cluster 0x%04x attribute 0x%04x does not fit "
+				"a %u B message; giving up",
+				(unsigned int)stats.stuck_endpoint,
+				(unsigned int)stats.stuck_cluster,
+				(unsigned int)stats.stuck_attribute,
+				(unsigned int)payload_cap);
+		} else {
+			LOG_ERR("a single attribute does not fit a message; giving up");
+		}
 		tx_abort_build(slot);
 		s->more = false;
 		return;
@@ -3550,6 +3662,19 @@ static size_t handle_sigma3(const uint8_t *sigma3, size_t sigma3_len, const uint
 	}
 	s_case_ready[slot] = true;
 	s_case_fabric[slot] = s_case.fabric->index;
+	memcpy(s_case_cats[slot], peer.cats, sizeof(s_case_cats[slot]));
+	s_case_n_cats[slot] = peer.n_cats;
+	/* An ACL subject in the CAT range is matched against these, not against
+	 * the node id. Print them: a peer denied ADMINISTER while presenting no
+	 * tags is a different bug from one denied while presenting them. */
+	if (peer.n_cats == 0u) {
+		LOG_INF("  CASE peer presents no CASE Authenticated Tags");
+	} else {
+		for (uint8_t i = 0u; i < peer.n_cats; i++) {
+			LOG_INF("  CASE peer CAT id 0x%04x version %u",
+				(unsigned)(peer.cats[i] >> 16), (unsigned)(peer.cats[i] & 0xFFFFu));
+		}
+	}
 	/* Replies to THIS Sigma3 are sealed on the unsecured exchange, but the
 	 * StatusReport that follows is the last thing that session sends before
 	 * the peer starts using the new one, so point the current slot at it. */
@@ -3730,23 +3855,46 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 		/* Whose fabric is asking, for the fabric-scoped attributes. */
 		s_info.accessing_fabric_index = s_case_fabric[slot];
 		s_info.accessing_node_id = s_case_x[slot].peer_op_node_id;
+		memcpy(s_info.accessing_cats, s_case_cats[slot], sizeof(s_info.accessing_cats));
+		s_info.accessing_n_cats = s_case_n_cats[slot];
 		s_thread_reply = reply;
 		s_thread_reply_cap = cap;
 		s_thread_reply_len = 0u;
 
 		rc = matter_exchange_recv_in_place(&s_case_x[slot], msg, len, &in);
 		if (rc == MATTER_E_DUP) {
-			if (!tx_thread_retry(&s_case_x[slot])) {
+			LOG_INF("  DUP exchange 0x%04x counter %u; replaying the answer",
+				(unsigned int)in.exchange_id, (unsigned int)in.message_counter);
+			/* I clear on a duplicate means it closes an exchange
+			 * this node opened; recv_impl() re-armed the pending
+			 * ack for it before refusing the payload. */
+			if (!in.initiator && in.ack_requested) {
+				(void)send_initiator_ack(&s_case_x[slot], in.exchange_id);
+			} else if (!tx_thread_retry(&s_case_x[slot])) {
 				(void)send_standalone_ack(&s_case_x[slot]);
 			}
 		} else if (rc != MATTER_OK) {
 			LOG_WRN("  CASE message refused (%d)", rc);
 			s_thread_reply_len = 0u;
 		} else {
-			LOG_DBG("  CASE in: protocol 0x%04x opcode 0x%02x, %u B",
+			LOG_INF("  CASE in: protocol 0x%04x opcode 0x%02x, %u B, "
+				"exchange 0x%04x counter %u",
 				(unsigned int)in.protocol_id, in.opcode,
-				(unsigned int)in.payload_len);
+				(unsigned int)in.payload_len, (unsigned int)in.exchange_id,
+				(unsigned int)in.message_counter);
 			on_secure(&in);
+			/*
+			 * Nothing to say back and the peer asked for an ack on
+			 * an exchange this node opened: the StatusResponse that
+			 * closes an update report. Every reply above carries
+			 * the ack for the peer's own exchanges; this one has no
+			 * reply to ride, so it goes out alone -- or the peer
+			 * retransmits into the DUP path until MRP gives up and
+			 * declares the session dead.
+			 */
+			if (s_thread_reply_len == 0u && in.ack_requested && !in.initiator) {
+				(void)send_initiator_ack(&s_case_x[slot], in.exchange_id);
+			}
 		}
 
 		s_thread_reply = NULL;
@@ -3992,9 +4140,14 @@ static void on_message_owned(uint8_t *msg, size_t len)
 	int rc;
 
 	/* PASE and unsecured traffic cannot inherit authority from the last CASE
-	 * datagram handled on the shared data model. */
+	 * datagram handled on the shared data model. The tags go with the node
+	 * id: leaving them would hand a PASE session the GROUP authority of
+	 * whoever last spoke over CASE, which is worse than the node id alone
+	 * because a group entry is the one an administrator actually grants. */
 	s_info.accessing_fabric_index = 0u;
 	s_info.accessing_node_id = 0u;
+	s_info.accessing_n_cats = 0u;
+	memset(s_info.accessing_cats, 0, sizeof(s_info.accessing_cats));
 
 	if (!s_verifier_ok) {
 		LOG_ERR("no usable SPAKE2P verifier; dropping %u bytes", (unsigned int)len);
@@ -4207,6 +4360,18 @@ int matter_commission_init(void)
 			s_info.have_ultrawidelock_group_resolving_key = true;
 			s_info.have_ultrawidelock_reader_config = true;
 			LOG_INF("credential reader configuration restored; attributes readable");
+		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+			if (s_info.fabric_acls[i].len == 0u) {
+				continue;
+			}
+			LOG_INF("  fabric %u ACL %u B, case admin subject %08x%08x",
+				(unsigned int)s_info.fabrics[i].index,
+				(unsigned int)s_info.fabric_acls[i].len,
+				(unsigned int)(s_info.fabrics[i].case_admin_subject >> 32),
+				(unsigned int)s_info.fabrics[i].case_admin_subject);
+			LOG_HEXDUMP_INF(s_info.fabric_acls[i].data, s_info.fabric_acls[i].len,
+					"  ACL bytes:");
+		}
 		} else if (rc != -ENOENT) {
 			/* -ENOENT is the dev identity and is not news. Anything
 			 * else means a stored identity exists and could not be
@@ -4223,6 +4388,8 @@ int matter_commission_init(void)
 	s_info.ultrawidelock_user_clear_cb = on_ultrawidelock_user_clear;
 
 	matter_clusters_init(&s_im, &s_info);
+	s_cluster_command = s_im.command;
+	s_im.command = command_status_logged;
 	fabric_snapshot_refresh_owned();
 	/* Without this the cluster still APPEARS in ServerList -- which is the
 	 * point, a node that hides it can never be shared with a second
