@@ -152,10 +152,79 @@ static void on_anchor_report(uint8_t role, int32_t peer_mm, uint16_t ranging_blo
 		 (unsigned)ranging_block, (int)peer_mm);
 }
 
+/*
+ * Baseline calibration: the median of CAL_N paired readings, taken with the
+ * phone held still. The two anchors and the phone are then collinear-ish and
+ * |own - peer| IS the anchor separation, which is the one number no firmware
+ * can derive and every triangle test is sized from.
+ *
+ * The median rather than the mean because the NLOS tail is one-sided: a body
+ * between phone and anchor only ever adds distance, so a handful of long
+ * readings would drag an average out and leave the geometry quietly wrong.
+ *
+ * Ported from apps/dwm3001cdk-lock/src/main.c, sampling the same two numbers:
+ * this node's own range, and ultrawidelock_satellite_set_peer_mm()'s fresh
+ * peer distance (the lock's uwb_range_mm and uwb_peer_mm).
+ */
+#define CAL_N 25u
+
+static int32_t s_cal[CAL_N];
+static uint8_t s_cal_n;
+static bool s_cal_on;
+
+/** Insertion sort, then the middle sample. Small n, and it shrugs off the tail. */
+static int32_t cal_median(int32_t *v, size_t n)
+{
+	for (size_t i = 1; i < n; i++) {
+		int32_t k = v[i];
+		size_t j = i;
+
+		for (; j > 0 && v[j - 1] > k; j--) {
+			v[j] = v[j - 1];
+		}
+		v[j] = k;
+	}
+	return v[n / 2];
+}
+
+static void cal_sample(int32_t self_mm)
+{
+	int32_t peer_mm;
+	int32_t m;
+
+	if (!s_cal_on || self_mm < 0) {
+		return;
+	}
+	peer_mm = ultrawidelock_satellite_set_peer_mm(&s_set, ultrawidelock_uptime_ms());
+	if (peer_mm < 0) {
+		return;
+	}
+
+	s_cal[s_cal_n++] = self_mm - peer_mm;
+	if (s_cal_n < CAL_N) {
+		return;
+	}
+
+	m = cal_median(s_cal, CAL_N);
+	m = m < 0 ? -m : m;
+	s_cal_on = false;
+	s_cal_n = 0;
+	/* A median outside the window means the phone was not held past one
+	 * anchor -- most often it sat between them, where the difference is
+	 * near zero. Refusing beats writing a geometry nothing was measured at. */
+	if (!baseline_sane(m)) {
+		ESP_LOGW(TAG, "baseline cal failed (median %d mm): not held past an anchor?",
+			 (int)m);
+		return;
+	}
+	baseline_apply(m, true);
+}
+
 void sat_fusion_observe(int32_t self_mm, uint32_t self_block, int64_t now_ms)
 {
 	if (s_up) {
 		ultrawidelock_satellite_set_observe(&s_set, self_mm, self_block, now_ms);
+		cal_sample(self_mm);
 	}
 }
 
@@ -252,8 +321,18 @@ static int cmd_baseline(int argc, char **argv)
 	int32_t mm;
 
 	if (argc != 2) {
-		printf("usage: sat_baseline <mm>   (anchor separation, measured at install)\n");
+		printf("usage: sat_baseline <mm>|cal   (anchor separation, measured at install)\n");
 		return 1;
+	}
+	/* `cal` measures it instead of being told it: hold the phone still, a
+	 * metre past one anchor and roughly in line with both, and the median
+	 * of the next CAL_N paired readings becomes the baseline. */
+	if (strcmp(argv[1], "cal") == 0) {
+		s_cal_n = 0;
+		s_cal_on = true;
+		printf("baseline cal: hold the phone still ~1 m past one anchor (%u readings)\n",
+		       (unsigned)CAL_N);
+		return 0;
 	}
 	mm = (int32_t)strtol(argv[1], NULL, 10);
 	if (!baseline_sane(mm)) {
@@ -296,7 +375,7 @@ static void console_register(void)
 		 .hint = NULL,
 		 .func = cmd_anckey},
 		{.command = "sat_baseline",
-		 .help = "set the anchor separation in mm, measured at install",
+		 .help = "anchor separation: <mm> to set it, `cal` to measure it",
 		 .hint = NULL,
 		 .func = cmd_baseline},
 		{.command = "sat_status",
