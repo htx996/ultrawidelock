@@ -13,7 +13,20 @@
 # deleting the worktree deletes it (see `make ws-clean`).
 set -euo pipefail
 
-TREE="$(cd "$(dirname "$0")/.." && pwd)"
+# The worktree to seed. Defaults to the one holding this script, so the plain
+# `make ws-seed` path is unchanged. Passing a path lets ONE checkout that has
+# this script seed a worktree whose branch predates it, without copying files
+# into that worktree or committing to its branch.
+TREE="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+[ -d "$TREE" ] || { echo "ERROR: no such worktree: $TREE" >&2; exit 1; }
+TREE="$(cd "$TREE" && pwd)"
+# bootstrap.sh is re-run INSIDE the target to normalize patches to its branch,
+# so a target without one cannot be seeded correctly -- say so here rather than
+# failing three steps later with the clone already made.
+[ -x "$TREE/scripts/bootstrap.sh" ] || {
+  echo "ERROR: $TREE/scripts/bootstrap.sh missing or not executable" >&2
+  exit 1
+}
 WS="$TREE/workspace"
 
 if [ -d "$WS/.west" ]; then
