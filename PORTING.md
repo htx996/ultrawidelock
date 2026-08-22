@@ -94,6 +94,7 @@ length-checks those where they are written.
 | esp32 | namespace | `ha_mqtt` | 15 | `apps/esp32-matter-lock/main/ha_mqtt.c` |
 | esp32 | namespace | `satlink` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | esp32 | key | `lk` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
+| esp32 | key | `ch` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | esp32 | namespace | `satfuse` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
 | esp32 | key | `bl` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
 | zephyr | subtree | `ultrawidelock` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |

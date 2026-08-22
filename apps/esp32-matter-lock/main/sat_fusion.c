@@ -348,9 +348,12 @@ void sat_fusion_init(void)
 	/* Before the carrier comes up, so a report cannot arrive with the sink
 	 * still unset. */
 	ultrawidelock_satlink_set_report_cb(on_anchor_report);
-	/* Role 1: this node is the lock, and the lock seals handoffs with the
-	 * 0xFF prefix rather than a role, so this value only names its slot. */
-	if (ultrawidelock_satlink_init(1u) != 0) {
+	/* The handoff role: this node is the lock. The value matters twice --
+	 * it is the 0xFF nonce prefix that keeps the lock's sealed frames
+	 * disjoint from every satellite's, and it is how the carrier knows this
+	 * end must ANSWER channel probes rather than send them (the satellite
+	 * scans Wi-Fi channels for us; we are pinned to the AP's). */
+	if (ultrawidelock_satlink_init(ULTRAWIDELOCK_LINK_HANDOFF_ROLE) != 0) {
 		ESP_LOGE(TAG, "sealed link did not come up; single-anchor behaviour");
 	}
 	/* The satellite cannot range until it holds this session's keys, and a
@@ -359,6 +362,10 @@ void sat_fusion_init(void)
 	baseline_load();
 	console_register();
 	s_up = true;
-	ESP_LOGI(TAG, "two-anchor gate armed (baseline %d mm)",
-		 (int)s_set.peer[0].cfg.baseline_mm);
+	/* The round shape, said out loud: a count mismatch with the satellite
+	 * build diverges every derived STS and the only symptom is silence, so
+	 * both consoles print their number for the bench to compare. */
+	ESP_LOGI(TAG, "two-anchor gate armed (baseline %d mm, round %d/%d)",
+		 (int)s_set.peer[0].cfg.baseline_mm, CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX,
+		 CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
 }
