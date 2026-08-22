@@ -410,7 +410,7 @@ def collect_config(build, image):
     cfg = {
         "board": cache.get("BOARD"),
         "image": image,
-        "extra_conf_file": cache.get("EXTRA_CONF_FILE"),
+        "extra_conf_file": conf_basenames(cache.get("EXTRA_CONF_FILE")),
         "kconfig": axis,
         "zephyr_version": read_version_header(
             os.path.join(gen, "zephyr", "version.h"), "KERNEL_VERSION_STRING"
@@ -425,6 +425,25 @@ def collect_config(build, image):
         "toolchain": os.environ.get("CDK_SIZE_TOOLCHAIN", "local"),
     }
     return cfg
+
+
+def conf_basenames(conf):
+    """An overlay list that can be committed: names only, never absolute paths.
+
+    Zephyr resolves EXTRA_CONF_FILE against the application source directory,
+    so a build whose app lives outside this checkout -- the nRF5340 DK, whose
+    application is Nordic's inside ./workspace -- has to pass absolute overlay
+    paths or Zephyr cannot find them. CMakeCache.txt records what was passed,
+    which for that board is four paths carrying whoever's home directory took
+    the measurement. Recorded as basenames instead, because that is the part
+    that says which overlays were used, and it is the part that is the same on
+    every machine. config_key() already basenames each entry, so the key a
+    report is stored under does not move.
+    """
+    if not conf:
+        return conf
+    parts = [item.strip() for item in conf.split(";")]
+    return ";".join(os.path.basename(item) for item in parts if item)
 
 
 def relative_to_root(path, root):
