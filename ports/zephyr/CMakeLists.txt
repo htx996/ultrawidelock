@@ -39,6 +39,11 @@ zephyr_library_sources(osal/osal_zephyr.c)
 # first. An image that calls nothing in it pays nothing -- the linker drops what
 # nobody reaches -- and compiling it everywhere is what stops it rotting.
 zephyr_library_sources(store/kv_zephyr.c)
+# Zephyr backend of ultrawidelock_dgram.h, on OpenThread UDP. NOT unconditional
+# like the two above: it calls otUdpOpen and takes openthread_mutex, so an image
+# built without the OpenThread L2 has nothing to compile it against. Every board
+# that opens the sealed link has that L2 by definition -- the link IS Thread.
+zephyr_library_sources_ifdef(CONFIG_NET_L2_OPENTHREAD net/dgram_openthread.c)
 zephyr_library_include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../../modules/ultrawidelock_port/include)
 

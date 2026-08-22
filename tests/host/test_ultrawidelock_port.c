@@ -1,7 +1,8 @@
 /**
  * @file test_ultrawidelock_port.c — the OSAL, flash and kv contracts, on the host backend.
  *
- * Files under test: tests/host/port/osal_host.c, flash_host.c and kv_host.c — the
+ * Files under test: tests/host/port/osal_host.c, flash_host.c, kv_host.c and
+ * dgram_host.c — the
  * backend every converted module's host suite runs on, so its semantics ARE
  * the portability contract: schedule is a no-op while pending, reschedule
  * restarts the delay, a timed sem take walks the virtual clock, flash refuses
@@ -12,9 +13,12 @@
 
 #include "test.h"
 
+#include "ultrawidelock_dgram.h"
 #include "ultrawidelock_flash.h"
 #include "ultrawidelock_kv.h"
 #include "ultrawidelock_osal.h"
+
+#include "port/dgram_host.h"
 
 /* ---- recorders -------------------------------------------------------------- */
 
@@ -332,6 +336,101 @@ static void test_kv(void)
 	     (long)ULTRAWIDELOCK_KV_NOT_FOUND);
 }
 
+/* ---- dgram ------------------------------------------------------------------ */
+
+static uint8_t g_rx[ULTRAWIDELOCK_DGRAM_MAX];
+static size_t g_rx_len;
+static int g_rx_calls;
+static void *g_rx_ctx;
+
+static void rx_record(void *ctx, const uint8_t *data, size_t len)
+{
+	g_rx_ctx = ctx;
+	g_rx_len = len;
+	g_rx_calls++;
+	memcpy(g_rx, data, len);
+}
+
+static void test_dgram(void)
+{
+	uint8_t out[ULTRAWIDELOCK_DGRAM_MAX];
+	uint8_t big[ULTRAWIDELOCK_DGRAM_MAX + 1];
+	int marker = 0;
+
+	memset(big, 0xA5, sizeof(big));
+	dgram_host_reset();
+	g_rx_calls = 0;
+
+	T_EQ("closed link is not ready", (long)ultrawidelock_dgram_ready(), 0L);
+	/* The failure that matters most: a link nobody opened must refuse to
+	 * send, not swallow. Both consumers fail closed on silence, so a fake
+	 * that accepted this would let a missing open() pass every test. */
+	T_EQ("send before open -> CLOSED", ultrawidelock_dgram_send("x", 1u),
+	     (long)ULTRAWIDELOCK_DGRAM_CLOSED);
+	T_EQ("delivery to a closed link runs no callback",
+	     (long)dgram_host_deliver("x", 1u), 0L);
+	T_EQ("and the callback did not run", (long)g_rx_calls, 0L);
+
+	T_EQ("NULL callback refused", ultrawidelock_dgram_open(1234u, NULL, NULL),
+	     (long)ULTRAWIDELOCK_DGRAM_INVALID);
+	T_EQ("open ok", ultrawidelock_dgram_open(1234u, rx_record, &marker),
+	     (long)ULTRAWIDELOCK_DGRAM_OK);
+	T_EQ("open is idempotent", ultrawidelock_dgram_open(1234u, rx_record, &marker),
+	     (long)ULTRAWIDELOCK_DGRAM_OK);
+	T_EQ("ready after open", (long)ultrawidelock_dgram_ready(), 1L);
+	T_EQ("bound to the port it was given", (long)dgram_host_port(), 1234L);
+
+	T_EQ("send ok", ultrawidelock_dgram_send("abcd", 4u), (long)ULTRAWIDELOCK_DGRAM_OK);
+	T_EQ("one datagram sent", (long)dgram_host_sent_count(), 1L);
+	T_EQ("captured whole", (long)dgram_host_sent(0u, out, sizeof(out)), 4L);
+	T_EQ("captured verbatim", (long)memcmp(out, "abcd", 4u), 0L);
+	/* A group-addressed link does hear itself on a real network, but the
+	 * fake must not echo on its own: a hidden loopback would put a datagram
+	 * through every consumer's parse in cases that only meant to send. */
+	T_EQ("send did not loop back", (long)g_rx_calls, 0L);
+
+	T_EQ("zero length refused", ultrawidelock_dgram_send("x", 0u),
+	     (long)ULTRAWIDELOCK_DGRAM_INVALID);
+	T_EQ("oversize refused", ultrawidelock_dgram_send(big, sizeof(big)),
+	     (long)ULTRAWIDELOCK_DGRAM_INVALID);
+	T_EQ("max size accepted", ultrawidelock_dgram_send(big, ULTRAWIDELOCK_DGRAM_MAX),
+	     (long)ULTRAWIDELOCK_DGRAM_OK);
+	T_EQ("refusals were not counted as sends", (long)dgram_host_sent_count(), 2L);
+
+	T_EQ("delivery runs the callback", (long)dgram_host_deliver("hello", 5u), 1L);
+	T_EQ("callback ran once", (long)g_rx_calls, 1L);
+	T_EQ("length delivered", (long)g_rx_len, 5L);
+	T_EQ("bytes delivered", (long)memcmp(g_rx, "hello", 5u), 0L);
+	T_EQ("context handed back", (long)(g_rx_ctx == &marker), 1L);
+
+	/* The backend drops these before the consumer sees them; so must the
+	 * fake, or the host suite is testing a link that does not exist. */
+	T_EQ("empty datagram dropped", (long)dgram_host_deliver("x", 0u), 0L);
+	T_EQ("oversize datagram dropped",
+	     (long)dgram_host_deliver(big, sizeof(big)), 0L);
+	T_EQ("neither reached the callback", (long)g_rx_calls, 1L);
+
+	(void)ultrawidelock_dgram_close();
+	dgram_host_open_rc = ULTRAWIDELOCK_DGRAM_IO;
+	T_EQ("injected open failure surfaces",
+	     ultrawidelock_dgram_open(1234u, rx_record, NULL),
+	     (long)ULTRAWIDELOCK_DGRAM_IO);
+	T_EQ("and it was one-shot", ultrawidelock_dgram_open(1234u, rx_record, &marker),
+	     (long)ULTRAWIDELOCK_DGRAM_OK);
+	dgram_host_send_rc = ULTRAWIDELOCK_DGRAM_IO;
+	T_EQ("injected send failure surfaces", ultrawidelock_dgram_send("q", 1u),
+	     (long)ULTRAWIDELOCK_DGRAM_IO);
+	T_EQ("and it was one-shot too", ultrawidelock_dgram_send("q", 1u),
+	     (long)ULTRAWIDELOCK_DGRAM_OK);
+
+	T_EQ("close ok", ultrawidelock_dgram_close(), (long)ULTRAWIDELOCK_DGRAM_OK);
+	T_EQ("not ready after close", (long)ultrawidelock_dgram_ready(), 0L);
+	T_EQ("close is safe twice", ultrawidelock_dgram_close(),
+	     (long)ULTRAWIDELOCK_DGRAM_OK);
+	T_EQ("a closed link sends nothing", ultrawidelock_dgram_send("x", 1u),
+	     (long)ULTRAWIDELOCK_DGRAM_CLOSED);
+}
+
 void test_ultrawidelock_port(void)
 {
 	test_work();
@@ -340,4 +439,5 @@ void test_ultrawidelock_port(void)
 	test_thread_and_init();
 	test_flash();
 	test_kv();
+	test_dgram();
 }
