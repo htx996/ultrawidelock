@@ -320,25 +320,120 @@ stage_cred_stack() {
 	"$OUT/host_test_stack"
 }
 
+# The core suite's build and its run were two steps; they are one now, because
+# the driver below starts the stages CONCURRENTLY and these two are the only
+# pair with an order between them -- the binary has to exist before it runs.
+# Folding them removes the dependency instead of scheduling around it.
+stage_core() {
+	stage_core_build
+	stage_core_run
+}
+
+# ---- running the stages concurrently ----------------------------------------
+# Nine stages, each compiling its own binary from its own sources into its own
+# output name, none of them reading anything another one wrote. Run one after
+# another they were about seventy seconds of a single core; the machine has
+# eight, and under scripts/test-runner.sh the quick suites have all finished by
+# then and left it idle. So they are all started at once.
+#
+# THE PROGRESS DISPLAY IS UNCHANGED, deliberately. Each stage is still one
+# ui_run row, in the order written below, and each row still carries that
+# stage's own output and its own exit status. What changed is only WHEN the work
+# happens: pl_start puts every stage in the background immediately, and the
+# ui_run call for a stage waits for that stage and replays its captured output.
+# So a row still cannot appear before the rows above it, the log is still in
+# source order, and a failing stage still fails the suite through the same
+# `set -e` path as before.
+#
+# The per-row times do go skewed -- the first row absorbs the wait for work that
+# was already running underneath it -- which is why the total at the end is the
+# number to read, not the individual rows.
+_pl_dir="$(mktemp -d -t oa-host-stages.XXXXXX)"
+_pl_pids=""
+
+# The stages are compilers, and there are nine of them. If one fails, ui_run
+# ends the script on the way back out and the other eight would otherwise be
+# left running -- a suite that "failed" while the machine stays busy for another
+# minute. Killed as a group, and the capture directory goes with them.
+#
+# The trap itself is installed BELOW, after ui_begin, not here: ui_attach sets
+# its own EXIT/INT/TERM traps and bash keeps one handler per signal, so a trap
+# set before it is silently replaced and this cleanup would never run. Same
+# reason scripts/test-runner.sh sets its trap after ui_attach and calls
+# _ui_cleanup from inside it.
+_pl_cleanup() {
+	local p
+	for p in $_pl_pids; do
+		kill "$p" 2>/dev/null || true
+	done
+	rm -rf "$_pl_dir"
+}
+
+pl_start() { # <name> <fn> -- run fn in the background, capturing output + status
+	local name="$1" fn="$2"
+	{
+		local rc=0
+		"$fn" >"$_pl_dir/$name.out" 2>&1 || rc=$?
+		printf '%s' "$rc" >"$_pl_dir/$name.rc"
+	} &
+	_pl_pids="$_pl_pids $!"
+	eval "_pl_pid_$name=$!"
+}
+
+pl_wait() { # <name> -- block for that stage, print its output, return its status
+	local name="$1" pid rc
+	eval "pid=\$_pl_pid_$name"
+	# `wait` first, because it is free and exact when it applies. It does not
+	# always apply: ui_run's fancy mode runs its command in a subshell to poll
+	# the capture file, and a subshell cannot wait on its parent's job -- it
+	# returns "not a child of this shell" immediately, which would have pl_wait
+	# read a status file the stage has not written yet and call a passing stage
+	# a failure. So the status file is what is actually waited on. pl_start
+	# writes it last, after the output file is closed, so its appearance means
+	# the whole stage is on disk.
+	wait "$pid" 2>/dev/null || true
+	while [ ! -s "$_pl_dir/$name.rc" ]; do
+		sleep 0.05 2>/dev/null || sleep 1
+	done
+	cat "$_pl_dir/$name.out" 2>/dev/null || true
+	rc="$(cat "$_pl_dir/$name.rc")"
+	return "$rc"
+}
+
+pl_start core stage_core
+pl_start uwb_driver stage_uwb_driver
+pl_start crypto stage_crypto_backends
+pl_start nfc_ecp stage_nfc_ecp
+pl_start cdk_port stage_cdk_port
+pl_start delta stage_delta_update
+pl_start nfc_transport stage_nfc_transport
+pl_start uwb_seam stage_uwb_seam
+pl_start cred_stack stage_cred_stack
+
 # The ":seconds" are first-run hints only, measured on the machine this was
 # written on. From the second run the real durations come out of the cache under
 # build/_ui, so the percentage is this checkout's own timings, not these. The
 # sanitized build is several times slower and gets its own cache.
 ULTRAWIDELOCK_UI_KEY="host-run${SAN:+-san}"
 ui_begin "host test suite${SAN:+ (ASan + UBSan)}" \
-	"core suite (build):5" "core suite (run):1" "uwb driver + shell:1" \
+	"core suite:6" "uwb driver + shell:1" \
 	"crypto backends:1" "nfc ecp emitter:1" "cdk port glue:1" \
 	"delta update + smp:1" "nfc transport:1" "uwb seam tier:1" \
 	"credential stack:2"
 
-ui_run "core suite (build)" stage_core_build
-ui_run "core suite (run)" stage_core_run
-ui_run "uwb driver + shell" stage_uwb_driver
-ui_run "crypto backends" stage_crypto_backends
-ui_run "nfc ecp emitter" stage_nfc_ecp
-ui_run "cdk port glue" stage_cdk_port
-ui_run "delta update + smp" stage_delta_update
-ui_run "nfc transport" stage_nfc_transport
-ui_run "uwb seam tier" stage_uwb_seam
-ui_run "credential stack" stage_cred_stack
+# After ui_begin, so these replace ui.sh's handlers rather than being replaced
+# by them, and each one still does ui.sh's own cleanup before ending.
+trap '_pl_cleanup; _ui_cleanup' EXIT
+trap '_pl_cleanup; _ui_cleanup; trap - INT; kill -INT $$' INT
+trap '_pl_cleanup; _ui_cleanup; trap - TERM; kill -TERM $$' TERM
+
+ui_run "core suite" pl_wait core
+ui_run "uwb driver + shell" pl_wait uwb_driver
+ui_run "crypto backends" pl_wait crypto
+ui_run "nfc ecp emitter" pl_wait nfc_ecp
+ui_run "cdk port glue" pl_wait cdk_port
+ui_run "delta update + smp" pl_wait delta
+ui_run "nfc transport" pl_wait nfc_transport
+ui_run "uwb seam tier" pl_wait uwb_seam
+ui_run "credential stack" pl_wait cred_stack
 ui_end
