@@ -112,6 +112,7 @@ length-checks those where they are written.
 | zephyr | key | `wit/ds` | 64 | `examples/zephyr/ble-witness/src/main.c` |
 | zephyr | subtree | `sat` | 64 | `apps/satellite/src/anchor_link.c` |
 | zephyr | key | `sat/lk` | 64 | `apps/satellite/src/anchor_link.c` |
+| esp32 | namespace | `uwl` | 15 | `ports/esp32/components/ultrawidelock_port/kv_nvs.c` |
 | zephyr | subtree | `uwl` | 64 | `ports/zephyr/store/kv_zephyr.c` |
 
 <!-- storage-names:end -->

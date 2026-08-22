@@ -60,6 +60,17 @@ cc -std=c11 -O1 -Wall -Wextra \
 rm -f "$NBIN"
 
 echo
+echo "== host: ultrawidelock_kv NVS backend vs in-RAM NVS fake =="
+KBIN="$(mktemp -t esp_kv_nvs.XXXXXX)"
+cc -std=c11 -O1 -Wall -Wextra \
+   -I "$SDKFAKE" -I "$REPO_ROOT/modules/ultrawidelock_port/include" \
+   "$HERE/test_esp_kv_nvs.c" \
+   "$ESP_COMPONENTS/ultrawidelock_port/kv_nvs.c" \
+   "$SDKFAKE/fake_nvs.c" -o "$KBIN"
+"$KBIN"
+rm -f "$KBIN"
+
+echo
 echo "== host: ultrawidelock_stepup worker vs FreeRTOS fakes =="
 # The queue/task doubles are pumped synchronously; the decrypt/parse/verify
 # underneath is the real shared-core code on the stepup_vectors.h KATs.

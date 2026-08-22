@@ -14,6 +14,11 @@
 
 #include "ultrawidelock_prov.h"
 
+/* Where ultrawidelock_prov_nvs.c puts the blob. Spelled here too because the
+ * fake holds many records now and a test has to say which one it means. */
+#define PROV_NS  "uwl_prov"
+#define PROV_KEY "blob"
+
 static int fails;
 
 static void okc(const char *name, int cond)
@@ -68,19 +73,19 @@ int main(void)
 
 	/* Namespace exists but the key does not -> rc 1. */
 	fake_nvs_reset();
-	fake_nvs_preload("x", 1); /* creates the namespace... */
+	fake_nvs_preload(PROV_NS, PROV_KEY, "x", 1); /* creates the namespace... */
 	fake_nvs_get_rc = ESP_ERR_NVS_NOT_FOUND; /* ...but the key read misses */
 	okc("key missing -> 1", ultrawidelock_prov_load(&out_id, &out_ts) == 1);
 
 	/* nvs_get_blob hard failure -> -1. */
 	fake_nvs_reset();
-	fake_nvs_preload("x", 1);
+	fake_nvs_preload(PROV_NS, PROV_KEY, "x", 1);
 	fake_nvs_get_rc = ESP_FAIL;
 	okc("get_blob failure -> -1", ultrawidelock_prov_load(&out_id, &out_ts) == -1);
 
 	/* Stored blob is garbage -> deserialize rejects -> -1 + DEV identity. */
 	fake_nvs_reset();
-	fake_nvs_preload((const uint8_t[]){0xBA, 0xD0, 0xBA, 0xD0}, 4);
+	fake_nvs_preload(PROV_NS, PROV_KEY, (const uint8_t[]){0xBA, 0xD0, 0xBA, 0xD0}, 4);
 	okc("malformed blob -> -1", ultrawidelock_prov_load(&out_id, &out_ts) == -1);
 	okc("malformed blob = DEV identity", memcmp(&out_id, &dev_id, sizeof(dev_id)) == 0);
 
@@ -100,7 +105,7 @@ int main(void)
 	okc("store rc", ultrawidelock_prov_store(&id, &ts) == 0);
 
 	uint8_t blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
-	size_t blob_len = fake_nvs_stored(blob, sizeof(blob));
+	size_t blob_len = fake_nvs_stored(PROV_NS, PROV_KEY, blob, sizeof(blob));
 
 	okc("blob landed in NVS", blob_len > 0);
 	okc("stored blob deserializes",
