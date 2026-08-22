@@ -51,9 +51,10 @@ echo
 echo "== host: ultrawidelock_prov NVS backend vs in-RAM NVS fake =="
 NBIN="$(mktemp -t esp_prov_nvs.XXXXXX)"
 cc -std=c11 -O1 -Wall -Wextra \
-   -I "$SDKFAKE" -I "$CRED/include" \
+   -I "$SDKFAKE" -I "$CRED/include" -I "$REPO_ROOT/modules/ultrawidelock_port/include" \
    "$HERE/test_esp_prov_nvs.c" \
    "$ESP_COMPONENTS/ultrawidelock_reader/ultrawidelock_prov_nvs.c" \
+   "$ESP_COMPONENTS/ultrawidelock_port/kv_nvs.c" \
    "$CRED/src/ultrawidelock_prov.c" \
    "$SDKFAKE/fake_nvs.c" -o "$NBIN"
 "$NBIN"

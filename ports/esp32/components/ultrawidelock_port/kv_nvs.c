@@ -16,8 +16,13 @@
  * derived four-digit name cannot reproduce that bug.
  *
  * One namespace for the whole store, so erase_all is nvs_erase_all() on that
- * handle: every other namespace on the part -- the reader's provisioning blob,
- * PIV's keys, Matter's own storage -- survives a factory reset of this one.
+ * handle: every other namespace on the part -- PIV's keys, the presence dongle's
+ * key, Matter's own storage -- survives a factory reset of this one. The
+ * reader's provisioning blob no longer does: it moved into this namespace when
+ * ultrawidelock_prov_nvs.c came onto the seam, so an erase_all here takes it too.
+ * Nothing in the tree calls erase_all yet; a caller that wants a credential
+ * factory reset should delete ULTRAWIDELOCK_KV_KEY_CRED_PROV, the way the Zephyr
+ * and FreeRTOS provisioning backends already do.
  */
 #include <stdbool.h>
 #include <stdio.h>
@@ -184,8 +189,9 @@ int ultrawidelock_kv_erase_all(void)
 	if (err != ESP_OK) {
 		return from_esp(err);
 	}
-	/* One namespace, not the partition: nvs_flash_erase() would take the
-	 * reader's provisioning blob, PIV's keys and Matter's storage with it. */
+	/* One namespace, not the partition: nvs_flash_erase() would take PIV's
+	 * keys and Matter's storage with it. This namespace's own records go,
+	 * the provisioning blob among them -- see the note at the top. */
 	err = nvs_erase_all(h);
 	if (err == ESP_OK) {
 		err = nvs_commit(h);

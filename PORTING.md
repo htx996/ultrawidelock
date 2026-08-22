@@ -84,8 +84,6 @@ length-checks those where they are written.
 
 | Port | Kind | Name | Cap | Declared in |
 |---|---|---|---|---|
-| esp32 | namespace | `uwl_prov` | 15 | `ports/esp32/components/ultrawidelock_reader/ultrawidelock_prov_nvs.c` |
-| esp32 | key | `blob` | 15 | `ports/esp32/components/ultrawidelock_reader/ultrawidelock_prov_nvs.c` |
 | esp32 | namespace | `presence` | 15 | `ports/esp32/components/ultrawidelock_reader/presence_link.c` |
 | esp32 | key | `kdev` | 15 | `ports/esp32/components/ultrawidelock_reader/presence_link.c` |
 | esp32 | namespace | `piv` | 15 | `ports/esp32/components/piv_ccid/piv_identity.c` |
@@ -126,17 +124,20 @@ a window in `ultrawidelock_kv.h`; it does not take a row in this table.
 
 The rows above it are the older spelling, where each record names itself. They
 are being retired one call site at a time. The credential provisioning blob went
-first: `ports/zephyr/store/ultrawidelock_prov_settings.c` used to hold two rows
-here for the subtree `ultrawidelock` and the key `ultrawidelock/prov`, and now
-takes `ULTRAWIDELOCK_KV_KEY_CRED_PROV` from the seam, so it has no row at all.
+first, on both ports that had a row for it: the Zephyr backend held the subtree
+`ultrawidelock` and the key `ultrawidelock/prov`, the ESP32 backend held the
+namespace `uwl_prov` and the key `blob`, and both now take
+`ULTRAWIDELOCK_KV_KEY_CRED_PROV` from the seam, so neither has a row at all.
 Each move costs the data already on the flash -- a derived name is not the name
 a provisioned board wrote -- which is why they go one at a time and not at once.
 
 Where the caps come from, and why they differ:
 
 - **esp32** — `NVS_NS_NAME_MAX_SIZE - 1` and `NVS_KEY_NAME_MAX_SIZE - 1`, both 15,
-  from ESP-IDF's `nvs.h`. Each name is also `_Static_assert`ed against the cap
-  where it is defined, so a bench build fails before the flash does.
+  from ESP-IDF's `nvs.h`. Each name still in the table is also `_Static_assert`ed
+  against the cap where it is defined, so a bench build fails before the flash
+  does. A record on the seam needs no assertion: `%04x` is four characters
+  whatever the caller passes.
 - **zephyr** — `SETTINGS_MAX_NAME_LEN`, `8 * SETTINGS_MAX_DIR_DEPTH` = 64, from
   `zephyr/include/zephyr/settings/settings.h`, with at most 8 `/`-separated
   levels. Roomy enough that no name here is close to it.
