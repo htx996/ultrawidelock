@@ -171,8 +171,8 @@ stage_cdk_port() {
 		"$ROOT/ports/zephyr/store/matter_fab_settings.c" \
 		"$ROOT/ports/zephyr/store/ultrawidelock_prov_settings.c" \
 		"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prov.c" \
-		-o "$ROOT/build/host_test_cdk"
-	"$ROOT/build/host_test_cdk"
+		-o "$OUT/host_test_cdk"
+	"$OUT/host_test_cdk"
 	"$ROOT/tests/ports/zephyr/matter_srp_lifecycle_check.sh"
 	"$ROOT/tests/ports/zephyr/ble_link_liveness_check.sh"
 }
