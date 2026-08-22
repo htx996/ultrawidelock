@@ -1,0 +1,6 @@
+# ultrawidelock_anchor tier: the inside-latch dwell/clear state machine
+# (CONFIG_ULTRAWIDELOCK_INSIDE_LATCH). Separate from anchor.list because the latch is a
+# policy an image opts into on top of the geometry, not part of it. Consumers:
+# modules/ultrawidelock_anchor/CMakeLists.txt, tests/host/sources.sh.
+# Sorted; add HERE and nowhere else.
+modules/ultrawidelock_anchor/src/ultrawidelock_latch.c

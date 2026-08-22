@@ -1,0 +1,8 @@
+# ultrawidelock_anchor tier: the witness label core and advertiser picker
+# (CONFIG_ULTRAWIDELOCK_WITNESS_CODEC). Witness-only, so an anchor-only image compiles
+# neither. The codec these two speak is anchor_msg.list, which this role does
+# not include -- a consumer taking witness_codec takes anchor_msg as well.
+# Consumers: modules/ultrawidelock_anchor/CMakeLists.txt, tests/host/sources.sh.
+# Sorted; add HERE and nowhere else.
+modules/ultrawidelock_anchor/src/ultrawidelock_witness_core.c
+modules/ultrawidelock_anchor/src/ultrawidelock_witness_pick.c

@@ -936,9 +936,14 @@ check_patch_symbols() {
 # Trees whose every tracked .c must be assigned to a role. Deliberately not the
 # whole of modules/: the vendored decadriver is reached BY manifests (core.list
 # points into it) but is not ours to enumerate, and single-port modules
-# (ultrawidelock_matter, ultrawidelock_ml, ultrawidelock_anchor, ...) have one consumer each, so a manifest
+# (ultrawidelock_matter, ultrawidelock_ml, ...) have one consumer each, so a manifest
 # would be a second copy of a list that exists once.
+#
+# ultrawidelock_anchor joined the list when the satellite went to ESP32: the same geometry
+# and the same WV3 codec now compile under Zephyr, ESP-IDF and the host cc, and
+# a second consumer is exactly the condition a manifest exists to serve.
 MANIFEST_ROOTS=(
+	modules/ultrawidelock_anchor/src
 	modules/ultrawidelock_cred/src
 	modules/ultrawidelock_uwb/src
 )

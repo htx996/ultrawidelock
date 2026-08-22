@@ -14,6 +14,7 @@
  *   modules/ultrawidelock_uwb/src/ccc/ccc_crypto_psa.c      (as ultrawidelock_test_psa_ecb)
  *   modules/ultrawidelock_uwb/src/ccc/ccc_crypto_mbedtls.c  (as ultrawidelock_test_mbedtls_ecb)
  *   modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c
+ *   modules/ultrawidelock_anchor/src/ultrawidelock_seal.c   (test_ultrawidelock_seal.c)
  */
 #include <errno.h>
 #include <stdio.h>
@@ -363,6 +364,8 @@ int main(void)
 {
 	test_ccc_crypto_backends();
 	test_ultrawidelock_prim_psa();
+	test_ultrawidelock_seal();
+	test_ultrawidelock_link();
 	if (t_fail > 0) {
 		printf("  psa-backends: FAIL (%d of %d)\n", t_fail, t_fail + t_pass);
 		return 1;

@@ -1,0 +1,9 @@
+# ultrawidelock_anchor tier: the sealed-link wire codec alone
+# (CONFIG_ULTRAWIDELOCK_ANCHOR_MSG, and implied by CONFIG_ULTRAWIDELOCK_WITNESS_CODEC).
+# ONE file carries BOTH message families -- WV2 witness reports and WV3 anchor
+# reports share a version byte -- so it cannot be split per family. A satellite
+# takes this role and nothing else: it encodes its own distance and has no
+# geometry, no second distance and no verdict to fuse. Consumers:
+# modules/ultrawidelock_anchor/CMakeLists.txt, tests/host/sources.sh.
+# Sorted; add HERE and nowhere else.
+modules/ultrawidelock_anchor/src/ultrawidelock_witness_msg.c

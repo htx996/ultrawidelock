@@ -1,0 +1,9 @@
+# ultrawidelock_anchor tier: the sealed link's decisions, carrier-free
+# (CONFIG_ULTRAWIDELOCK_SEALED_LINK). Compose a report or a handoff, and decide
+# what an arriving datagram is and whether to believe it -- with no socket and
+# no radio, so one implementation serves Thread UDP and ESP-NOW alike and the
+# host suite can test the freshness rules without either. Takes anchor_msg.list
+# (the codec) and seal.list (the envelope); a consumer of this role needs both.
+# Consumers: ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
+# Sorted; add HERE and nowhere else.
+modules/ultrawidelock_anchor/src/ultrawidelock_link.c

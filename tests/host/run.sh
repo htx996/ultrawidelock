@@ -105,10 +105,28 @@ stage_crypto_backends() {
 	"${CC:-cc}" "${psa_flags[@]}" $san_flags -c \
 		-Dcrypto_aes_ecb_encrypt=ultrawidelock_test_mbedtls_ecb \
 		"$SRC/ccc/ccc_crypto_mbedtls.c" -o "$OUT/ccc_crypto_mbedtls_host.o"
+	# ultrawidelock_seal.c belongs to this stage and not to the shared-core
+	# binary: it is the third PSA seam, and the shared-core build has no PSA
+	# at all. Its sources come from the role manifest, like every other
+	# consumer's, so the host suite and the two ports cannot disagree.
+	# seal + link + the WV2/WV3/WV4 codec the link speaks. Three roles, read
+	# the same way every other consumer reads them.
+	seal_srcs=()
+	for _r in seal link anchor_msg; do
+		while IFS= read -r _l; do
+			_l="${_l%%#*}"
+			_l="${_l#"${_l%%[![:space:]]*}"}"
+			_l="${_l%"${_l##*[![:space:]]}"}"
+			[ -n "$_l" ] && seal_srcs+=("$ROOT/$_l")
+		done < "$ROOT/modules/ultrawidelock_anchor/roles/$_r.list"
+	done
 	# shellcheck disable=SC2086
 	"${CC:-cc}" "${psa_flags[@]}" $san_flags \
 		-I"$HOSTD" -I"$ROOT/modules/ultrawidelock_cred/include" \
+		-I"$ROOT/modules/ultrawidelock_anchor/include" \
 		"$HOSTD/test.c" "$HOSTD/test_psa_backends.c" "$HOSTD/psafake/psafake.c" \
+		"$HOSTD/test_ultrawidelock_seal.c" "$HOSTD/test_ultrawidelock_link.c" \
+		"${seal_srcs[@]}" \
 		"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c" \
 		"$OUT/ccc_crypto_psa_host.o" "$OUT/ccc_crypto_mbedtls_host.o" \
 		-o "$OUT/host_test_psa"
