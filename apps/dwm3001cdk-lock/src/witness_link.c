@@ -251,7 +251,7 @@ static bool unseal_key(const uint8_t *k, const uint8_t *in, size_t in_len, uint8
  * provably disjoint, not merely unlikely to collide.
  *
  * They are disjoint in byte 0. The satellite writes its ROLE there
- * (anchor_link.c seal()), and apps/nrf5340dk-satellite/Kconfig constrains
+ * (anchor_link.c seal()), and apps/satellite/Kconfig constrains
  * ULTRAWIDELOCK_ANCHOR_ROLE to `range 1 3`. 0xFF is outside that range and no
  * conforming anchor can ever emit it, so no counter or boot id either side
  * chooses can bring the two nonces together.

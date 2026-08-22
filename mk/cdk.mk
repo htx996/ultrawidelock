@@ -414,7 +414,7 @@ mlgate:
 	  --from-config $(CDK_MLGATE_BUILD)/$(CDK_IMAGE)/zephyr/.config
 
 ## anchorlink: the lock half of the two-anchor inside/outside pair  ·  BENCH=1 for the desk
-#   The other half is `make sat-build SAT_THREAD=1` (apps/nrf5340dk-satellite).
+#   The other half is `make sat-build SAT_THREAD=1` (apps/satellite).
 #   Flash this with `make flash CDK_BUILD=build/cdk-anchorlink` and NEVER
 #   flash-erase: the anchor key enrolled from the reader image lives in the
 #   settings partition a full erase takes with it.

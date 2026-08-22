@@ -32,7 +32,7 @@ developed on the DK and lands on the CDK by changing `ANCHOR_BOARD`.
 | Two-distance side-of-door + triangle gate | `ultrawidelock_fusion` | built, tested |
 | Freshness gate, fail-safe rules | `ultrawidelock_satellite` | built, tested, wired into the lock's PREDICT arm |
 | Anchor-to-anchor DS-TWR on these two boards | `examples/zephyr/anchor` (stage A) | run and calibrated 2026-08-21 |
-| CRED ranging engine as a standalone app, no Matter workspace | `apps/nrf5340dk-satellite` (stage B) | built 129 KB, joins a live session from air |
+| CRED ranging engine as a standalone app, no Matter workspace | `apps/satellite` (stage B) | built 129 KB, joins a live session from air |
 | Full CRED-tier ranging engine on nRF5340+DWM3000EVB | `apps/nrf5340dk-lock` | built (it is a whole lock) |
 | Phone builds the `N_Resp = 2` layout | `ULTRAWIDELOCK_NUM_RESPONDERS`, protocol-research.md §7 | measured 2026-07-17; slot layout only, see stage B |
 | Sealed lock↔peer link over Thread UDP | `witness_link.c` pattern | built for witnesses, reusable |
@@ -407,7 +407,7 @@ lock       32 anchor reports, 19 paired on (session, block)
 
 ONE KEY, TWO DIRECTIONS, so the CCM nonce spaces have to be disjoint by
 construction rather than by luck. The satellite writes its role in nonce byte 0
-and `apps/nrf5340dk-satellite/Kconfig` bounds that to `range 1 3`; the lock
+and `apps/satellite/Kconfig` bounds that to `range 1 3`; the lock
 writes 0xFF. If a role is ever widened past 3, `HANDOFF_NONCE_ROLE` in
 `witness_link.c` must move with it.
 
@@ -507,7 +507,7 @@ to the bench. Hardware bring-up waits for the board; everything below was
 verified by build and host tests alone.
 
 It was a board string, as the anchor example promised. The app C did not change:
-`apps/nrf5340dk-satellite/src/` has no board `#ifdef` and no `dwt_*`, and
+`apps/satellite/src/` has no board `#ifdef` and no `dwt_*`, and
 `anchor_link.c` already stamped `CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE` into every
 report. What the port needed was three files and one real bug.
 
@@ -526,7 +526,7 @@ Measured from the linker's own region report, first green builds:
 | DK, Thread (unchanged) | 256,336 B of 1008 KB (24.83%) | 119,096 B of 448 KB (25.96%) |
 
 Both CDK rows are committed as baselines --
-`apps/nrf5340dk-satellite/size-baseline-decawave_dwm3001cdk.json` and
+`apps/satellite/size-baseline-decawave_dwm3001cdk.json` and
 `-thread.json`, one per variant because the four builds are four different
 images -- and `make sat-size-check SAT_BOARD=decawave_dwm3001cdk SAT_THREAD=1`
 is what fails on a regression against them.

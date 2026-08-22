@@ -2,8 +2,10 @@
 #
 # The other half of the inside/outside product: this board measures its own
 # distance to the phone in the same ranging block the lock does, and returns it
-# over the sealed Thread link. Lives in apps/nrf5340dk-satellite because it is a
-# product front end, not a sample.
+# over the sealed Thread link. Lives in apps/satellite because it is a product
+# front end, not a sample -- and unprefixed because it is the one app here that
+# is not bound to a board: SAT_BOARD picks which of apps/satellite/boards/ is
+# layered on, and nothing under src/ knows which one won.
 #
 # One application, developed on the nRF5340 DK + DWM3000EVB, ported to a second
 # DWM3001CDK later by changing SAT_BOARD (stage E). Reuses mk/cdk.mk's
@@ -11,8 +13,14 @@
 # the same reason: two debug probes on one machine enumerate in a different
 # order twenty minutes apart.
 
-SAT_APP   := $(REPO_ROOT)/apps/nrf5340dk-satellite
+SAT_APP   := $(REPO_ROOT)/apps/satellite
 SAT_BOARD ?= nrf5340dk/nrf5340/cpuapp
+
+# Sysbuild names the application image after the app directory, so this has to
+# track SAT_APP or every ELF path below points at a directory that does not
+# exist. Derived rather than spelled out because it already went stale once,
+# when the app moved out of examples/zephyr/ and only `sat-build` was tried.
+SAT_IMAGE := $(notdir $(SAT_APP))
 
 # Flattened board string, same as mk/anchor.mk: slashes would bury the build
 # where the ELF paths stop being copy-pasteable.
@@ -101,7 +109,7 @@ SAT_PROBE_ARG := $(if $(SAT_PROBE),--probe '$(SAT_PROBE)')
 SAT_SIZE_JSON     ?= $(SAT_BUILD)/size-report.json
 SAT_SIZE_BASELINE ?= $(SAT_APP)/size-baseline-$(SAT_BOARD_TAG)$(SAT_SUFFIX).json
 SAT_SIZE_REPORTS  ?= 1
-SAT_SIZE_ARGS      = --build '$(SAT_BUILD)' --image satellite --json '$(SAT_SIZE_JSON)' \
+SAT_SIZE_ARGS      = --build '$(SAT_BUILD)' --image $(SAT_IMAGE) --json '$(SAT_SIZE_JSON)' \
                      $(if $(filter-out 0 n no off N NO OFF,$(SAT_SIZE_REPORTS)),--reports --run-prefix '$(CDK_WEST)')
 
 .PHONY: sat-build sat-flash sat-monitor sat-term sat-size sat-size-check sat-size-baseline \
@@ -115,9 +123,9 @@ sat-build:
 
 ## sat-size: what the satellite image costs and how much room is left  ·  measures only
 sat-size:
-	@test -f '$(SAT_BUILD)/satellite/zephyr/zephyr.elf' || { \
-	  printf '  no ELF at %s/satellite/zephyr/zephyr.elf  ·  run `make sat-build` first\n' \
-	    '$(SAT_BUILD)' >&2; exit 2; }
+	@test -f '$(SAT_BUILD)/$(SAT_IMAGE)/zephyr/zephyr.elf' || { \
+	  printf '  no ELF at %s/%s/zephyr/zephyr.elf  ·  run `make sat-build` first\n' \
+	    '$(SAT_BUILD)' '$(SAT_IMAGE)' >&2; exit 2; }
 	@# From ./workspace like mk/cdk.mk's copy, so the west invocation the
 	@# reports need resolves its manifest. Every path handed to the script is
 	@# already absolute, so the working directory does not reach the output.
@@ -155,7 +163,7 @@ sat-flash:
 ##   failed in the way that reads like a dead board.
 sat-monitor:
 	@probe-rs attach --chip $(SAT_CHIP) $(SAT_PROBE_ARG) \
-	  $(SAT_BUILD)/satellite/zephyr/zephyr.elf
+	  $(SAT_BUILD)/$(SAT_IMAGE)/zephyr/zephyr.elf
 
 ## nrf-monitor-rtt: RTT feed for the nRF5340 DK  ·  ctrl-c ends it
 ##   Takes the probe over (stops any capture already attached to this chip) and
@@ -166,7 +174,7 @@ nrf-monitor-rtt:
 	@command -v probe-rs >/dev/null 2>&1 || { printf '  probe-rs not found  ·  see `make tools`\n' >&2; exit 1; }
 	-@pkill -f 'probe-rs attach --chip $(SAT_CHIP)' 2>/dev/null || true; sleep 1
 	@log='$(if $(LOG),$(LOG),$(ULTRAWIDELOCK_BUILD_ROOT)/rtt-nrf5340dk.log)'; \
-	elf=$$(/bin/ls -t $(ULTRAWIDELOCK_BUILD_ROOT)/satellite-*/satellite/zephyr/zephyr.elf 2>/dev/null | head -1); \
+	elf=$$(/bin/ls -t $(ULTRAWIDELOCK_BUILD_ROOT)/satellite-*/$(SAT_IMAGE)/zephyr/zephyr.elf 2>/dev/null | head -1); \
 	[ -n "$$elf" ] || { printf '  no satellite ELF under %s  ·  make sat-build first\n' '$(ULTRAWIDELOCK_BUILD_ROOT)' >&2; exit 1; }; \
 	printf '  RTT: nRF5340 DK  ·  elf %s  ·  copy -> %s  ·  ctrl-c ends\n' "$$elf" "$$log"; \
 	exec script -aq "$$log" probe-rs attach --chip $(SAT_CHIP) $(SAT_PROBE_ARG) "$$elf"
