@@ -1264,7 +1264,15 @@ static int commissioning_fabric_store(void *ctx, const struct matter_device_info
 		/* The record a reboot must bring back; its absence at the next
 		 * boot is a store/restore bug, not a controller that never
 		 * granted anything. */
-		LOG_INF("  ACL persisted for slot %u (%u B)", slot, (unsigned int)value_len);
+	/*
+ * SUBSCRIPTION AND STORAGE NARRATION SITS AT DBG for the same reason the
+ * per-datagram lines above do: it reports bookkeeping rather than a decision,
+ * and this image has under two kilobytes of slot left. What stays at INF is
+ * anything a capture is read FOR -- writes, invokes, AddNOC, the whole CASE
+ * handshake, refusals and unsecured drops. Raise matter_ble to DBG to get the
+ * rest back; nothing here was deleted.
+ */
+	LOG_DBG("  ACL persisted for slot %u (%u B)", slot, (unsigned int)value_len);
 	}
 	return MATTER_OK;
 }
@@ -1766,7 +1774,7 @@ static void on_write_request(const struct matter_exchange_in *in)
 #endif
 	if (resp_len == 0u) {
 		/* The write ran; the peer asked not to be told. */
-		LOG_INF("  write done, response suppressed");
+		LOG_DBG("  write done, response suppressed");
 		tx_abort_build(slot);
 		return;
 	}
@@ -2019,7 +2027,7 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 		s->peer = peer;
 		s_dormant[i].used = 0u;
 
-		LOG_INF("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
+		LOG_DBG("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
 			(unsigned int)s->id, (unsigned int)session_id);
 		subscription_heartbeat_arm();
 	}
@@ -2144,7 +2152,14 @@ static void notify_lock_state(struct sub_state *s)
 	struct matter_thread_peer peer = s->peer;
 
 	rc = matter_thread_send_to(&peer, packet->data, framed);
-	LOG_DBG("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
+	/*
+	 * BACK AT INF after a spell at DBG, and the demotion was a mistake worth
+	 * recording: this line reports whether a controller was TOLD, and rc is
+	 * how a dead subscription is told apart from one that never matched. It
+	 * reads like bookkeeping and is the only evidence that the state a
+	 * person can see on a hub came from the state the bolt is actually in.
+	 */
+	LOG_INF("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
 		(unsigned int)framed, rc);
 	if (rc == MATTER_OK) {
 		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
@@ -2831,7 +2846,7 @@ static void on_subscribe_request(const struct matter_exchange_in *in)
 	s->priming = true;
 	s->active = false;
 
-	LOG_INF("  subscribe: %u path(s), %u..%u s, id 0x%08x, session 0x%04x", s->read.n_paths,
+	LOG_DBG("  subscribe: %u path(s), %u..%u s, id 0x%08x, session 0x%04x", s->read.n_paths,
 		sub.min_interval_s, sub.max_interval_s, (unsigned int)s->id,
 		(unsigned int)s->session_id);
 	/*
@@ -3050,7 +3065,7 @@ static void on_timed_request(const struct matter_exchange_in *in)
 		LOG_WRN("  malformed TimedRequest");
 		return;
 	}
-	LOG_INF("  timed request: %u ms, answering SUCCESS", (unsigned int)timeout_ms);
+	LOG_DBG("  timed request: %u ms, answering SUCCESS", (unsigned int)timeout_ms);
 
 	slot = tx_acquire();
 	if (slot == NULL) {
@@ -3139,7 +3154,7 @@ static void on_status_response(const struct matter_exchange_in *in)
 		s->in_use = false;
 		return;
 	}
-	LOG_INF("  subscription 0x%08x ESTABLISHED on session 0x%04x, max interval %u s",
+	LOG_DBG("  subscription 0x%08x ESTABLISHED on session 0x%04x, max interval %u s",
 		(unsigned int)s->id, (unsigned int)s->session_id, s->max_interval_s);
 	s_tx_effects[tx_slot_index(slot)] = (struct tx_effect){
 		.kind = TX_EFFECT_SUB_RESPONSE,
