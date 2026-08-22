@@ -23,6 +23,7 @@
 #include "matter_fab_settings.h"
 #include "settingsfake.h"
 #include "test.h"
+#include "ultrawidelock_kv.h"
 #include "ultrawidelock_prov.h"
 
 #define K_META "mf2/meta"
@@ -351,9 +352,12 @@ static void test_ultrawidelock_prov_settings(void)
 	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), ULTRAWIDELOCK_PROV_LOAD_EMPTY);
 	T_OK("empty store exposes only marked recovery identity", loaded_id.is_dev);
 	T_EQ("empty store exposes no trust anchors", loaded_ts.count, 0);
-	T_EQ("unrelated sibling can be stored",
+	/* The record is addressed by key now, so a foreign name cannot be mistaken
+	 * for it the way a sibling under the old "ultrawidelock" subtree could. Kept
+	 * as an assertion because the erase path still has to leave it alone. */
+	T_EQ("an unrelated record can be stored",
 	     settings_save_one("ultrawidelock/other", malformed, sizeof(malformed)), 0);
-	T_EQ("unrelated sibling is not treated as provisioning",
+	T_EQ("an unrelated record is not treated as provisioning",
 	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), ULTRAWIDELOCK_PROV_LOAD_EMPTY);
 
 	t_group("ultrawidelock_prov_settings: valid round trip");
@@ -381,8 +385,12 @@ static void test_ultrawidelock_prov_settings(void)
 
 	t_group("ultrawidelock_prov_settings: corrupt storage fails closed");
 	settingsfake_reset();
+	/* Injected through the seam, not by spelling the derived name: the name
+	 * kv_zephyr.c builds is pinned in test_kv_zephyr.c, and pinning it twice
+	 * would make this suite fail for a reason that is not about provisioning. */
 	T_EQ("malformed record can be injected",
-	     settings_save_one("ultrawidelock/prov", malformed, sizeof(malformed)), 0);
+	     ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, malformed, sizeof(malformed)),
+	     (long)ULTRAWIDELOCK_KV_OK);
 	memset(&loaded_id, 0, sizeof(loaded_id));
 	memset(&loaded_ts, 0xff, sizeof(loaded_ts));
 	T_EQ("malformed record is an explicit error",
@@ -391,7 +399,8 @@ static void test_ultrawidelock_prov_settings(void)
 	T_EQ("malformed record cannot expose trust anchors", loaded_ts.count, 0);
 	settingsfake_reset();
 	T_EQ("oversized record can be injected",
-	     settings_save_one("ultrawidelock/prov", oversized, sizeof(oversized)), 0);
+	     ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, oversized, sizeof(oversized)),
+	     (long)ULTRAWIDELOCK_KV_OK);
 	T_EQ("oversized record preserves handler errno",
 	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), -EINVAL);
 	T_OK("oversized record remains fail-closed", loaded_id.is_dev && loaded_ts.count == 0u);

@@ -94,8 +94,6 @@ length-checks those where they are written.
 | esp32 | namespace | `ha_mqtt` | 15 | `apps/esp32-matter-lock/main/ha_mqtt.c` |
 | esp32 | namespace | `satlink` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | esp32 | key | `lk` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
-| zephyr | subtree | `ultrawidelock` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |
-| zephyr | key | `ultrawidelock/prov` | 64 | `ports/zephyr/store/ultrawidelock_prov_settings.c` |
 | zephyr | subtree | `mf2` | 64 | `ports/zephyr/store/matter_fab_settings.c` |
 | zephyr | subtree | `msub` | 64 | `apps/dwm3001cdk-lock/src/matter_commission.c` |
 | zephyr | key | `srp/hid` | 64 | `ports/zephyr/matter/matter_thread_port.c` |
@@ -126,10 +124,13 @@ so neither cap can be reached by any caller and there is nothing per-record to
 list here or to keep in step. A record added through that seam takes an id from
 a window in `ultrawidelock_kv.h`; it does not take a row in this table.
 
-The rows above it are the older spelling, where each record names itself. Those
-call sites have not moved onto the seam, and moving them is a separate decision:
-the names hold provisioned data, and derived names are not the names already on
-the flash.
+The rows above it are the older spelling, where each record names itself. They
+are being retired one call site at a time. The credential provisioning blob went
+first: `ports/zephyr/store/ultrawidelock_prov_settings.c` used to hold two rows
+here for the subtree `ultrawidelock` and the key `ultrawidelock/prov`, and now
+takes `ULTRAWIDELOCK_KV_KEY_CRED_PROV` from the seam, so it has no row at all.
+Each move costs the data already on the flash -- a derived name is not the name
+a provisioned board wrote -- which is why they go one at a time and not at once.
 
 Where the caps come from, and why they differ:
 

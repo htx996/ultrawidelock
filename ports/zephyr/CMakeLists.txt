@@ -33,6 +33,12 @@ zephyr_library_named(ultrawidelock_zephyr_port)
 # with nothing behind them. MCUboot is the exception and needs no backend: the
 # applier is synchronous and takes only ultrawidelock_flash.
 zephyr_library_sources(osal/osal_zephyr.c)
+# Zephyr backend of ultrawidelock_kv.h, here for the same reason as the OSAL
+# above: it is the contract's implementation for this OS and belongs to the tier
+# every image on it carries, not to whichever application happened to need it
+# first. An image that calls nothing in it pays nothing -- the linker drops what
+# nobody reaches -- and compiling it everywhere is what stops it rotting.
+zephyr_library_sources(store/kv_zephyr.c)
 zephyr_library_include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../../modules/ultrawidelock_port/include)
 
