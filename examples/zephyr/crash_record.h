@@ -6,9 +6,12 @@
  * The witness dongle's console is USB CDC, which does not exist until the end
  * of a boot that never ends, so a live dump was never going to happen. This is
  * the dead-drop instead: the fault handler (ble-witness/src/boot_trace.c)
- * burns one copy of the machine state into a spare flash page, and a separate
- * radio-free image (crash-reader) that boots the way stock dongle firmware
- * boots reads the page back over USB after the reboot.
+ * burns one copy of the machine state into a spare flash page, which survives
+ * the reboot and any later DFU. Reading it back needs a radio-free image that
+ * boots the way stock dongle firmware boots; one lived at
+ * examples/zephyr/crash-reader until 2026-08-22, when it was removed for
+ * having no build target and no documentation. Recover it from git history
+ * rather than writing a new one.
  *
  * The page is inside the app partition (0x1000..0xFE000) but far above both
  * images, so DFU reflashes of either image never erase it: nrfutil only
