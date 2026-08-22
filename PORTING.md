@@ -201,17 +201,58 @@ Keep a new chipset's radio API inside its own engine the same way.
 
 ## New operating systems
 
-The five HAL seams are not the complete contract for a new operating system.
-Before chipset work, implement the platform services declared by:
+The five HAL seams are the chipset contract, not the operating system one. The
+platform services live in `modules/ultrawidelock_port/include/`, and this is all
+of them:
 
-- `ultrawidelock_osal.h`
-- `ultrawidelock_flash.h`
-- `ultrawidelock_log.h`
-- `ultrawidelock_port.h`
+| Seam | What it covers | Backends today | Host fake |
+|---|---|---|---|
+| `ultrawidelock_port.h` | heap, uptime, sleep, cycle counter, blocking mutex, atomic exchange | in-header branches | the `ULTRAWIDELOCK_PORT_HOST` branch |
+| `ultrawidelock_log.h` | `LOG_*` spellings and `ultrawidelock_printf` | in-header branches | the host branch, over `tests/host/logfake` |
+| `ultrawidelock_bytes.h` | endian-neutral load/store | in-header: Zephyr defers to `<zephyr/sys/byteorder.h>`, everything else takes the portable inlines | the portable inlines |
+| `ultrawidelock_osal.h` | work, delayed work, semaphore, thread | `ports/zephyr/osal/osal_zephyr.c`, `ports/esp32/components/ultrawidelock_port/osal_esp.c`, `ports/freertos-nrf52833/osal/osal_freertos.c` | `tests/host/port/osal_host.c` |
+| `ultrawidelock_flash.h` | erase-block regions, for DFU | `ports/zephyr/osal/flash_zephyr.c`, `ports/freertos-nrf52833/storage/flash_area_freertos.c` | `tests/host/port/flash_host.c` |
+| `ultrawidelock_kv.h` | small persistent values, addressed by number | `ports/zephyr/store/kv_zephyr.c`, `ports/esp32/components/ultrawidelock_port/kv_nvs.c`, `ports/freertos-nrf52833/storage/kv_flash_freertos.c` | `tests/host/port/kv_host.c` |
+| `ultrawidelock_dgram.h` | the sealed link's datagrams | `ports/zephyr/net/dgram_openthread.c` | `tests/host/port/dgram_host.c` |
 
-Put that backend under one new `ports/<os>/` tree. Keep conditional operating
-system code out of `modules/`. Add a host compile or fake for each new contract
-before relying on a hardware build.
+Two shapes appear in that table, and the difference is not cosmetic.
+
+**In-header branches.** `ultrawidelock_port.h`, `_log.h` and `_bytes.h` are
+`#if defined(__ZEPHYR__) / ESP_PLATFORM / ULTRAWIDELOCK_PORT_FREERTOS /
+ULTRAWIDELOCK_PORT_HOST` inside the header itself. A new OS is a new branch
+there. That suits contracts that are a handful of one-line inlines with no
+state: a separate translation unit per port would cost more than it explains.
+
+**A file per port.** `ultrawidelock_kv.h` and `ultrawidelock_dgram.h` have no
+platform branches at all -- the header is contract only, and each port supplies
+a `.c` under its own tree. This is the shape to prefer for anything with state,
+a lifecycle, or error paths worth testing, and it is why those two are the only
+seams whose host backend is a real fake a suite drives rather than a stub.
+`ultrawidelock_osal.h` is a hybrid: the types branch in the header because they
+wrap `k_work` and its equivalents, the functions are a file per port.
+
+Whichever shape a new seam takes, two rules hold. Put the backend under one new
+`ports/<os>/` tree and keep conditional operating system code out of `modules/`.
+And do not add a seam that has no second implementation: every one above has at
+least two backends today, or one backend plus a host fake a suite actually
+drives. A contract with a single implementation is a header, not a seam, and it
+will be wrong in the ways only a second port would have revealed.
+
+### A new framework, end to end
+
+1. Implement the seven seams above. Nothing under `modules/` should need an
+   edit; if it does, that is the bug to fix first.
+2. Add the OS branch to the three in-header seams, and one `.c` per port for the
+   other four.
+3. Write one thin component wrapper that reads the role manifests
+   (`modules/<mod>/roles/*.list`) rather than listing sources again. See
+   `cmake/ultrawidelock_roles.cmake` and the ESP-IDF components for what that
+   looks like.
+4. Run `tests/tooling/port_purity_check.sh`. It fails on a source in two roles,
+   a platform tree naming another OS, and a record stored under a name this file
+   does not list.
+5. Run `make check`. The host suite is the correctness story for every module a
+   new port has not yet compiled.
 
 ## Matter/Home Key multi-admin contract
 
