@@ -18,6 +18,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # One build root for the whole repo; the host suites own build/host.
 OUT="${ULTRAWIDELOCK_BUILD_ROOT:-$ROOT/build}/host"
 mkdir -p "$OUT"
+# Belt to pl_start's braces: with no binary left from the last run, a stage that
+# somehow reaches its run line without compiling has nothing stale to succeed
+# against. A false PASS over a compile error is the one failure this suite must
+# never have, so it is prevented twice.
+rm -f "$OUT"/host_test_*
 # SAN=1: same suite rebuilt under ASan + UBSan (`make test-san`).
 san_flags=
 if [ -n "${SAN:-}" ]; then
@@ -373,7 +378,15 @@ pl_start() { # <name> <fn> -- run fn in the background, capturing output + statu
 	local name="$1" fn="$2"
 	{
 		local rc=0
-		"$fn" >"$_pl_dir/$name.out" 2>&1 || rc=$?
+		# The stage runs as its own job rather than as the left operand of
+		# `||`, and that is the whole point. `set -e` is suppressed inside
+		# a function used as an operand of || or &&, so `"$fn" || rc=$?`
+		# let a stage continue past a failed compile, reach the run line,
+		# and execute the PREVIOUS build's binary -- which passed, so the
+		# stage reported PASS over a compile error. A separate job keeps
+		# -e armed, so the first failing command ends the stage.
+		"$fn" >"$_pl_dir/$name.out" 2>&1 &
+		wait $! || rc=$?
 		printf '%s' "$rc" >"$_pl_dir/$name.rc"
 	} &
 	_pl_pids="$_pl_pids $!"
