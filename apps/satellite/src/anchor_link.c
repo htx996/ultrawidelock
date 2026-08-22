@@ -255,14 +255,6 @@ void anchor_link_report(int32_t peer_mm, uint32_t ranging_block)
 		return;
 	}
 
-	msg = otUdpNewMessage(ot, NULL);
-	if (msg == NULL) {
-		return;
-	}
-	if (otMessageAppend(msg, sealed, (uint16_t)sealed_len) != OT_ERROR_NONE) {
-		otMessageFree(msg);
-		return;
-	}
 	memset(&info, 0, sizeof(info));
 	/*
 	 * Mesh-local all-nodes, matching the witness link's reasoning: this board
@@ -276,9 +268,25 @@ void anchor_link_report(int32_t peer_mm, uint32_t ranging_block)
 	info.mPeerAddr.mFields.m8[15] = 0x01u;
 	info.mPeerPort = ANCHOR_PORT;
 
-	if (otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
-		otMessageFree(msg); /* takes ownership only on success */
+	/*
+	 * The OpenThread API lock, and it is not optional. This runs on the app
+	 * thread out of the ranging loop in main.c, while OT's own thread is
+	 * concurrently servicing the radio -- the same situation the witness
+	 * link's nonce_send() documents, and the same lock it takes. udp_rx()
+	 * above is the exception: it is already called with the lock held.
+	 *
+	 * Everything above this point is memory work on locals, so the lock
+	 * covers the OT calls and nothing else.
+	 */
+	openthread_mutex_lock();
+	msg = otUdpNewMessage(ot, NULL);
+	if (msg != NULL) {
+		if (otMessageAppend(msg, sealed, (uint16_t)sealed_len) != OT_ERROR_NONE ||
+		    otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
+			otMessageFree(msg); /* send takes ownership on success only */
+		}
 	}
+	openthread_mutex_unlock();
 }
 
 /**
