@@ -63,6 +63,15 @@ extern "C" {
 #define MATTER_APPROACH_DIRECTION_ALL        0x07u
 #define MATTER_APPROACH_DIRECTION_CLUSTER_REV 1u
 
+/* Development manufacturer-specific UWB presence cluster. 0xFFF1 is the
+ * Matter test vendor id used by this image; production must use an assigned
+ * vendor id. */
+#define MATTER_CLUSTER_UWB_PRESENCE     0xFFF1FC10u
+#define MATTER_ATTR_UWB_DEVICE_IN_RANGE 0x0000u
+#define MATTER_ATTR_UWB_DISTANCE_MM     0x0001u
+#define MATTER_ATTR_UWB_DEVICE_ID       0x0002u
+#define MATTER_UWB_PRESENCE_CLUSTER_REV 1u
+
 /*
  * AdministratorCommissioning. This is what Apple Home's "Turn On Pairing Mode"
  * sends, and what multi-admin sharing runs on: a node that does not serve it
@@ -912,6 +921,10 @@ struct matter_device_info {
 	 * The application persists it after a successful write response.
 	 */
 	uint8_t approach_direction;
+	/** Live, non-persistent UWB state exposed by the vendor cluster. */
+	bool uwb_device_in_range;
+	int32_t uwb_distance_mm;
+	uint32_t uwb_device_id;
 	/**
 	 * The LockOperation events waiting to be reported, oldest first.
 	 *

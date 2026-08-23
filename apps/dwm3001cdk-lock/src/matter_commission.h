@@ -66,6 +66,14 @@ bool matter_commission_window_open(void);
 bool matter_commission_take_deliberate_unlock(void);
 
 /**
+ * Publish the latest trusted UWB observation through the vendor Matter
+ * cluster. Reports are internally rate-limited; presence edges are immediate.
+ * @p device_id is a privacy-safe credential-derived identifier, or zero.
+ */
+void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
+					   uint32_t device_id);
+
+/**
  * Finish the one packet previously accepted by the Matter BLE transport.
  * Called exactly once by the transport after final confirmation or failure.
  */

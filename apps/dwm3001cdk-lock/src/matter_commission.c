@@ -124,6 +124,7 @@ static void s_info_defaults(void)
 	/* All three directions permitted, the default the CHIP builds declare;
 	 * zero is a writable value so it cannot mean "never set". */
 	s_info.approach_direction = MATTER_APPROACH_DIRECTION_ALL;
+	s_info.uwb_distance_mm = -1;
 }
 
 /* Advertising and the main loop read these outside the Matter owner. Publish
@@ -2210,6 +2211,102 @@ static void notify_work_fn(struct k_work *w)
 }
 
 static K_WORK_DEFINE(s_notify_work, notify_work_fn);
+
+static bool sub_path_matches(const struct matter_im_path *p, uint32_t attribute)
+{
+	return (!p->have_endpoint || p->endpoint == MATTER_ENDPOINT_LOCK) &&
+	       (!p->have_cluster || p->cluster == MATTER_CLUSTER_UWB_PRESENCE) &&
+	       (!p->have_attribute || p->attribute == attribute);
+}
+
+static void notify_uwb_presence(struct sub_state *s)
+{
+	static const uint32_t attrs[] = {
+		MATTER_ATTR_UWB_DEVICE_IN_RANGE,
+		MATTER_ATTR_UWB_DISTANCE_MM,
+		MATTER_ATTR_UWB_DEVICE_ID,
+	};
+	struct matter_im_read read;
+	struct matter_tx_slot *packet;
+	uint8_t *payload;
+	size_t payload_cap;
+	size_t tlv_len = 0u;
+	size_t framed = 0u;
+	uint8_t slot;
+	int rc;
+
+	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
+		return;
+	}
+	memset(&read, 0, sizeof(read));
+	for (size_t a = 0u; a < ARRAY_SIZE(attrs); a++) {
+		for (uint8_t p = 0u; p < s->read.n_paths; p++) {
+			if (sub_path_matches(&s->read.paths[p], attrs[a])) {
+				struct matter_im_path *out = &read.paths[read.n_paths++];
+
+				out->endpoint = MATTER_ENDPOINT_LOCK;
+				out->have_endpoint = true;
+				out->cluster = MATTER_CLUSTER_UWB_PRESENCE;
+				out->have_cluster = true;
+				out->attribute = attrs[a];
+				out->have_attribute = true;
+				break;
+			}
+		}
+	}
+	if (read.n_paths == 0u) {
+		return;
+	}
+	read.subscription_id = s->id;
+	slot = case_slot_of(s->session_id);
+	if (slot >= MATTER_CASE_SESSIONS) {
+		return;
+	}
+	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
+	if (packet == NULL) {
+		LOG_ERR("  no owned packet slot for UWB presence report");
+		return;
+	}
+	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
+	payload = tx_payload(packet, &payload_cap);
+	rc = matter_im_report_data_encode(&s_im, &read, payload, payload_cap, &tlv_len, NULL);
+	if (rc != MATTER_OK) {
+		LOG_ERR("  cannot build UWB presence report (%d)", rc);
+		tx_abort_build(packet);
+		return;
+	}
+	rc = matter_exchange_send_initiator(&s_case_x[slot], s_next_init_exchange++,
+					    MATTER_PROTOCOL_INTERACTION_MODEL,
+					    MATTER_IM_OP_REPORT_DATA, payload, tlv_len,
+					    packet->data, packet->capacity, &framed);
+	if (rc != MATTER_OK || matter_tx_slot_commit(packet, framed) != MATTER_OK ||
+	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
+		tx_abort_build(packet);
+		return;
+	}
+	struct matter_thread_peer peer = s->peer;
+
+	rc = matter_thread_send_to(&peer, packet->data, framed);
+	LOG_DBG("  UWB presence report to subscription 0x%08x, %u B, rc=%d",
+		(unsigned int)s->id, (unsigned int)framed, rc);
+	if (rc == MATTER_OK) {
+		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
+	} else {
+		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
+	}
+}
+
+static void uwb_notify_work_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
+		notify_uwb_presence(&s_subs[i]);
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+
+static K_WORK_DEFINE(s_uwb_notify_work, uwb_notify_work_fn);
 static void heartbeat_work_fn(struct k_work *w);
 static K_WORK_DELAYABLE_DEFINE(s_heartbeat_work, heartbeat_work_fn);
 
@@ -4328,6 +4425,35 @@ bool matter_commission_has_fabric(void)
 bool matter_commission_take_deliberate_unlock(void)
 {
 	return atomic_clear(&s_deliberate_unlock) != 0;
+}
+
+void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
+					   uint32_t device_id)
+{
+	static int64_t last_report_ms;
+	static int32_t last_report_mm = -1;
+	static bool last_report_in_range;
+	int64_t now = k_uptime_get();
+	bool report;
+
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	report = in_range != last_report_in_range || device_id != s_info.uwb_device_id;
+	s_info.uwb_device_in_range = in_range;
+	s_info.uwb_distance_mm = in_range ? distance_mm : -1;
+	s_info.uwb_device_id = in_range ? device_id : 0u;
+	if (in_range && !report && (now - last_report_ms) >= 1000 &&
+	    (last_report_mm < 0 || ABS(distance_mm - last_report_mm) >= 100)) {
+		report = true;
+	}
+	if (report) {
+		last_report_in_range = in_range;
+		last_report_mm = in_range ? distance_mm : -1;
+		last_report_ms = now;
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+	if (report) {
+		k_work_submit(&s_uwb_notify_work);
+	}
 }
 
 int matter_commission_init(void)

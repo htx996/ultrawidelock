@@ -81,6 +81,7 @@ static const uint32_t k_lock_servers[] = {
 	MATTER_CLUSTER_DESCRIPTOR,
 	MATTER_CLUSTER_DOOR_LOCK,
 	MATTER_CLUSTER_APPROACH_DIRECTION,
+	MATTER_CLUSTER_UWB_PRESENCE,
 #if MATTER_FEATURE_CLIENT
 	/*
 	 * Advertised as a SERVER even though the point of it is to make this
@@ -541,7 +542,8 @@ static bool has_cluster(void *ctx, uint16_t endpoint, uint32_t cluster)
 #if MATTER_FEATURE_CLIENT
 		       cluster == MATTER_CLUSTER_BINDING ||
 #endif
-		       cluster == MATTER_CLUSTER_APPROACH_DIRECTION;
+		       cluster == MATTER_CLUSTER_APPROACH_DIRECTION ||
+		       cluster == MATTER_CLUSTER_UWB_PRESENCE;
 	}
 	if (endpoint != MATTER_ENDPOINT_ROOT) {
 		return false;
@@ -640,6 +642,21 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 		if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			switch (attribute) {
 			case MATTER_ATTR_APPROACH_DIRECTION:
+			case MATTER_ATTR_FEATURE_MAP:
+			case MATTER_ATTR_CLUSTER_REVISION:
+			case MATTER_ATTR_ATTRIBUTE_LIST:
+			case MATTER_ATTR_ACCEPTED_CMD_LIST:
+			case MATTER_ATTR_GENERATED_CMD_LIST:
+				return MATTER_IM_STATUS_SUCCESS;
+			default:
+				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
+			}
+		}
+		if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			switch (attribute) {
+			case MATTER_ATTR_UWB_DEVICE_IN_RANGE:
+			case MATTER_ATTR_UWB_DISTANCE_MM:
+			case MATTER_ATTR_UWB_DEVICE_ID:
 			case MATTER_ATTR_FEATURE_MAP:
 			case MATTER_ATTR_CLUSTER_REVISION:
 			case MATTER_ATTR_ATTRIBUTE_LIST:
@@ -884,6 +901,17 @@ static const uint32_t k_approach_attrs[] = {
 	MATTER_ATTR_GENERATED_CMD_LIST,
 };
 
+static const uint32_t k_uwb_presence_attrs[] = {
+	MATTER_ATTR_UWB_DEVICE_IN_RANGE,
+	MATTER_ATTR_UWB_DISTANCE_MM,
+	MATTER_ATTR_UWB_DEVICE_ID,
+	MATTER_ATTR_FEATURE_MAP,
+	MATTER_ATTR_CLUSTER_REVISION,
+	MATTER_ATTR_ATTRIBUTE_LIST,
+	MATTER_ATTR_ACCEPTED_CMD_LIST,
+	MATTER_ATTR_GENERATED_CMD_LIST,
+};
+
 #if MATTER_FEATURE_CLIENT
 /*
  * The manufacturer-specific PIN attribute is deliberately NOT in this list.
@@ -1031,6 +1059,40 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 		case MATTER_ATTR_ACCEPTED_CMD_LIST:
 		case MATTER_ATTR_GENERATED_CMD_LIST:
 			/* Three attributes and nothing else: no commands. */
+			put_id_list(w, tag, NULL, 0u);
+			return;
+		default:
+			return;
+		}
+	}
+
+	if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+		switch (attribute) {
+		case MATTER_ATTR_UWB_DEVICE_IN_RANGE:
+			(void)matter_tlv_put_bool(w, tag, info->uwb_device_in_range);
+			return;
+		case MATTER_ATTR_UWB_DISTANCE_MM:
+			if (info->uwb_device_in_range && info->uwb_distance_mm >= 0) {
+				(void)matter_tlv_put_u64(w, tag, (uint32_t)info->uwb_distance_mm);
+			} else {
+				(void)matter_tlv_put_null(w, tag);
+			}
+			return;
+		case MATTER_ATTR_UWB_DEVICE_ID:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_device_id);
+			return;
+		case MATTER_ATTR_FEATURE_MAP:
+			(void)matter_tlv_put_u64(w, tag, 0u);
+			return;
+		case MATTER_ATTR_CLUSTER_REVISION:
+			(void)matter_tlv_put_u64(w, tag, MATTER_UWB_PRESENCE_CLUSTER_REV);
+			return;
+		case MATTER_ATTR_ATTRIBUTE_LIST:
+			put_id_list(w, tag, k_uwb_presence_attrs,
+				    sizeof(k_uwb_presence_attrs) / sizeof(k_uwb_presence_attrs[0]));
+			return;
+		case MATTER_ATTR_ACCEPTED_CMD_LIST:
+		case MATTER_ATTR_GENERATED_CMD_LIST:
 			put_id_list(w, tag, NULL, 0u);
 			return;
 		default:
@@ -1682,6 +1744,10 @@ static size_t list_attrs(void *ctx, uint16_t endpoint, uint32_t cluster, const u
 		if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			*out = k_approach_attrs;
 			return sizeof(k_approach_attrs) / sizeof(k_approach_attrs[0]);
+		}
+		if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			*out = k_uwb_presence_attrs;
+			return sizeof(k_uwb_presence_attrs) / sizeof(k_uwb_presence_attrs[0]);
 		}
 #if MATTER_FEATURE_CLIENT
 		if (cluster == MATTER_CLUSTER_BINDING) {

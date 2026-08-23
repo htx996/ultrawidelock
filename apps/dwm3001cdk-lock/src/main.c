@@ -1056,6 +1056,15 @@ int main(void)
 			last_gen = gen;
 			last_obs_gen = gen;
 			present = true;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			{
+				uint32_t device_id = 0u;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
+				device_id = latch_cred;
+#endif
+				matter_commission_update_uwb_presence(true, cm * 10, device_id);
+			}
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_PAIR_LOG)
 			/* On the MAIN THREAD, not the ranging callback: the per-frame
 			 * trace is forced off above precisely because synchronous
@@ -1465,6 +1474,9 @@ int main(void)
 #endif
 			}
 			present = false;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			matter_commission_update_uwb_presence(false, -1, 0u);
+#endif
 		}
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_SLAM)

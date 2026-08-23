@@ -1235,6 +1235,58 @@ void test_matter_clusters(void)
 		     srv.write(srv.ctx, &path, tlv, 4u), MATTER_IM_STATUS_UNSUPPORTED_WRITE);
 	}
 
+	t_group("the vendor UWB cluster exposes live presence state");
+	{
+		struct matter_tlv_writer w;
+		struct matter_tlv_reader r;
+		uint8_t out[32];
+		const uint32_t *ids = NULL;
+		uint64_t v = 0u;
+		bool b = false;
+		bool listed = false;
+		size_t n;
+
+		reset_doubles();
+		fill_info(&info);
+		info.uwb_device_in_range = true;
+		info.uwb_distance_mm = 1370;
+		info.uwb_device_id = 0x12345678u;
+		matter_clusters_init(&srv, &info);
+
+		n = srv.list_clusters(srv.ctx, MATTER_ENDPOINT_LOCK, &ids);
+		for (size_t i = 0u; i < n; i++) {
+			listed |= ids[i] == MATTER_CLUSTER_UWB_PRESENCE;
+		}
+		T_OK("the lock endpoint lists the UWB cluster", listed);
+		T_EQ("and recognizes the distance attribute",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DISTANCE_MM),
+		     MATTER_IM_STATUS_SUCCESS);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_DEVICE_IN_RANGE, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("presence decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_bool(&r, &b) == 0 && b);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_DISTANCE_MM, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("distance decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("distance is reported in millimetres", (long)v, 1370);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_DEVICE_ID, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("device id decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("device id is privacy-safe credential hash prefix", (long)v, 0x12345678u);
+	}
+
 	t_group("the lock endpoint answers its own commands");
 	{
 		reset_doubles();
