@@ -4434,7 +4434,12 @@ void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
 	static int32_t last_report_mm = -1;
 	static bool last_report_in_range;
 	int64_t now = k_uptime_get();
+	int32_t distance_delta = distance_mm - last_report_mm;
 	bool report;
+
+	if (distance_delta < 0) {
+		distance_delta = -distance_delta;
+	}
 
 	ultrawidelock_mutex_lock(&s_owner_lock);
 	report = in_range != last_report_in_range || device_id != s_info.uwb_device_id;
@@ -4442,7 +4447,7 @@ void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
 	s_info.uwb_distance_mm = in_range ? distance_mm : -1;
 	s_info.uwb_device_id = in_range ? device_id : 0u;
 	if (in_range && !report && (now - last_report_ms) >= 1000 &&
-	    (last_report_mm < 0 || ABS(distance_mm - last_report_mm) >= 100)) {
+	    (last_report_mm < 0 || distance_delta >= 100)) {
 		report = true;
 	}
 	if (report) {
