@@ -38,6 +38,7 @@
 #include "ml_feed.h" /* channel-classifier glue; plain feed when ML is off */
 #include "status_led.h"
 #include "uwb_cirdiag.h" /* latched Ipatov scalars, for the channel classifier */
+#include "ultrawidelock_hash.h" /* SHA-256, for the credential's pseudonymous id */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
 #include "ultrawidelock_satellite.h" /* second-anchor verdict; gates PREDICT only */
 #endif
@@ -48,7 +49,6 @@
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 #include "ultrawidelock_latch.h" /* persistent inside veto layered over the side gate */
-#include "ultrawidelock_hash.h" /* SHA-256, for the credential's non-identifying name */
 #include <zephyr/settings/settings.h>
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
@@ -335,6 +335,30 @@ static void factory_reset_if_requested(void)
 #define SESSION_FLAP_HOLD_MS 10000
 #define SESSION_FLAP_FEED_FRESH_MS 3000
 
+/* Stable for one provisioned credential, but not identifying without its
+ * public key. Zero means no authenticated credential; UINT32_MAX is kept
+ * unavailable because the optional inside latch uses it as its wildcard. */
+#define CREDENTIAL_ID_NONE 0x00000000u
+#define CREDENTIAL_ID_ANY  0xFFFFFFFFu
+
+static uint32_t authenticated_credential_id(void)
+{
+	uint8_t cred_pub[65];
+	uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
+	uint32_t v;
+
+	if (!ultrawidelock_reader_authenticated_credential(cred_pub)) {
+		return CREDENTIAL_ID_NONE;
+	}
+	ultrawidelock_sha256(cred_pub, sizeof(cred_pub), digest);
+	v = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
+	    ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
+	if (v == CREDENTIAL_ID_NONE || v == CREDENTIAL_ID_ANY) {
+		v = 1u;
+	}
+	return v;
+}
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 /*
  * The inside veto. The side gate classifies each window; this decides what a
@@ -360,7 +384,7 @@ static bool s_latch_dirty;
  * must not accumulate against one, so the session stays closed until the
  * reader can say whose it is.
  */
-#define LATCH_CRED_NONE 0x00000000u
+#define LATCH_CRED_NONE CREDENTIAL_ID_NONE
 
 /* How long a credential-session gap still counts as the SAME approach --
  * the latch twin of SESSION_CARRY_MS in witness_link.c. iOS tears the
@@ -370,32 +394,6 @@ static bool s_latch_dirty;
  * clear_windows as the session flapped, and with the phone then at the
  * door no run could restart beyond clear_min_mm -- why=0x10 for good). */
 #define LATCH_SESSION_CARRY_MS 30000
-
-static uint32_t latch_cred_id(void)
-{
-	uint8_t cred_pub[65];
-	uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
-	uint32_t v;
-
-	if (!ultrawidelock_reader_authenticated_credential(cred_pub)) {
-		return LATCH_CRED_NONE;
-	}
-	/* The same construction ultrawidelock_assert_cred_id() uses -- SHA-256
-	 * over the credential public key -- computed here rather than called,
-	 * because ultrawidelock_assert is not linked into this image and
-	 * pulling it in for four bytes of digest would cost more than it says. */
-	ultrawidelock_sha256(cred_pub, sizeof(cred_pub), digest);
-	v = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
-	    ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
-	/* Two reserved values must never be minted from a real credential: zero
-	 * means "nobody", and CRED_ANY addresses every record at once. A
-	 * collision is a 1-in-2^31 event and costs that credential nothing but
-	 * a different record number. */
-	if (v == LATCH_CRED_NONE || v == ULTRAWIDELOCK_LATCH_CRED_ANY) {
-		v = 1u;
-	}
-	return v;
-}
 
 static int latch_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -980,7 +978,8 @@ int main(void)
 		 * agreeing windows must never be inherited by another phone.
 		 */
 		{
-			uint32_t cred_now = session_now ? latch_cred_id() : LATCH_CRED_NONE;
+			uint32_t cred_now = session_now ? authenticated_credential_id()
+						    : LATCH_CRED_NONE;
 
 			if (cred_now == latch_cred) {
 				if (latch_gap_ms != 0) {
@@ -1058,10 +1057,8 @@ int main(void)
 			present = true;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 			{
-				uint32_t device_id = 0u;
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
-				device_id = latch_cred;
-#endif
+				uint32_t device_id = authenticated_credential_id();
+
 				matter_commission_update_uwb_presence(true, cm * 10, device_id);
 			}
 #endif
