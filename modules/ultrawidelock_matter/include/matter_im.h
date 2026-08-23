@@ -417,6 +417,22 @@ typedef size_t (*matter_im_list_attrs_fn)(void *ctx, uint16_t endpoint, uint32_t
 					  const uint32_t **out);
 
 /**
+ * Split one large list attribute into Matter list operations for chunked reports.
+ *
+ * Return zero for an ordinary attribute. A fragmented list returns one logical
+ * report for the empty replace-all followed by one report per appended item.
+ */
+typedef size_t (*matter_im_list_fragments_fn)(void *ctx, uint16_t endpoint, uint32_t cluster,
+					      uint32_t attribute, bool fabric_filtered);
+
+/** Write logical fragment @p index selected by @ref matter_im_list_fragments_fn. */
+typedef void (*matter_im_list_fragment_value_fn)(void *ctx, uint16_t endpoint,
+						 uint32_t cluster, uint32_t attribute,
+						 bool fabric_filtered, size_t index,
+						 struct matter_tlv_writer *w,
+						 matter_tlv_tag_t tag);
+
+/**
  * Every cluster on one endpoint, for expanding a path that names none.
  *
  * A commissioner that has just adopted a node subscribes to ALL of it -- no
@@ -508,6 +524,9 @@ struct matter_im_server {
 	matter_im_value_fn value;
 	matter_im_has_cluster_fn has_cluster;
 	matter_im_list_attrs_fn list_attrs;
+	/** Both NULL means every attribute is encoded as one report. */
+	matter_im_list_fragments_fn list_fragments;
+	matter_im_list_fragment_value_fn list_fragment_value;
 	matter_im_list_endpoints_fn list_endpoints;
 	matter_im_list_clusters_fn list_clusters;
 	matter_im_command_fn command;

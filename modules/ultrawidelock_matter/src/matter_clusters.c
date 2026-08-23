@@ -1233,6 +1233,75 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
  * including Door Lock, Descriptor, Basic Information, Network Commissioning, Access Control,
  * Operational Credentials, Admin Commissioning, and General Commissioning.
  */
+static bool noc_visible(const struct matter_device_info *info, const struct matter_fabric *f,
+			bool fabric_filtered)
+{
+	return f->index != 0u &&
+	       (!fabric_filtered || f->index == info->accessing_fabric_index);
+}
+
+static void put_noc_entry(const struct matter_device_info *info, const struct matter_fabric *f,
+			  struct matter_tlv_writer *w, matter_tlv_tag_t tag)
+{
+	(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_NOC), f->noc, f->noc_len);
+	if (f->icac_len > 0u && info->icac.owner_index == f->index &&
+	    info->icac.len == f->icac_len) {
+		(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_ICAC), info->icac.buf,
+					   f->icac_len);
+	} else {
+		(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_NOC_ICAC));
+	}
+	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_INDEX), f->index);
+	(void)matter_tlv_end_container(w);
+}
+
+static size_t list_fragments(void *ctx, uint16_t endpoint, uint32_t cluster,
+			     uint32_t attribute, bool fabric_filtered)
+{
+	const struct matter_device_info *info = ctx;
+	size_t count = 1u; /* The empty replace-all. */
+
+	if (endpoint != MATTER_ENDPOINT_ROOT || cluster != MATTER_CLUSTER_OPERATIONAL_CREDENTIALS ||
+	    attribute != MATTER_ATTR_OC_NOCS) {
+		return 0u;
+	}
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (noc_visible(info, &info->fabrics[i], fabric_filtered)) {
+			count++;
+		}
+	}
+	return count;
+}
+
+static void list_fragment_value(void *ctx, uint16_t endpoint, uint32_t cluster,
+				uint32_t attribute, bool fabric_filtered, size_t index,
+				struct matter_tlv_writer *w, matter_tlv_tag_t tag)
+{
+	const struct matter_device_info *info = ctx;
+	size_t visible = 0u;
+
+	(void)endpoint;
+	(void)cluster;
+	(void)attribute;
+	if (index == 0u) {
+		(void)matter_tlv_start_container(w, tag, MATTER_TLV_ARRAY);
+		(void)matter_tlv_end_container(w);
+		return;
+	}
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		const struct matter_fabric *f = &info->fabrics[i];
+
+		if (!noc_visible(info, f, fabric_filtered)) {
+			continue;
+		}
+		if (++visible == index) {
+			put_noc_entry(info, f, w, tag);
+			return;
+		}
+	}
+}
+
 static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t attribute,
 		       bool fabric_filtered, struct matter_tlv_writer *w, matter_tlv_tag_t tag)
 {
@@ -1539,22 +1608,7 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 				    (fabric_filtered && f->index != info->accessing_fabric_index)) {
 					continue;
 				}
-				(void)matter_tlv_start_container(w, MATTER_TLV_ANON,
-								 MATTER_TLV_STRUCTURE);
-				(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_NOC), f->noc,
-							   f->noc_len);
-				if (f->icac_len > 0u && info->icac.owner_index == f->index &&
-				    info->icac.len == f->icac_len) {
-					(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_ICAC),
-								   info->icac.buf, f->icac_len);
-				} else {
-					/* Nullable, and null is the answer when
-					 * the root signed the NOC directly. */
-					(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_NOC_ICAC));
-				}
-				(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_INDEX),
-							 f->index);
-				(void)matter_tlv_end_container(w);
+				put_noc_entry(info, f, w, MATTER_TLV_ANON);
 			}
 			(void)matter_tlv_end_container(w);
 			return;
@@ -3986,6 +4040,8 @@ void matter_clusters_init(struct matter_im_server *srv, struct matter_device_inf
 	srv->value = attr_value;
 	srv->has_cluster = has_cluster;
 	srv->list_attrs = list_attrs;
+	srv->list_fragments = list_fragments;
+	srv->list_fragment_value = list_fragment_value;
 	srv->list_endpoints = list_endpoints;
 	srv->list_clusters = list_clusters;
 	srv->command = command;
