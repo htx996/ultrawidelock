@@ -60,6 +60,7 @@ void test_ultrawidelock_link(void)
 	uint8_t frame[ULTRAWIDELOCK_LINK_MAX_FRAME];
 	uint8_t frame2[sizeof(frame)];
 	uint8_t chal[ULTRAWIDELOCK_LINK_CHALLENGE_LEN];
+	uint8_t chal_hint[ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN];
 	size_t n;
 	size_t n2;
 
@@ -80,6 +81,8 @@ void test_ultrawidelock_link(void)
 	/* The demultiplexer is length-based, so the two must never be equal. */
 	T_OK("report and handoff have different sealed lengths",
 	     ULTRAWIDELOCK_ANCHOR_MSG_LEN != ULTRAWIDELOCK_JOIN_MSG_LEN);
+	T_OK("handoff nonce role is outside every satellite role",
+	     ULTRAWIDELOCK_LINK_HANDOFF_ROLE > ULTRAWIDELOCK_LINK_ROLE_MAX);
 
 	t_group("init: nothing is sendable before a key");
 	psafake_reset();
@@ -102,6 +105,15 @@ void test_ultrawidelock_link(void)
 	T_EQ("still not ready", ultrawidelock_link_ready(&sat), 0);
 	T_EQ("16 bytes accepted", ultrawidelock_link_set_key(&sat, KEY, 16u), 0);
 	T_EQ("ready", ultrawidelock_link_ready(&sat), 1);
+	{
+		struct ultrawidelock_link bad_role;
+
+		ultrawidelock_link_init(&bad_role, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, 1u);
+		(void)ultrawidelock_link_set_key(&bad_role, KEY, sizeof(KEY));
+		T_EQ("handoff nonce role cannot compose a satellite report",
+		     ultrawidelock_link_build_report(&bad_role, 100, 1u, frame, sizeof(frame)), 0);
+		T_EQ("refused role burns no nonce", bad_role.ctr, 0);
+	}
 
 	ultrawidelock_link_init(&lock, 1u, 0x11223344u);
 	T_EQ("lock keyed", ultrawidelock_link_set_key(&lock, KEY, 16u), 0);
@@ -172,6 +184,41 @@ void test_ultrawidelock_link(void)
 	     ULTRAWIDELOCK_LINK_RX_REPORT);
 	T_EQ("distance survived", am.peer_mm, 1111);
 
+	t_group("replay: alternating anchor roles cannot reset each other's window");
+	{
+		struct ultrawidelock_link role2;
+		struct ultrawidelock_link role3;
+		struct ultrawidelock_link role_lock;
+		uint8_t role2_frame[ULTRAWIDELOCK_LINK_MAX_FRAME];
+		uint8_t role3_frame[ULTRAWIDELOCK_LINK_MAX_FRAME];
+		size_t role2_len;
+		size_t role3_len;
+
+		ultrawidelock_link_init(&role2, 2u, 0x11111111u);
+		ultrawidelock_link_init(&role3, 3u, 0x33333333u);
+		ultrawidelock_link_init(&role_lock, ULTRAWIDELOCK_LINK_HANDOFF_ROLE,
+					0x99999999u);
+		(void)ultrawidelock_link_set_key(&role2, KEY, sizeof(KEY));
+		(void)ultrawidelock_link_set_key(&role3, KEY, sizeof(KEY));
+		(void)ultrawidelock_link_set_key(&role_lock, KEY, sizeof(KEY));
+		role2_len = ultrawidelock_link_build_report(&role2, 1200, 70u, role2_frame,
+							  sizeof(role2_frame));
+		role3_len = ultrawidelock_link_build_report(&role3, 1300, 70u, role3_frame,
+							  sizeof(role3_frame));
+		T_EQ("role 2 lands", ultrawidelock_link_consume(&role_lock, role2_frame,
+								     role2_len, &am, NULL),
+		     ULTRAWIDELOCK_LINK_RX_REPORT);
+		T_EQ("role 3 lands without replacing role 2's state",
+		     ultrawidelock_link_consume(&role_lock, role3_frame, role3_len, &am, NULL),
+		     ULTRAWIDELOCK_LINK_RX_REPORT);
+		T_EQ("role 2's first frame is still a replay",
+		     ultrawidelock_link_consume(&role_lock, role2_frame, role2_len, &am, NULL),
+		     ULTRAWIDELOCK_LINK_RX_REPLAYED);
+		T_EQ("replay diagnostic keeps its role", am.role, 2);
+		T_EQ("replay diagnostic keeps its counter", am.ctr, 1);
+		T_EQ("rejected distance remains cleared", am.peer_mm, 0);
+	}
+
 	t_group("challenge: unsealed, and it can only cost a report its standing");
 	psafake_reset();
 	T_EQ("built", ultrawidelock_link_build_challenge(0x0102030405060708ULL, chal,
@@ -184,6 +231,24 @@ void test_ultrawidelock_link(void)
 	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
 	T_EQ("echo nonce updated", (long)(sat.echo_nonce & 0xFFFFFFFFu), (long)0x05060708u);
 	T_EQ("no key was consulted for it", psafake.import_calls, 0);
+
+	t_group("challenge: the 12-byte picked-label hint is accepted and ignored");
+	T_EQ("hinted challenge built",
+	     ultrawidelock_link_build_challenge_hint(0x0102030405060708ULL, 0x00A1B2C3u,
+						     chal_hint, sizeof(chal_hint)),
+	     ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN);
+	t_vec("hinted challenge bytes", chal_hint, sizeof(chal_hint),
+	      "020102030405060708a1b2c3");
+	T_EQ("11-byte buffer refused",
+	     ultrawidelock_link_build_challenge_hint(1u, 2u, chal_hint,
+						     sizeof(chal_hint) - 1u),
+	     0);
+	sat.echo_nonce = 0u;
+	T_EQ("satellite takes the hinted form",
+	     ultrawidelock_link_consume(&sat, chal_hint, sizeof(chal_hint), NULL, NULL),
+	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
+	T_EQ("trailer did not alter the nonce", (long)(sat.echo_nonce & 0xFFFFFFFFu),
+	     (long)0x05060708u);
 
 	t_group("challenge: the echo travels in the next report");
 	psafake_reset();

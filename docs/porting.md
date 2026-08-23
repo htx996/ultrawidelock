@@ -87,8 +87,10 @@ two more per-platform seams, both small and both with ESP-IDF worked examples:
 - a **storage backend** for the `ultrawidelock_prov` trust store (the NVS one is
   `ports/esp32/components/ultrawidelock_reader/ultrawidelock_prov_nvs.c`).
 
-The crypto layer itself (`ultrawidelock_hash.c`, `ultrawidelock_crypto.c`, `ultrawidelock_prim_psa.c`) is shared
-source over PSA/mbedTLS and ports without platform code.
+Portable crypto calls `ultrawidelock_prim.h`. Target builds bind that contract
+once to `ultrawidelock_prim_psa.c`, over the framework's PSA implementation;
+host tests bind it to a deterministic double. Modules do not call the framework
+provider directly.
 
 ## 3. Build tiers
 
@@ -106,13 +108,11 @@ source over PSA/mbedTLS and ports without platform code.
 
 ### Crypto seam
 
-`ccc_kdf.h` needs one AES-ECB primitive, supplied by exactly one of:
-
-- `ccc_crypto_psa.c` — `CONFIG_ULTRAWIDELOCK_CRYPTO_PSA` (default on nRF, backed by nrf_security).
-- `ccc_crypto_mbedtls.c` — `CONFIG_ULTRAWIDELOCK_CRYPTO_MBEDTLS`, for SoCs without a PSA provider.
-  This is what the ESP32-S3 port uses.
-
-Both honour the same contract; pick whichever the target's crypto stack provides.
+`ccc_kdf.h` needs one AES-ECB primitive. `ccc_crypto_prim.c` is the thin adapter
+from that existing CCC contract to `ultrawidelock_aes_ecb_encrypt()`, including
+both 128-bit and 256-bit keys. Every target links exactly one primitive provider;
+there is no UWB-specific crypto-backend selector. Zephyr uses nrf_security or
+Mbed TLS PSA, and ESP-IDF and FreeRTOS use their Mbed TLS PSA providers.
 
 ### SoC-specific seams
 

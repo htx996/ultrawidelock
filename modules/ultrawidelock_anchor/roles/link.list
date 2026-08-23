@@ -4,6 +4,7 @@
 # no radio, so one implementation serves Thread UDP and ESP-NOW alike and the
 # host suite can test the freshness rules without either. Takes anchor_msg.list
 # (the codec) and seal.list (the envelope); a consumer of this role needs both.
-# Consumers: ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
+# Consumers: this module's Zephyr library, apps/satellite,
+# ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
 # Sorted; add HERE and nowhere else.
 modules/ultrawidelock_anchor/src/ultrawidelock_link.c

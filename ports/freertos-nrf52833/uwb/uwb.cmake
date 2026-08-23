@@ -28,13 +28,9 @@ set(ULTRAWIDELOCK_UWB_ROLE_LISTS
   "${ULTRAWIDELOCK_UWB_ROLES}/responder_engine.list"
   "${ULTRAWIDELOCK_UWB_ROLES}/ccc_keys.list"
   "${ULTRAWIDELOCK_UWB_ROLES}/ccc_engine.list"
-  # The PSA provider, not the mbedTLS variant ports/esp32 selects. The CCC STS
-  # key derivation reaches AES-ECB through a seam behind ccc_kdf.h, and this
-  # port has a PSA provider where that one did not: crypto/ builds Mbed TLS
-  # standalone with the PSA core on, for ultrawidelock_prim_psa.c's sake. Selecting the
-  # mbedTLS variant here would link a second, lower-level path to the same
-  # primitive for no reason.
-  "${ULTRAWIDELOCK_UWB_ROLES}/crypto_psa.list"
+  # Thin compatibility adapter only. The standalone ultrawidelock_prim target
+  # owns the PSA provider, so UWB never selects a platform crypto backend.
+  "${ULTRAWIDELOCK_UWB_ROLES}/crypto_prim.list"
   "${ULTRAWIDELOCK_UWB_ROLES}/ultrawidelock_adapter.list"
   "${ULTRAWIDELOCK_UWB_ROLES}/ultrawidelock_codec.list"
   "${ULTRAWIDELOCK_DW_ROLES}/core.list"
@@ -70,6 +66,7 @@ target_include_directories(ultrawidelock_uwb PUBLIC
   "${ULTRAWIDELOCK_PORT_DIR}/include"
 )
 target_include_directories(ultrawidelock_uwb PRIVATE
+	"${ULTRAWIDELOCK_REPO_ROOT}/modules/ultrawidelock_cred/include"
   "${ULTRAWIDELOCK_REPO_ROOT}/modules/ultrawidelock_uwb/src/driver"
   "${ULTRAWIDELOCK_REPO_ROOT}/modules/ultrawidelock_uwb/src/fira"
   "${ULTRAWIDELOCK_REPO_ROOT}/modules/ultrawidelock_uwb/src/ccc"
@@ -91,7 +88,6 @@ target_compile_definitions(ultrawidelock_uwb PUBLIC
   CONFIG_ULTRAWIDELOCK_CRED=1
   CONFIG_DW3000=1
   CONFIG_DW3000_CHIP_DW3000=1
-  CONFIG_ULTRAWIDELOCK_CRYPTO_PSA=1
   # Not optional and not a diagnostic. This is a single core and BLE shares it
   # with the ranging callbacks, so the next round's POLL and Response overwrite
   # the live DS-TWR timestamps before Final_Data is processed and the distances
@@ -102,8 +98,9 @@ target_compile_definitions(ultrawidelock_uwb PUBLIC
 
 # The kernel headers, the board's platform hooks, and Mbed TLS's PSA core: the
 # engine takes its OS surface from ultrawidelock_port.h, its logging and timebase from the
-# board, and its AES-ECB from PSA.
-target_link_libraries(ultrawidelock_uwb PUBLIC ultrawidelock_kernel ultrawidelock_board ultrawidelock_mbedtls)
+# board, and its AES-ECB through the shared primitive provider.
+target_link_libraries(ultrawidelock_uwb PUBLIC ultrawidelock_kernel ultrawidelock_board)
+target_link_libraries(ultrawidelock_uwb PRIVATE ultrawidelock_prim)
 
 # ----------------------------------------------------------------------------
 # Proof that this layer links, which the product image does not currently give.

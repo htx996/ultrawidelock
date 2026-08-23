@@ -92,22 +92,10 @@ length-checks those where they are written.
 | esp32 | namespace | `ha_mqtt` | 15 | `apps/esp32-matter-lock/main/ha_mqtt.c` |
 | esp32 | namespace | `satlink` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | esp32 | key | `lk` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
-| zephyr | subtree | `mf2` | 64 | `ports/zephyr/store/matter_fab_settings.c` |
 | zephyr | subtree | `msub` | 64 | `apps/dwm3001cdk-lock/src/matter_commission.c` |
 | zephyr | key | `srp/hid` | 64 | `ports/zephyr/matter/matter_thread_port.c` |
 | zephyr | subtree | `uwl/latch` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
 | zephyr | key | `uwl/latch/rec` | 64 | `apps/dwm3001cdk-lock/src/main.c` |
-| zephyr | subtree | `uwl/wit` | 64 | `apps/dwm3001cdk-lock/src/witness_link.c` |
-| zephyr | key | `uwl/wit/k` | 64 | `apps/dwm3001cdk-lock/src/prov_shell.c` |
-| zephyr | subtree | `uwl/anc` | 64 | `apps/dwm3001cdk-lock/src/witness_link.c` |
-| zephyr | key | `uwl/anc/k` | 64 | `apps/dwm3001cdk-lock/src/prov_shell.c` |
-| zephyr | subtree | `wit` | 64 | `examples/zephyr/ble-witness/src/main.c` |
-| zephyr | key | `wit/role` | 64 | `examples/zephyr/ble-witness/src/main.c` |
-| zephyr | key | `wit/lk` | 64 | `examples/zephyr/ble-witness/src/main.c` |
-| zephyr | key | `wit/gk` | 64 | `examples/zephyr/ble-witness/src/main.c` |
-| zephyr | key | `wit/ds` | 64 | `examples/zephyr/ble-witness/src/main.c` |
-| zephyr | subtree | `sat` | 64 | `apps/satellite/src/anchor_link.c` |
-| zephyr | key | `sat/lk` | 64 | `apps/satellite/src/anchor_link.c` |
 | esp32 | namespace | `uwl` | 15 | `ports/esp32/components/ultrawidelock_port/kv_nvs.c` |
 | zephyr | subtree | `uwl` | 64 | `ports/zephyr/store/kv_zephyr.c` |
 
@@ -145,9 +133,10 @@ Where the caps come from, and why they differ:
   are numeric ids (`ULTRAWIDELOCK_KV_KEY_CRED_PROV` = `0x0001u`) in the windows
   `modules/ultrawidelock_port/include/ultrawidelock_kv.h` reserves; this port
   reached that design first and the seam was derived from it.
-  `ports/freertos-nrf52833/include/ultrawidelock_freertos_kv.h` now assigns only
-  the ids inside those windows that this port's own Matter and PSA backends
-  read. A new record takes an id from the right window, not a string.
+  Matter's shared ids now live in `ultrawidelock_kv.h`; the port-specific
+  `ports/freertos-nrf52833/include/ultrawidelock_freertos_kv.h` assigns only its
+  PSA backend's ids. A new record takes an id from the right window, not a
+  string.
 
 The three ports share `ultrawidelock_prov.h` and the portable serializer, not
 these names. A single spelling across all three is neither possible nor wanted;
@@ -202,8 +191,9 @@ Keep a new chipset's radio API inside its own engine the same way.
 ## New operating systems
 
 The five HAL seams are the chipset contract, not the operating system one. The
-platform services live in `modules/ultrawidelock_port/include/`, and this is all
-of them:
+platform-service contracts live in `modules/ultrawidelock_port/include/`. The
+crypto primitive contract lives with its callers in
+`modules/ultrawidelock_cred/include/`. Together, this is all of them:
 
 | Seam | What it covers | Backends today | Host fake |
 |---|---|---|---|
@@ -214,8 +204,9 @@ of them:
 | `ultrawidelock_flash.h` | erase-block regions, for DFU | `ports/zephyr/osal/flash_zephyr.c`, `ports/freertos-nrf52833/storage/flash_area_freertos.c` | `tests/host/port/flash_host.c` |
 | `ultrawidelock_kv.h` | small persistent values, addressed by number | `ports/zephyr/store/kv_zephyr.c`, `ports/esp32/components/ultrawidelock_port/kv_nvs.c`, `ports/freertos-nrf52833/storage/kv_flash_freertos.c` | `tests/host/port/kv_host.c` |
 | `ultrawidelock_dgram.h` | the sealed link's datagrams | `ports/zephyr/net/dgram_openthread.c` | `tests/host/port/dgram_host.c` |
+| `ultrawidelock_prim.h` | random bytes, AES ECB/GCM/CCM, P-256 | shared `ultrawidelock_prim_psa.c` over each framework's PSA provider | `tests/shared/ultrawidelock_prim_host.c`, with `tests/host/psafake` for the provider contract |
 
-Two shapes appear in that table, and the difference is not cosmetic.
+Three shapes appear in that table, and the difference is not cosmetic.
 
 **In-header branches.** `ultrawidelock_port.h`, `_log.h` and `_bytes.h` are
 `#if defined(__ZEPHYR__) / ESP_PLATFORM / ULTRAWIDELOCK_PORT_FREERTOS /
@@ -231,8 +222,16 @@ seams whose host backend is a real fake a suite drives rather than a stub.
 `ultrawidelock_osal.h` is a hybrid: the types branch in the header because they
 wrap `k_work` and its equivalents, the functions are a file per port.
 
-Whichever shape a new seam takes, two rules hold. Put the backend under one new
-`ports/<os>/` tree and keep conditional operating system code out of `modules/`.
+**A provider-backed adapter.** `ultrawidelock_prim.h` is a provider-neutral
+contract. Zephyr, ESP-IDF and FreeRTOS builds use the shared PSA adapter, while
+their framework supplies nrf_security or the Mbed TLS PSA implementation and
+its lifecycle. Host tests supply a deterministic double. A framework without
+PSA implements the same primitive contract in its own port tree; portable
+modules still do not name that provider.
+
+Whichever shape a new seam takes, two rules hold. Put operating-system-specific
+code under one new `ports/<os>/` tree and keep conditional operating system code
+out of `modules/`. A provider-neutral adapter may remain shared source.
 And do not add a seam that has no second implementation: every one above has at
 least two backends today, or one backend plus a host fake a suite actually
 drives. A contract with a single implementation is a header, not a seam, and it
@@ -240,10 +239,10 @@ will be wrong in the ways only a second port would have revealed.
 
 ### A new framework, end to end
 
-1. Implement the seven seams above. Nothing under `modules/` should need an
+1. Implement the eight seams above. Nothing under `modules/` should need an
    edit; if it does, that is the bug to fix first.
-2. Add the OS branch to the three in-header seams, and one `.c` per port for the
-   other four.
+2. Add the OS branch to the three in-header seams, one `.c` per port for the
+   four service seams, and bind the primitive contract to one crypto provider.
 3. Write one thin component wrapper that reads the role manifests
    (`modules/<mod>/roles/*.list`) rather than listing sources again. See
    `cmake/ultrawidelock_roles.cmake` and the ESP-IDF components for what that
@@ -291,7 +290,8 @@ whether it uses the portable Matter implementation or an SDK-owned CHIP stack:
 
 The DWM3001CDK Zephyr and FreeRTOS builds share
 `modules/ultrawidelock_matter/`, `ports/zephyr/matter/matter_thread_port.c`, and
-the `mf2` record contract in `ports/zephyr/store/matter_fab_settings.c`. The
+the numeric MF2 record layout in `ports/zephyr/store/matter_fab_settings.c`,
+whose ids live in `ultrawidelock_kv.h`. The
 ESP32 and nRF5340 ports delegate fabric transactions to their CHIP SDKs; their
 application glue still owns the last-fabric credential cleanup rule.
 

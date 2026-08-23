@@ -80,6 +80,9 @@ size_t ultrawidelock_link_build_report(struct ultrawidelock_link *l, int32_t pee
 	if (l == NULL || out == NULL || !l->provisioned || peer_mm < 0) {
 		return 0;
 	}
+	if (l->role < ULTRAWIDELOCK_LINK_ROLE_MIN || l->role > ULTRAWIDELOCK_LINK_ROLE_MAX) {
+		return 0;
+	}
 	if (cap < SEALED(ULTRAWIDELOCK_ANCHOR_MSG_LEN)) {
 		return 0;
 	}
@@ -151,6 +154,19 @@ size_t ultrawidelock_link_build_challenge(uint64_t nonce, uint8_t *out, size_t c
 	return ULTRAWIDELOCK_LINK_CHALLENGE_LEN;
 }
 
+size_t ultrawidelock_link_build_challenge_hint(uint64_t nonce, uint32_t hint, uint8_t *out,
+				       size_t cap)
+{
+	if (out == NULL || cap < ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN) {
+		return 0;
+	}
+	(void)ultrawidelock_link_build_challenge(nonce, out, cap);
+	out[9] = (uint8_t)(hint >> 16);
+	out[10] = (uint8_t)(hint >> 8);
+	out[11] = (uint8_t)hint;
+	return ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN;
+}
+
 enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link *l,
 						      const uint8_t *in, size_t len,
 						      struct ultrawidelock_anchor_msg *am,
@@ -167,7 +183,9 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 	/* The challenge is unsealed by design and is the only thing read before
 	 * the key is consulted. It can set no state but the echo nonce, and an
 	 * echo nonce can only ever cost a report its standing. */
-	if (len == ULTRAWIDELOCK_LINK_CHALLENGE_LEN && in[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
+	if ((len == ULTRAWIDELOCK_LINK_CHALLENGE_LEN ||
+	     len == ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN) &&
+	    in[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
 		uint64_t n = 0u;
 
 		for (int i = 0; i < 8; i++) {
@@ -199,8 +217,18 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 			return ULTRAWIDELOCK_LINK_RX_MALFORMED;
 		}
 		memset(plain, 0, sizeof(plain));
-		if (!ultrawidelock_seen_accept_ctr(&l->peer, am->boot_id, am->ctr)) {
+		/* anchor_msg_decode() enforces the nonce-safe role range before
+		 * populating am, so indexing the per-role window is safe here. */
+		if (!ultrawidelock_seen_accept_ctr(&l->report_peer[am->role - 1u], am->boot_id,
+						   am->ctr)) {
+			uint8_t role = am->role;
+			uint32_t ctr = am->ctr;
+
 			memset(am, 0, sizeof(*am));
+			/* Keep only the two non-sensitive fields a carrier needs for its
+			 * existing replay diagnostic. The rejected distance is cleared. */
+			am->role = role;
+			am->ctr = ctr;
 			return ULTRAWIDELOCK_LINK_RX_REPLAYED;
 		}
 		return ULTRAWIDELOCK_LINK_RX_REPORT;
@@ -213,17 +241,24 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 		if (!ultrawidelock_unseal(l->key, in, len, plain, sizeof(plain), &plain_len)) {
 			return ULTRAWIDELOCK_LINK_RX_UNSEALED;
 		}
+		memset(jm, 0, sizeof(*jm));
 		rc = ULTRAWIDELOCK_LINK_RX_JOIN;
 		if (!ultrawidelock_join_msg_decode(plain, plain_len, jm)) {
 			rc = ULTRAWIDELOCK_LINK_RX_MALFORMED;
-		} else if (!ultrawidelock_seen_accept_ctr(&l->peer, jm->boot_id, jm->ctr)) {
+		} else if (!ultrawidelock_seen_accept_ctr(&l->join_peer, jm->boot_id, jm->ctr)) {
 			rc = ULTRAWIDELOCK_LINK_RX_REPLAYED;
 		}
 		/* Carries a URSK either way: clear the staging buffer, and the
 		 * out-parameter too unless the caller is about to use it. */
 		memset(plain, 0, sizeof(plain));
 		if (rc != ULTRAWIDELOCK_LINK_RX_JOIN) {
+			uint32_t ctr = jm->ctr;
+
 			memset(jm, 0, sizeof(*jm));
+			/* Preserve the diagnostic counter, never the rejected URSK. */
+			if (rc == ULTRAWIDELOCK_LINK_RX_REPLAYED) {
+				jm->ctr = ctr;
+			}
 		}
 		return rc;
 	}

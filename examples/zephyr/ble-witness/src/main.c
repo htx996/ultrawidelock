@@ -72,6 +72,7 @@ void witness_boot_trace_phase(unsigned int n); /* src/boot_trace.c, bench only *
 #include <zephyr/net/openthread.h>
 
 #include "ultrawidelock_dgram.h"
+#include "ultrawidelock_kv.h"
 
 #include <psa/crypto.h>
 
@@ -438,44 +439,36 @@ static void window_close_and_send(void)
 	LOG_DBG("report ctr=%u tuples=%u", (unsigned)wm.ctr, (unsigned)n);
 }
 
-/* ---- settings and provisioning ---------------------------------------- */
+/* ---- persistent provisioning ----------------------------------------- */
 
-static int wit_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+static void provisioning_load(void)
 {
-	if (strcmp(name, "role") == 0 && len == 1u) {
-		if (read_cb(cb_arg, &s_prov.role, 1) == 1) {
-			s_prov.have_role = true;
-			return 0;
-		}
-		return -EINVAL;
-	}
-	if (strcmp(name, "lk") == 0 && len == KEY_LEN) {
-		if (read_cb(cb_arg, s_prov.link_key, KEY_LEN) == (ssize_t)KEY_LEN) {
-			s_prov.have_link = true;
-			return 0;
-		}
-		return -EINVAL;
-	}
-	if (strcmp(name, "gk") == 0 && len == KEY_LEN) {
-		if (read_cb(cb_arg, s_prov.group_key, KEY_LEN) == (ssize_t)KEY_LEN) {
-			s_prov.have_group = true;
-			return 0;
-		}
-		return -EINVAL;
-	}
-	if (strcmp(name, "ds") == 0 && len <= DATASET_MAX) {
-		ssize_t got = read_cb(cb_arg, s_prov.dataset, DATASET_MAX);
+	size_t len = sizeof(s_prov.role);
 
-		if (got > 0) {
-			s_prov.dataset_len = (uint8_t)got;
-			return 0;
-		}
-		return -EINVAL;
+	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_ROLE,
+				 &s_prov.role, &len) == ULTRAWIDELOCK_KV_OK &&
+	    len == sizeof(s_prov.role)) {
+		s_prov.have_role = true;
 	}
-	return -ENOENT;
+	len = sizeof(s_prov.link_key);
+	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_LINK_KEY,
+				 s_prov.link_key, &len) == ULTRAWIDELOCK_KV_OK &&
+	    len == sizeof(s_prov.link_key)) {
+		s_prov.have_link = true;
+	}
+	len = sizeof(s_prov.group_key);
+	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_GROUP_KEY,
+				 s_prov.group_key, &len) == ULTRAWIDELOCK_KV_OK &&
+	    len == sizeof(s_prov.group_key)) {
+		s_prov.have_group = true;
+	}
+	len = sizeof(s_prov.dataset);
+	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_DATASET,
+				 s_prov.dataset, &len) == ULTRAWIDELOCK_KV_OK &&
+	    len > 0u && len <= sizeof(s_prov.dataset)) {
+		s_prov.dataset_len = (uint8_t)len;
+	}
 }
-
-SETTINGS_STATIC_HANDLER_DEFINE(wit, "wit", NULL, wit_settings_set, NULL, NULL);
 
 static int unhex(const char *hex, uint8_t *out, size_t cap)
 {
@@ -555,10 +548,14 @@ static void cmd_prov(char *args)
 		return;
 	}
 
-	if (settings_save_one("wit/role", &role, 1) != 0 ||
-	    settings_save_one("wit/lk", lk, KEY_LEN) != 0 ||
-	    settings_save_one("wit/gk", gk, KEY_LEN) != 0 ||
-	    settings_save_one("wit/ds", ds, (size_t)dsn) != 0) {
+	if (ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_ROLE,
+				 &role, sizeof(role)) != ULTRAWIDELOCK_KV_OK ||
+	    ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_LINK_KEY,
+				 lk, sizeof(lk)) != ULTRAWIDELOCK_KV_OK ||
+	    ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_GROUP_KEY,
+				 gk, sizeof(gk)) != ULTRAWIDELOCK_KV_OK ||
+	    ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_DATASET,
+				 ds, (size_t)dsn) != ULTRAWIDELOCK_KV_OK) {
 		printk("PROV err=store\n");
 		return;
 	}
@@ -567,10 +564,10 @@ static void cmd_prov(char *args)
 
 static void cmd_wipe(void)
 {
-	(void)settings_delete("wit/role");
-	(void)settings_delete("wit/lk");
-	(void)settings_delete("wit/gk");
-	(void)settings_delete("wit/ds");
+	(void)ultrawidelock_kv_delete(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_ROLE);
+	(void)ultrawidelock_kv_delete(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_LINK_KEY);
+	(void)ultrawidelock_kv_delete(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_GROUP_KEY);
+	(void)ultrawidelock_kv_delete(ULTRAWIDELOCK_KV_KEY_LINK_BLE_WITNESS_DATASET);
 	printk("WIPE ok reboot\n");
 }
 
@@ -697,7 +694,11 @@ int main(void)
 	}
 	sys_rand_get(&s_boot_id, sizeof(s_boot_id));
 
-	(void)settings_subsys_init();
+	(void)ultrawidelock_kv_init();
+	provisioning_load();
+	/* OpenThread owns settings records outside this application's KV window.
+	 * Keep loading those registered handlers; provisioning no longer registers
+	 * one of its own. */
 	(void)settings_load();
 
 	printk("witness role=%s provisioned=%d\n", role_name(s_prov.role),

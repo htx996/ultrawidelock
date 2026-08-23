@@ -88,6 +88,11 @@ void test_kv_zephyr(void)
 	T_EQ("out of space -> FULL", ultrawidelock_kv_set(0x4005u, "x", 1u),
 	     (long)ULTRAWIDELOCK_KV_FULL);
 	settingsfake_fail_saves_after(-1);
+	settingsfake_fail_reads_after(0);
+	len = sizeof(out);
+	T_EQ("stored value read failure -> IO", ultrawidelock_kv_get(0x4001u, out, &len),
+	     (long)ULTRAWIDELOCK_KV_IO);
+	settingsfake_fail_reads_after(-1);
 
 	t_group("kv/zephyr: delete tells the truth");
 	T_EQ("delete of a stored key", ultrawidelock_kv_delete(0x4003u),
@@ -109,12 +114,13 @@ void test_kv_zephyr(void)
 	T_EQ("erase_all ok", ultrawidelock_kv_erase_all(), (long)ULTRAWIDELOCK_KV_OK);
 	T_EQ("nothing left", settingsfake_key_count(), 0);
 
-	t_group("kv/zephyr: erase_all leaves other subtrees alone");
+	t_group("kv/zephyr: erase_all leaves non-KV settings names alone");
 	settingsfake_reset();
 	(void)ultrawidelock_kv_init();
 	T_EQ("a kv record", ultrawidelock_kv_set(0x4000u, "v", 1u), (long)ULTRAWIDELOCK_KV_OK);
-	/* Matter's fabric table and OpenThread's settings share this partition;
-	 * a factory reset of this store must not take them with it. */
+	/* Framework-owned records and inert legacy names can share this settings
+	 * partition. Current Matter records are numeric KV keys and are erased; the
+	 * old mf2 name is only a representative record outside the uwl subtree. */
 	T_EQ("a foreign record", settings_save_one("mf2/f0", "v", 1u), 0L);
 	T_EQ("erase_all ok", ultrawidelock_kv_erase_all(), (long)ULTRAWIDELOCK_KV_OK);
 	T_EQ("the foreign record survived", settingsfake_key_count(), 1);

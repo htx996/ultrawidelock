@@ -1,6 +1,8 @@
-# UltraWideLock credential-auth stack as a Zephyr module.
-# Contributes nothing unless CONFIG_ULTRAWIDELOCK_CRED_STACK=y (stock nRF build
-# byte-identical). The same src/ is compiled by the ESP-IDF ports through
+# UltraWideLock credential-auth stack and primitive provider as a Zephyr module.
+# The credential library contributes nothing unless
+# CONFIG_ULTRAWIDELOCK_CRED_STACK=y. CONFIG_ULTRAWIDELOCK_PRIM independently
+# contributes the image's one explicitly linked provider. The same src/ is
+# compiled by the ESP-IDF ports through
 # ports/esp32/components/ultrawidelock_{crypto,reader}/CMakeLists.txt.
 #
 # Every source here is platform-agnostic: the k_*/LOG_* calls are Zephyr's own
@@ -8,19 +10,36 @@
 # here is the BLE transport (ultrawidelock_ble.h has no Zephyr backend yet) and the
 # ultrawidelock_prov storage backend, so linking this alone does not yield a reader.
 
+set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set(ROLES ${CMAKE_CURRENT_SOURCE_DIR}/roles)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/ultrawidelock_roles.cmake)
+
+# One provider target per Zephyr image. It deliberately lives outside the
+# credential-stack gate: sealed links, CCC ranging and DFU signature checks use
+# the same primitive contract without necessarily building the credential
+# protocol. Consumers link this target explicitly.
+if(CONFIG_ULTRAWIDELOCK_PRIM)
+
+  ultrawidelock_role_sources(${ROLES}/prim_provider.list PRIM_PROVIDER_SRCS)
+
+  zephyr_library_named(ultrawidelock_prim)
+  zephyr_library_sources(${PRIM_PROVIDER_SRCS})
+  zephyr_library_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+endif()
+
 if(CONFIG_ULTRAWIDELOCK_CRED_STACK)
 
-  set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  ultrawidelock_role_sources(${ROLES}/crypto.list CRYPTO_SRCS)
 
   zephyr_library_named(ultrawidelock_cred)
 
-  # Key schedule + the one AEAD/EC backend. ultrawidelock_prim_psa.c is pure PSA Crypto,
-  # which NCS provides via nrf_security/CryptoCell on the nRF5340's Cortex-M33.
+  # Credential composition uses the image's one primitive provider. The
+  # provider itself is compiled above, from its own role manifest.
   zephyr_library_sources(
     ${SRC}/ultrawidelock_hash.c
-    ${SRC}/ultrawidelock_crypto.c
+    ${CRYPTO_SRCS}
     ${SRC}/ultrawidelock_advtag.c
-    ${SRC}/ultrawidelock_prim_psa.c
     # BER-TLV / ISO7816 / BLE-envelope wire codec.
     ${SRC}/ultrawidelock_apdu.c
     # Reader identity + raw-key trust store (storage backend is per-platform).
@@ -37,6 +56,7 @@ if(CONFIG_ULTRAWIDELOCK_CRED_STACK)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${SRC}
   )
+  zephyr_library_link_libraries(ultrawidelock_prim)
 
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 

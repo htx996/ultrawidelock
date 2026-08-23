@@ -35,21 +35,15 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
-#include <zephyr/settings/settings.h>
 
 #include "ultrawidelock_dgram.h"
+#include "ultrawidelock_kv.h"
+#include "ultrawidelock_link.h"
 
 #include "side_feed.h"
 /* struct ultrawidelock_uwb_handoff, whose members the sealed handoff reads --
  * the header only forward-declares it. */
 #include <ultrawidelock/uwb.h>
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
-/* For ULTRAWIDELOCK_SATELLITE_MAX_ROLES, which sizes the per-role replay
- * windows below. Guarded because this module's include directory only exists
- * under CONFIG_ULTRAWIDELOCK_ANCHOR, and a sealed-link build without the fusion
- * layer -- the witness-only configuration -- compiles this file too. */
-#include "ultrawidelock_satellite.h"
-#endif
 #include "ultrawidelock_seal.h"
 #include "ultrawidelock_witness_msg.h"
 #include "ultrawidelock_witness_pick.h"
@@ -70,6 +64,9 @@ LOG_MODULE_REGISTER(witness_link, LOG_LEVEL_INF);
 #define KEY_LEN       WITNESS_LINK_KEY_LEN
 BUILD_ASSERT(WITNESS_LINK_KEY_LEN == ULTRAWIDELOCK_SEAL_KEY_LEN,
 	     "witness link key width must match the seal's");
+BUILD_ASSERT(ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + ULTRAWIDELOCK_LINK_ROLE_MAX <
+		     ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_LIMIT,
+	     "the three witness-role keys must fit their assigned KV range");
 
 /* One report must fit a single 802.15.4 frame with room for the seal. */
 #define SEALED_MAX (ULTRAWIDELOCK_WITNESS_MSG_MAX_LEN + CCM_TAG_LEN + CCM_NONCE_LEN)
@@ -108,27 +105,7 @@ static witness_link_anchor_cb s_anchor_cb;
 /* The anchor's OWN credentials. Deliberately not a witness role slot: it is a
  * UWB responder sharing the credential session's keys, and enrolling it through
  * the witness path would tie a live device class to a retired one. */
-static uint8_t s_anchor_key[KEY_LEN];
-static bool s_anchor_provisioned;
-/*
- * ONE REPLAY WINDOW PER ROLE, and the array is the whole point of it.
- *
- * This was a single window while only one satellite existed, and a single
- * window does not merely mix two satellites up -- it stops rejecting anything.
- * ultrawidelock_seen_accept_ctr() compares counters only when the boot_id
- * matches, and two satellites have different boot ids, so alternating reports
- * each reset the window for the other and every counter is accepted, replays
- * included. What a replayed report can then DO is still bounded by the pairing
- * rule downstream -- it has to name a ranging block this node measured inside
- * stale_ms -- but that is the fusion's guard doing the replay window's job, and
- * only for as long as those two rules keep agreeing.
- *
- * Indexed by role, which is inside the seal, so an attacker cannot choose the
- * slot. Sized by the anchor role ceiling rather than WITNESS_MAX -- see
- * ULTRAWIDELOCK_SATELLITE_MAX_ROLES for why those two numbers are not the same
- * number.
- */
-static struct ultrawidelock_witness_seen s_anchor_seen[ULTRAWIDELOCK_SATELLITE_MAX_ROLES];
+static struct ultrawidelock_link s_anchor_link;
 #endif
 static bool s_session;
 
@@ -168,17 +145,13 @@ static void nonce_roll(int64_t now_ms)
  */
 static void nonce_send(void)
 {
-	uint8_t body[12];
+	uint8_t body[ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN];
 	uint32_t hint = 0u;
+	size_t body_len;
 
 	if (!ultrawidelock_dgram_ready()) {
 		return;
 	}
-	body[0] = ULTRAWIDELOCK_WITNESS_MSG_VER;
-	for (int i = 0; i < 8; i++) {
-		body[1 + i] = (uint8_t)(s_nonce >> (56 - 8 * i));
-	}
-
 	/* The picked label rides along, so the witnesses can keep it in their
 	 * reports even when it would lose the loudness cut -- a pick whose
 	 * label one report drops fails quorum, and that was every window of
@@ -199,10 +172,11 @@ static void nonce_send(void)
 	 * exposure is one torn hint on a challenge, and a wrong hint costs a
 	 * witness one window. */
 	(void)ultrawidelock_witness_pick_best(&s_pick, &hint);
-	body[9] = (uint8_t)(hint >> 16);
-	body[10] = (uint8_t)(hint >> 8);
-	body[11] = (uint8_t)hint;
-	(void)ultrawidelock_dgram_send(body, sizeof(body));
+	body_len = ultrawidelock_link_build_challenge_hint(s_nonce, hint, body, sizeof(body));
+	if (body_len == 0u) {
+		return;
+	}
+	(void)ultrawidelock_dgram_send(body, body_len);
 	s_nonce_sent_ms = k_uptime_get();
 }
 
@@ -215,41 +189,14 @@ static void nonce_send(void)
  */
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
-/*
- * THE LOCK'S NONCE PREFIX, and the whole reason this constant exists.
- *
- * The anchor link key is ONE key used in BOTH directions: the satellite seals
- * WV3 reports with it and the lock now seals WV4 handoffs with it. Under
- * AES-CCM a repeated (key, nonce) pair is catastrophic -- it leaks the XOR of
- * two plaintexts and forges the MAC -- so the two senders' nonce spaces must be
- * provably disjoint, not merely unlikely to collide.
- *
- * They are disjoint in byte 0. The satellite writes its ROLE there
- * (anchor_link.c seal()), and apps/satellite/Kconfig constrains
- * ULTRAWIDELOCK_ANCHOR_ROLE to `range 1 3`. 0xFF is outside that range and no
- * conforming anchor can ever emit it, so no counter or boot id either side
- * chooses can bring the two nonces together.
- *
- * If a role is ever widened past 3, this constant must move with it.
- */
-#define HANDOFF_NONCE_ROLE 0xFFu
-
-/* Fresh per boot for the same reason the satellite's is: it makes a counter
- * that legitimately restarts at zero distinguishable from a replay. */
-static uint32_t s_lock_boot_id;
-static uint32_t s_handoff_ctr;
-
 void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
 {
-	struct ultrawidelock_join_msg jm;
-	uint8_t plain[ULTRAWIDELOCK_JOIN_MSG_LEN];
-	uint8_t sealed[CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN];
-	uint8_t nonce[CCM_NONCE_LEN];
-	size_t plain_len;
+	uint8_t sealed[ULTRAWIDELOCK_LINK_MAX_FRAME];
 	size_t sealed_len;
 	uint32_t sent_ctr;
 
-	if (h == NULL || !ultrawidelock_dgram_ready() || !s_anchor_provisioned) {
+	if (h == NULL || !ultrawidelock_dgram_ready() ||
+	    !ultrawidelock_link_ready(&s_anchor_link)) {
 		return;
 	}
 	if (h->ursk == NULL || h->ursk_len != ULTRAWIDELOCK_JOIN_URSK_LEN ||
@@ -263,29 +210,9 @@ void witness_link_send_handoff(const struct ultrawidelock_uwb_handoff *h)
 		return;
 	}
 
-	memset(&jm, 0, sizeof(jm));
-	jm.ver = ULTRAWIDELOCK_JOIN_MSG_VER;
-	jm.boot_id = s_lock_boot_id;
-	jm.ctr = ++s_handoff_ctr; /* pre-increment: the nonce below must match */
-	memcpy(jm.ursk, h->ursk, ULTRAWIDELOCK_JOIN_URSK_LEN);
-	memcpy(jm.rcfg, h->rcfg, ULTRAWIDELOCK_JOIN_RCFG_LEN);
-	jm.channel = h->channel;
-	jm.sync_code_index = h->sync_code_index;
-
-	plain_len = ultrawidelock_join_msg_encode(&jm, plain, sizeof(plain));
-	if (plain_len == 0u) {
-		return;
-	}
-
-	ultrawidelock_seal_nonce(HANDOFF_NONCE_ROLE, s_lock_boot_id, jm.ctr, nonce);
-
-	sealed_len = ultrawidelock_seal(s_anchor_key, nonce, plain, plain_len, sealed,
-					sizeof(sealed));
-	sent_ctr = jm.ctr;
-	/* The URSK is in here; do not leave a copy on the stack for the rest of
-	 * the frame. */
-	memset(&jm, 0, sizeof(jm));
-	memset(plain, 0, sizeof(plain));
+	sealed_len = ultrawidelock_link_build_join(&s_anchor_link, h->ursk, h->rcfg, h->channel,
+						    h->sync_code_index, sealed, sizeof(sealed));
+	sent_ctr = s_anchor_link.ctr;
 	if (sealed_len == 0u) {
 		return;
 	}
@@ -459,6 +386,11 @@ static void link_rx(void *ctx, const uint8_t *sealed, size_t len)
 	struct witness_slot *w;
 	size_t plain_len = 0;
 	int64_t now;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	struct ultrawidelock_anchor_msg am = {0};
+	struct ultrawidelock_join_msg jm = {0};
+	enum ultrawidelock_link_rx anchor_rx;
+#endif
 
 	ARG_UNUSED(ctx);
 
@@ -491,10 +423,34 @@ static void link_rx(void *ctx, const uint8_t *sealed, size_t len)
 	}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 	/* The second anchor's own key, tried after the witnesses and enrolled
-	 * separately from them. */
-	if (s_anchor_provisioned &&
-	    ultrawidelock_unseal(s_anchor_key, sealed, len, plain, sizeof(plain), &plain_len)) {
-		goto opened;
+	 * separately from them. Its WV3/WV4 decisions live in the carrier-free
+	 * link core; the WV2 loop above remains unchanged. */
+	anchor_rx = ultrawidelock_link_consume(&s_anchor_link, sealed, len, &am, &jm);
+	/* This lock does not consume WV4, but its own multicast can loop back.
+	 * Clear the decoded URSK before dispatching the non-sensitive result. */
+	memset(&jm, 0, sizeof(jm));
+	switch (anchor_rx) {
+	case ULTRAWIDELOCK_LINK_RX_REPORT:
+		if (s_anchor_cb != NULL) {
+			s_anchor_cb(am.role, am.peer_mm, am.ranging_block, now);
+		}
+		return;
+	case ULTRAWIDELOCK_LINK_RX_REPLAYED:
+		/* A replayed WV4 is our own multicast returning. The report form
+		 * retains role/counter solely for this existing diagnostic. */
+		if (am.role != 0u) {
+			LOG_WRN("anchor role=%u replay (ctr=%u)", (unsigned)am.role,
+				(unsigned)am.ctr);
+		}
+		return;
+	case ULTRAWIDELOCK_LINK_RX_JOIN:
+	case ULTRAWIDELOCK_LINK_RX_CHALLENGE:
+	case ULTRAWIDELOCK_LINK_RX_MALFORMED:
+		return;
+	case ULTRAWIDELOCK_LINK_RX_UNSEALED:
+	case ULTRAWIDELOCK_LINK_RX_IGNORED:
+	default:
+		break;
 	}
 #endif
 	/*
@@ -512,49 +468,8 @@ static void link_rx(void *ctx, const uint8_t *sealed, size_t len)
 	return;
 
 opened:
-	/*
-	 * Demultiplex on the version byte BEFORE choosing a decoder. WV3 is the
-	 * second anchor's own measured distance; it rides this link unchanged --
-	 * same socket, same seal, same per-role key -- and shares WV2's leading
-	 * fields precisely so the replay window below applies to both.
-	 */
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
-	if (ultrawidelock_msg_is_anchor(plain, plain_len)) {
-		struct ultrawidelock_anchor_msg am;
-
-		if (!ultrawidelock_anchor_msg_decode(plain, plain_len, &am)) {
-			return;
-		}
-		if (!s_anchor_provisioned) {
-			return;
-		}
-		/*
-		 * Range-check before it indexes anything. The role is sealed, so
-		 * this is not an attacker's choice, but it is still a number off
-		 * the wire and it selects an array slot two lines down.
-		 *
-		 * Dropped rather than clamped to a valid role: a satellite
-		 * outside 1..3 has no disjoint nonce space with this lock
-		 * (HANDOFF_NONCE_ROLE above), so it is not a peer this link can
-		 * safely have, and folding it onto role 1 would give it role 1's
-		 * replay window.
-		 */
-		if (am.role < 1u || am.role > ULTRAWIDELOCK_SATELLITE_MAX_ROLES) {
-			LOG_WRN("anchor role=%u out of range", (unsigned)am.role);
-			return;
-		}
-		if (!ultrawidelock_seen_accept_ctr(&s_anchor_seen[am.role - 1u], am.boot_id,
-						   am.ctr)) {
-			LOG_WRN("anchor role=%u replay (ctr=%u)", (unsigned)am.role,
-				(unsigned)am.ctr);
-			return;
-		}
-		if (s_anchor_cb != NULL) {
-			s_anchor_cb(am.role, am.peer_mm, am.ranging_block, now);
-		}
-		return;
-	}
-#endif
+	/* Ordinary WV2 handling stays here: its key selection, decoder, replay
+	 * window, nonce standing, picker feed and error behavior are unchanged. */
 	if (!ultrawidelock_witness_msg_decode(plain, plain_len, &wm)) {
 		return;
 	}
@@ -578,50 +493,6 @@ opened:
 	publish_pair(now);
 }
 
-static int witness_settings_set(const char *name, size_t len, settings_read_cb read_cb,
-				void *cb_arg)
-{
-	unsigned long idx;
-	char *end;
-
-	/* "k/<role>" -> the link key for that role. Written once at enrollment;
-	 * absent means that witness is not enrolled, and an un-enrolled witness
-	 * is silence, which fails closed. */
-	if (len != KEY_LEN || strncmp(name, "k/", 2) != 0) {
-		return -ENOENT;
-	}
-	idx = strtoul(name + 2, &end, 10);
-	if (*end != '\0' || idx < 1u || idx > WITNESS_MAX) {
-		return -ENOENT;
-	}
-	if (read_cb(cb_arg, s_wit[idx - 1u].key, KEY_LEN) != (ssize_t)KEY_LEN) {
-		return -EINVAL;
-	}
-	s_wit[idx - 1u].provisioned = true;
-	return 0;
-}
-
-SETTINGS_STATIC_HANDLER_DEFINE(witness, "uwl/wit", NULL, witness_settings_set, NULL, NULL);
-
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
-/* Its own subtree, so the anchor's key is not enrolled, listed or erased as
- * part of the witness set. */
-static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
-			       void *cb_arg)
-{
-	if (len != KEY_LEN || strcmp(name, "k") != 0) {
-		return -ENOENT;
-	}
-	if (read_cb(cb_arg, s_anchor_key, KEY_LEN) != (ssize_t)KEY_LEN) {
-		return -EINVAL;
-	}
-	s_anchor_provisioned = true;
-	return 0;
-}
-
-SETTINGS_STATIC_HANDLER_DEFINE(anchor, "uwl/anc", NULL, anchor_settings_set, NULL, NULL);
-#endif
-
 void witness_link_set_anchor_cb(witness_link_anchor_cb cb)
 {
 	s_anchor_cb = cb;
@@ -630,6 +501,12 @@ void witness_link_set_anchor_cb(witness_link_anchor_cb cb)
 void witness_link_init(void)
 {
 	unsigned provisioned = 0u;
+	int kv_rc;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	uint8_t anchor_key[KEY_LEN];
+	size_t anchor_key_len = sizeof(anchor_key);
+	uint32_t boot_id;
+#endif
 
 	ultrawidelock_witness_pick_init(&s_pick, NULL);
 	nonce_roll(k_uptime_get());
@@ -639,25 +516,35 @@ void witness_link_init(void)
 	 * accept a counter that went backwards, and zero is what an
 	 * uninitialised one looks like. */
 	do {
-		s_lock_boot_id = sys_rand32_get();
-	} while (s_lock_boot_id == 0u);
-	s_handoff_ctr = 0u;
+		boot_id = sys_rand32_get();
+	} while (boot_id == 0u);
+	ultrawidelock_link_init(&s_anchor_link, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, boot_id);
 #endif
 
-	/*
-	 * Load the keys. Registering the handler above does NOT read anything --
-	 * a static handler only says who to call, and something has to ask. This
-	 * line was missing, so every enrolled key sat in flash unread and the
-	 * lock reported "0 enrolled" with the keys right there; the latch's own
-	 * load two files over made the omission easy to miss.
-	 *
-	 * Not settings_load(): the whole store includes the Matter fabric, whose
-	 * handlers have already run by now, and re-running them is neither free
-	 * nor obviously safe.
-	 */
-	(void)settings_load_subtree("uwl/wit");
+	/* Numeric keys keep the consumers independent of Zephyr's settings tree.
+	 * Only the three semantic witness roles have assigned records; a configured
+	 * fourth slot remains deliberately unprovisionable. */
+	kv_rc = ultrawidelock_kv_init();
+	if (kv_rc == ULTRAWIDELOCK_KV_OK) {
+		for (size_t i = 0; i < WITNESS_MAX && i < ULTRAWIDELOCK_LINK_ROLE_MAX; i++) {
+			size_t key_len = KEY_LEN;
+
+			if (ultrawidelock_kv_get(
+				    (uint16_t)(ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + i + 1u),
+				    s_wit[i].key, &key_len) == ULTRAWIDELOCK_KV_OK &&
+			    key_len == KEY_LEN) {
+				s_wit[i].provisioned = true;
+			}
+		}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
-	(void)settings_load_subtree("uwl/anc");
+		if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_ANCHOR_KEY, anchor_key,
+					  &anchor_key_len) == ULTRAWIDELOCK_KV_OK) {
+			(void)ultrawidelock_link_set_key(&s_anchor_link, anchor_key, anchor_key_len);
+		}
+#endif
+	}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	memset(anchor_key, 0, sizeof(anchor_key));
 #endif
 
 	for (size_t i = 0; i < WITNESS_MAX; i++) {

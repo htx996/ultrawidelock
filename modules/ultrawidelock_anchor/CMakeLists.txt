@@ -39,15 +39,23 @@ if(CONFIG_ULTRAWIDELOCK_ANCHOR)
     ultrawidelock_role_sources(${ROLES}/inside_latch.list INSIDE_LATCH_SRCS)
     zephyr_library_sources(${INSIDE_LATCH_SRCS})
   endif()
-  # The AES-CCM envelope, gated on the link that uses it. Nested inside
+  # The AES-CCM envelope and carrier-free link core, gated on the link that
+  # uses them. Nested inside
   # ULTRAWIDELOCK_ANCHOR because every path to SEALED_LINK goes through it:
   # ANCHOR_LINK depends on ANCHOR outright, and WITNESS_LINK_OT depends on
   # INSIDE_LATCH, which lives inside the same `if ULTRAWIDELOCK_ANCHOR`.
   # apps/satellite is the one consumer that is ANCHOR_MSG without ANCHOR, and
-  # it reads roles/seal.list from its own CMakeLists for exactly that reason.
+  # it reads roles/seal.list and roles/link.list from its own CMakeLists for
+  # exactly that reason.
   if(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
     ultrawidelock_role_sources(${ROLES}/seal.list SEAL_SRCS)
-    zephyr_library_sources(${SEAL_SRCS})
+    ultrawidelock_role_sources(${ROLES}/link.list LINK_SRCS)
+    zephyr_library_sources(${SEAL_SRCS} ${LINK_SRCS})
+    # The seal calls the portable primitive provider. Private: consumers use
+    # ultrawidelock_link.h and must not inherit another module's headers.
+    zephyr_library_include_directories(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../ultrawidelock_cred/include)
+    zephyr_library_link_libraries(ultrawidelock_prim)
   endif()
   # The LIS2DH12 backend of ultrawidelock_slam_hw.h (CONFIG_ULTRAWIDELOCK_ANCHOR_SLAM) is the one
   # file that was not portable integer logic; it compiles from ports/zephyr

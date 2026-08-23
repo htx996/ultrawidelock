@@ -9,21 +9,20 @@
  * satellite — depends on that being true, and nothing here may be "improved"
  * without changing it on both ends at once.
  *
- * The key is imported and destroyed per call rather than held as a key id. It
- * costs a few microseconds per datagram on a link that carries one report per
- * ranging block, and it buys a backend that holds no key material between
- * calls: nothing to leak in a crash dump, and no id to go stale across a
- * re-provision.
+ * Key lifetime and provider selection belong to the primitive seam. This
+ * layer owns only the wire envelope and delegates AES-128-CCM to that seam, so
+ * portable link code never reaches a platform crypto API directly.
  */
 
 #include "ultrawidelock_seal.h"
+#include "ultrawidelock_prim.h"
 
 #include <string.h>
 
-#include <psa/crypto.h>
-
-/** PSA_ALG_CCM with our shortened tag. One expression, so the two halves cannot disagree. */
-#define SEAL_ALG PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, ULTRAWIDELOCK_SEAL_TAG_LEN)
+_Static_assert(ULTRAWIDELOCK_SEAL_KEY_LEN == 16u,
+	       "the primitive provider implements AES-128-CCM");
+_Static_assert(ULTRAWIDELOCK_SEAL_TAG_LEN <= ULTRAWIDELOCK_CCM_TAG,
+	       "the sealed-link tag must fit the primitive provider");
 
 void ultrawidelock_seal_nonce(uint8_t role, uint32_t boot_id, uint32_t ctr, uint8_t *out)
 {
@@ -45,10 +44,7 @@ void ultrawidelock_seal_nonce(uint8_t role, uint32_t boot_id, uint32_t ctr, uint
 size_t ultrawidelock_seal(const uint8_t *key, const uint8_t *nonce, const uint8_t *plain,
 			  size_t plain_len, uint8_t *out, size_t cap)
 {
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t kid = PSA_KEY_ID_NULL;
 	size_t ct_len = 0;
-	psa_status_t st;
 
 	if (key == NULL || nonce == NULL || out == NULL) {
 		return 0;
@@ -57,19 +53,10 @@ size_t ultrawidelock_seal(const uint8_t *key, const uint8_t *nonce, const uint8_
 		return 0;
 	}
 	memcpy(out, nonce, ULTRAWIDELOCK_SEAL_NONCE_LEN);
-
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
-	psa_set_key_algorithm(&attr, SEAL_ALG);
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, ULTRAWIDELOCK_SEAL_KEY_LEN * 8u);
-	if (psa_import_key(&attr, key, ULTRAWIDELOCK_SEAL_KEY_LEN, &kid) != PSA_SUCCESS) {
-		return 0;
-	}
-	st = psa_aead_encrypt(kid, SEAL_ALG, out, ULTRAWIDELOCK_SEAL_NONCE_LEN, NULL, 0, plain,
-			      plain_len, out + ULTRAWIDELOCK_SEAL_NONCE_LEN,
-			      cap - ULTRAWIDELOCK_SEAL_NONCE_LEN, &ct_len);
-	(void)psa_destroy_key(kid);
-	if (st != PSA_SUCCESS) {
+	if (ultrawidelock_aes128_ccm_encrypt(
+		    key, out, ULTRAWIDELOCK_SEAL_NONCE_LEN, plain, plain_len,
+		    ULTRAWIDELOCK_SEAL_TAG_LEN, out + ULTRAWIDELOCK_SEAL_NONCE_LEN,
+		    cap - ULTRAWIDELOCK_SEAL_NONCE_LEN, &ct_len) != 0) {
 		return 0;
 	}
 	return ULTRAWIDELOCK_SEAL_NONCE_LEN + ct_len;
@@ -78,9 +65,7 @@ size_t ultrawidelock_seal(const uint8_t *key, const uint8_t *nonce, const uint8_
 bool ultrawidelock_unseal(const uint8_t *key, const uint8_t *in, size_t in_len, uint8_t *out,
 			  size_t out_cap, size_t *out_len)
 {
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t kid = PSA_KEY_ID_NULL;
-	psa_status_t st;
+	size_t plain_len = 0;
 
 	if (key == NULL || in == NULL || out == NULL || out_len == NULL) {
 		return false;
@@ -90,16 +75,13 @@ bool ultrawidelock_unseal(const uint8_t *key, const uint8_t *in, size_t in_len, 
 	if (in_len <= ULTRAWIDELOCK_SEAL_NONCE_LEN + ULTRAWIDELOCK_SEAL_TAG_LEN) {
 		return false;
 	}
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
-	psa_set_key_algorithm(&attr, SEAL_ALG);
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, ULTRAWIDELOCK_SEAL_KEY_LEN * 8u);
-	if (psa_import_key(&attr, key, ULTRAWIDELOCK_SEAL_KEY_LEN, &kid) != PSA_SUCCESS) {
+	if (ultrawidelock_aes128_ccm_decrypt(
+		    key, in, ULTRAWIDELOCK_SEAL_NONCE_LEN,
+		    in + ULTRAWIDELOCK_SEAL_NONCE_LEN,
+		    in_len - ULTRAWIDELOCK_SEAL_NONCE_LEN, ULTRAWIDELOCK_SEAL_TAG_LEN, out,
+		    out_cap, &plain_len) != 0) {
 		return false;
 	}
-	st = psa_aead_decrypt(kid, SEAL_ALG, in, ULTRAWIDELOCK_SEAL_NONCE_LEN, NULL, 0,
-			      in + ULTRAWIDELOCK_SEAL_NONCE_LEN,
-			      in_len - ULTRAWIDELOCK_SEAL_NONCE_LEN, out, out_cap, out_len);
-	(void)psa_destroy_key(kid);
-	return st == PSA_SUCCESS;
+	*out_len = plain_len;
+	return true;
 }

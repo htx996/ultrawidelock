@@ -27,11 +27,10 @@
 #include "linenoise/linenoise.h"
 #include "nvs_flash.h"
 
-#include <psa/crypto.h>
-
 #include <ultrawidelock/uwb.h>
 
 #include "sat_join.h"
+#include "ultrawidelock_prim.h"
 #include "ultrawidelock_satlink.h"
 
 static const char *TAG = "sat";
@@ -78,8 +77,8 @@ static void console_start(void)
 
 void app_main(void)
 {
-	psa_status_t st;
 	esp_err_t e;
+	int rc;
 
 	/* Mute the CCC shim's per-frame STS trace: it fires on the delayed-TX
 	 * reply path, where a log line can blow the reply window. WARN keeps its
@@ -94,11 +93,11 @@ void app_main(void)
 	}
 	ESP_ERROR_CHECK(e);
 
-	/* The link seals with PSA and would fail every report if it came up
-	 * first. Same ordering apps/satellite's main() takes. */
-	st = psa_crypto_init();
-	if (st != PSA_SUCCESS) {
-		ESP_LOGE(TAG, "psa_crypto_init failed (%d)", (int)st);
+	/* The link seals through the primitive provider and would fail every
+	 * report if it came up first. Same ordering apps/satellite's main() takes. */
+	rc = ultrawidelock_prim_init();
+	if (rc != 0) {
+		ESP_LOGE(TAG, "crypto provider init failed (%d)", rc);
 		return;
 	}
 

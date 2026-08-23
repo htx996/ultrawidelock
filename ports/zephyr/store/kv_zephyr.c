@@ -15,9 +15,9 @@
  * store is that the values are not all live at once.
  *
  * NOT the Zephyr settings API in disguise. Settings is a tree with typed
- * handlers and a load phase; this is get/set/delete on one flat namespace. Code
- * that wants the tree -- Matter's fabric table, OpenThread's own store -- should
- * keep using settings directly.
+ * handlers and a load phase; this is get/set/delete on one flat namespace.
+ * Framework-owned trees such as OpenThread's own store keep using settings
+ * directly.
  */
 #include <errno.h>
 #include <stdbool.h>
@@ -68,8 +68,10 @@ static int read_cb(const char *name, size_t len, settings_read_cb read_fn, void 
 	}
 	got = read_fn(cb_arg, ctx->value, len);
 	if (got < 0 || (size_t)got != len) {
-		ctx->found = false;
-		return 0;
+		/* A stored record that the backend could not read is not absence.
+		 * Propagate the callback failure through settings_load_subtree_direct()
+		 * so callers receive KV_IO and cannot manufacture default identity. */
+		return -EIO;
 	}
 	return 0;
 }

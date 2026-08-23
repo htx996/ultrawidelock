@@ -27,8 +27,8 @@
  * caller must never seal twice under one counter value. Every existing sender
  * pre-increments its counter and then builds the nonce from the new value.
  *
- * Platform-free apart from psa/crypto.h, the same seam ultrawidelock_prim_psa.c
- * sits on: PSA on nRF, and the mbedTLS-PSA provider on ESP32.
+ * Platform-free. AES-128-CCM reaches the selected provider only through
+ * ultrawidelock_prim.h: PSA on nRF, and the mbedTLS-PSA provider on ESP32.
  */
 
 #ifndef ULTRAWIDELOCK_SEAL_H

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: ISC */
 
 /*
- * ultrawidelock_prim — the AEAD + elliptic-curve + RNG primitive interface used by the
- * credential-auth composition (ultrawidelock_crypto.c). Two backends implement it:
- *   - ultrawidelock_prim_psa.c   on the ESP32 target (mbedTLS-PSA)
- *   - a host double in the test build (for the secure-channel nonce/AAD tests)
+ * ultrawidelock_prim — the symmetric-crypto + elliptic-curve + RNG primitive
+ * interface used by the portable modules. Target builds use
+ * ultrawidelock_prim_psa.c over their platform's PSA provider; host tests use a
+ * recording or reference double.
  *
  * Hashing/KDF is NOT here; that is the portable ultrawidelock_hash.c, shared by both.
  * All returns: 0 on success, negative on failure (AEAD decrypt returns <0 on a
@@ -39,7 +39,14 @@ int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce
 			     const uint8_t *aad, size_t aad_len, const uint8_t *ct, size_t ct_len,
 			     const uint8_t *tag, size_t tag_len, uint8_t *pt);
 
-/* AES-128-ECB, one block (the BLE advertisement Dynamic Tag, ultrawidelock_advtag.c). */
+/*
+ * AES-ECB, one block. key_bits must be 128 or 256. This is the primitive
+ * beneath the CCC key ladder, Matter CCM, and the advertisement Dynamic Tag.
+ */
+int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
+				  const uint8_t in[16], uint8_t out[16]);
+
+/* Stable AES-128 convenience ABI used by the advertisement Dynamic Tag. */
 int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);
 
 /*

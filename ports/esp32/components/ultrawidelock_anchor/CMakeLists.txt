@@ -13,9 +13,9 @@
 # manifests stay the boundary; this component is just the delivery vehicle.
 #
 # The logic is pure integer C over caller-owned structs: no allocation, no
-# threads, no platform. ultrawidelock_seal.c is the one file with a dependency —
-# psa/crypto.h, the same seam ultrawidelock_prim_psa.c sits on, backed here by
-# ESP-IDF's mbedTLS-PSA provider. That provider needs AES-CCM: MBEDTLS_PSA_CRYPTO_C
+# threads, no platform. ultrawidelock_seal.c is the one file with a dependency:
+# ultrawidelock_prim.h, backed here by ESP-IDF's mbedTLS-PSA provider. That
+# provider needs AES-CCM: MBEDTLS_PSA_CRYPTO_C
 # comes from mbedtls_config.h and esp_config.h gates MBEDTLS_CCM_C / MBEDTLS_AES_C
 # on CONFIG_MBEDTLS_CCM_C / CONFIG_MBEDTLS_AES_C, both default y. An image that
 # turns either off fails to link this component rather than silently sending
@@ -33,9 +33,8 @@ ultrawidelock_role_sources("${ANCHOR}/roles/anchor_msg.list" ANCHOR_MSG_SRCS)
 # the AES-CCM envelope, shared with the nRF pair so a mixed bench stays possible
 ultrawidelock_role_sources("${ANCHOR}/roles/seal.list" ANCHOR_SEAL_SRCS)
 # the link's decisions (compose, authenticate, replay-check) with no carrier in
-# them. NOT taken by the Zephyr module: those apps still carry their own copies
-# inline, and compiling a second unused implementation into images that have
-# committed size baselines would cost flash for nothing.
+# them. The Zephyr module and satellite consume this same role; each image
+# compiles it once alongside its carrier.
 ultrawidelock_role_sources("${ANCHOR}/roles/link.list" ANCHOR_LINK_SRCS)
 
 idf_component_register(
@@ -53,7 +52,7 @@ idf_component_register(
 		# component something requires, so without this the backend is discovered
 		# and then silently skipped.
 		ultrawidelock_port
-		mbedtls
+		ultrawidelock_crypto
 )
 
 # Kconfig symbols the in-tree build gates on, supplied as compile defs. The

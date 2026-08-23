@@ -32,11 +32,10 @@ extern "C" {
  * `make reader` build (src/prov_shell.c), and the record survives the reflash
  * to the Thread image in the settings partition.
  *
- * The record is "uwl/wit/k/<role>", role 1..3 (ULTRAWIDELOCK_WITNESS_ROLE_*):
- * "uwl/wit/k/2" is the outside witness. Reader and writer are registered
- * separately in PORTING.md and checked against the code by
- * tests/tooling/port_purity_check.sh, which is what keeps the two ends of a
- * name nothing prints at runtime from drifting apart.
+ * The numeric record is ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role,
+ * for roles 1..3 (ULTRAWIDELOCK_WITNESS_ROLE_*). The outside witness is
+ * therefore key 0x4002. Reader and writer share the named assignment from
+ * ultrawidelock_kv.h, so a string spelling cannot drift between images.
  */
 #define WITNESS_LINK_KEY_LEN 16u
 

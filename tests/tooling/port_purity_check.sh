@@ -6,12 +6,14 @@
 # under Zephyr, ESP-IDF and the host cc. A platform include or a kernel call
 # added to a shared file builds cleanly on the port it was written on and breaks
 # the other two at the worst time — after the change looked done. This gate
-# fails the commit instead. Two shapes are banned in modules/** sources:
+# fails the commit instead. Three shapes are banned in modules/** sources:
 #
 #   1. platform includes   Zephyr, ESP-IDF, or canonical FreeRTOS headers
 #   2. Zephyr kernel API   k_work*, k_sem*, k_thread*, k_timer*, k_fifo*,
 #                          k_msleep, SYS_INIT, K_WORK_*, K_SEM_*, flash_area_*,
 #                          sys_reboot — platform code goes through ultrawidelock_port
+#   3. crypto provider API PSA, mbedTLS, OpenSSL, or wolfSSL includes and calls;
+#                          portable code goes through ultrawidelock_prim.h
 #
 # and one shape is banned in platform-owned trees, which is the same rule read
 # from the other side: each names exactly one OS (check_port_os). modules/ names
@@ -79,6 +81,7 @@
 #                      different module's private header; tests may white-box
 #                      the implementation they compile
 #   HAL contract       ultrawidelock/ultrawidelock_hal.h names exactly the five approved seams
+#   crypto boundary    only ultrawidelock_prim_psa.c may reach a raw crypto provider
 
 set -euo pipefail
 
@@ -100,6 +103,9 @@ ESP_INC_RE="${INC_RE}(freertos/|esp_)"
 FREERTOS_INC_RE="${INC_RE}(freertos/)?(FreeRTOS|task|semphr|queue|timers)\.h"
 INCLUDE_RE="${INC_RE}(zephyr/|freertos/|esp_|(FreeRTOS|task|semphr|queue|timers)\.h)"
 KERNEL_RE='(^|[^_[:alnum:]])(k_(work|sem|thread|timer|fifo|msleep|sleep|usleep|busy_wait|yield)|sys_reboot|flash_area_|SYS_INIT|K_(WORK|SEM|THREAD|TIMER|FIFO|MUTEX)|(x|v|ux|ul)Task[A-Z_][A-Za-z0-9_]*|x(Queue|Semaphore|Timer)[A-Z_][A-Za-z0-9_]*|pvPortMalloc|vPortFree)'
+CRYPTO_INCLUDE_RE="${INC_RE}(psa/|mbedtls/|openssl/|wolfssl/)"
+CRYPTO_CALL_RE='(^|[^_[:alnum:]])(psa_[A-Za-z0-9_]+|mbedtls_[A-Za-z0-9_]+|EVP_[A-Za-z0-9_]+|wolfSSL_[A-Za-z0-9_]+)[[:space:]]*\('
+CRYPTO_PROVIDER=modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c
 
 # Prose naming a kernel symbol is not a call. Same filter as the seam gate:
 # drop comment-opening lines from `grep -n` output, keep code with a trailing
@@ -165,6 +171,28 @@ repo_files() { # tracked + untracked files that exist in this working tree
 
 scan_paths() {
 	repo_files 'modules/*.c' 'modules/*.h' 'modules/*.cpp' 'modules/*.hpp'
+}
+
+crypto_scan_paths() {
+	local f
+	while IFS= read -r f; do
+		case "$f" in
+		modules/ultrawidelock_dw3000/dwt_uwb_driver/* | \
+			modules/ultrawidelock_dfu/src/detools/*) continue ;;
+		esac
+		printf '%s\n' "$f"
+	done < <(scan_paths)
+}
+
+crypto_file_hits() {
+	{
+		grep -nE "$CRYPTO_INCLUDE_RE" "$1" || true
+		grep -nE "$CRYPTO_CALL_RE" "$1" | grep -vE "$COMMENT_LINE_RE" || true
+	} | sort -t: -k1,1n -u
+}
+
+crypto_path_allowed() {
+	[ "$1" = "$CRYPTO_PROVIDER" ]
 }
 
 in_ratchet() {
@@ -263,6 +291,42 @@ scan() {
 		"$G" "$((${#PERMANENT_DIRS[@]} + ${#PERMANENT_FILES[@]}))" \
 		"${#PERMANENT_DIRS[@]}" "${#PERMANENT_FILES[@]}" "${#RATCHET[@]}" "$Z"
 	return 0
+}
+
+# ---- portable crypto reaches one provider ----------------------------------
+
+check_crypto_boundary() {
+	local fails=0 n=0 provider_hits=0 f hits hit
+
+	while IFS= read -r f; do
+		n=$((n + 1))
+		hits=$(crypto_file_hits "$f")
+		[ -n "$hits" ] || continue
+		if crypto_path_allowed "$f"; then
+			provider_hits=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
+			continue
+		fi
+		while IFS= read -r hit; do
+			[ -n "$hit" ] || continue
+			printf '%s  raw crypto provider reference: %s:%s%s\n' \
+				"$R" "$f" "$hit" "$Z" >&2
+			fails=$((fails + 1))
+		done <<<"$hits"
+	done < <(crypto_scan_paths)
+
+	selector_live "crypto-boundary module sources" "$n" || return 1
+	if [ ! -f "$CRYPTO_PROVIDER" ] || [ "$provider_hits" -eq 0 ]; then
+		printf '%s  crypto provider exception is stale: %s%s\n' \
+			"$R" "$CRYPTO_PROVIDER" "$Z" >&2
+		fails=$((fails + 1))
+	fi
+	if [ "$fails" -gt 0 ]; then
+		printf '%scheck-purity: %d raw crypto provider reference(s) outside ultrawidelock_prim_psa.c%s\n' \
+			"$R" "$fails" "$Z" >&2
+		return 1
+	fi
+	printf '%s  ok   crypto boundary: %d module source(s), raw provider API confined to ultrawidelock_prim_psa.c%s\n' \
+		"$G" "$n" "$Z"
 }
 
 # ---- platform trees keep to their own OS -------------------------------------
@@ -1144,6 +1208,37 @@ self_test() {
 	done
 	[ "$fails" -ne 0 ] || printf '%s  self-test: quiet on all %d legitimate shapes%s\n' "$G" "$quiet" "$Z"
 
+	# Crypto-provider boundary: raw provider includes and calls must fire, while
+	# the portable primitive call and the one exact provider path remain valid.
+	local crypto_bad=('#include <psa/crypto.h>' '#include "mbedtls/aes.h"'
+		'psa_crypto_init();' 'mbedtls_aes_crypt_ecb(&ctx, 1, in, out);'
+		'EVP_EncryptInit_ex(ctx, cipher, NULL, key, iv);'
+		'wolfSSL_EVP_Cipher(ctx, out, in, len);')
+	local crypto_ok=('ultrawidelock_aes_ecb_encrypt(key, 128u, in, out);'
+		'ultrawidelock_random(nonce, sizeof(nonce));')
+	for line in "${crypto_bad[@]}"; do
+		if ! printf '%s\n' "$line" | grep -qE "$CRYPTO_INCLUDE_RE|$CRYPTO_CALL_RE"; then
+			printf '%s  self-test FAILED: crypto boundary missed: %s%s\n' \
+				"$R" "$line" "$Z" >&2
+			fails=$((fails + 1))
+		fi
+	done
+	for line in "${crypto_ok[@]}"; do
+		if printf '%s\n' "$line" | grep -qE "$CRYPTO_INCLUDE_RE|$CRYPTO_CALL_RE"; then
+			printf '%s  self-test FAILED: crypto boundary rejected a primitive call: %s%s\n' \
+				"$R" "$line" "$Z" >&2
+			fails=$((fails + 1))
+		fi
+	done
+	if ! crypto_path_allowed "$CRYPTO_PROVIDER" || \
+		crypto_path_allowed modules/ultrawidelock_uwb/src/ccc/ccc_crypto_prim.c; then
+		printf '%s  self-test FAILED: crypto provider exception is not exact%s\n' \
+			"$R" "$Z" >&2
+		fails=$((fails + 1))
+	fi
+	[ "$fails" -ne 0 ] || printf '%s  self-test: crypto boundary rejects raw providers and accepts primitive calls%s\n' \
+		"$G" "$Z"
+
 	# HAL exactness: both a missing seam and an invented sixth seam must fail,
 	# while the approved five pass independently of include order.
 	local halfix
@@ -1523,6 +1618,7 @@ case "${1-}" in
 	# through a whole rename, which is the rot it exists to catch.
 	self_test || rc=1
 	scan || rc=1
+	check_crypto_boundary || rc=1
 	check_port_os || rc=1
 	check_public_includes || rc=1
 	check_private_headers || rc=1

@@ -208,8 +208,7 @@ SIDE_UNIT_SRCS=(
 	"$SRC/driver/uwb_cirdiag.c"
 	"$SRC/driver/uwb_selftest.c"
 	"$ROOT/ports/zephyr/shell/ultrawidelock_shell.c"
-	"$SRC/ccc/ccc_crypto_psa.c"
-	"$SRC/ccc/ccc_crypto_mbedtls.c"
+	"$SRC/ccc/ccc_crypto_prim.c"
 	"$CRED/src/ultrawidelock_prim_psa.c"
 	"$ROOT/modules/ultrawidelock_nfc/src/nfc_prop_ecp.cpp"
 	"$ECOMP/ultrawidelock_ble/ultrawidelock_ble_esp32.c"
@@ -261,14 +260,11 @@ ULTRAWIDELOCK_TEST_QUIET=1 LLVM_PROFILE_FILE="$OUT/drv.profraw" "$OUT/cov_drv" \
 	>>"$OUT/run.log" 2>&1 || true
 OBJS+=(-object "$OUT/cov_drv")
 
-psa_flags=(-I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_uwb/include" -I"$SRC/ccc")
-cov_cc "${psa_flags[@]}" -c -Dcrypto_aes_ecb_encrypt=ultrawidelock_test_psa_ecb \
-	"$SRC/ccc/ccc_crypto_psa.c" -o "$OUT/ccc_crypto_psa_cov.o"
-cov_cc "${psa_flags[@]}" -c -Dcrypto_aes_ecb_encrypt=ultrawidelock_test_mbedtls_ecb \
-	"$SRC/ccc/ccc_crypto_mbedtls.c" -o "$OUT/ccc_crypto_mbedtls_cov.o"
+psa_flags=(-I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_uwb/include" -I"$SRC/ccc"
+	-I"$CRED/include")
 # ultrawidelock_seal.c rides this stage for the same reason it does in run.sh:
-# it is a PSA seam, and the shared-core binary has no psa/crypto.h. Read from
-# the role manifest, like every other consumer of it.
+# it calls the primitive seam, whose host provider is PSA-backed. Read from the
+# role manifest, like every other consumer of it.
 seal_srcs=()
 for _r in seal link anchor_msg; do
 	while IFS= read -r _l; do
@@ -283,8 +279,9 @@ cov_cc "${psa_flags[@]}" -I"$HOSTD" -I"$CRED/include" \
 	"$HOSTD/test.c" "$HOSTD/test_psa_backends.c" "$HOSTD/psafake/psafake.c" \
 	"$HOSTD/test_ultrawidelock_seal.c" "$HOSTD/test_ultrawidelock_link.c" \
 	"${seal_srcs[@]}" \
+	"$SRC/ccc/ccc_crypto_prim.c" \
 	"$CRED/src/ultrawidelock_prim_psa.c" \
-	"$OUT/ccc_crypto_psa_cov.o" "$OUT/ccc_crypto_mbedtls_cov.o" -o "$OUT/cov_psa"
+	-o "$OUT/cov_psa"
 run_suite psa "$OUT/cov_psa"
 
 # C++ suite: same instrumentation flags through the C++ driver.
@@ -333,15 +330,21 @@ cov_cc -D_POSIX_C_SOURCE=200809L -DULTRAWIDELOCK_PORT_HOST \
 	"$SDKFAKE/fake_nvs.c" -o "$OUT/cov_esp_presence"
 run_suite esp_presence "$OUT/cov_esp_presence"
 
-# The DWM3001CDK settings glue, mirroring stage 4 of tests/host/run.sh. That
-# stage had no mirror here at all, so make test proved this file's 51 checks
-# while the report called it never built.
-cov_cc -DCONFIG_LOG_DEFAULT_LEVEL=3 \
+# The DWM3001CDK persistence glue, mirroring stage 4 of tests/host/run.sh. The
+# real Matter and provisioning consumers reach settings only through the real
+# Zephyr KV backend, all over the same recording fake used by the correctness
+# suite.
+cov_cc -DCONFIG_LOG_DEFAULT_LEVEL=3 -DCONFIG_ULTRAWIDELOCK_PROV_CLEAR_ON_BOOT=0 \
 	-I"$HOSTD" -I"$HOSTD/settingsfake" -I"$HOSTD/logfake" \
-	-I"$ROOT/modules/ultrawidelock_matter/include" -I"$ROOT/ports/zephyr/store" \
+	-I"$ROOT/modules/ultrawidelock_matter/include" -I"$CRED/include" \
+	-I"$ROOT/ports/zephyr/store" -I"$ROOT/modules/ultrawidelock_port/include" \
 	"$HOSTD/test.c" "$HOSTD/test_matter_fab_settings.c" \
+	"$HOSTD/test_kv_zephyr.c" \
 	"$HOSTD/settingsfake/settingsfake.c" \
-	"$ROOT/ports/zephyr/store/matter_fab_settings.c" -o "$OUT/cov_cdk_fab"
+	"$ROOT/ports/zephyr/store/matter_fab_settings.c" \
+	"$ROOT/ports/zephyr/store/kv_zephyr.c" \
+	"$ROOT/ports/zephyr/store/ultrawidelock_prov_settings.c" \
+	"$CRED/src/ultrawidelock_prov.c" -o "$OUT/cov_cdk_fab"
 run_suite cdk_fab "$OUT/cov_cdk_fab"
 
 cov_cc -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 \
@@ -414,14 +417,16 @@ cov_cc -DULTRAWIDELOCK_PORT_HOST -DCONFIG_ULTRAWIDELOCK_DFU_SMP_IMG=1 -DCONFIG_U
 	-DCONFIG_MCUMGR_GRP_OS_RESET_HOOK=1 -DCONFIG_MCUMGR_GRP_ENUM_DETAILS_NAME=1 \
 	-DCONFIG_MCUMGR_SMP_LEGACY_RC_BEHAVIOUR=1 \
 	-I"$HOSTD" -I"$HOSTD/dfufake" -I"$HOSTD/smpfake" -I"$HOSTD/logfake" \
-	-I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_port/include" \
-	-I"$ROOT/modules/ultrawidelock_dfu/include" -I"$ROOT/modules/ultrawidelock_dfu/src" \
+		-I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_port/include" \
+		-I"$CRED/include" \
+		-I"$ROOT/modules/ultrawidelock_dfu/include" -I"$ROOT/modules/ultrawidelock_dfu/src" \
 	"$HOSTD/test.c" "$HOSTD/test_dfu.c" "$HOSTD/test_dfu_smp.c" \
 	"$HOSTD/dfufake/dfufake.c" "$HOSTD/smpfake/smpfake.c" "$HOSTD/psafake/psafake.c" \
 	"$ROOT/tests/host/port/osal_host.c" "$ROOT/tests/host/port/flash_host.c" \
-	"$ROOT/modules/ultrawidelock_dfu/src/dfu_crc.c" \
-	"$ROOT/modules/ultrawidelock_dfu/src/dfu_receiver.c" \
-	"$ROOT/modules/ultrawidelock_dfu/src/dfu_applier.c" \
+		"$ROOT/modules/ultrawidelock_dfu/src/dfu_crc.c" \
+		"$ROOT/modules/ultrawidelock_dfu/src/dfu_receiver.c" \
+		"$CRED/src/ultrawidelock_prim_psa.c" \
+		"$ROOT/modules/ultrawidelock_dfu/src/dfu_applier.c" \
 	"$ROOT/ports/zephyr/dfu/dfu_smp_img.c" -o "$OUT/cov_dfu"
 run_suite dfu "$OUT/cov_dfu"
 

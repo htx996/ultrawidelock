@@ -1,6 +1,8 @@
-# ultrawidelock_cred role: key schedule + PSA P-256 primitive backend.
-# Consumers: the reader app, the Zephyr initiator and on-target test,
-# ports/esp32/components/ultrawidelock_crypto. Repo-root-relative, one path per line,
-# sorted. To compile a file everywhere this role goes, add it HERE and nowhere else.
+# ultrawidelock_cred role: credential key schedule and session-crypto composition.
+# The primitive provider is a separate role because several consumers need the
+# primitive contract without the credential stack. Consumers: the reader app,
+# the Zephyr initiator and on-target test, and
+# ports/esp32/components/ultrawidelock_crypto. Repo-root-relative, one path per
+# line, sorted. To compile a file everywhere this role goes, add it HERE and
+# nowhere else.
 modules/ultrawidelock_cred/src/ultrawidelock_crypto.c
-modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c

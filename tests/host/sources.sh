@@ -102,6 +102,7 @@ unit_srcs_from_role "$CRED/roles/reader_policy.list"
 # flight recorder's replay half. base_driver/responder_driver need a DW3000 and
 # are absent by design.
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ccc_keys.list"
+unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/crypto_prim.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ccc_engine.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ultrawidelock_adapter.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ultrawidelock_codec.list"

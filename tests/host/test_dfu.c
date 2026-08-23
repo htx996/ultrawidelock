@@ -384,6 +384,17 @@ static void test_receiver_auth(void)
 	T_EQ("signature length", (long)psafake.last_sig_len, (long)ULTRAWIDELOCK_DFU_SIG_LEN);
 	T_EQ("key destroyed after the verify", (long)psafake.destroy_calls, 1L);
 
+	/* DFU is a standalone primitive consumer, not accidentally dependent on
+	 * the reader having initialized PSA first. Provider failure fails closed
+	 * before any key import or signature check. */
+	receiver_ready();
+	psafake.init_ret = -1;
+	T_OK("begin", is_ok(rsp, send_begin(HEAD_LEN + sizeof(patch), rsp), 0));
+	T_OK("provider init failure refused",
+	     is_err(rsp, send_data(head, HEAD_LEN, rsp), ULTRAWIDELOCK_DFU_ERR_AUTH));
+	T_EQ("provider init attempted", (long)psafake.init_calls, 1L);
+	T_EQ("no key imported after init failure", (long)psafake.import_calls, 0L);
+
 	/* A key that will not import fails closed. */
 	receiver_ready();
 	psafake.import_ret = -1;

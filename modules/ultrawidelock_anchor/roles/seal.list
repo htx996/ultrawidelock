@@ -2,8 +2,8 @@
 # (CONFIG_ULTRAWIDELOCK_SEALED_LINK). The ONE copy -- it was two, one per app,
 # and the ESP32 satellite would have made three. Separate from anchor_msg.list
 # because the codec is crypto-free and the envelope is not: a build that only
-# encodes a report pulls in no PSA backend. Depends on psa/crypto.h, the same
-# seam ultrawidelock_prim_psa.c sits on (PSA on nRF, mbedTLS-PSA on ESP32).
+# encodes a report pulls in no crypto backend. Depends on ultrawidelock_prim.h;
+# the selected provider owns PSA (PSA on nRF, mbedTLS-PSA on ESP32).
 # Consumers: modules/ultrawidelock_anchor/CMakeLists.txt,
 # ports/esp32/components/ultrawidelock_anchor, tests/host/sources.sh.
 # Sorted; add HERE and nowhere else.

@@ -396,12 +396,17 @@ int main(void)
 	 * 0x7a4b8500), then the no-clock form as a pinned self-consistency vector
 	 * (expected bytes recomputed with an independent AES implementation). */
 	{
-		uint8_t k16[16], adva[6], tag[ULTRAWIDELOCK_ADVTAG_LEN];
+		uint8_t k16[16], k32[32], adva[6], tag[ULTRAWIDELOCK_ADVTAG_LEN];
 
 		uh(k16, "000102030405060708090a0b0c0d0e0f");
 		uh(msg, "00112233445566778899aabbccddeeff");
 		T_OK("aes128.ecb", ultrawidelock_aes128_ecb_encrypt(k16, msg, out) == 0);
 		chk("aes128.fips197-c1", out, 16, "69c4e0d86a7b0430d8cdb78070b4c55a");
+		uh(k32, "000102030405060708090a0b0c0d0e0f"
+			 "101112131415161718191a1b1c1d1e1f");
+		T_OK("aes256.ecb", ultrawidelock_aes_ecb_encrypt(k32, 256, msg, out) == 0);
+		chk("aes256.fips197-c3", out, 16, "8ea2b7ca516745bfeafc49904b496089");
+		T_OK("aes192.ecb-rejected", ultrawidelock_aes_ecb_encrypt(k32, 192, msg, out) < 0);
 
 		uh(k16, "f5b165224a58b791df6af1d8303e61cd");
 		uh(adva, "c4bb86c32710");

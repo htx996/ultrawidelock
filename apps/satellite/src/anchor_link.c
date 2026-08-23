@@ -25,7 +25,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
-#include <zephyr/settings/settings.h>
 
 /*
  * The bring-up half only. Moving bytes is ultrawidelock_dgram.h's job now, but
@@ -42,61 +41,18 @@
 
 #include "anchor_link.h"
 #include "ultrawidelock_dgram.h"
-#include "ultrawidelock_seal.h"
-#include "ultrawidelock_witness_msg.h"
+#include "ultrawidelock_kv.h"
+#include "ultrawidelock_link.h"
 
 LOG_MODULE_REGISTER(anclink, LOG_LEVEL_INF);
 
-/* The envelope's own constants, from the ONE definition of it. Aliased rather
- * than redefined: this file used to carry its own copies, which is how a wire
- * format grows two versions of itself. */
-#define KEY_LEN        ULTRAWIDELOCK_SEAL_KEY_LEN
-#define CCM_NONCE_LEN  ULTRAWIDELOCK_SEAL_NONCE_LEN
-#define CCM_TAG_LEN    ULTRAWIDELOCK_SEAL_TAG_LEN
-#define ANCHOR_PORT    CONFIG_ULTRAWIDELOCK_WITNESS_PORT
+#define KEY_LEN     ULTRAWIDELOCK_SEAL_KEY_LEN
+#define ANCHOR_PORT CONFIG_ULTRAWIDELOCK_WITNESS_PORT
 
-static uint8_t s_key[KEY_LEN];
-static bool s_provisioned;
-/*
- * Fresh per boot, so a counter that legitimately restarts at zero after a power
- * cut is distinguishable from a replay of the reports that preceded it. Without
- * it the lock's only options would be accepting replays or locking out an
- * anchor that lost power.
- */
-static uint32_t s_boot_id;
-static uint32_t s_ctr;
-/* The lock's current challenge, echoed back so it can tell a live report from a
- * recorded one. Zero until one is heard; the lock only challenges while a
- * credential session is up. */
-static uint64_t s_echo_nonce;
-/* Where a surviving handoff goes, and the lock's replay state for that
- * direction. Separate from anything the report path keeps: the two directions
- * have independent senders, boot ids and counters. */
+/* Carrier-free WV3/WV4 state. This file owns only Thread lifecycle, durable
+ * storage and callback dispatch now. */
+static struct ultrawidelock_link s_link;
 static anchor_link_join_cb s_join_cb;
-static struct ultrawidelock_witness_seen s_lock_seen;
-
-/**
- * Seal one report under the link key.
- *
- * The envelope is ultrawidelock_seal.h's; what stays here is the nonce, because
- * only this file knows which counter value the caller just committed to. The
- * report path pre-increments s_ctr and then builds the nonce from the new
- * value, so the two can never disagree.
- */
-static size_t seal(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t cap)
-{
-	uint8_t nonce[ULTRAWIDELOCK_SEAL_NONCE_LEN];
-
-	ultrawidelock_seal_nonce((uint8_t)CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE, s_boot_id, s_ctr,
-				 nonce);
-	return ultrawidelock_seal(s_key, nonce, plain, plain_len, out, cap);
-}
-
-/** Unseal under the link key: the inverse of seal() above. */
-static bool unseal(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_len)
-{
-	return ultrawidelock_unseal(s_key, in, in_len, out, out_cap, out_len);
-}
 
 /**
  * Two different things arrive on this socket.
@@ -108,66 +64,20 @@ static bool unseal(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_ca
  */
 static void link_rx(void *ctx, const uint8_t *body, size_t len)
 {
-	uint8_t plain[ULTRAWIDELOCK_JOIN_MSG_LEN];
-	struct ultrawidelock_join_msg jm;
-	size_t plain_len = 0;
+	struct ultrawidelock_join_msg jm = {0};
+	enum ultrawidelock_link_rx rx;
 
 	ARG_UNUSED(ctx);
-
-	/*
-	 * Flattened and length-checked by the transport, so the otMessage offset
-	 * arithmetic this function used to open with is gone. The cap below is
-	 * this protocol's own: the largest thing it can be handed is a sealed
-	 * handoff, and anything longer is not one whatever the link carried.
-	 */
-	if (len == 0u || len > CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN) {
-		return;
-	}
-
-	/* 9 B is the bare challenge; 12 B carries the lock's picked label as a
-	 * trailer. Both are valid, and the witness reference parse accepts both
-	 * (examples/zephyr/ble-witness). This board ignores the trailer -- it
-	 * reports a distance, not a label -- but it must still accept the
-	 * length, or it hears no challenge at all and echoes a zero nonce. */
-	if ((len == 9u || len == 12u) && body[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
-		s_echo_nonce = 0u;
-		for (int i = 0; i < 8; i++) {
-			s_echo_nonce = (s_echo_nonce << 8) | (uint64_t)body[1 + i];
-		}
-		return;
-	}
-
-	/* Anything else is only interesting if it is sealed to us. Our own WV3
-	 * reports come back off the all-nodes address too and must not be
-	 * mistaken for input: they fail the length check below. */
-	if (!s_provisioned || s_join_cb == NULL) {
-		return;
-	}
-	if (len != CCM_NONCE_LEN + ULTRAWIDELOCK_JOIN_MSG_LEN + CCM_TAG_LEN) {
-		return;
-	}
-	if (!unseal(body, len, plain, sizeof(plain), &plain_len)) {
-		return; /* not sealed under our key, or tampered with */
-	}
-	if (!ultrawidelock_join_msg_decode(plain, plain_len, &jm)) {
-		memset(plain, 0, sizeof(plain));
-		return;
-	}
-	memset(plain, 0, sizeof(plain));
-
-	/*
-	 * Replay window, shared with the report direction's implementation so
-	 * there is one notion of freshness on this link. A lock that reboots
-	 * gets a new boot_id and its counter may restart; without that a power
-	 * cut would lock the satellite out of every future session.
-	 */
-	if (!ultrawidelock_seen_accept_ctr(&s_lock_seen, jm.boot_id, jm.ctr)) {
+	rx = ultrawidelock_link_consume(&s_link, body, len, NULL,
+					 s_join_cb != NULL ? &jm : NULL);
+	if (rx == ULTRAWIDELOCK_LINK_RX_REPLAYED) {
 		LOG_WRN("handoff replayed or stale (ctr %u); ignored", (unsigned)jm.ctr);
 		memset(&jm, 0, sizeof(jm));
 		return;
 	}
-
-	s_join_cb(jm.ursk, jm.rcfg, jm.channel, jm.sync_code_index);
+	if (rx == ULTRAWIDELOCK_LINK_RX_JOIN) {
+		s_join_cb(jm.ursk, jm.rcfg, jm.channel, jm.sync_code_index);
+	}
 	/* The URSK lives on inside the ranging engine; this copy must not. */
 	memset(&jm, 0, sizeof(jm));
 }
@@ -179,30 +89,14 @@ void anchor_link_set_join_cb(anchor_link_join_cb cb)
 
 void anchor_link_report(int32_t peer_mm, uint32_t ranging_block)
 {
-	struct ultrawidelock_anchor_msg am;
-	uint8_t plain[ULTRAWIDELOCK_ANCHOR_MSG_LEN];
-	uint8_t sealed[CCM_NONCE_LEN + ULTRAWIDELOCK_ANCHOR_MSG_LEN + CCM_TAG_LEN];
-	size_t plain_len;
+	uint8_t sealed[ULTRAWIDELOCK_LINK_MAX_FRAME];
 	size_t sealed_len;
 
-	if (!ultrawidelock_dgram_ready() || !s_provisioned || peer_mm < 0) {
+	if (!ultrawidelock_dgram_ready() || !ultrawidelock_link_ready(&s_link) || peer_mm < 0) {
 		return;
 	}
-
-	memset(&am, 0, sizeof(am));
-	am.ver = ULTRAWIDELOCK_ANCHOR_MSG_VER;
-	am.role = (uint8_t)CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE;
-	am.boot_id = s_boot_id;
-	am.ctr = ++s_ctr; /* pre-increment: the nonce below must match this */
-	am.echo_nonce = s_echo_nonce;
-	am.ranging_block = (uint16_t)ranging_block;
-	am.peer_mm = peer_mm;
-
-	plain_len = ultrawidelock_anchor_msg_encode(&am, plain, sizeof(plain));
-	if (plain_len == 0u) {
-		return;
-	}
-	sealed_len = seal(plain, plain_len, sealed, sizeof(sealed));
+	sealed_len = ultrawidelock_link_build_report(&s_link, peer_mm, ranging_block, sealed,
+						      sizeof(sealed));
 	if (sealed_len == 0u) {
 		return;
 	}
@@ -317,21 +211,6 @@ bool anchor_link_attached(void)
 	       role == OT_DEVICE_ROLE_LEADER;
 }
 
-static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
-			       void *cb_arg)
-{
-	if (len != KEY_LEN || strcmp(name, "lk") != 0) {
-		return -ENOENT;
-	}
-	if (read_cb(cb_arg, s_key, KEY_LEN) != (ssize_t)KEY_LEN) {
-		return -EINVAL;
-	}
-	s_provisioned = true;
-	return 0;
-}
-
-SETTINGS_STATIC_HANDLER_DEFINE(anchor_link, "sat", NULL, anchor_settings_set, NULL, NULL);
-
 int anchor_link_set_key(const uint8_t *key, size_t len)
 {
 	int rc;
@@ -339,35 +218,40 @@ int anchor_link_set_key(const uint8_t *key, size_t len)
 	if (key == NULL || len != KEY_LEN) {
 		return -EINVAL;
 	}
-	rc = settings_save_one("sat/lk", key, len);
+	rc = ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_SATELLITE_KEY, key, len);
 	if (rc != 0) {
 		return rc;
 	}
-	memcpy(s_key, key, KEY_LEN);
-	s_provisioned = true;
-	return 0;
+	return ultrawidelock_link_set_key(&s_link, key, len) == 0 ? 0 : -EINVAL;
 }
 
 bool anchor_link_ready(void)
 {
-	return ultrawidelock_dgram_ready() && s_provisioned;
+	return ultrawidelock_dgram_ready() && ultrawidelock_link_ready(&s_link);
 }
 
 void anchor_link_init(void)
 {
 	otInstance *ot;
 	bool commissioned;
-
-	(void)settings_subsys_init();
-	(void)settings_load_subtree("sat");
+	uint8_t key[KEY_LEN];
+	size_t key_len = sizeof(key);
+	uint32_t boot_id;
 
 	/* Never zero: a zero boot_id is what an uninitialised variable looks
 	 * like, and the lock treats a change of boot_id as permission to accept
 	 * a counter that went backwards. */
 	do {
-		s_boot_id = sys_rand32_get();
-	} while (s_boot_id == 0u);
-	s_ctr = 0u;
+		boot_id = sys_rand32_get();
+	} while (boot_id == 0u);
+	ultrawidelock_link_init(&s_link, (uint8_t)CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE, boot_id);
+
+	if (ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK &&
+	    ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_SATELLITE_KEY, key, &key_len) ==
+		    ULTRAWIDELOCK_KV_OK) {
+		(void)ultrawidelock_link_set_key(&s_link, key, key_len);
+	}
+	memset(key, 0, sizeof(key));
 
 	ot = openthread_get_default_instance();
 	if (ot == NULL) {
@@ -405,7 +289,7 @@ void anchor_link_init(void)
 
 	if (!ultrawidelock_dgram_ready()) {
 		LOG_WRN("anchor link did not open");
-	} else if (!s_provisioned) {
+	} else if (!ultrawidelock_link_ready(&s_link)) {
 		/* Loud, because it fails closed and silently otherwise: an
 		 * un-provisioned anchor ranges perfectly and reports nothing,
 		 * which at the lock is indistinguishable from a board that never

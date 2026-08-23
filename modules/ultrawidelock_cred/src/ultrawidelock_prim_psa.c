@@ -164,20 +164,25 @@ int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce
 	return rc;
 }
 
-// Encrypt one AES-128-ECB block via PSA Crypto (the BLE advertisement Dynamic Tag).
-// Returns 0 on success, -1 if key import or the cipher operation fails.
-int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+// Encrypt one AES-128/256-ECB block via PSA Crypto. Returns 0 on success, -1
+// for an invalid argument, unsupported key size, or backend failure.
+int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
+				  const uint8_t in[16], uint8_t out[16])
 {
 	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
 	psa_key_id_t k = 0;
 	size_t olen = 0;
 	int rc = -1;
 
+	if (key == NULL || in == NULL || out == NULL ||
+	    (key_bits != 128u && key_bits != 256u)) {
+		return -1;
+	}
 	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
 	psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
 	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, 128);
-	if (psa_import_key(&attr, key, 16, &k) != PSA_SUCCESS) {
+	psa_set_key_bits(&attr, key_bits);
+	if (psa_import_key(&attr, key, key_bits / 8u, &k) != PSA_SUCCESS) {
 		return -1;
 	}
 	/* ECB has no IV, so the one-shot output is exactly the 16-byte block. */
@@ -187,6 +192,11 @@ int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16]
 	}
 	psa_destroy_key(k);
 	return rc;
+}
+
+int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+{
+	return ultrawidelock_aes_ecb_encrypt(key, 128u, in, out);
 }
 
 // Encrypt and authenticate plaintext with AES-128-CCM via PSA Crypto.
