@@ -126,7 +126,7 @@ static void s_info_defaults(void)
 	s_info.approach_direction = MATTER_APPROACH_DIRECTION_ALL;
 	s_info.uwb_distance_mm = -1;
 	s_info.uwb_config.version = MATTER_UWB_CONFIG_VERSION;
-	s_info.uwb_config.distance_relock_enabled = 1u;
+	s_info.uwb_config.policy_flags = MATTER_UWB_POLICY_ALL;
 	s_info.uwb_config.unlock_cm = 100u;
 	s_info.uwb_config.approach_cm = 180u;
 	s_info.uwb_config.relock_cm = 250u;
@@ -2239,6 +2239,9 @@ static void notify_uwb_presence(struct sub_state *s)
 		MATTER_ATTR_UWB_RELOCK_CM,
 		MATTER_ATTR_UWB_MOTOR_MS,
 		MATTER_ATTR_UWB_DISTANCE_RELOCK,
+		MATTER_ATTR_UWB_BOUND_UNLOCK,
+		MATTER_ATTR_UWB_LOCK_RELOCK,
+		MATTER_ATTR_UWB_LOCK_UNLOCK,
 	};
 	struct matter_im_read read;
 	size_t framed = 0u;

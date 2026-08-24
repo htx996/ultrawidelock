@@ -76,17 +76,25 @@ extern "C" {
 #define MATTER_ATTR_UWB_RELOCK_CM            0x0006u
 #define MATTER_ATTR_UWB_MOTOR_MS             0x0007u
 #define MATTER_ATTR_UWB_DISTANCE_RELOCK      0x0008u
+#define MATTER_ATTR_UWB_BOUND_UNLOCK         0x0009u
+#define MATTER_ATTR_UWB_LOCK_RELOCK          0x000Au
+#define MATTER_ATTR_UWB_LOCK_UNLOCK          0x000Bu
 #define MATTER_UWB_MOVEMENT_UNKNOWN         0u
 #define MATTER_UWB_MOVEMENT_STATIONARY      1u
 #define MATTER_UWB_MOVEMENT_APPROACHING     2u
 #define MATTER_UWB_MOVEMENT_LEAVING         3u
-#define MATTER_UWB_PRESENCE_CLUSTER_REV     3u
+#define MATTER_UWB_PRESENCE_CLUSTER_REV     4u
 
-#define MATTER_UWB_CONFIG_VERSION 1u
+#define MATTER_UWB_CONFIG_VERSION 2u
+#define MATTER_UWB_POLICY_BOUND_RELOCK 0x01u
+#define MATTER_UWB_POLICY_BOUND_UNLOCK 0x02u
+#define MATTER_UWB_POLICY_LOCK_RELOCK  0x04u
+#define MATTER_UWB_POLICY_LOCK_UNLOCK  0x08u
+#define MATTER_UWB_POLICY_ALL          0x0Fu
 
 struct matter_uwb_config {
 	uint8_t version;
-	uint8_t distance_relock_enabled;
+	uint8_t policy_flags;
 	uint16_t unlock_cm;
 	uint16_t approach_cm;
 	uint16_t relock_cm;

@@ -824,11 +824,20 @@ int matter_uwb_config_load(struct matter_uwb_config *config)
 	(void)ultrawidelock_kv_init();
 	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_MATTER_UWB_CONFIG,
 				 &stored, &len) == ULTRAWIDELOCK_KV_OK &&
-	    len == sizeof(stored) && stored.version == MATTER_UWB_CONFIG_VERSION &&
+	    len == sizeof(stored) &&
+	    (stored.version == 1u || stored.version == MATTER_UWB_CONFIG_VERSION) &&
 	    stored.unlock_cm >= 20u && stored.unlock_cm < stored.approach_cm &&
 	    stored.approach_cm < stored.relock_cm && stored.relock_cm <= 1000u &&
 	    stored.motor_ms >= 100u && stored.motor_ms <= 5000u &&
-	    stored.distance_relock_enabled <= 1u) {
+	    (stored.version == 1u ||
+	     (stored.policy_flags & (uint8_t)~MATTER_UWB_POLICY_ALL) == 0u)) {
+		if (stored.version == 1u) {
+			stored.policy_flags = (stored.policy_flags != 0u
+					       ? MATTER_UWB_POLICY_BOUND_RELOCK : 0u) |
+					      (MATTER_UWB_POLICY_ALL &
+					       (uint8_t)~MATTER_UWB_POLICY_BOUND_RELOCK);
+			stored.version = MATTER_UWB_CONFIG_VERSION;
+		}
 		*config = stored;
 	}
 	return 0;

@@ -1289,7 +1289,7 @@ void test_matter_clusters(void)
 		info.uwb_device_id = 0x12345678u;
 		info.uwb_config = (struct matter_uwb_config){
 			.version = MATTER_UWB_CONFIG_VERSION,
-			.distance_relock_enabled = 1u,
+			.policy_flags = MATTER_UWB_POLICY_ALL,
 			.unlock_cm = 100u,
 			.approach_cm = 180u,
 			.relock_cm = 250u,
@@ -1318,6 +1318,10 @@ void test_matter_clusters(void)
 		T_EQ("and recognizes the writable relock switch",
 		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
 				MATTER_ATTR_UWB_DISTANCE_RELOCK),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and recognizes the writable UltraWideLock unlock switch",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_LOCK_UNLOCK),
 		     MATTER_IM_STATUS_SUCCESS);
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
@@ -1355,7 +1359,17 @@ void test_matter_clusters(void)
 			T_EQ("distance relock is writable", srv.write(srv.ctx, &path, tlv, w.len),
 			     MATTER_IM_STATUS_SUCCESS);
 			T_EQ("and updates the shared config",
-			     info.uwb_config.distance_relock_enabled, 0u);
+			     info.uwb_config.policy_flags & MATTER_UWB_POLICY_BOUND_RELOCK, 0u);
+
+			path.attribute = MATTER_ATTR_UWB_LOCK_UNLOCK;
+			matter_tlv_writer_init(&w, tlv, sizeof(tlv));
+			(void)matter_tlv_put_bool(&w, MATTER_TLV_ANON, false);
+			T_EQ("UltraWideLock unlock is writable",
+			     srv.write(srv.ctx, &path, tlv, w.len), MATTER_IM_STATUS_SUCCESS);
+			T_EQ("and only clears its policy bit",
+			     info.uwb_config.policy_flags,
+			     MATTER_UWB_POLICY_ALL & (uint8_t)~MATTER_UWB_POLICY_BOUND_RELOCK &
+				     (uint8_t)~MATTER_UWB_POLICY_LOCK_UNLOCK);
 		}
 
 		matter_tlv_writer_init(&w, out, sizeof(out));

@@ -660,6 +660,9 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 			case MATTER_ATTR_UWB_RELOCK_CM:
 			case MATTER_ATTR_UWB_MOTOR_MS:
 			case MATTER_ATTR_UWB_DISTANCE_RELOCK:
+			case MATTER_ATTR_UWB_BOUND_UNLOCK:
+			case MATTER_ATTR_UWB_LOCK_RELOCK:
+			case MATTER_ATTR_UWB_LOCK_UNLOCK:
 			case MATTER_ATTR_FEATURE_MAP:
 			case MATTER_ATTR_CLUSTER_REVISION:
 			case MATTER_ATTR_ATTRIBUTE_LIST:
@@ -914,6 +917,9 @@ static const uint32_t k_uwb_presence_attrs[] = {
 	MATTER_ATTR_UWB_RELOCK_CM,
 	MATTER_ATTR_UWB_MOTOR_MS,
 	MATTER_ATTR_UWB_DISTANCE_RELOCK,
+	MATTER_ATTR_UWB_BOUND_UNLOCK,
+	MATTER_ATTR_UWB_LOCK_RELOCK,
+	MATTER_ATTR_UWB_LOCK_UNLOCK,
 	MATTER_ATTR_FEATURE_MAP,
 	MATTER_ATTR_CLUSTER_REVISION,
 	MATTER_ATTR_ATTRIBUTE_LIST,
@@ -1106,7 +1112,24 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 			(void)matter_tlv_put_u64(w, tag, info->uwb_config.motor_ms);
 			return;
 		case MATTER_ATTR_UWB_DISTANCE_RELOCK:
-			(void)matter_tlv_put_bool(w, tag, info->uwb_config.distance_relock_enabled != 0u);
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_BOUND_RELOCK) != 0u);
+			return;
+		case MATTER_ATTR_UWB_BOUND_UNLOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_BOUND_UNLOCK) != 0u);
+			return;
+		case MATTER_ATTR_UWB_LOCK_RELOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_LOCK_RELOCK) != 0u);
+			return;
+		case MATTER_ATTR_UWB_LOCK_UNLOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_LOCK_UNLOCK) != 0u);
 			return;
 		case MATTER_ATTR_FEATURE_MAP:
 			(void)matter_tlv_put_u64(w, tag, 0u);
@@ -3837,11 +3860,24 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 			if (matter_tlv_next(&r) != MATTER_OK) {
 				return MATTER_IM_STATUS_INVALID_COMMAND;
 			}
-			if (path->attribute == MATTER_ATTR_UWB_DISTANCE_RELOCK) {
+			if (path->attribute >= MATTER_ATTR_UWB_DISTANCE_RELOCK &&
+			    path->attribute <= MATTER_ATTR_UWB_LOCK_UNLOCK) {
+				static const uint8_t flags[] = {
+					MATTER_UWB_POLICY_BOUND_RELOCK,
+					MATTER_UWB_POLICY_BOUND_UNLOCK,
+					MATTER_UWB_POLICY_LOCK_RELOCK,
+					MATTER_UWB_POLICY_LOCK_UNLOCK,
+				};
+				uint8_t flag = flags[path->attribute - MATTER_ATTR_UWB_DISTANCE_RELOCK];
+
 				if (matter_tlv_get_bool(&r, &enabled) != MATTER_OK) {
 					return MATTER_IM_STATUS_INVALID_COMMAND;
 				}
-				next.distance_relock_enabled = enabled;
+				if (enabled) {
+					next.policy_flags |= flag;
+				} else {
+					next.policy_flags &= (uint8_t)~flag;
+				}
 			} else {
 				if (matter_tlv_get_u64(&r, &v) != MATTER_OK || v > UINT16_MAX) {
 					return MATTER_IM_STATUS_INVALID_COMMAND;

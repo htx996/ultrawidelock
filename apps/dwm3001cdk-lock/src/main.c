@@ -522,9 +522,15 @@ static void baseline_apply(struct ultrawidelock_satellite_set *set, int32_t mm, 
 }
 #endif
 
+#define UWB_POLICY_BOUND_RELOCK 0x01u
+#define UWB_POLICY_BOUND_UNLOCK 0x02u
+#define UWB_POLICY_LOCK_RELOCK  0x04u
+#define UWB_POLICY_LOCK_UNLOCK  0x08u
+#define UWB_POLICY_ALL          0x0Fu
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 static void apply_uwb_config(struct ultrawidelock_approach *approach,
-			     bool *distance_relock_enabled)
+			     uint8_t *policy_flags)
 {
 	struct matter_uwb_config config;
 
@@ -535,9 +541,14 @@ static void apply_uwb_config(struct ultrawidelock_approach *approach,
 	approach->cfg.approach_cm = config.approach_cm;
 	approach->cfg.relock_cm = config.relock_cm;
 	approach->cfg.motor_ms = config.motor_ms;
-	*distance_relock_enabled = config.distance_relock_enabled != 0u;
+	*policy_flags = config.policy_flags;
 }
 #endif
+
+static bool uwb_policy_enabled(uint8_t policy_flags, uint8_t policy)
+{
+	return (policy_flags & policy) != 0u;
+}
 
 int main(void)
 {
@@ -772,10 +783,10 @@ int main(void)
 	 * ranging started does not open it. See ultrawidelock_approach_cfg::approach_cm. */
 	ultrawidelock_approach_init(&approach, NULL);
 	approach.cfg.near_dwell = CONFIG_ULTRAWIDELOCK_APPROACH_NEAR_DWELL;
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-	bool distance_relock_enabled = true;
+	uint8_t policy_flags = UWB_POLICY_ALL;
 
-	apply_uwb_config(&approach, &distance_relock_enabled);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	apply_uwb_config(&approach, &policy_flags);
 	uwb_matter_presence_init();
 #endif
 
@@ -812,7 +823,7 @@ int main(void)
 		enum ultrawidelock_approach_action act;
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-		apply_uwb_config(&approach, &distance_relock_enabled);
+		apply_uwb_config(&approach, &policy_flags);
 #endif
 
 		ultrawidelock_reader_status_tick(now);
@@ -944,11 +955,17 @@ int main(void)
 				LOG_INF("passive unlock revoked: side=%u flags=0x%02x conf=%u",
 					(unsigned)side_dec.side, side_dec.flags,
 					side_dec.confidence);
-				ultrawidelock_reader_notify_unlock(false);
-				status_led_signal(STATUS_LED_UNLOCKED, false);
+				if (uwb_policy_enabled(policy_flags, UWB_POLICY_LOCK_RELOCK)) {
+					ultrawidelock_reader_notify_unlock(false);
+					status_led_signal(STATUS_LED_UNLOCKED, false);
+				}
 				granted = false;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-				matter_client_want(false);
+				if (uwb_policy_enabled(policy_flags, UWB_POLICY_BOUND_RELOCK)) {
+					matter_client_want(false);
+				} else {
+					matter_client_rearm_unlock();
+				}
 #endif
 				/* Same state repair as a refusal: the controller still
 				 * believes the bolt it opened is open. Without this it
@@ -1298,6 +1315,7 @@ int main(void)
 			}
 			if (!granted && tg_until != 0 && now < tg_until && session_now &&
 			    latch_cred != LATCH_CRED_NONE &&
+			    uwb_policy_enabled(policy_flags, UWB_POLICY_LOCK_UNLOCK) &&
 			    ultrawidelock_side_may_passive_unlock(&side_dec, &side_cfg)) {
 				tg_until = 0;
 				LOG_INF("toggle unlock (conf=%u)", side_dec.confidence);
@@ -1332,6 +1350,11 @@ int main(void)
 #endif
 			/* fall through */
 		case ULTRAWIDELOCK_APPROACH_UNLOCK_THRESHOLD:
+			if (!uwb_policy_enabled(policy_flags, UWB_POLICY_LOCK_UNLOCK) &&
+			    !uwb_policy_enabled(policy_flags, UWB_POLICY_BOUND_UNLOCK)) {
+				ultrawidelock_approach_veto(&approach);
+				break;
+			}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)
 			/*
 			 * Safety gate for ALL passive approach unlocks. Requires
@@ -1388,8 +1411,10 @@ int main(void)
 				break;
 			}
 #endif
-			ultrawidelock_reader_notify_unlock(true); /* Reader Status -> Unsecured (animate) */
-			status_led_signal(STATUS_LED_UNLOCKED, true);
+			if (uwb_policy_enabled(policy_flags, UWB_POLICY_LOCK_UNLOCK)) {
+				ultrawidelock_reader_notify_unlock(true); /* Reader Status -> Unsecured */
+				status_led_signal(STATUS_LED_UNLOCKED, true);
+			}
 			granted = true;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 			/*
@@ -1402,7 +1427,9 @@ int main(void)
 			 * must not delay them, and matter_client_want() returns
 			 * without waiting for anything at all.
 			 */
-			matter_client_want(true);
+			if (uwb_policy_enabled(policy_flags, UWB_POLICY_BOUND_UNLOCK)) {
+				matter_client_want(true);
+			}
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 			/* The door is open, so assume the phone goes in. This
@@ -1420,14 +1447,16 @@ int main(void)
 			break;
 		case ULTRAWIDELOCK_APPROACH_RELOCK_DEPART:
 		case ULTRAWIDELOCK_APPROACH_RELOCK_ABORT:
-			ultrawidelock_reader_notify_unlock(false); /* Reader Status -> Secured */
-			status_led_signal(STATUS_LED_UNLOCKED, false);
+			if (uwb_policy_enabled(policy_flags, UWB_POLICY_LOCK_RELOCK)) {
+				ultrawidelock_reader_notify_unlock(false); /* Reader Status -> Secured */
+				status_led_signal(STATUS_LED_UNLOCKED, false);
+			}
 			granted = false;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 			/* And close the lock this one opened. Same shape as the
 			 * grant above: after this board's own bolt, never
 			 * before it. */
-			if (distance_relock_enabled) {
+			if (uwb_policy_enabled(policy_flags, UWB_POLICY_BOUND_RELOCK)) {
 				matter_client_want(false);
 			} else {
 				matter_client_rearm_unlock();
@@ -1492,11 +1521,13 @@ int main(void)
 			}
 			(void)ultrawidelock_approach_gone(&approach);
 			if (granted) {
-				ultrawidelock_reader_notify_unlock(false);
-				status_led_signal(STATUS_LED_UNLOCKED, false);
+				if (uwb_policy_enabled(policy_flags, UWB_POLICY_LOCK_RELOCK)) {
+					ultrawidelock_reader_notify_unlock(false);
+					status_led_signal(STATUS_LED_UNLOCKED, false);
+				}
 				granted = false;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-				if (distance_relock_enabled) {
+				if (uwb_policy_enabled(policy_flags, UWB_POLICY_BOUND_RELOCK)) {
 					matter_client_want(false);
 				} else {
 					matter_client_rearm_unlock();
