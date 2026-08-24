@@ -69,11 +69,13 @@ setup_init "esp-bootstrap" "make esp-bootstrap"
 
 # Stage 2 is implied by the app that needs it. APP comes from make, and defaults
 # there to matter-lock.
+ESP_MATTER_WHY="ESP_MATTER=${ESP_MATTER:-} was asked for"
 if [ -z "${ESP_MATTER:-}" ]; then
   case "${APP:-matter-lock}" in
     matter-lock) ESP_MATTER=1 ;;
     *)           ESP_MATTER=0 ;;
   esac
+  ESP_MATTER_WHY="APP=${APP:-matter-lock} does not need it (ESP_MATTER=1 to install anyway)"
 fi
 
 # =============================================================================
@@ -113,7 +115,7 @@ info "esp-idf      $IDF_VER  ->  $IDF_DIR"
 if [ "$ESP_MATTER" = 1 ]; then
   info "esp-matter   ${ESP_MATTER_REV:0:10}…  ->  $ESP_MATTER_PATH"
 else
-  info "esp-matter   skipped  ·  APP=${APP:-matter-lock} does not need it (ESP_MATTER=1 to install anyway)"
+  info "esp-matter   skipped  ·  $ESP_MATTER_WHY"
 fi
 
 # =============================================================================
