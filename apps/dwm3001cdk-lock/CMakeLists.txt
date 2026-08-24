@@ -144,7 +144,9 @@ target_sources_ifdef(CONFIG_ULTRAWIDELOCK_CASE_BENCH app PRIVATE src/case_bench.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_BLE_CENTRAL app PRIVATE ${ULTRAWIDELOCK_BLE_CENTRAL_SRCS})
 # The commissioning policy half; its transport, Thread/fabric ports and fabric
 # table store live in ports/zephyr/{matter,store} under the same gate.
-target_sources_ifdef(CONFIG_ULTRAWIDELOCK_MATTER_BLE app PRIVATE src/matter_commission.c)
+target_sources_ifdef(CONFIG_ULTRAWIDELOCK_MATTER_BLE app PRIVATE
+	src/matter_commission.c
+	src/uwb_matter_presence.c)
 # The client role: what turns the four protocol files in ultrawidelock_matter
 # into a lock that unlocks another lock. Both symbols, not just the client one,
 # for the same reason door_alarm.c needs both above: the routing hooks it

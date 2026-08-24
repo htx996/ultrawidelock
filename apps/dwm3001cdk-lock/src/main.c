@@ -30,6 +30,7 @@
 #include "matter_client.h"
 #endif
 #include "matter_commission.h"
+#include "uwb_matter_presence.h"
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
 #include <matter_thread.h> /* bench-only dataset disclosure; see the main loop */
 #endif
@@ -38,7 +39,6 @@
 #include "ml_feed.h" /* channel-classifier glue; plain feed when ML is off */
 #include "status_led.h"
 #include "uwb_cirdiag.h" /* latched Ipatov scalars, for the channel classifier */
-#include "ultrawidelock_hash.h" /* SHA-256, for the credential's pseudonymous id */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
 #include "ultrawidelock_satellite.h" /* second-anchor verdict; gates PREDICT only */
 #endif
@@ -49,6 +49,7 @@
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 #include "ultrawidelock_latch.h" /* persistent inside veto layered over the side gate */
+#include "ultrawidelock_hash.h" /* SHA-256, for the credential's non-identifying name */
 #include <zephyr/settings/settings.h>
 #endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_SEALED_LINK)
@@ -335,99 +336,6 @@ static void factory_reset_if_requested(void)
 #define SESSION_FLAP_HOLD_MS 10000
 #define SESSION_FLAP_FEED_FRESH_MS 3000
 
-/* Stable for one provisioned credential, but not identifying without its
- * public key. Zero means no authenticated credential; UINT32_MAX is kept
- * unavailable because the optional inside latch uses it as its wildcard. */
-#define CREDENTIAL_ID_NONE 0x00000000u
-#define CREDENTIAL_ID_ANY  0xFFFFFFFFu
-
-static uint32_t authenticated_credential_id(void)
-{
-	uint8_t cred_pub[65];
-	uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
-	uint32_t v;
-
-	if (!ultrawidelock_reader_authenticated_credential(cred_pub)) {
-		return CREDENTIAL_ID_NONE;
-	}
-	ultrawidelock_sha256(cred_pub, sizeof(cred_pub), digest);
-	v = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
-	    ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
-	if (v == CREDENTIAL_ID_NONE || v == CREDENTIAL_ID_ANY) {
-		v = 1u;
-	}
-	return v;
-}
-
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-#define UWB_MOVEMENT_ENTER_CM_S       20
-#define UWB_MOVEMENT_STATIONARY_CM_S   8
-#define UWB_MOVEMENT_CONFIRM_SAMPLES   2u
-#define UWB_MOVEMENT_STATIONARY_MS   500
-#define UWB_MOVEMENT_HOLD_MS         300
-
-struct uwb_movement_filter {
-	enum matter_uwb_movement_state state;
-	enum matter_uwb_movement_state candidate;
-	uint8_t candidate_samples;
-	int64_t candidate_since_ms;
-	int64_t hold_until_ms;
-};
-
-static void uwb_movement_reset(struct uwb_movement_filter *filter)
-{
-	memset(filter, 0, sizeof(*filter));
-	filter->state = MATTER_UWB_MOVEMENT_STATE_UNKNOWN;
-	filter->candidate = MATTER_UWB_MOVEMENT_STATE_UNKNOWN;
-}
-
-static enum matter_uwb_movement_state
-uwb_movement_state(struct uwb_movement_filter *filter, int32_t velocity_cm_s,
-		   int64_t now_ms)
-{
-	enum matter_uwb_movement_state candidate;
-	int64_t dwell_ms;
-
-	if (velocity_cm_s >= UWB_MOVEMENT_ENTER_CM_S) {
-		candidate = MATTER_UWB_MOVEMENT_STATE_APPROACHING;
-	} else if (velocity_cm_s <= -UWB_MOVEMENT_ENTER_CM_S) {
-		candidate = MATTER_UWB_MOVEMENT_STATE_LEAVING;
-	} else if (velocity_cm_s >= -UWB_MOVEMENT_STATIONARY_CM_S &&
-		   velocity_cm_s <= UWB_MOVEMENT_STATIONARY_CM_S) {
-		candidate = MATTER_UWB_MOVEMENT_STATE_STATIONARY;
-	} else {
-		filter->candidate = filter->state;
-		filter->candidate_samples = 0u;
-		filter->candidate_since_ms = now_ms;
-		return filter->state;
-	}
-	if (candidate == filter->state) {
-		filter->candidate = candidate;
-		filter->candidate_samples = 0u;
-		filter->candidate_since_ms = now_ms;
-		return filter->state;
-	}
-	if (candidate != filter->candidate) {
-		filter->candidate = candidate;
-		filter->candidate_samples = 1u;
-		filter->candidate_since_ms = now_ms;
-	} else if (filter->candidate_samples < UINT8_MAX) {
-		filter->candidate_samples++;
-	}
-	dwell_ms = candidate == MATTER_UWB_MOVEMENT_STATE_STATIONARY
-			   ? UWB_MOVEMENT_STATIONARY_MS
-			   : 0;
-	if (filter->candidate_samples >= UWB_MOVEMENT_CONFIRM_SAMPLES &&
-	    now_ms >= filter->hold_until_ms &&
-	    now_ms - filter->candidate_since_ms >= dwell_ms) {
-		filter->state = candidate;
-		filter->candidate_samples = 0u;
-		filter->hold_until_ms = now_ms + UWB_MOVEMENT_HOLD_MS;
-	}
-	return filter->state;
-}
-#endif
-
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 /*
  * The inside veto. The side gate classifies each window; this decides what a
@@ -453,7 +361,7 @@ static bool s_latch_dirty;
  * must not accumulate against one, so the session stays closed until the
  * reader can say whose it is.
  */
-#define LATCH_CRED_NONE CREDENTIAL_ID_NONE
+#define LATCH_CRED_NONE 0x00000000u
 
 /* How long a credential-session gap still counts as the SAME approach --
  * the latch twin of SESSION_CARRY_MS in witness_link.c. iOS tears the
@@ -463,6 +371,32 @@ static bool s_latch_dirty;
  * clear_windows as the session flapped, and with the phone then at the
  * door no run could restart beyond clear_min_mm -- why=0x10 for good). */
 #define LATCH_SESSION_CARRY_MS 30000
+
+static uint32_t latch_cred_id(void)
+{
+	uint8_t cred_pub[65];
+	uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
+	uint32_t v;
+
+	if (!ultrawidelock_reader_authenticated_credential(cred_pub)) {
+		return LATCH_CRED_NONE;
+	}
+	/* The same construction ultrawidelock_assert_cred_id() uses -- SHA-256
+	 * over the credential public key -- computed here rather than called,
+	 * because ultrawidelock_assert is not linked into this image and
+	 * pulling it in for four bytes of digest would cost more than it says. */
+	ultrawidelock_sha256(cred_pub, sizeof(cred_pub), digest);
+	v = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
+	    ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
+	/* Two reserved values must never be minted from a real credential: zero
+	 * means "nobody", and CRED_ANY addresses every record at once. A
+	 * collision is a 1-in-2^31 event and costs that credential nothing but
+	 * a different record number. */
+	if (v == LATCH_CRED_NONE || v == ULTRAWIDELOCK_LATCH_CRED_ANY) {
+		v = 1u;
+	}
+	return v;
+}
 
 static int latch_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -661,9 +595,6 @@ int main(void)
 	 * grew past trivial; the 4 KB main stack is not the place to discover that,
 	 * and in .bss the cost shows up in the measured RAM budget instead. */
 	static struct ultrawidelock_approach approach;
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-	static struct uwb_movement_filter movement_filter;
-#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
 	/*
 	 * Second-anchor geometry. Nothing feeds this yet -- the satellite
@@ -825,8 +756,7 @@ int main(void)
 	ultrawidelock_approach_init(&approach, NULL);
 	approach.cfg.near_dwell = CONFIG_ULTRAWIDELOCK_APPROACH_NEAR_DWELL;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-	uwb_movement_reset(&movement_filter);
-	matter_commission_set_uwb_unlock_threshold((uint32_t)approach.cfg.unlock_cm);
+	uwb_matter_presence_init((uint32_t)approach.cfg.unlock_cm);
 #endif
 
 	/* Same seam the ESP32 matter-lock uses (app_main.cpp on_uwb_range): the engine
@@ -1054,8 +984,7 @@ int main(void)
 		 * agreeing windows must never be inherited by another phone.
 		 */
 		{
-			uint32_t cred_now = session_now ? authenticated_credential_id()
-						    : LATCH_CRED_NONE;
+			uint32_t cred_now = session_now ? latch_cred_id() : LATCH_CRED_NONE;
 
 			if (cred_now == latch_cred) {
 				if (latch_gap_ms != 0) {
@@ -1278,10 +1207,7 @@ int main(void)
 #endif
 			act = ml_feed_range(&approach, now, cm);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-			matter_commission_update_uwb_presence(
-				true, cm * 10, authenticated_credential_id(),
-				uwb_movement_state(&movement_filter,
-					ultrawidelock_approach_vel_cm_s(&approach), now));
+			uwb_matter_presence_update(&approach, cm, now);
 #endif
 		} else {
 			/*
@@ -1547,9 +1473,7 @@ int main(void)
 			}
 			present = false;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-			uwb_movement_reset(&movement_filter);
-			matter_commission_update_uwb_presence(
-				false, -1, 0u, MATTER_UWB_MOVEMENT_STATE_UNKNOWN);
+			uwb_matter_presence_clear();
 #endif
 		}
 

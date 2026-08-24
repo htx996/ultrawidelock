@@ -2074,6 +2074,48 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 /** Exchange ids this node originates. Any non-zero value the peer is not using. */
 static uint16_t s_next_init_exchange = 0xE000u;
 
+static int send_subscription_report(struct sub_state *s,
+				    struct matter_im_read *read, size_t *framed)
+{
+	struct matter_tx_slot *packet;
+	uint8_t *payload;
+	size_t payload_cap;
+	size_t tlv_len = 0u;
+	uint8_t slot = case_slot_of(s->session_id);
+	int rc;
+
+	if (slot >= MATTER_CASE_SESSIONS) {
+		return MATTER_E_STATE;
+	}
+	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
+	if (packet == NULL) {
+		return MATTER_E_NOSPACE;
+	}
+	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
+	payload = tx_payload(packet, &payload_cap);
+	rc = matter_im_report_data_encode(&s_im, read, payload, payload_cap, &tlv_len, NULL);
+	if (rc == MATTER_OK) {
+		rc = matter_exchange_send_initiator(
+			&s_case_x[slot], s_next_init_exchange++,
+			MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_REPORT_DATA,
+			payload, tlv_len, packet->data, packet->capacity, framed);
+	}
+	if (rc != MATTER_OK || matter_tx_slot_commit(packet, *framed) != MATTER_OK ||
+	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
+		tx_abort_build(packet);
+		return rc == MATTER_OK ? MATTER_E_STATE : rc;
+	}
+	struct matter_thread_peer peer = s->peer;
+
+	rc = matter_thread_send_to(&peer, packet->data, *framed);
+	if (rc == MATTER_OK) {
+		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
+	} else {
+		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
+	}
+	return rc;
+}
+
 /**
  * Send a Matter lock state subscription report to one CASE session. Builds a TLV-encoded data
  * report for the DoorLock cluster LockState attribute and sends it as an initiator exchange. Logs
@@ -2090,12 +2132,7 @@ static void notify_lock_state(struct sub_state *s)
 	 * over its 3,872 B peak, and this path is shallow.
 	 */
 	struct matter_im_read one;
-	struct matter_tx_slot *packet;
-	uint8_t *payload;
-	size_t payload_cap;
-	size_t tlv_len = 0u;
 	size_t framed = 0u;
-	uint8_t slot;
 	uint16_t session_id;
 	uint32_t subscription_id;
 	int rc;
@@ -2103,18 +2140,6 @@ static void notify_lock_state(struct sub_state *s)
 	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
 		return;
 	}
-	slot = case_slot_of(s->session_id);
-	if (slot >= MATTER_CASE_SESSIONS) {
-		return;
-	}
-	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
-	if (packet == NULL) {
-		LOG_ERR("  no owned packet slot for LockState report");
-		return;
-	}
-	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
-	payload = tx_payload(packet, &payload_cap);
-
 	memset(&one, 0, sizeof(one));
 	one.n_paths = 1u;
 	one.paths[0].endpoint = MATTER_ENDPOINT_LOCK;
@@ -2140,37 +2165,9 @@ static void notify_lock_state(struct sub_state *s)
 		one.event_min = s->event_min;
 	}
 
-	rc = matter_im_report_data_encode(&s_im, &one, payload, payload_cap, &tlv_len,
-					  NULL);
-	if (rc != MATTER_OK) {
-		LOG_ERR("  cannot build the LockState report (%d)", rc);
-		tx_abort_build(packet);
-		return;
-	}
-
-	rc = matter_exchange_send_initiator(&s_case_x[slot], s_next_init_exchange++,
-					    MATTER_PROTOCOL_INTERACTION_MODEL,
-					    MATTER_IM_OP_REPORT_DATA, payload, tlv_len, packet->data,
-					    packet->capacity, &framed);
-	if (rc != MATTER_OK) {
-		LOG_ERR("  cannot frame the LockState report (%d)", rc);
-		tx_abort_build(packet);
-		return;
-	}
-	if (matter_tx_slot_commit(packet, framed) != MATTER_OK ||
-	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
-		tx_abort_build(packet);
-		return;
-	}
 	session_id = s->session_id;
 	subscription_id = s->id;
-	/* The IN_FLIGHT slot keeps packet and peer bytes stable through the
-	 * synchronous copy into an otMessage. UDP receive never waits on this owner
-	 * (matter_thread_on_datagram below), so this owner-to-OT call has no reverse
-	 * blocking edge. */
-	struct matter_thread_peer peer = s->peer;
-
-	rc = matter_thread_send_to(&peer, packet->data, framed);
+	rc = send_subscription_report(s, &one, &framed);
 	/*
 	 * BACK AT INF after a spell at DBG, and the demotion was a mistake worth
 	 * recording: this line reports whether a controller was TOLD, and rc is
@@ -2180,11 +2177,6 @@ static void notify_lock_state(struct sub_state *s)
 	 */
 	LOG_INF("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
 		(unsigned int)framed, rc);
-	if (rc == MATTER_OK) {
-		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
-	} else {
-		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
-	}
 	/*
 	 * Advance the watermark only on a report that went out. Moving it before
 	 * the send would drop an unlock on a failed transmit, and the subscriber
@@ -2229,12 +2221,7 @@ static void notify_uwb_presence(struct sub_state *s)
 		MATTER_ATTR_UWB_MOVEMENT_STATE,
 	};
 	struct matter_im_read read;
-	struct matter_tx_slot *packet;
-	uint8_t *payload;
-	size_t payload_cap;
-	size_t tlv_len = 0u;
 	size_t framed = 0u;
-	uint8_t slot;
 	int rc;
 
 	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
@@ -2260,42 +2247,9 @@ static void notify_uwb_presence(struct sub_state *s)
 		return;
 	}
 	read.subscription_id = s->id;
-	slot = case_slot_of(s->session_id);
-	if (slot >= MATTER_CASE_SESSIONS) {
-		return;
-	}
-	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
-	if (packet == NULL) {
-		LOG_ERR("  no owned packet slot for UWB presence report");
-		return;
-	}
-	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
-	payload = tx_payload(packet, &payload_cap);
-	rc = matter_im_report_data_encode(&s_im, &read, payload, payload_cap, &tlv_len, NULL);
-	if (rc != MATTER_OK) {
-		LOG_ERR("  cannot build UWB presence report (%d)", rc);
-		tx_abort_build(packet);
-		return;
-	}
-	rc = matter_exchange_send_initiator(&s_case_x[slot], s_next_init_exchange++,
-					    MATTER_PROTOCOL_INTERACTION_MODEL,
-					    MATTER_IM_OP_REPORT_DATA, payload, tlv_len,
-					    packet->data, packet->capacity, &framed);
-	if (rc != MATTER_OK || matter_tx_slot_commit(packet, framed) != MATTER_OK ||
-	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
-		tx_abort_build(packet);
-		return;
-	}
-	struct matter_thread_peer peer = s->peer;
-
-	rc = matter_thread_send_to(&peer, packet->data, framed);
+	rc = send_subscription_report(s, &read, &framed);
 	LOG_DBG("  UWB presence report to subscription 0x%08x, %u B, rc=%d",
 		(unsigned int)s->id, (unsigned int)framed, rc);
-	if (rc == MATTER_OK) {
-		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
-	} else {
-		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
-	}
 }
 
 static void uwb_notify_work_fn(struct k_work *w)
