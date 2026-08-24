@@ -429,11 +429,26 @@ cdk_fresh    = $(strip $(if $(PRISTINE),,$(if $(wildcard $($(2))/CMakeCache.txt)
 cdk_tail     = $(if $(call cdk_fresh,$(1),$(2)),,-- $($(1)))
 cdk_stamp    = printf '%s\n' '$(call cdk_args_id,$(1))' > '$(call cdk_stamp_at,$(1),$(2))'
 
+# A configured build directory records absolute paths, and CMAKE_CACHEFILE_DIR is
+# the one that names the directory the cache was written FOR. Move the checkout --
+# renaming a home directory does it -- and every path in there is wrong: `-p auto`
+# correctly notices the changed app dir, then resolves pristine.cmake through the
+# stale ZEPHYR_BASE and exits 1. West cannot recover the directory on its own, so
+# `make build` stays wedged until someone deletes it by hand. Delete it here
+# instead, and say so: the cost is one rebuild, and the alternative is a failure
+# whose message names a path that does not exist.
+cdk_scrub = if [ -f '$($(1))/CMakeCache.txt' ] && \
+              ! grep -qxF 'CMAKE_CACHEFILE_DIR:INTERNAL=$($(1))' '$($(1))/CMakeCache.txt'; then \
+              printf '  build dir was configured for another path  ·  removing %s\n' '$($(1))'; \
+              rm -rf '$($(1))'; \
+            fi
+
 ##@ DWM3001CDK  ·  the lock (bare targets mean this board)
 ## build: the DWM3001CDK lock, reader + Matter over Thread  -> build/cdk-matter
 CDK_BUILD_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF)" -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
                  $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 build:
+	@$(call cdk_scrub,CDK_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_BUILD) $(CDK_APP) \
 	  $(call cdk_tail,CDK_BUILD_ARGS,CDK_BUILD)
@@ -469,6 +484,7 @@ rebuild:
 ## reader: the same board WITHOUT Matter        -> build/cdk-reader
 CDK_READER_ARGS = $(CDK_SIGN)
 reader:
+	@$(call cdk_scrub,CDK_READER_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_READER_BUILD) $(CDK_APP) \
 	  $(call cdk_tail,CDK_READER_ARGS,CDK_READER_BUILD)
@@ -477,6 +493,7 @@ reader:
 ## selftest: one-shot UWB init self-test at boot  -> build/cdk-selftest
 CDK_SELFTEST_ARGS = -DEXTRA_CONF_FILE=overlays/uwb-selftest.conf $(CDK_SIGN)
 selftest:
+	@$(call cdk_scrub,CDK_SELFTEST_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_SELFTEST_BUILD) $(CDK_APP) \
 	  $(call cdk_tail,CDK_SELFTEST_ARGS,CDK_SELFTEST_BUILD)
@@ -493,6 +510,7 @@ CDK_CIRDIAG_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF);overlays/cirdiag.conf" \
                    -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y $(CDK_CIRDIAG_WINDOWS) \
                    $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 cirdiag:
+	@$(call cdk_scrub,CDK_CIRDIAG_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_CIRDIAG_BUILD) $(CDK_APP) \
 	  $(call cdk_tail,CDK_CIRDIAG_ARGS,CDK_CIRDIAG_BUILD)
@@ -508,6 +526,7 @@ CDK_MLGATE_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF);overlays/mlgate.conf" \
                   -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
                   $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 mlgate:
+	@$(call cdk_scrub,CDK_MLGATE_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_MLGATE_BUILD) $(CDK_APP) \
 	  $(call cdk_tail,CDK_MLGATE_ARGS,CDK_MLGATE_BUILD)
@@ -524,6 +543,7 @@ CDK_ANCHORLINK_ARGS = -DEXTRA_CONF_FILE="$(CDK_ANCHORLINK_CONF)" \
                       -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
                       $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 anchorlink:
+	@$(call cdk_scrub,CDK_ANCHORLINK_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_ANCHORLINK_BUILD) $(CDK_APP) \
 	  $(call cdk_tail,CDK_ANCHORLINK_ARGS,CDK_ANCHORLINK_BUILD)
