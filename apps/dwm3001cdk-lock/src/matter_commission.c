@@ -85,28 +85,46 @@ static bool s_stale = true;
  * Sized in seconds and enum values rather than Kconfig strings because these
  * are what the commissioner reads back; see matter_clusters.h for each.
  */
-static struct matter_device_info s_info = {
-	.vendor_id = CONFIG_ULTRAWIDELOCK_MATTER_VENDOR_ID,
-	.product_id = CONFIG_ULTRAWIDELOCK_MATTER_PRODUCT_ID,
-	.breadcrumb = 0u,
-	.regulatory_config = MATTER_REGULATORY_INDOOR,
-	.location_capability = MATTER_REGULATORY_INDOOR,
+static struct matter_device_info s_info;
+
+/*
+ * The non-zero half of s_info, assigned rather than statically initialized.
+ *
+ * A static initializer puts the WHOLE struct in .data, and .data is stored in
+ * FLASH and copied to RAM at boot. Only the scalars below are non-zero; the
+ * rest -- the fabric table, the NOC and ICAC buffers, the lock event queue --
+ * is zero, and paying flash to store zeros is the entire cost. In .bss it
+ * costs the same RAM and no flash at all.
+ *
+ * This was cheap when the struct was small and got expensive silently as the
+ * struct grew, which is why it survived the size hunt in
+ * overlay-client-debug.conf: that went looking for code, and this is data.
+ * Adding a non-zero field here is what puts it back in .data, so add it to
+ * this function instead.
+ */
+static void s_info_defaults(void)
+{
+	s_info.vendor_id = CONFIG_ULTRAWIDELOCK_MATTER_VENDOR_ID;
+	s_info.product_id = CONFIG_ULTRAWIDELOCK_MATTER_PRODUCT_ID;
+	s_info.breadcrumb = 0u;
+	s_info.regulatory_config = MATTER_REGULATORY_INDOOR;
+	s_info.location_capability = MATTER_REGULATORY_INDOOR;
 	/* The fail-safe window a commissioner may arm, and the ceiling it may
 	 * extend to. CHIP's own defaults; nothing here is slow enough to need
 	 * more. */
-	.failsafe_expiry_s = 60u,
-	.failsafe_max_s = 900u,
+	s_info.failsafe_expiry_s = 60u;
+	s_info.failsafe_max_s = 900u;
 	/*
 	 * True keeps BLE up across the whole of commissioning. False would tell
 	 * the commissioner to expect this node to leave BLE and reappear on its
 	 * operational network -- which it cannot do, having no Thread or Wi-Fi
 	 * yet, so false would promise a return that never happens.
 	 */
-	.supports_concurrent_connection = true,
+	s_info.supports_concurrent_connection = true;
 	/* All three directions permitted, the default the CHIP builds declare;
 	 * zero is a writable value so it cannot mean "never set". */
-	.approach_direction = MATTER_APPROACH_DIRECTION_ALL,
-};
+	s_info.approach_direction = MATTER_APPROACH_DIRECTION_ALL;
+}
 
 /* Advertising and the main loop read these outside the Matter owner. Publish
  * only the two scalar predicates they need instead of exposing s_info or the
@@ -4314,6 +4332,7 @@ bool matter_commission_take_deliberate_unlock(void)
 
 int matter_commission_init(void)
 {
+	s_info_defaults();
 	ultrawidelock_sem_init(&s_fab_done, 0u, 1u);
 	s_info.commissioning_hooks = &k_commissioning_hooks;
 	ultrawidelock_mutex_init(&s_owner_lock);
