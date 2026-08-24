@@ -20,6 +20,20 @@
  * without touching a key. */
 #define SEALED(plain_len) (ULTRAWIDELOCK_SEAL_OVERHEAD + (plain_len))
 
+/*
+ * consume() indexes report_peer[] and report_epoch[] with (role - 1) on the
+ * strength of the codec having range-checked the role. That is only sound
+ * while the codec's highest role and this module's array bound are the same
+ * number, and they are declared in two different headers -- so tie them here
+ * rather than leave the next widening to notice on its own.
+ */
+_Static_assert(ULTRAWIDELOCK_LINK_ROLE_MIN == ULTRAWIDELOCK_WITNESS_ROLE_INSIDE,
+	       "the link's lowest satellite role must be the codec's lowest");
+_Static_assert(ULTRAWIDELOCK_LINK_ROLE_MAX == ULTRAWIDELOCK_WITNESS_ROLE_THRESHOLD,
+	       "per-role array bound must match the highest role the codec admits");
+_Static_assert(ULTRAWIDELOCK_LINK_HANDOFF_ROLE > ULTRAWIDELOCK_LINK_ROLE_MAX,
+	       "the lock's nonce role must stay outside every satellite's");
+
 void ultrawidelock_link_init(struct ultrawidelock_link *l, uint8_t role, uint32_t boot_id)
 {
 	if (l == NULL) {
@@ -92,7 +106,7 @@ size_t ultrawidelock_link_build_report(struct ultrawidelock_link *l, int32_t pee
 	am.role = l->role;
 	am.boot_id = l->boot_id;
 	am.ctr = l->ctr + 1u; /* must match the nonce seal_next() builds */
-	am.echo_nonce = l->echo_nonce;
+	am.echo_nonce = l->tx_echo_nonce;
 	am.ranging_block = (uint16_t)ranging_block;
 	am.peer_mm = peer_mm;
 
@@ -167,6 +181,33 @@ size_t ultrawidelock_link_build_challenge_hint(uint64_t nonce, uint32_t hint, ui
 	return ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN;
 }
 
+/**
+ * Refuse a report that unsealed and decoded but is not fresh.
+ *
+ * Clears the out-parameter and keeps only role and counter, the two
+ * non-sensitive fields the carriers' existing replay diagnostic prints. The
+ * distance never survives a rejection: a caller that forgets to check the
+ * return value must not find a believable number waiting for it.
+ */
+static enum ultrawidelock_link_rx report_rejected(struct ultrawidelock_anchor_msg *am)
+{
+	uint8_t role = am->role;
+	uint32_t ctr = am->ctr;
+
+	memset(am, 0, sizeof(*am));
+	am->role = role;
+	am->ctr = ctr;
+	return ULTRAWIDELOCK_LINK_RX_REPLAYED;
+}
+
+void ultrawidelock_link_expect_echo(struct ultrawidelock_link *l, uint64_t nonce)
+{
+	if (l == NULL) {
+		return;
+	}
+	l->expected_echo_nonce = nonce;
+}
+
 enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link *l,
 						      const uint8_t *in, size_t len,
 						      struct ultrawidelock_anchor_msg *am,
@@ -181,8 +222,10 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 	}
 
 	/* The challenge is unsealed by design and is the only thing read before
-	 * the key is consulted. It can set no state but the echo nonce, and an
-	 * echo nonce can only ever cost a report its standing. */
+	 * the key is consulted. It can set no state but the OUTGOING echo nonce,
+	 * and an outgoing echo nonce can only ever cost our own next report its
+	 * standing. What we require of an arriving report is expected_echo_nonce,
+	 * which nothing on the wire can reach. */
 	if ((len == ULTRAWIDELOCK_LINK_CHALLENGE_LEN ||
 	     len == ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN) &&
 	    in[0] == ULTRAWIDELOCK_WITNESS_MSG_VER) {
@@ -191,7 +234,7 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 		for (int i = 0; i < 8; i++) {
 			n = (n << 8) | (uint64_t)in[1 + i];
 		}
-		l->echo_nonce = n;
+		l->tx_echo_nonce = n;
 		return ULTRAWIDELOCK_LINK_RX_CHALLENGE;
 	}
 
@@ -206,6 +249,9 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 	 * never mistakes it for input.
 	 */
 	if (len == SEALED(ULTRAWIDELOCK_ANCHOR_MSG_LEN)) {
+		struct ultrawidelock_witness_seen *seen;
+		size_t idx;
+
 		if (am == NULL) {
 			return ULTRAWIDELOCK_LINK_RX_IGNORED;
 		}
@@ -218,19 +264,36 @@ enum ultrawidelock_link_rx ultrawidelock_link_consume(struct ultrawidelock_link 
 		}
 		memset(plain, 0, sizeof(plain));
 		/* anchor_msg_decode() enforces the nonce-safe role range before
-		 * populating am, so indexing the per-role window is safe here. */
-		if (!ultrawidelock_seen_accept_ctr(&l->report_peer[am->role - 1u], am->boot_id,
-						   am->ctr)) {
-			uint8_t role = am->role;
-			uint32_t ctr = am->ctr;
-
-			memset(am, 0, sizeof(*am));
-			/* Keep only the two non-sensitive fields a carrier needs for its
-			 * existing replay diagnostic. The rejected distance is cleared. */
-			am->role = role;
-			am->ctr = ctr;
-			return ULTRAWIDELOCK_LINK_RX_REPLAYED;
+		 * populating am, so indexing the per-role state is safe here. */
+		idx = (size_t)(am->role - 1u);
+		seen = &l->report_peer[idx];
+		/*
+		 * ORDER: freshness epoch, then the counter window. Both reject the
+		 * same way, and both run only after the seal, so neither is
+		 * reachable by anyone without the link key.
+		 */
+		if (l->expected_echo_nonce != 0u) {
+			/* Produced during some other epoch, or none: a recording,
+			 * however well sealed. */
+			if (am->echo_nonce != l->expected_echo_nonce) {
+				return report_rejected(am);
+			}
+			/*
+			 * A boot id change resets the counter window, which is
+			 * exactly what a captured older boot needs. Admit it once
+			 * per epoch: a satellite that really rebooted is believed
+			 * on the next challenge, and a replayed old boot is not
+			 * believed at all while this one stands.
+			 */
+			if (seen->have && seen->boot_id != am->boot_id &&
+			    l->report_epoch[idx] == l->expected_echo_nonce) {
+				return report_rejected(am);
+			}
 		}
+		if (!ultrawidelock_seen_accept_ctr(seen, am->boot_id, am->ctr)) {
+			return report_rejected(am);
+		}
+		l->report_epoch[idx] = l->expected_echo_nonce;
 		return ULTRAWIDELOCK_LINK_RX_REPORT;
 	}
 

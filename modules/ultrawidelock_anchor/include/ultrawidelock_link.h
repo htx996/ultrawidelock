@@ -91,7 +91,8 @@ enum ultrawidelock_link_rx {
 	/** Not ours: a length no message on this link has, or our own broadcast
 	 *  coming back. The ordinary case on a shared carrier, and not an error. */
 	ULTRAWIDELOCK_LINK_RX_IGNORED = 0,
-	/** The lock's freshness beacon. The echo nonce has been updated. */
+	/** The lock's freshness beacon. The OUTGOING echo nonce has been
+	 *  updated; nothing this end believes has changed. */
 	ULTRAWIDELOCK_LINK_RX_CHALLENGE,
 	/** A fresh sealed WV3 report. The @p am out-parameter is populated. */
 	ULTRAWIDELOCK_LINK_RX_REPORT,
@@ -104,7 +105,13 @@ enum ultrawidelock_link_rx {
 	/** Sealed under our key but the codec refused the plaintext. Means the
 	 *  two ends disagree about the format, not that an attacker is present. */
 	ULTRAWIDELOCK_LINK_RX_MALFORMED,
-	/** Authentic, but not fresh: the counter did not advance. */
+	/**
+	 * Authentic, but not fresh. One of three: the counter did not advance,
+	 * the report echoed a challenge this end is not asking for, or a boot id
+	 * changed inside a single challenge epoch. They are one outcome on
+	 * purpose -- telling them apart tells a prober which of its frames was
+	 * closest. Only @p am's role and counter survive, for the diagnostic.
+	 */
 	ULTRAWIDELOCK_LINK_RX_REPLAYED,
 };
 
@@ -131,13 +138,39 @@ struct ultrawidelock_link {
 	/** OURS. Pre-incremented on every send; the nonce is built from the new
 	 *  value, so the two can never disagree. */
 	uint32_t ctr;
-	/** The lock's current challenge, echoed back so it can tell a live
-	 *  report from a recorded one. Zero until one is heard. */
-	uint64_t echo_nonce;
+	/**
+	 * OUTGOING. The challenge last heard, echoed in our next report so the
+	 * receiver can tell a live report from a recorded one. Zero until one is
+	 * heard, and learned from an UNAUTHENTICATED frame — so it is only ever
+	 * an input to what we send, never to what we believe.
+	 */
+	uint64_t tx_echo_nonce;
+	/**
+	 * INCOMING, and deliberately not the same field. This is the challenge
+	 * WE issued and therefore the one an arriving report must echo; it is
+	 * set only through ultrawidelock_link_expect_echo(). Sharing one field
+	 * with tx_echo_nonce would let anyone who can broadcast a challenge
+	 * choose our freshness epoch, which on a shared carrier -- where a lock
+	 * hears the satellites' channel probes -- is a frame away.
+	 *
+	 * Zero means UNARMED: no epoch has been issued, so reports are judged on
+	 * the counter window alone. That is the behaviour of a node that never
+	 * challenges, and it is what the link did before the epoch existed.
+	 */
+	uint64_t expected_echo_nonce;
 	/** THE SATELLITES' replay windows, one per authenticated role. A single
 	 *  window is unsafe: alternating boot IDs from two roles would continually
 	 *  reset it and make an old report from either role fresh again. */
 	struct ultrawidelock_witness_seen report_peer[ULTRAWIDELOCK_LINK_ROLE_MAX];
+	/**
+	 * The epoch each role's window last advanced under, so a boot id change
+	 * is admitted once per challenge and not once per frame. A changed boot
+	 * id is legitimate and must reset the counter window; that same reset is
+	 * how a captured old boot rolls the window backwards. Requiring a fresh
+	 * challenge in between costs a genuinely rebooted satellite one challenge
+	 * interval and costs a recording attack the thing it cannot produce.
+	 */
+	uint64_t report_epoch[ULTRAWIDELOCK_LINK_ROLE_MAX];
 	/** THE LOCK's replay window at a satellite. WV4 has one lock sender and no
 	 *  role field, so it must not share a role-indexed WV3 window. */
 	struct ultrawidelock_witness_seen join_peer;
@@ -214,6 +247,20 @@ size_t ultrawidelock_link_build_challenge_hint(uint64_t nonce, uint32_t hint, ui
 				       size_t cap);
 
 /**
+ * Arm this end's freshness epoch: the nonce an arriving WV3 report must echo.
+ *
+ * Call it with the nonce that was just broadcast, from the ONE place that rolls
+ * it, so the value a report is judged against and the value on the wire cannot
+ * come apart. Passing 0 disarms, which returns the report path to the counter
+ * window alone.
+ *
+ * Deliberately a setter and not a side effect of consume(): a challenge is
+ * unauthenticated, so what we EXPECT may only ever be set locally. See
+ * expected_echo_nonce.
+ */
+void ultrawidelock_link_expect_echo(struct ultrawidelock_link *l, uint64_t nonce);
+
+/**
  * Decide what one arriving datagram is, and whether to believe it.
  *
  * On ULTRAWIDELOCK_LINK_RX_REPORT the report is in @p am; on _RX_JOIN the
@@ -224,6 +271,11 @@ size_t ultrawidelock_link_build_challenge_hint(uint64_t nonce, uint32_t hint, ui
  * ORDER MATTERS AND IS NOT NEGOTIABLE: seal first, then decode, then freshness.
  * Checking freshness before the seal would let anyone who can forge a counter
  * move the replay window, which is exactly the window's job to prevent.
+ *
+ * Freshness for a WV3 report is the challenge epoch and then the counter
+ * window, in that order, and the epoch half only applies once this end has
+ * armed one with ultrawidelock_link_expect_echo(). Unarmed, the counter window
+ * decides alone.
  *
  * @p jm carries a URSK on success. The caller must clear it once consumed.
  */

@@ -127,7 +127,13 @@ static struct witness_slot *slot_for_role(uint8_t role)
 
 static void nonce_roll(int64_t now_ms)
 {
-	sys_rand_get(&s_nonce, sizeof(s_nonce));
+	/* Never zero. Zero is this file's "no challenge has been issued" value
+	 * -- it is what nonce_ok checks below and what disarms the anchor link
+	 * -- so a random draw that happened to be zero would silently retire
+	 * the freshness rules instead of rolling them. */
+	do {
+		sys_rand_get(&s_nonce, sizeof(s_nonce));
+	} while (s_nonce == 0u);
 	s_nonce_ms = now_ms;
 	/* Every stored report now echoes a retired challenge, so none of them
 	 * may clear the veto any more. They stay usable in the veto direction,
@@ -135,6 +141,17 @@ static void nonce_roll(int64_t now_ms)
 	for (size_t i = 0; i < WITNESS_MAX; i++) {
 		s_wit[i].nonce_ok = false;
 	}
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
+	/*
+	 * The second anchor is judged harder than a witness: a WV3 report is
+	 * evidence about geometry, not a vote, so a retired challenge does not
+	 * merely cost it standing -- the link core refuses it outright, and
+	 * refuses a boot id that changes without a challenge in between. Armed
+	 * from here because this is the only place s_nonce changes, so what the
+	 * wire carries and what the core requires cannot come apart.
+	 */
+	ultrawidelock_link_expect_echo(&s_anchor_link, s_nonce);
+#endif
 }
 
 /*
@@ -509,7 +526,6 @@ void witness_link_init(void)
 #endif
 
 	ultrawidelock_witness_pick_init(&s_pick, NULL);
-	nonce_roll(k_uptime_get());
 
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_LINK)
 	/* Never zero: the satellite reads a change of boot id as permission to
@@ -518,8 +534,12 @@ void witness_link_init(void)
 	do {
 		boot_id = sys_rand32_get();
 	} while (boot_id == 0u);
+	/* BEFORE the first nonce_roll(), which arms this struct. link_init()
+	 * clears every field, so the other order would leave the anchor link
+	 * unarmed until the next challenge. */
 	ultrawidelock_link_init(&s_anchor_link, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, boot_id);
 #endif
+	nonce_roll(k_uptime_get());
 
 	/* Numeric keys keep the consumers independent of Zephyr's settings tree.
 	 * Only the three semantic witness roles have assigned records; a configured
