@@ -271,12 +271,12 @@ static void boot_task(void *arg)
 	 * before the BLE host because the identity is what the host will
 	 * eventually advertise.
 	 *
-	 * Neither failure is fatal. ultrawidelock_freertos_kv_init() reformats a store it
+	 * Neither failure is fatal. ultrawidelock_kv_init() reformats a store it
 	 * cannot read, and ultrawidelock_prov_load() yields a usable development
 	 * identity on every failure path, because a reader that will not boot is
 	 * worse than one that boots unprovisioned.
 	 */
-	if (ultrawidelock_freertos_kv_init() != 0) {
+	if (ultrawidelock_kv_init() != 0) {
 		ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, MAIN_TAG, "key-value store unavailable");
 	}
 	if (ultrawidelock_prov_load(&s_identity, &s_trust) != 0) {

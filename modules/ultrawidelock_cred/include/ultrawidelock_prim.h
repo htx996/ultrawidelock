@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: ISC */
 
 /*
- * ultrawidelock_prim — the AEAD + elliptic-curve + RNG primitive interface used by the
- * credential-auth composition (ultrawidelock_crypto.c). Two backends implement it:
- *   - ultrawidelock_prim_psa.c   on the ESP32 target (mbedTLS-PSA)
- *   - a host double in the test build (for the secure-channel nonce/AAD tests)
+ * ultrawidelock_prim — the symmetric-crypto + elliptic-curve + RNG primitive
+ * interface used by the portable modules. Target builds use
+ * ultrawidelock_prim_psa.c over their platform's PSA provider; host tests use a
+ * recording or reference double.
  *
  * Hashing/KDF is NOT here; that is the portable ultrawidelock_hash.c, shared by both.
  * All returns: 0 on success, negative on failure (AEAD decrypt returns <0 on a
@@ -23,6 +23,7 @@ extern "C" {
 #define ULTRAWIDELOCK_P256_POINT  65u /* uncompressed point: 0x04 | X32 | Y32 */
 #define ULTRAWIDELOCK_P256_SIG    64u /* raw ECDSA r|s */
 #define ULTRAWIDELOCK_GCM_TAG     16u
+#define ULTRAWIDELOCK_CCM_TAG     16u /* maximum; the sealed link uses 8 */
 
 /* Initialise the backend (idempotent). Call once before any other call. */
 int ultrawidelock_prim_init(void);
@@ -38,8 +39,36 @@ int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce
 			     const uint8_t *aad, size_t aad_len, const uint8_t *ct, size_t ct_len,
 			     const uint8_t *tag, size_t tag_len, uint8_t *pt);
 
-/* AES-128-ECB, one block (the BLE advertisement Dynamic Tag, ultrawidelock_advtag.c). */
+/*
+ * AES-ECB, one block. key_bits must be 128 or 256. This is the primitive
+ * beneath the CCC key ladder, Matter CCM, and the advertisement Dynamic Tag.
+ */
+int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
+				  const uint8_t in[16], uint8_t out[16]);
+
+/* Stable AES-128 convenience ABI used by the advertisement Dynamic Tag. */
 int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);
+
+/*
+ * AES-128-CCM, one shot, no AAD (the sealed link between the lock and its
+ * satellites and witnesses). Output is ciphertext ‖ tag, which is what goes on
+ * the wire; the GCM pair above hands the tag back separately because it streams
+ * a message that does not fit in RAM, and these messages are tens of bytes.
+ *
+ * No AAD parameter because nothing has one: everything the seal authenticates
+ * is inside the plaintext, and the nonce carries the sender and counter. Add it
+ * when a caller needs it, not before.
+ *
+ * tag_len must be <= ULTRAWIDELOCK_CCM_TAG. *out_len is what the backend wrote.
+ * Decrypt verifies the tag and returns <0 on a mismatch: a hard auth failure,
+ * never a retry.
+ */
+int ultrawidelock_aes128_ccm_encrypt(const uint8_t key[16], const uint8_t *nonce, size_t nonce_len,
+				     const uint8_t *pt, size_t pt_len, size_t tag_len, uint8_t *out,
+				     size_t out_cap, size_t *out_len);
+int ultrawidelock_aes128_ccm_decrypt(const uint8_t key[16], const uint8_t *nonce, size_t nonce_len,
+				     const uint8_t *in, size_t in_len, size_t tag_len, uint8_t *out,
+				     size_t out_cap, size_t *out_len);
 
 /* P-256 ephemeral key pair: priv = 32-byte scalar, pub = 65-byte point. */
 int ultrawidelock_ec_p256_keygen(uint8_t priv[ULTRAWIDELOCK_P256_SCALAR],

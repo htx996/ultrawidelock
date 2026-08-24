@@ -10,6 +10,7 @@
 
 SRC="$ROOT/modules/ultrawidelock_uwb/src"
 CRED="$ROOT/modules/ultrawidelock_cred"
+ANCHOR="$ROOT/modules/ultrawidelock_anchor"
 SHIM="$ROOT/tests/host/shim"
 HOST="$ROOT/tests/host"
 
@@ -75,18 +76,17 @@ UNIT_SRCS=(
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_feat.c"
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_range.c"
 	"$ROOT/modules/ultrawidelock_ml/src/ultrawidelock_ml_log2.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_door.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_fusion.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_report.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_satellite.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_side.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_side_log.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_slam.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_latch.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_witness_core.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_witness_msg.c"
-	"$ROOT/modules/ultrawidelock_anchor/src/ultrawidelock_witness_pick.c"
 )
+
+# ultrawidelock_anchor roles. Platform-free integer logic throughout, so the host
+# suite takes every tier: the geometry and fusion, the WV2/WV3 wire codec, the
+# witness label core and picker, and the inside latch. The ESP satellite and
+# the Zephyr apps read the same lists, so they cannot disagree about what a
+# tier contains.
+unit_srcs_from_role "$ANCHOR/roles/anchor.list"
+unit_srcs_from_role "$ANCHOR/roles/anchor_msg.list"
+unit_srcs_from_role "$ANCHOR/roles/witness_codec.list"
+unit_srcs_from_role "$ANCHOR/roles/inside_latch.list"
 
 # ultrawidelock_cred roles. wire_codecs = the shared step-up/assert codecs (one source;
 # ultrawidelock_cred_stack compiles the same files on target) — crypto-free, so no
@@ -102,6 +102,7 @@ unit_srcs_from_role "$CRED/roles/reader_policy.list"
 # flight recorder's replay half. base_driver/responder_driver need a DW3000 and
 # are absent by design.
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ccc_keys.list"
+unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/crypto_prim.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ccc_engine.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ultrawidelock_adapter.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ultrawidelock_codec.list"
@@ -189,10 +190,12 @@ SHIM_SRCS=(
 	"$SHIM/dw_rx_stub.c"
 	"$HOST/logfake/logfake.c"
 	"$HOST/spakefake/spakefake.c"
-	# The host OSAL/flash backends double as the test fakes (ultrawidelock_osal.h).
+	# The host OSAL/flash/kv/dgram backends double as the test fakes.
 	"$ROOT/tests/host/port/osal_host.c"
 	"$ROOT/tests/host/matterfake/thread_host.c"
 	"$ROOT/tests/host/port/flash_host.c"
+	"$ROOT/tests/host/port/kv_host.c"
+	"$ROOT/tests/host/port/dgram_host.c"
 )
 
 # Include search path: shim first so <zephyr/...> resolves to the stubs;

@@ -34,7 +34,8 @@ config ULTRAWIDELOCK_CRED
 	help
 	  CCC credential-bound STS substitution (ccc_shim + uwb_seam.h). Consumes an
 	  externally supplied URSK (the add-on hands us the plaintext URSK in
-	  UltraWideBandImpl::_ConfigureRangingSession).
+	  UltraWideBandImpl::_ConfigureRangingSession). Its AES-ECB key ladder uses
+	  the shared ultrawidelock_prim provider.
 
 config ULTRAWIDELOCK_NUM_RESPONDERS
 	int "Responder count the CCC round is built for"
@@ -91,30 +92,6 @@ config ULTRAWIDELOCK_SATELLITE_HANDOFF_LOG
 	  per-session key material: it dies with the session and opens nothing,
 	  but this still belongs only on a bench image while the sealed
 	  satellite handoff link is not built. Never enable on a deployed lock.
-
-choice
-	prompt "AES-ECB backend for the CCC key ladder"
-	default ULTRAWIDELOCK_CRYPTO_PSA
-	depends on ULTRAWIDELOCK_CRED
-	help
-	  Selects which file defines crypto_aes_ecb_encrypt() (ccc_kdf.h) — the one
-	  AES-128/256 ECB primitive the whole CCC key ladder and AES-CCM* build on.
-	  This is the only per-platform crypto seam.
-
-config ULTRAWIDELOCK_CRYPTO_PSA
-	bool "PSA Crypto (nRF/NCS default)"
-	help
-	  ccc_crypto_psa.c over the PSA Crypto API (nrf_security / CryptoCell on nRF).
-	  Default: the nRF build is byte-identical to before this option existed.
-
-config ULTRAWIDELOCK_CRYPTO_MBEDTLS
-	bool "mbedTLS AES (ESP32-S3 / generic Zephyr)"
-	select MBEDTLS
-	help
-	  ccc_crypto_mbedtls.c over mbedtls_aes_crypt_ecb — no PSA dependency, for
-	  SoCs without nrf_security's PSA backend (e.g. ESP32-S3, which has
-	  hardware-accelerated AES via mbedTLS). See ports/esp32-idf/.
-endchoice
 
 config ULTRAWIDELOCK_UWB_SELFTEST
 	bool "One-shot UWB init self-test after boot (diagnostic; no iPhone)"

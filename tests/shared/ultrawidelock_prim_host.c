@@ -231,13 +231,32 @@ static void aes128_encrypt(const uint8_t rk[176], const uint8_t in[16], uint8_t 
 	memcpy(out, s, 16);
 }
 
+int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
+				  const uint8_t in[16], uint8_t out[16])
+{
+	if (key == NULL || in == NULL || out == NULL) {
+		return -1;
+	}
+	if (key_bits == 128u) {
+		uint8_t rk[176];
+
+		aes128_expand(key, rk);
+		aes128_encrypt(rk, in, out);
+		return 0;
+	}
+	if (key_bits == 256u) {
+		uint8_t rk[240];
+
+		aes256_expand(key, rk);
+		aes256_encrypt(rk, in, out);
+		return 0;
+	}
+	return -1;
+}
+
 int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
 {
-	uint8_t rk[176];
-
-	aes128_expand(key, rk);
-	aes128_encrypt(rk, in, out);
-	return 0;
+	return ultrawidelock_aes_ecb_encrypt(key, 128u, in, out);
 }
 
 /* ---- GHASH (GF(2^128)) ---- */

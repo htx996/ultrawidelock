@@ -2,7 +2,7 @@
 #
 # Role is NOT here any more. It used to be a build-time choice, which meant a
 # separate image per dongle and a reflash to move one from inside to outside.
-# It is provisioned at install now and lives in settings.
+# It is provisioned at install now and lives in a persistent KV record.
 
 mainmenu "ultrawidelock BLE witness"
 

@@ -203,7 +203,7 @@ static void scenario_multi_value(void)
 	      otPlatSettingsGet(&g_instance, OT_SETTINGS_KEY_CHILD_INFO, 0, NULL, NULL) ==
 		      OT_ERROR_NOT_FOUND);
 	CHECK("a fully deleted key holds no record",
-	      ultrawidelock_freertos_kv_get(kv_key_of(OT_SETTINGS_KEY_CHILD_INFO), NULL, &(size_t){0}) ==
+	      ultrawidelock_kv_get(kv_key_of(OT_SETTINGS_KEY_CHILD_INFO), NULL, &(size_t){0}) ==
 		      ULTRAWIDELOCK_KV_NOT_FOUND);
 
 	CHECK("an add after full deletion starts over",
@@ -263,7 +263,7 @@ static void scenario_wipe(void)
 	otPlatSettingsInit(&g_instance, NULL, 0);
 
 	CHECK("the credential provisioning blob stores beside the settings",
-	      ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, prov_blob,
+	      ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, prov_blob,
 					    sizeof(prov_blob)) == ULTRAWIDELOCK_KV_OK);
 	CHECK("the settings to be wiped store",
 	      otPlatSettingsSet(&g_instance, OT_SETTINGS_KEY_ACTIVE_DATASET, dataset,
@@ -303,7 +303,7 @@ static void scenario_wipe(void)
 	 */
 	length = sizeof(prov_read);
 	CHECK("the wipe leaves the credential provisioning blob byte-for-byte intact",
-	      ultrawidelock_freertos_kv_get(ULTRAWIDELOCK_KV_KEY_CRED_PROV, prov_read, &length) ==
+	      ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_CRED_PROV, prov_read, &length) ==
 			      ULTRAWIDELOCK_KV_OK &&
 		      length == sizeof(prov_blob) && memcmp(prov_read, prov_blob, length) == 0);
 	CHECK("the wipe broke no flash rule", fake_flash_violations == 0);
@@ -338,7 +338,7 @@ static void scenario_key_range(void)
 	 * not alias into the bottom of the window.
 	 */
 	CHECK("a refused vendor key stored nothing in the window",
-	      ultrawidelock_freertos_kv_get(kv_key_of(0x0000), NULL, &length) ==
+	      ultrawidelock_kv_get(kv_key_of(0x0000), NULL, &length) ==
 		      ULTRAWIDELOCK_KV_NOT_FOUND);
 }
 
@@ -454,7 +454,7 @@ static void scenario_corrupt_tail(void)
 	otPlatSettingsInit(&g_instance, NULL, 0);
 
 	CHECK("a corrupt-tailed record plants",
-	      ultrawidelock_freertos_kv_set(kv_key_of(OT_SETTINGS_KEY_CHILD_INFO), record,
+	      ultrawidelock_kv_set(kv_key_of(OT_SETTINGS_KEY_CHILD_INFO), record,
 				  sizeof(record)) == ULTRAWIDELOCK_KV_OK);
 
 	CHECK("the entry in front of the corruption still reads",

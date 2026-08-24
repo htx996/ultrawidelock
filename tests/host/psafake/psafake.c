@@ -98,6 +98,8 @@ psa_status_t psa_aead_encrypt(psa_key_id_t key, psa_algorithm_t alg, const uint8
 			      size_t plaintext_length, uint8_t *ciphertext,
 			      size_t ciphertext_size, size_t *ciphertext_length)
 {
+	size_t tag;
+
 	(void)key;
 	(void)nonce;
 	(void)additional_data;
@@ -106,11 +108,16 @@ psa_status_t psa_aead_encrypt(psa_key_id_t key, psa_algorithm_t alg, const uint8
 	psafake.last_nonce_len = nonce_length;
 	psafake.last_aad_len = additional_data_length;
 	psafake.last_in_len = plaintext_length;
-	if (plaintext_length + 16u <= ciphertext_size) {
+	/* Tag width from the algorithm, as a real backend does it. A fake that
+	 * always appended 16 made every shortened-tag caller's frames the wrong
+	 * length, and a caller that demultiplexes messages BY length then
+	 * matched none of its own. */
+	tag = PSAFAKE_TAG_LEN(alg);
+	if (plaintext_length + tag <= ciphertext_size) {
 		memcpy(ciphertext, plaintext, plaintext_length); /* filler "ct" */
-		fill(ciphertext + plaintext_length, 16u, 0xc0); /* filler "tag" */
+		fill(ciphertext + plaintext_length, tag, 0xc0); /* filler "tag" */
 	}
-	*ciphertext_length = olen_of(psafake.aead_enc_olen, plaintext_length + 16u);
+	*ciphertext_length = olen_of(psafake.aead_enc_olen, plaintext_length + tag);
 	return psafake.aead_enc_ret;
 }
 
@@ -123,7 +130,8 @@ psa_status_t psa_aead_decrypt(psa_key_id_t key, psa_algorithm_t alg, const uint8
 	(void)key;
 	(void)nonce;
 	(void)additional_data;
-	size_t pt = ciphertext_length >= 16u ? ciphertext_length - 16u : 0u;
+	size_t tag = PSAFAKE_TAG_LEN(alg);
+	size_t pt = ciphertext_length >= tag ? ciphertext_length - tag : 0u;
 
 	psafake.aead_dec_calls++;
 	psafake.last_alg = alg;

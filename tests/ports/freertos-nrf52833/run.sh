@@ -208,6 +208,7 @@ printf '  ok   the host FromISR ceiling matches board/FreeRTOSConfig.h (%s)\n' "
 	-DULTRAWIDELOCK_FREERTOS_LOG_NO_MACRO=1 \
 	-I"$HERE/fake" \
 	-I"$ROOT/ports/freertos-nrf52833/include" \
+	-I"$ROOT/modules/ultrawidelock_port/include" \
 	"$HERE/test_kv_flash.c" \
 	"$HERE/fake/fake_flash.c" \
 	"$HERE/fake/fake_freertos.c" \
@@ -223,6 +224,7 @@ printf '  ok   the host FromISR ceiling matches board/FreeRTOSConfig.h (%s)\n' "
 	-DULTRAWIDELOCK_FREERTOS_LOG_NO_MACRO=1 \
 	-I"$HERE/fake" \
 	-I"$ROOT/ports/freertos-nrf52833/include" \
+	-I"$ROOT/modules/ultrawidelock_port/include" \
 	-I"$ROOT/modules/ultrawidelock_cred/include" \
 	"$HERE/test_prov_kv.c" \
 	"$HERE/fake/fake_flash.c" \
@@ -389,6 +391,7 @@ OT_SETTINGS_BIN="$OUT/freertos_ot_settings_test"
 	-DULTRAWIDELOCK_FREERTOS_LOG_NO_MACRO=1 \
 	-I"$HERE/fake" \
 	-I"$ROOT/ports/freertos-nrf52833/include" \
+	-I"$ROOT/modules/ultrawidelock_port/include" \
 	"$HERE/test_ot_settings.c" \
 	"$HERE/fake/fake_flash.c" \
 	"$HERE/fake/fake_freertos.c" \
@@ -408,6 +411,7 @@ MATTER_SETTINGS_BIN="$OUT/freertos_matter_settings_test"
 	-include "$ROOT/ports/freertos-nrf52833/matter/matter_compat/ultrawidelock_freertos_matter_config.h" \
 	-I"$HERE/fake" \
 	-I"$ROOT/ports/freertos-nrf52833/include" \
+	-I"$ROOT/modules/ultrawidelock_port/include" \
 	-I"$ROOT/ports/freertos-nrf52833/matter" \
 	-I"$ROOT/ports/freertos-nrf52833/matter/matter_compat" \
 	-I"$ROOT/modules/ultrawidelock_matter/include" \

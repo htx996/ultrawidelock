@@ -19,9 +19,8 @@
 #                           than to an error, so its sources simply vanish
 #   every path resolves     a manifest entry naming a moved file still compiles
 #                           on the ports that do not read it
-#   the PSA backend         this port has a PSA provider and the ESP-IDF one
-#                           does not, so copying that port's selection links a
-#                           second path to the same primitive
+#   the crypto adapter      CCC uses the one portable adapter and links the
+#                           standalone primitive provider beneath it
 #   the Final snapshot      not a diagnostic on this part: without it the ranges
 #                           are kilometres wide, on a single core where BLE
 #                           shares the CPU with the ranging callbacks
@@ -83,10 +82,8 @@ self_test() {
 		'/dw3000_hw_freertos.c/d'
 	mutate "an include directory that does not exist" \
 		's|modules/ultrawidelock_uwb/src/facade|modules/ultrawidelock_uwb/src/facade_gone|'
-	mutate "the mbedTLS crypto backend copied over from the ESP-IDF port" \
-		's|crypto_psa.list|crypto_mbedtls.list|'
-	mutate "the mbedTLS define left selected beside the PSA one" \
-		's|CONFIG_ULTRAWIDELOCK_CRYPTO_PSA=1|CONFIG_ULTRAWIDELOCK_CRYPTO_PSA=1 CONFIG_ULTRAWIDELOCK_CRYPTO_MBEDTLS=1|'
+	mutate "the primitive adapter role dropped from the source set" \
+		'/crypto_prim.list/d'
 	mutate "the Final-capture snapshot dropped as if it were a diagnostic" \
 		'/CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT=1/d'
 	mutate "the engine built as something other than a responder" \
@@ -95,8 +92,8 @@ self_test() {
 		's|CONFIG_DW3000_CHIP_DW3000=1|CONFIG_DW3000_CHIP_DW3720=1|'
 	mutate "the Zephyr backend dragged in beside this port's own" \
 		's|uwb/dw3000_hw_freertos.c|../zephyr/dw3000/dw3000_hw.c|'
-	mutate "the engine linked without the crypto library its STS seam needs" \
-		's|ultrawidelock_kernel ultrawidelock_board ultrawidelock_mbedtls|ultrawidelock_kernel ultrawidelock_board|'
+	mutate "the engine linked without the primitive provider its STS seam needs" \
+		'/PRIVATE ultrawidelock_prim/d'
 	mutate "the STS seam left to the Zephyr file this port does not compile" \
 		'/ultrawidelock_seam_stubs.c/d'
 
@@ -275,28 +272,22 @@ esac
 check "no other port's backend is dragged in beside them" "$r"
 
 case "$defs" in
-*CONFIG_ULTRAWIDELOCK_CRYPTO_PSA=1*) r=0 ;;
-*) r=1 ;;
-esac
-check "the AES-ECB seam takes the PSA provider this port has" "$r"
-
-case "$defs" in
-*CONFIG_ULTRAWIDELOCK_CRYPTO_MBEDTLS*) r=1 ;;
+*CONFIG_ULTRAWIDELOCK_CRYPTO_*) r=1 ;;
 *) r=0 ;;
 esac
-check "the mbedTLS variant is not selected beside it" "$r"
+check "UWB does not select a platform crypto backend" "$r"
 
 case "$srcs" in
-*modules/ultrawidelock_uwb/src/ccc/ccc_crypto_psa.c*) r=0 ;;
+*modules/ultrawidelock_uwb/src/ccc/ccc_crypto_prim.c*) r=0 ;;
 *) r=1 ;;
 esac
-check "the PSA crypto source is the one in the set" "$r"
+check "the primitive crypto adapter is in the source set" "$r"
 
 case "$libs" in
-*ultrawidelock_mbedtls*) r=0 ;;
+*ultrawidelock_prim*) r=0 ;;
 *) r=1 ;;
 esac
-check "the engine links the crypto library its STS seam reaches through" "$r"
+check "the engine links the primitive provider its STS seam reaches through" "$r"
 
 case "$defs" in
 *CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT=1*) r=0 ;;

@@ -83,6 +83,11 @@ void test_ultrawidelock_report(void);
 void test_ultrawidelock_satellite(void);
 void test_ultrawidelock_side(void);
 void test_ultrawidelock_side_replay(void);
+/* Lives in the PSA-backends binary, not the shared-core one: the seal is the
+ * one anchor-tier file with a crypto dependency, and only that binary has a
+ * psa/crypto.h to link against. */
+void test_ultrawidelock_seal(void);
+void test_ultrawidelock_link(void);
 void test_ultrawidelock_slam(void);
 void test_ultrawidelock_logfmt(void);
 void test_trace(void);

@@ -48,19 +48,14 @@ extern "C" {
 #define MATTER_AAD_MAX 0xFEFFu
 
 /**
- * The AES block seam, shared with the CCC key ladder.
+ * The legacy AES block signature shared with the CCC key ladder.
  *
- * Defined by exactly one backend per build: ccc_crypto_psa.c or
- * ccc_crypto_mbedtls.c on target (the CONFIG_ULTRAWIDELOCK_CRYPTO_* choice in
- * modules/ultrawidelock_uwb/Kconfig), and tests/host/aes_ref.c -- a real FIPS-197 AES --
- * on the host. Declared here rather than pulled in from
+ * Defined by ccc_crypto_prim.c, a thin argument/errno adapter over the shared
+ * ultrawidelock_prim provider. Host tests exercise the same adapter over
+ * tests/host/aes_ref.c, a real FIPS-197 implementation. Declared here rather than pulled in from
  * modules/ultrawidelock_uwb/include/ccc_kdf.h so this module does not depend on the UWB
  * module's private headers; tests/host/test_matter_crypto.c includes both, so a
  * compiler sees the two declarations together and rejects any drift.
- *
- * Note for the first on-target Matter build: that Kconfig choice currently
- * `depends on ULTRAWIDELOCK_CRED`, so a Matter-only image would find no definition and
- * fail to link. Widening it belongs with that build, not here.
  */
 int crypto_aes_ecb_encrypt(const uint8_t *key, size_t key_bits, const uint8_t in[16],
 			   uint8_t out[16]);

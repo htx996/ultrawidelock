@@ -1,0 +1,3 @@
+description: two-anchor geometry, the WV3 wire codec and the sealed link's envelope
+dependencies:
+  idf: ">=5.5"

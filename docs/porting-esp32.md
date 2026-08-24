@@ -124,7 +124,8 @@ The UWB engine (`modules/ultrawidelock_uwb`) already compiles as pure C on host 
   omits `uwb_rxdiag.c`, which is `k_work`-based, and supplies `ultrawidelock_uwb_set_callbacks` and
   `ultrawidelock_uwb_configure_phy` from `port/ultrawidelock_seam_stubs.c`; `ccc_shim_rx.c` and `ccc_shim_wrap.c`
   carry `ultrawidelock_uwb_arm_rx` and `ultrawidelock_uwb_set_sts_iv` across unchanged.
-- Crypto seam: `ccc_crypto_mbedtls.c` (already selected by the existing scaffold's `prj.conf`).
+- Crypto seam: `ccc_crypto_prim.c`, routed through the primitive provider over
+  ESP-IDF's Mbed TLS PSA implementation.
 - Placement: pin engine + DW3000 SPI to core 1, BLE/Wi-Fi on core 0. Hot buffers in internal SRAM,
   not PSRAM (jitter).
 

@@ -6,13 +6,14 @@
 # platform SPI/GPIO layer is the ESP-IDF backend in port/.
 # Source set = the role manifests in modules/{ultrawidelock_uwb,ultrawidelock_dw3000}/roles/ — the
 # SAME lists modules/ultrawidelock_uwb/CMakeLists.txt reads for CONFIG_ULTRAWIDELOCK_UWB +
-# RESPONDER + CRED + CRYPTO_MBEDTLS (no PRETTY/SHELL/SELFTEST, no uwb_rxdiag:
+# RESPONDER + CRED (no PRETTY/SHELL/SELFTEST, no uwb_rxdiag:
 # those stay Zephyr-module literals) — plus the port/*.c locals below.
 
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 set(UWB_SRC "${REPO_ROOT}/modules/ultrawidelock_uwb/src")
 set(ULTRAWIDELOCK_INC "${REPO_ROOT}/modules/ultrawidelock_uwb/include")
 set(ULTRAWIDELOCK_PORT "${REPO_ROOT}/modules/ultrawidelock_port/include")
+set(ULTRAWIDELOCK_CRED "${REPO_ROOT}/modules/ultrawidelock_cred/include")
 set(DW  "${REPO_ROOT}/modules/ultrawidelock_dw3000")
 set(UWBROLES "${REPO_ROOT}/modules/ultrawidelock_uwb/roles")
 set(DWROLES "${REPO_ROOT}/modules/ultrawidelock_dw3000/roles")
@@ -23,10 +24,10 @@ ultrawidelock_role_sources("${UWBROLES}/base_driver.list" UWB_BASE_DRIVER_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/base_engine.list" UWB_BASE_ENGINE_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/responder_driver.list" UWB_RESP_DRIVER_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/responder_engine.list" UWB_RESP_ENGINE_SRCS)
-# engine: CCC STS (+ mbedTLS AES-ECB seam: no PSA provider on ESP32)
+# engine: CCC STS + thin AES-ECB adapter over ultrawidelock_prim
 ultrawidelock_role_sources("${UWBROLES}/ccc_keys.list" UWB_CCC_KEYS_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/ccc_engine.list" UWB_CCC_ENGINE_SRCS)
-ultrawidelock_role_sources("${UWBROLES}/crypto_mbedtls.list" UWB_CRYPTO_SRCS)
+ultrawidelock_role_sources("${UWBROLES}/crypto_prim.list" UWB_CRYPTO_SRCS)
 # engine: credential ranging-setup adapter + M1-M4 codec
 ultrawidelock_role_sources("${UWBROLES}/ultrawidelock_adapter.list" UWB_ULTRAWIDELOCK_ADAPTER_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/ultrawidelock_codec.list" UWB_ULTRAWIDELOCK_CODEC_SRCS)
@@ -75,6 +76,7 @@ idf_component_register(
         "port"                 # board_pins.h
         "${UWB_SRC}/driver" "${UWB_SRC}/fira" "${UWB_SRC}/ccc" "${UWB_SRC}/facade"
 		"${UWB_SRC}/cred"
+		"${ULTRAWIDELOCK_CRED}"
 		"${DW}/include"
         "${DW}/dwt_uwb_driver"
         "${DW}/dwt_uwb_driver/lib/qmath/include"
@@ -84,7 +86,7 @@ idf_component_register(
         # path above: ESP-IDF only builds a component something requires, so
         # without this the backend is discovered and then silently skipped.
         ultrawidelock_port
-        driver esp_timer mbedtls
+        driver esp_timer ultrawidelock_crypto
 )
 
 # The engine + vendor decadriver were written for the Nordic/Zephyr warning
@@ -100,10 +102,28 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     CONFIG_ULTRAWIDELOCK_UWB=1
     CONFIG_ULTRAWIDELOCK_UWB_RESPONDER=1
     CONFIG_ULTRAWIDELOCK_CRED=1
-    CONFIG_ULTRAWIDELOCK_CRYPTO_MBEDTLS=1
     CONFIG_DW3000=1
     CONFIG_DW3000_CHIP_DW3000=1
 )
+
+# Two-anchor rounds. A project sets these before including project.cmake, so
+# ONE engine serves the lock (responder 0 of 1, the validated baseline) and the
+# satellite (responder 1 of 2, transmitting Response_1 at POLL+2 slots).
+# See modules/ultrawidelock_uwb/src/ccc/cred_round_config.h: the count appears
+# in the M3 attribute and in rcfg[12] and MUST agree, or every derived STS
+# diverges and nothing decodes.
+#
+# Added ONLY when set. The header already defaults to 1 and 0, so an app that
+# says nothing gets the definitions it got before this existed — the reader and
+# matter-lock images cannot move because of it.
+if(DEFINED ULTRAWIDELOCK_NUM_RESPONDERS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=${ULTRAWIDELOCK_NUM_RESPONDERS})
+endif()
+if(DEFINED ULTRAWIDELOCK_RESPONDER_INDEX)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=${ULTRAWIDELOCK_RESPONDER_INDEX})
+endif()
 
 # The CCC STS seam is modules/ultrawidelock_uwb/include/uwb_seam.h: every caller reaches
 # the radio through ultrawidelock_uwb_arm_rx / _set_sts_iv / _set_callbacks / _configure_phy,

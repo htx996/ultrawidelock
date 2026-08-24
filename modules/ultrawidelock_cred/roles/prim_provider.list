@@ -1,0 +1,5 @@
+# ultrawidelock_cred role: PSA implementation of the portable primitive contract.
+# Consumers either compile this role directly (standalone/on-target apps) or
+# link their framework's single provider target. Repo-root-relative, one path
+# per line, sorted. Add provider sources HERE and nowhere else.
+modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c

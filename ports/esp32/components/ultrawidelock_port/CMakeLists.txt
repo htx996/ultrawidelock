@@ -11,6 +11,10 @@
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 
 idf_component_register(
-    SRCS "osal_esp.c"
+    SRCS "osal_esp.c" "kv_nvs.c"
     INCLUDE_DIRS "${REPO_ROOT}/modules/ultrawidelock_port/include"
-    REQUIRES freertos esp_timer)
+    # nvs_flash for kv_nvs.c, which is the ultrawidelock_kv.h backend on this
+    # port. Same reasoning as the OSAL above: no image calls it yet, and the
+    # linker drops what nobody calls, but compiling it here is what stops it
+    # rotting between now and the first caller.
+    REQUIRES freertos esp_timer nvs_flash)

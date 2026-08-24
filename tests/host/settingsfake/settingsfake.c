@@ -16,7 +16,10 @@
 
 #include "settingsfake.h"
 
-#define FAKE_MAX_KEYS 16
+/* Above kv_zephyr.c's ERASE_BATCH, so a store that needs more than one sweep
+ * pass to empty can be built here. At 16 the multi-pass path was unreachable
+ * and a single-pass erase would have looked correct. */
+#define FAKE_MAX_KEYS 64
 #define FAKE_MAX_NAME 64
 #define FAKE_MAX_VAL  768
 
@@ -31,6 +34,7 @@ static struct fake_entry s_store[FAKE_MAX_KEYS];
 static const struct settings_handler_static *s_handlers[4];
 static int s_n_handlers;
 static int s_fail_after = -1;
+static int s_fail_reads_after = -1;
 static int s_saves;
 static int s_deletes;
 
@@ -45,6 +49,7 @@ void settingsfake_reset(void)
 {
 	memset(s_store, 0, sizeof(s_store));
 	s_fail_after = -1;
+	s_fail_reads_after = -1;
 	s_saves = 0;
 	s_deletes = 0;
 	/* Handlers are registered by constructors and outlive a reset, which is
@@ -54,6 +59,11 @@ void settingsfake_reset(void)
 void settingsfake_fail_saves_after(int n)
 {
 	s_fail_after = n;
+}
+
+void settingsfake_fail_reads_after(int n)
+{
+	s_fail_reads_after = n;
 }
 
 int settingsfake_save_count(void)
@@ -168,6 +178,13 @@ static ssize_t fake_read(void *cb_arg, void *data, size_t len)
 {
 	const struct read_ctx *ctx = cb_arg;
 	size_t n = ctx->e->len < len ? ctx->e->len : len;
+
+	if (s_fail_reads_after >= 0) {
+		if (s_fail_reads_after == 0) {
+			return -EIO;
+		}
+		s_fail_reads_after--;
+	}
 
 	memcpy(data, ctx->e->val, n);
 	return (ssize_t)n;

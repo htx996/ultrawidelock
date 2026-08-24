@@ -12,6 +12,7 @@
 
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(ULTRAWIDELOCK_PORT ${REPO_ROOT}/modules/ultrawidelock_port)
+set(ULTRAWIDELOCK_CRED ${REPO_ROOT}/modules/ultrawidelock_cred)
 # The Zephyr flash backend lives with the other Zephyr backends, in the port
 # tree. It is pulled in BY PATH rather than by depending on that module,
 # because the applier half below is built into MCUboot, and ports/zephyr is
@@ -104,7 +105,11 @@ if(CONFIG_ULTRAWIDELOCK_DFU_RECEIVER)
   # named by path above instead, for the reason given at ULTRAWIDELOCK_PORT_ZEPHYR.
   zephyr_library_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${ULTRAWIDELOCK_CRED}/include
     ${ULTRAWIDELOCK_PORT}/include)
+  # Signature verification reaches PSA only through the image's primitive
+  # provider. Linking the named target keeps the backend TU owned in one place.
+  zephyr_library_link_libraries(ultrawidelock_prim)
 
   # The optional SMP image-group front door onto this receiver
   # (CONFIG_ULTRAWIDELOCK_DFU_SMP_IMG) is Zephyr mcumgr glue and compiles from

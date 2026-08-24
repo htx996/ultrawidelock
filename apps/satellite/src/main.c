@@ -29,9 +29,10 @@
 #include "anchor_link.h"
 #endif
 #include <zephyr/sys/printk.h>
-#include <psa/crypto.h>
 
 #include <ultrawidelock/uwb.h>
+
+#include "ultrawidelock_prim.h"
 
 /* Ahead of every LOG_* in this file, which is where Zephyr requires it. */
 LOG_MODULE_REGISTER(sat, LOG_LEVEL_INF);
@@ -288,18 +289,17 @@ SHELL_CMD_REGISTER(sat, &sat_cmds, "satellite responder (stage B)", NULL);
 
 int main(void)
 {
-	psa_status_t st = psa_crypto_init();
+	int rc = ultrawidelock_prim_init();
 
-	if (st != PSA_SUCCESS) {
-		printk("SAT psa_crypto_init failed (%d)\n", (int)st);
+	if (rc != 0) {
+		printk("SAT crypto provider init failed (%d)\n", rc);
 		return 0;
 	}
 #if defined(CONFIG_OPENTHREAD)
 	/* Before the socket opens, so a handoff cannot arrive with the sink
 	 * still unset -- the lock sends one at every session start. */
 	anchor_link_set_join_cb(on_link_join);
-	/* After psa_crypto_init: the link seals with PSA and would fail every
-	 * report if it opened first. */
+	/* After provider init: the link cannot seal if it opens first. */
 	anchor_link_init();
 #endif
 	printk("SAT satellite responder %u/%u — waiting for a sealed handoff\n",

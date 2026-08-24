@@ -1,5 +1,0 @@
-# ultrawidelock_uwb tier: AES-ECB seam behind ccc_kdf.h, mbedTLS backend (SoCs without a
-# PSA provider, e.g. ESP32). Consumers: modules/ultrawidelock_uwb/CMakeLists.txt
-# (CONFIG_ULTRAWIDELOCK_CRYPTO_MBEDTLS), ports/esp32/components/ultrawidelock_uwb.
-# One repo-root-relative path per line, sorted; add HERE and nowhere else.
-modules/ultrawidelock_uwb/src/ccc/ccc_crypto_mbedtls.c

@@ -23,6 +23,9 @@ void settingsfake_reset(void);
  */
 void settingsfake_fail_saves_after(int n);
 
+/** Fail the Nth stored-value read from now. Negative disables injection. */
+void settingsfake_fail_reads_after(int n);
+
 /** How many settings_save_one() calls have succeeded since the last reset. */
 int settingsfake_save_count(void);
 

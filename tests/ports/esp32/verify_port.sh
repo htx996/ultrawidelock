@@ -120,9 +120,10 @@ check "uwb_min does not call dwt_rxenable directly" \
 	"[ -n '$UWBMIN' ] && ! nm '$UWBMIN' | grep -qE ' U dwt_rxenable$'"
 
 echo "3. excluded diagnostic files stay out"
-for d in uwb_rxdiag uwb_selftest ccc_crypto_psa ultrawidelock_shell ultrawidelock_logquiet dw3000_spi_trace; do
+for d in uwb_rxdiag uwb_selftest ultrawidelock_shell ultrawidelock_logquiet dw3000_spi_trace; do
 	check "no $d.obj" "! find '$BUILD' -name '$d*.obj' | grep -q ."
 done
+check "CCC primitive adapter is built" "find '$BUILD' -name 'ccc_crypto_prim*.obj' | grep -q ."
 
 echo "4. presence build (CONFIG_ULTRAWIDELOCK_PRESENCE=y)"
 # Presence is default n and no sdkconfig.defaults sets it, so everything above

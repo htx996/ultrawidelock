@@ -321,7 +321,8 @@ SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
   once. It is no longer a build flag, so all dongles run one image and moving
   one from inside to outside is a re-provision, not a reflash.
 - **link key** — 16 bytes, DIFFERENT per dongle. Seals that witness's reports;
-  the lock holds the same bytes under `uwl/wit/k/<role>`.
+  the lock holds the same bytes at
+  `ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role`.
 - **group key** — 16 bytes, THE SAME on every dongle and deliberately NOT on
   the lock. It labels advertisers so inside can be compared against outside
   (section 5) while the labels stay opaque to the lock.
@@ -333,10 +334,11 @@ SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
   window opens. `ot-ctl dataset active -x` is the alternative and needs a node
   with a CLI, which an Apple border router does not give you.
 
-All four persist in the witness's settings. It cold-boots into scanning,
-joining and reporting, and holds that for weeks with nothing attached. The LED
-is the only diagnostic once it is on the wall: fast blink unprovisioned, slow
-blink provisioned but not attached, solid attached and reporting.
+All four persist through the witness's numeric key-value seam. It cold-boots
+into scanning, joining and reporting, and holds that for weeks with nothing
+attached. The LED is the only diagnostic once it is on the wall: fast blink
+unprovisioned, slow blink provisioned but not attached, solid attached and
+reporting.
 
 ### 6.1 The lock's half, and why it is a different image
 
@@ -557,7 +559,8 @@ delta against the section 10 budget.
 
 **P5a -- lock-side enrollment. BUILT.**
 `ultrawidelock witkey <role> <hex32>` on the reader image writes
-`uwl/wit/k/<role>`; the record survives the reflash to the Thread image because
+`ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role`; the record survives the
+reflash to the Thread image because
 `make flash` does not erase. Restoring it exposed a separate defect: commit
 4bdfd44a had replaced `prov_shell.c`'s line in
 `apps/dwm3001cdk-lock/CMakeLists.txt` with the `side_feed.c` one instead of

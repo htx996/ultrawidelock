@@ -1,8 +1,9 @@
 # credential reader engine as an ESP-IDF component.
 # The transaction driver, wire codec, trust store and ranging glue come from
 # the role manifests in modules/ultrawidelock_cred/roles/; the same lists apps/dwm3001cdk-lock/
-# and the host suite read. Only ultrawidelock_prov_nvs.c is ESP32-specific (NVS-backed
-# blob store); its Zephyr counterpart will be a settings/nvs twin.
+# and the host suite read. Only ultrawidelock_prov_nvs.c is ESP32-specific, and only
+# because it logs through ESP_LOG* -- the blob itself goes through ultrawidelock_kv.h now,
+# the same seam its Zephyr and FreeRTOS twins use.
 
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 set(CRED "${REPO_ROOT}/modules/ultrawidelock_cred")
@@ -41,6 +42,8 @@ idf_component_register(
 	PRIV_INCLUDE_DIRS "${CRED}/src"
 	# ultrawidelock_port.h / ultrawidelock_log.h (the platform contract ultrawidelock_reader.c and
 	# ultrawidelock_ranging.c are written to) come via ultrawidelock_uwb's public include dirs
-	# (modules/ultrawidelock_port/include).
-	REQUIRES ultrawidelock_ble ultrawidelock_uwb ultrawidelock_crypto nvs_flash
+	# (modules/ultrawidelock_port/include). ultrawidelock_port is named for the symbols, not
+	# the headers: ultrawidelock_prov_nvs.c stores its blob through ultrawidelock_kv.h, whose
+	# backend on this port is that component's kv_nvs.c.
+	REQUIRES ultrawidelock_ble ultrawidelock_uwb ultrawidelock_crypto ultrawidelock_port nvs_flash
 )

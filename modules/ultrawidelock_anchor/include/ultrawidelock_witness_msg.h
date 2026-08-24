@@ -4,9 +4,9 @@
  * @file ultrawidelock_witness_msg.h — WV2, the BLE witness report on the wire.
  *
  * One datagram per summarisation window, witness -> lock, over Thread UDP.
- * This file is the codec and the validation rules ONLY: sealing (AES-CCM under
- * the per-witness link key) belongs to the transport, because the key lives
- * where the PSA backend does and this module has to stay platform-free.
+ * This file is the codec and the validation rules ONLY. The portable sealed-link
+ * core applies AES-CCM under the per-peer key through the primitive seam; the
+ * consumer owns key storage and each platform supplies one primitive provider.
  *
  * Three properties the format is shaped by, in order:
  *
