@@ -252,6 +252,26 @@ device ID and a responder that never listens. Check it before suspecting softwar
 Full detail lives in [`docs/esp32-gotchas.md`](esp32-gotchas.md);
 this is the short triage list.
 
+**`ESP-IDF export.sh not found` or `esp-matter not found`.** Nothing is installed at the
+path the build looks in. `make esp-bootstrap APP=reader` installs ESP-IDF alone (about
+5 GB, enough for the reader, satellite and initiator apps); `make esp-bootstrap` installs
+esp-matter on top of it as well, which `APP=matter-lock` needs and which costs about
+15 GB more and the better part of an hour. Both stages ask first, `SETUP_AUTO=1` accepts
+without asking, and an install you already have elsewhere is reached with
+`IDF_EXPORT=` and `ESP_MATTER_PATH=` instead. `make tools` shows which of the two the
+build can currently see.
+
+**`make esp-bootstrap` stopped partway through esp-matter.** Re-run it. The clone is
+pinned and reused, and the install only repeats when its marker
+(`.ultrawidelock-install-done` in the esp-matter tree) does not match the revision being
+installed. If the tree itself is the problem, `rm -rf` it and run the command again.
+
+**`make esp-bootstrap` installed a different version than the bench uses.** It defaults to
+ESP-IDF v5.5.4 and esp-matter `93b1680` only when it starts from nothing; an existing
+checkout is offered a re-pin and keeps whatever you say to keep. `IDF_VER=` and
+`ESP_MATTER_REV=` (a full 40-character SHA) choose others, and the build enforces
+neither, so a tree at any revision still builds.
+
 **`dwt_probe failed: -1` the first time a phone reaches M4.** The DW3000 was never
 brought up at boot, so the first SPI touch happens inside a NimBLE host callback, where
 the shallow stack and missing init make probing fail. Bring the radio up once from a

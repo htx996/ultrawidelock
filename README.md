@@ -150,9 +150,20 @@ Thread network, follow the
 <br/>
 
 ESP32 needs an installed ESP-IDF, and the Matter lock also needs esp-matter.
-Neither is pinned here; both default under `$HOME/esp`, overridden with
-`IDF_EXPORT` and `ESP_MATTER_PATH`. The bench builds against ESP-IDF v5.5.4 and
-esp-matter `93b1680`.
+`make esp-bootstrap` installs both, asking before each stage:
+
+```sh
+make esp-bootstrap APP=reader     # ESP-IDF only, about 5 GB
+make esp-bootstrap                # ESP-IDF + esp-matter, about 20 GB and an hour
+make esp-build APP=matter-lock TARGET=esp32s3
+```
+
+Neither is pinned by the build; both default under `$HOME/esp`, overridden with
+`IDF_EXPORT` and `ESP_MATTER_PATH`, and an install you already have keeps
+working untouched. What `esp-bootstrap` installs when it starts from nothing is
+the pair the bench builds against: ESP-IDF v5.5.4 and esp-matter `93b1680`,
+which is the version esp-matter itself asks for at that revision. `IDF_VER` and
+`ESP_MATTER_REV` choose others.
 
 </details>
 
