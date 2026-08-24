@@ -151,7 +151,11 @@ else
   # that one because the patches in it are this repo's and can be reapplied;
   # nothing here can put back somebody's local fix to an ESP-IDF component. So
   # this stops rather than resets, and the way past it is theirs to choose.
-  dirty="$(git -C "$IDF_DIR" status --porcelain --untracked-files=no 2>/dev/null || true)"
+  # --ignore-submodules=all, because an installed IDF is never clean without it:
+  # a shallow submodule checkout leaves several gitlinks reading as modified, so
+  # the plain form calls every working install dirty and would refuse every
+  # version bump anybody ever attempts. Real edits to real files still show.
+  dirty="$(git -C "$IDF_DIR" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null || true)"
   if [ -n "$dirty" ] && [ "$have" != "$IDF_VER" ]; then
     die "$IDF_DIR has local changes, and is at $have rather than $IDF_VER" \
         "" \
