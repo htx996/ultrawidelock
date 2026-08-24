@@ -62,15 +62,20 @@ CDB="$OUT/compile_commands.json"
 REPORTS="$OUT/codechecker"
 
 # CodeChecker is usually a venv or pipx install rather than something on PATH.
-# CODECHECKER lets a caller point at one without changing this file.
-CC_BIN="${CODECHECKER:-CodeChecker}"
+# CODECHECKER lets a caller point at one without changing this file; failing
+# that, .venv-sca is where `make tools-install` puts it, so the install route
+# and this gate cannot disagree about where it went.
+CC_BIN="${CODECHECKER:-}"
+if [ -z "$CC_BIN" ] && [ -x "$ROOT/.venv-sca/bin/CodeChecker" ]; then
+	CC_BIN="$ROOT/.venv-sca/bin/CodeChecker"
+fi
+CC_BIN="${CC_BIN:-CodeChecker}"
 
 if ! command -v "$CC_BIN" >/dev/null 2>&1; then
 	printf '\n  %s!! CodeChecker not installed -- PATH ANALYSIS SKIPPED%s\n' "$Y" "$Z"
 	printf '     it is not part of `make check` or CI; this is the deeper pass.\n'
-	printf '     install:  python3 -m venv .venv-sca\n'
-	printf '               .venv-sca/bin/pip install codechecker\n'
-	printf '               CODECHECKER=.venv-sca/bin/CodeChecker make sca\n\n'
+	printf '     install:  make tools-install   (lands in .venv-sca, found from there)\n'
+	printf '               or point CODECHECKER=<path> at an existing install\n\n'
 	exit 0
 fi
 

@@ -1,12 +1,22 @@
 # mk/setup.mk — getting a machine ready: host gate tools, then the NCS toolchain
 # and the fetched west workspace both Zephyr ports build against.
 
-.PHONY: tools bootstrap ws-seed dfu-key print-sign-key
+.PHONY: tools tools-install bootstrap ws-seed dfu-key print-sign-key
 
 ##@ Setup
 ## tools: what the host suites need, what this machine has
+##   Installs nothing. Exits nonzero when a gate tool is missing, so a suite
+##   skipping quietly is never a surprise.
 tools:
 	@$(REPO_ROOT)/scripts/toolchain.sh
+
+## tools-install: install the missing host tools  ·  prints the commands, asks first
+##   macOS/Linux, via whichever of brew/apt/dnf/pacman/zypper is present. Nothing
+##   runs before you agree; ASSUME_YES=1 answers in advance. Offers the bench
+##   tools too, which no gate needs. The SDKs are not here: those are
+##   `make bootstrap` (NCS) and `make esp-bootstrap` (ESP-IDF, esp-matter).
+tools-install:
+	@$(REPO_ROOT)/scripts/toolchain.sh install
 
 ## bootstrap: set this machine up for the repo  ·  the only command before build
 ##   Checks the host first, then installs the NCS toolchain and fetches the

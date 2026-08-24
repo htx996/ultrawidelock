@@ -102,7 +102,7 @@ lint:
 ##   The deeper pass `make lint` is not: it follows values across functions and
 ##   branches, so it reaches NULL-on-one-arm and use-after-free-on-the-error-path
 ##   bugs. Needs CodeChecker installed, so it is out of `make check` and CI:
-##     python3 -m venv .venv-sca && .venv-sca/bin/pip install codechecker
-##     CODECHECKER=.venv-sca/bin/CodeChecker make sca
+##     make tools-install          (puts it in .venv-sca, where this gate looks)
+##     CODECHECKER=<path> make sca (to point at an install somewhere else)
 sca:
 	@$(REPO_ROOT)/tests/tooling/codechecker_sca.sh
