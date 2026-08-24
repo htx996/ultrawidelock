@@ -73,7 +73,7 @@ struct rep {
 /* Room for every attribute of the widest cluster this node has, plus slack.
  * BasicInformation alone reports 16, which is exactly where this used to sit --
  * and an overflow here reads as a malformed report rather than a full one. */
-#define MAX_REPS 96
+#define MAX_REPS 128
 
 /** Read an AttributePathIB into @p r. Reader is positioned on the list. */
 static int walk_path(struct matter_tlv_reader *rd, struct rep *r)

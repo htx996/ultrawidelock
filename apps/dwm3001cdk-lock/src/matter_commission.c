@@ -125,7 +125,15 @@ static void s_info_defaults(void)
 	 * zero is a writable value so it cannot mean "never set". */
 	s_info.approach_direction = MATTER_APPROACH_DIRECTION_ALL;
 	s_info.uwb_distance_mm = -1;
+	s_info.uwb_config.version = MATTER_UWB_CONFIG_VERSION;
+	s_info.uwb_config.distance_relock_enabled = 1u;
+	s_info.uwb_config.unlock_cm = 100u;
+	s_info.uwb_config.approach_cm = 180u;
+	s_info.uwb_config.relock_cm = 250u;
+	s_info.uwb_config.motor_ms = 500u;
 }
+
+static atomic_t s_uwb_config_dirty = ATOMIC_INIT(1);
 
 /* Advertising and the main loop read these outside the Matter owner. Publish
  * only the two scalar predicates they need instead of exposing s_info or the
@@ -1732,6 +1740,8 @@ static void on_invoke_request(const struct matter_exchange_in *in)
  * has finished commissioning and cannot record that it owns the node sits on
  * "Adding to home" until it gives up.
  */
+static void uwb_config_changed(void);
+
 static void on_write_request(const struct matter_exchange_in *in)
 {
 	static struct matter_im_write wr;
@@ -1740,6 +1750,7 @@ static void on_write_request(const struct matter_exchange_in *in)
 	size_t payload_cap;
 	uint32_t prev_relock_s;
 	uint8_t prev_approach;
+	struct matter_uwb_config prev_uwb;
 	size_t resp_len = 0u;
 	int rc;
 
@@ -1766,6 +1777,7 @@ static void on_write_request(const struct matter_exchange_in *in)
 	 */
 	prev_relock_s = s_info.auto_relock_time_s;
 	prev_approach = s_info.approach_direction;
+	prev_uwb = s_info.uwb_config;
 	slot = tx_acquire();
 	if (slot == NULL) {
 		LOG_ERR("no owned packet slot for WriteResponse");
@@ -1779,6 +1791,10 @@ static void on_write_request(const struct matter_exchange_in *in)
 		return;
 	}
 	(void)matter_dl_attr_store(&s_info, prev_relock_s, prev_approach);
+	if (memcmp(&prev_uwb, &s_info.uwb_config, sizeof(prev_uwb)) != 0) {
+		(void)matter_uwb_config_store(&s_info.uwb_config, &prev_uwb);
+		uwb_config_changed();
+	}
 #if MATTER_FEATURE_CLIENT
 	/*
 	 * Keyed on the CLUSTER rather than on the write status: the encoder
@@ -2219,6 +2235,10 @@ static void notify_uwb_presence(struct sub_state *s)
 		MATTER_ATTR_UWB_DEVICE_ID,
 		MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM,
 		MATTER_ATTR_UWB_MOVEMENT_STATE,
+		MATTER_ATTR_UWB_APPROACH_CM,
+		MATTER_ATTR_UWB_RELOCK_CM,
+		MATTER_ATTR_UWB_MOTOR_MS,
+		MATTER_ATTR_UWB_DISTANCE_RELOCK,
 	};
 	struct matter_im_read read;
 	size_t framed = 0u;
@@ -2263,6 +2283,12 @@ static void uwb_notify_work_fn(struct k_work *w)
 }
 
 static K_WORK_DEFINE(s_uwb_notify_work, uwb_notify_work_fn);
+
+static void uwb_config_changed(void)
+{
+	atomic_set(&s_uwb_config_dirty, 1);
+	k_work_submit(&s_uwb_notify_work);
+}
 static void heartbeat_work_fn(struct k_work *w);
 static K_WORK_DELAYABLE_DEFINE(s_heartbeat_work, heartbeat_work_fn);
 
@@ -4383,17 +4409,15 @@ bool matter_commission_take_deliberate_unlock(void)
 	return atomic_clear(&s_deliberate_unlock) != 0;
 }
 
-void matter_commission_set_uwb_unlock_threshold(uint32_t threshold_cm)
+bool matter_commission_take_uwb_config(struct matter_uwb_config *config)
 {
-	bool report;
-
-	ultrawidelock_mutex_lock(&s_owner_lock);
-	report = s_info.uwb_unlock_threshold_cm != threshold_cm;
-	s_info.uwb_unlock_threshold_cm = threshold_cm;
-	ultrawidelock_mutex_unlock(&s_owner_lock);
-	if (report) {
-		k_work_submit(&s_uwb_notify_work);
+	if (config == NULL || atomic_clear(&s_uwb_config_dirty) == 0) {
+		return false;
 	}
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	*config = s_info.uwb_config;
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+	return true;
 }
 
 void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
@@ -4571,6 +4595,8 @@ int matter_commission_init(void)
 	 * not survive -- the next commissioner reads what the last one set.
 	 */
 	(void)matter_dl_attr_load(&s_info);
+	(void)matter_uwb_config_load(&s_info.uwb_config);
+	atomic_set(&s_uwb_config_dirty, 1);
 #if MATTER_FEATURE_CLIENT
 	/*
 	 * AFTER matter_clusters_init, which zeroes the binding table this

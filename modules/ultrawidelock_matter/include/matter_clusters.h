@@ -72,11 +72,26 @@ extern "C" {
 #define MATTER_ATTR_UWB_DEVICE_ID       0x0002u
 #define MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM 0x0003u
 #define MATTER_ATTR_UWB_MOVEMENT_STATE      0x0004u
+#define MATTER_ATTR_UWB_APPROACH_CM          0x0005u
+#define MATTER_ATTR_UWB_RELOCK_CM            0x0006u
+#define MATTER_ATTR_UWB_MOTOR_MS             0x0007u
+#define MATTER_ATTR_UWB_DISTANCE_RELOCK      0x0008u
 #define MATTER_UWB_MOVEMENT_UNKNOWN         0u
 #define MATTER_UWB_MOVEMENT_STATIONARY      1u
 #define MATTER_UWB_MOVEMENT_APPROACHING     2u
 #define MATTER_UWB_MOVEMENT_LEAVING         3u
-#define MATTER_UWB_PRESENCE_CLUSTER_REV     2u
+#define MATTER_UWB_PRESENCE_CLUSTER_REV     3u
+
+#define MATTER_UWB_CONFIG_VERSION 1u
+
+struct matter_uwb_config {
+	uint8_t version;
+	uint8_t distance_relock_enabled;
+	uint16_t unlock_cm;
+	uint16_t approach_cm;
+	uint16_t relock_cm;
+	uint16_t motor_ms;
+};
 
 /*
  * AdministratorCommissioning. This is what Apple Home's "Turn On Pairing Mode"
@@ -936,7 +951,7 @@ struct matter_device_info {
 	bool uwb_device_in_range;
 	int32_t uwb_distance_mm;
 	uint32_t uwb_device_id;
-	uint32_t uwb_unlock_threshold_cm;
+	struct matter_uwb_config uwb_config;
 	uint8_t uwb_movement_state;
 	/**
 	 * The LockOperation events waiting to be reported, oldest first.

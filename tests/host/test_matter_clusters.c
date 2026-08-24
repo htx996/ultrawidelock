@@ -1287,7 +1287,14 @@ void test_matter_clusters(void)
 		info.uwb_device_in_range = true;
 		info.uwb_distance_mm = 1370;
 		info.uwb_device_id = 0x12345678u;
-		info.uwb_unlock_threshold_cm = 100u;
+		info.uwb_config = (struct matter_uwb_config){
+			.version = MATTER_UWB_CONFIG_VERSION,
+			.distance_relock_enabled = 1u,
+			.unlock_cm = 100u,
+			.approach_cm = 180u,
+			.relock_cm = 250u,
+			.motor_ms = 500u,
+		};
 		info.uwb_movement_state = MATTER_UWB_MOVEMENT_APPROACHING;
 		matter_clusters_init(&srv, &info);
 
@@ -1307,6 +1314,10 @@ void test_matter_clusters(void)
 		T_EQ("and recognizes the movement state attribute",
 		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
 				MATTER_ATTR_UWB_MOVEMENT_STATE),
+			     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and recognizes the writable relock switch",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DISTANCE_RELOCK),
 		     MATTER_IM_STATUS_SUCCESS);
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
@@ -1323,6 +1334,29 @@ void test_matter_clusters(void)
 		T_OK("distance decodes",
 		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
 		T_EQ("distance is reported in millimetres", (long)v, 1370);
+
+		{
+			struct matter_im_path path = {
+				.endpoint = MATTER_ENDPOINT_LOCK,
+				.cluster = MATTER_CLUSTER_UWB_PRESENCE,
+				.attribute = MATTER_ATTR_UWB_MOTOR_MS,
+			};
+			uint8_t tlv[16];
+
+			matter_tlv_writer_init(&w, tlv, sizeof(tlv));
+			(void)matter_tlv_put_u64(&w, MATTER_TLV_ANON, 750u);
+			T_EQ("motor time is writable", srv.write(srv.ctx, &path, tlv, w.len),
+			     MATTER_IM_STATUS_SUCCESS);
+			T_EQ("and updates the shared config", info.uwb_config.motor_ms, 750u);
+
+			path.attribute = MATTER_ATTR_UWB_DISTANCE_RELOCK;
+			matter_tlv_writer_init(&w, tlv, sizeof(tlv));
+			(void)matter_tlv_put_bool(&w, MATTER_TLV_ANON, false);
+			T_EQ("distance relock is writable", srv.write(srv.ctx, &path, tlv, w.len),
+			     MATTER_IM_STATUS_SUCCESS);
+			T_EQ("and updates the shared config",
+			     info.uwb_config.distance_relock_enabled, 0u);
+		}
 
 		matter_tlv_writer_init(&w, out, sizeof(out));
 		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,

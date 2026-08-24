@@ -90,10 +90,9 @@ static enum matter_uwb_movement_state movement_state(int32_t velocity_cm_s,
 	return s_movement.state;
 }
 
-void uwb_matter_presence_init(uint32_t unlock_threshold_cm)
+void uwb_matter_presence_init(void)
 {
 	movement_reset();
-	matter_commission_set_uwb_unlock_threshold(unlock_threshold_cm);
 }
 
 void uwb_matter_presence_update(const struct ultrawidelock_approach *approach,

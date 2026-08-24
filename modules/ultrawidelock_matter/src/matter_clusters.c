@@ -656,6 +656,10 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 			case MATTER_ATTR_UWB_DEVICE_ID:
 			case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
 			case MATTER_ATTR_UWB_MOVEMENT_STATE:
+			case MATTER_ATTR_UWB_APPROACH_CM:
+			case MATTER_ATTR_UWB_RELOCK_CM:
+			case MATTER_ATTR_UWB_MOTOR_MS:
+			case MATTER_ATTR_UWB_DISTANCE_RELOCK:
 			case MATTER_ATTR_FEATURE_MAP:
 			case MATTER_ATTR_CLUSTER_REVISION:
 			case MATTER_ATTR_ATTRIBUTE_LIST:
@@ -906,6 +910,10 @@ static const uint32_t k_uwb_presence_attrs[] = {
 	MATTER_ATTR_UWB_DEVICE_ID,
 	MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM,
 	MATTER_ATTR_UWB_MOVEMENT_STATE,
+	MATTER_ATTR_UWB_APPROACH_CM,
+	MATTER_ATTR_UWB_RELOCK_CM,
+	MATTER_ATTR_UWB_MOTOR_MS,
+	MATTER_ATTR_UWB_DISTANCE_RELOCK,
 	MATTER_ATTR_FEATURE_MAP,
 	MATTER_ATTR_CLUSTER_REVISION,
 	MATTER_ATTR_ATTRIBUTE_LIST,
@@ -1083,10 +1091,22 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 			(void)matter_tlv_put_u64(w, tag, info->uwb_device_id);
 			return;
 		case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
-			(void)matter_tlv_put_u64(w, tag, info->uwb_unlock_threshold_cm);
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.unlock_cm);
 			return;
 		case MATTER_ATTR_UWB_MOVEMENT_STATE:
 			(void)matter_tlv_put_u64(w, tag, info->uwb_movement_state);
+			return;
+		case MATTER_ATTR_UWB_APPROACH_CM:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.approach_cm);
+			return;
+		case MATTER_ATTR_UWB_RELOCK_CM:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.relock_cm);
+			return;
+		case MATTER_ATTR_UWB_MOTOR_MS:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.motor_ms);
+			return;
+		case MATTER_ATTR_UWB_DISTANCE_RELOCK:
+			(void)matter_tlv_put_bool(w, tag, info->uwb_config.distance_relock_enabled != 0u);
 			return;
 		case MATTER_ATTR_FEATURE_MAP:
 			(void)matter_tlv_put_u64(w, tag, 0u);
@@ -3804,6 +3824,54 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 			return MATTER_IM_STATUS_SUCCESS;
 		}
 #endif
+		if (path->cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			struct matter_uwb_config next = info->uwb_config;
+			struct matter_tlv_reader r;
+			uint64_t v = 0u;
+			bool enabled = false;
+
+			if (data == NULL || data_len == 0u) {
+				return MATTER_IM_STATUS_INVALID_COMMAND;
+			}
+			matter_tlv_reader_init(&r, data, data_len);
+			if (matter_tlv_next(&r) != MATTER_OK) {
+				return MATTER_IM_STATUS_INVALID_COMMAND;
+			}
+			if (path->attribute == MATTER_ATTR_UWB_DISTANCE_RELOCK) {
+				if (matter_tlv_get_bool(&r, &enabled) != MATTER_OK) {
+					return MATTER_IM_STATUS_INVALID_COMMAND;
+				}
+				next.distance_relock_enabled = enabled;
+			} else {
+				if (matter_tlv_get_u64(&r, &v) != MATTER_OK || v > UINT16_MAX) {
+					return MATTER_IM_STATUS_INVALID_COMMAND;
+				}
+				switch (path->attribute) {
+				case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
+					next.unlock_cm = (uint16_t)v;
+					break;
+				case MATTER_ATTR_UWB_APPROACH_CM:
+					next.approach_cm = (uint16_t)v;
+					break;
+				case MATTER_ATTR_UWB_RELOCK_CM:
+					next.relock_cm = (uint16_t)v;
+					break;
+				case MATTER_ATTR_UWB_MOTOR_MS:
+					next.motor_ms = (uint16_t)v;
+					break;
+				default:
+					return MATTER_IM_STATUS_UNSUPPORTED_WRITE;
+				}
+			}
+			if (next.unlock_cm < 20u || next.unlock_cm >= next.approach_cm ||
+			    next.approach_cm >= next.relock_cm || next.relock_cm > 1000u ||
+			    next.motor_ms < 100u || next.motor_ms > 5000u) {
+				return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+			}
+			next.version = MATTER_UWB_CONFIG_VERSION;
+			info->uwb_config = next;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
 		if (path->cluster != MATTER_CLUSTER_DOOR_LOCK) {
 			return has_cluster(ctx, path->endpoint, path->cluster)
 				       ? MATTER_IM_STATUS_UNSUPPORTED_WRITE

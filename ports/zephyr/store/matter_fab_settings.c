@@ -800,11 +800,46 @@ int matter_dl_attr_load(struct matter_device_info *info)
 	return 0;
 }
 
+int matter_uwb_config_store(const struct matter_uwb_config *config,
+			    const struct matter_uwb_config *previous)
+{
+	if (config == NULL || previous == NULL) {
+		return -EINVAL;
+	}
+	if (memcmp(config, previous, sizeof(*config)) == 0) {
+		return 0;
+	}
+	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_UWB_CONFIG,
+				     config, sizeof(*config));
+}
+
+int matter_uwb_config_load(struct matter_uwb_config *config)
+{
+	struct matter_uwb_config stored;
+	size_t len = sizeof(stored);
+
+	if (config == NULL) {
+		return -EINVAL;
+	}
+	(void)ultrawidelock_kv_init();
+	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_MATTER_UWB_CONFIG,
+				 &stored, &len) == ULTRAWIDELOCK_KV_OK &&
+	    len == sizeof(stored) && stored.version == MATTER_UWB_CONFIG_VERSION &&
+	    stored.unlock_cm >= 20u && stored.unlock_cm < stored.approach_cm &&
+	    stored.approach_cm < stored.relock_cm && stored.relock_cm <= 1000u &&
+	    stored.motor_ms >= 100u && stored.motor_ms <= 5000u &&
+	    stored.distance_relock_enabled <= 1u) {
+		*config = stored;
+	}
+	return 0;
+}
+
 int matter_dl_attr_erase(void)
 {
 	static const uint16_t keys[] = {
 		ULTRAWIDELOCK_KV_KEY_MATTER_DL_AUTO_RELOCK,
 		ULTRAWIDELOCK_KV_KEY_MATTER_DL_APPROACH,
+		ULTRAWIDELOCK_KV_KEY_MATTER_UWB_CONFIG,
 	};
 	int first_err = 0;
 	int rc = ultrawidelock_kv_init();

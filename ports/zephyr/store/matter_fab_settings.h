@@ -72,6 +72,10 @@ int matter_dl_attr_store(const struct matter_device_info *info, uint32_t prev_au
  */
 int matter_dl_attr_load(struct matter_device_info *info);
 
+int matter_uwb_config_store(const struct matter_uwb_config *config,
+			    const struct matter_uwb_config *previous);
+int matter_uwb_config_load(struct matter_uwb_config *config);
+
 /**
  * Forget them, so the next boot uses the port's defaults.
  *

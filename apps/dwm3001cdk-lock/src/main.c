@@ -522,6 +522,23 @@ static void baseline_apply(struct ultrawidelock_satellite_set *set, int32_t mm, 
 }
 #endif
 
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+static void apply_uwb_config(struct ultrawidelock_approach *approach,
+			     bool *distance_relock_enabled)
+{
+	struct matter_uwb_config config;
+
+	if (!matter_commission_take_uwb_config(&config)) {
+		return;
+	}
+	approach->cfg.unlock_cm = config.unlock_cm;
+	approach->cfg.approach_cm = config.approach_cm;
+	approach->cfg.relock_cm = config.relock_cm;
+	approach->cfg.motor_ms = config.motor_ms;
+	*distance_relock_enabled = config.distance_relock_enabled != 0u;
+}
+#endif
+
 int main(void)
 {
 	/* Off before the radio comes up: keeps the ranging callbacks print-free so the
@@ -756,7 +773,10 @@ int main(void)
 	ultrawidelock_approach_init(&approach, NULL);
 	approach.cfg.near_dwell = CONFIG_ULTRAWIDELOCK_APPROACH_NEAR_DWELL;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-	uwb_matter_presence_init((uint32_t)approach.cfg.unlock_cm);
+	bool distance_relock_enabled = true;
+
+	apply_uwb_config(&approach, &distance_relock_enabled);
+	uwb_matter_presence_init();
 #endif
 
 	/* Same seam the ESP32 matter-lock uses (app_main.cpp on_uwb_range): the engine
@@ -790,6 +810,10 @@ int main(void)
 		uint32_t gen = ultrawidelock_uwb_range_generation();
 		int32_t cm = 0;
 		enum ultrawidelock_approach_action act;
+
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+		apply_uwb_config(&approach, &distance_relock_enabled);
+#endif
 
 		ultrawidelock_reader_status_tick(now);
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
@@ -1403,7 +1427,11 @@ int main(void)
 			/* And close the lock this one opened. Same shape as the
 			 * grant above: after this board's own bolt, never
 			 * before it. */
-			matter_client_want(false);
+			if (distance_relock_enabled) {
+				matter_client_want(false);
+			} else {
+				matter_client_rearm_unlock();
+			}
 #endif
 			break;
 		default:
@@ -1468,7 +1496,11 @@ int main(void)
 				status_led_signal(STATUS_LED_UNLOCKED, false);
 				granted = false;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT) && IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-				matter_client_want(false);
+				if (distance_relock_enabled) {
+					matter_client_want(false);
+				} else {
+					matter_client_rearm_unlock();
+				}
 #endif
 			}
 			present = false;

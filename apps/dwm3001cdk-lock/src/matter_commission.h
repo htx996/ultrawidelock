@@ -10,6 +10,8 @@
 
 #include <zephyr/sys/util.h>
 
+#include "matter_clusters.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -72,8 +74,8 @@ enum matter_uwb_movement_state {
 	MATTER_UWB_MOVEMENT_STATE_LEAVING = 3,
 };
 
-/** Publish the read-only UWB unlock threshold through the vendor cluster. */
-void matter_commission_set_uwb_unlock_threshold(uint32_t threshold_cm);
+/** Take a newly loaded or remotely written UWB policy snapshot. */
+bool matter_commission_take_uwb_config(struct matter_uwb_config *config);
 
 /**
  * Publish the latest trusted UWB observation through the vendor Matter
