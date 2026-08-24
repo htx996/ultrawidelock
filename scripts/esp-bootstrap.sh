@@ -182,6 +182,32 @@ else
   else
     info "already at $IDF_VER"
   fi
+
+  # Reconcile the submodules whatever the version turned out to be. This is the
+  # hole the first real install fell into: a tree at the right tag whose
+  # submodules are empty or at other commits passes every check above, and
+  # install.sh does not care either — it is building a Python environment, not
+  # compiling components. The failure surfaces a build later as
+  #
+  #     CMake Error: Include directory '…/components/unity/unity/src' is not a
+  #     directory
+  #
+  # which names neither git nor a submodule and is nobody's idea of a clue. A
+  # clone made without --recursive is enough to produce it, and this repo cannot
+  # assume it made the clone: $HOME/esp is shared, and people arrive with a tree
+  # already in it. So ask the tree what it should contain, and fetch whatever it
+  # is missing. Costs one status walk when everything is already right.
+  sub_state="$(git -C "$IDF_DIR" submodule status --recursive 2>/dev/null || true)"
+  if text_has '^[-+]' "$sub_state"; then
+    info "submodules are missing or off their recorded commits — fetching them"
+    git -C "$IDF_DIR" submodule update --init --depth 1 --recursive || die \
+        "could not fetch the ESP-IDF submodules in $IDF_DIR" \
+        "the build needs them: a component whose submodule is empty fails cmake" \
+        "with an include directory that 'is not a directory'." \
+        "" \
+        "run it by hand to see why:" \
+        "  git -C '$IDF_DIR' submodule update --init --depth 1 --recursive"
+  fi
 fi
 
 PHASE="installing the ESP-IDF toolchain for $ESP_TARGETS"

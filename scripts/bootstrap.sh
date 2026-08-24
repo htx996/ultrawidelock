@@ -218,9 +218,9 @@ if [ "${ULTRAWIDELOCK_TOOLCHAIN:-}" != env ] && [ -z "${NO_TOOLCHAIN:-}" ]; then
   if out="$(nrfutil --json sdk-manager toolchain list 2>/dev/null)"; then
     case "$out" in *"\"$NCS_VER\""*) installed=1 ;; esac
   fi
-  if [ "$installed" -eq 0 ] && nrfutil sdk-manager toolchain list --styling never 2>/dev/null \
-     | grep -q "^${NCS_VER}[[:space:]]"; then
-    installed=1
+  if [ "$installed" -eq 0 ]; then
+    table="$(nrfutil sdk-manager toolchain list --styling never 2>/dev/null || true)"
+    text_has "^${NCS_VER}[[:space:]]" "$table" && installed=1
   fi
 
   if [ "$installed" -eq 1 ]; then
@@ -230,7 +230,7 @@ if [ "${ULTRAWIDELOCK_TOOLCHAIN:-}" != env ] && [ -z "${NO_TOOLCHAIN:-}" ]; then
     # line of Rust error. Ask the index first, and if the pin is not there,
     # answer the question the reader is about to have: what IS there.
     if avail="$(nrfutil sdk-manager search --styling never 2>/dev/null)" &&
-       [ -n "$avail" ] && ! printf '%s\n' "$avail" | grep -q "[[:space:]]${NCS_VER}[[:space:]]"; then
+       [ -n "$avail" ] && ! text_has "[[:space:]]${NCS_VER}[[:space:]]" "$avail"; then
       versions="$(printf '%s\n' "$avail" | awk 'NR>1 {print $2}' | head -8 | tr '\n' ' ')"
       die "NCS $NCS_VER is not one of the versions Nordic publishes a toolchain for" \
           "available: ${versions}…" \

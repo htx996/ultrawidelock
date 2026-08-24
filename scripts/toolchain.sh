@@ -97,8 +97,11 @@ tool_probe() {
 		# Ask nrfutil, never a path: `toolchain launch` is how every build here
 		# reaches the compiler, so a toolchain nrfutil cannot see is one no
 		# build could have used. JSON because a column layout is not an API.
-		nrfutil --json sdk-manager toolchain list 2>/dev/null \
-			| grep -q "\"$NCS_VER\"" || return 1
+		# Captured, not piped into `grep -q`: -q exits on the first match and
+		# the SIGPIPE that gives nrfutil becomes this pipeline's status under
+		# `set -o pipefail`, which would report an installed toolchain as absent.
+		tl="$(nrfutil --json sdk-manager toolchain list 2>/dev/null || true)"
+		[ "$(printf '%s\n' "$tl" | grep -c "\"$NCS_VER\"" || true)" -gt 0 ] || return 1
 		echo "NCS $NCS_VER installed"
 		;;
 	esp-idf)

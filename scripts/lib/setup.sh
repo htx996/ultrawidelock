@@ -171,6 +171,20 @@ suggest_tools() {
   done
 }
 
+# ---- text ---------------------------------------------------------------------
+# `cmd | grep -q PAT` is wrong in every file that sets `-o pipefail`, which is
+# all of them. -q exits the moment it matches, the writer upstream gets SIGPIPE
+# and dies with 141, pipefail adopts that as the pipeline's status — so the case
+# where the pattern IS found reports failure. The guard inverts, silently, and
+# only when the input is long enough for the writer to still be writing.
+#
+# Capture first, then match, and use -c so grep always drains its input.
+text_has() {   # $1 = pattern, $2 = text
+  local n
+  n="$(printf '%s\n' "$2" | grep -c -- "$1" || true)"
+  [ "${n:-0}" -gt 0 ]
+}
+
 # ---- disk --------------------------------------------------------------------
 # GiB free on the filesystem holding $1, or nothing when df cannot say. Walks up
 # to the nearest existing parent, because the directory being sized usually does
