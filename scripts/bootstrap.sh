@@ -30,82 +30,13 @@ PATCH_STATE="$WS/.ultrawidelock-patches.sha256"
 NRFUTIL_URL="https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables"
 NRFUTIL_PAGE="https://www.nordicsemi.com/Products/Development-tools/nrf-util"
 
-# ---- how this script talks --------------------------------------------------
-# Phases announce themselves with ==>, their detail lines indent four spaces,
-# and anything fatal goes to stderr as ERROR: with aligned continuation lines.
-#
-# `die` exists so every stop looks the same and none of them ends without a next
-# command: this script's whole job is getting a stranger's machine from a clone
-# to a build, and a stop that only says what is wrong leaves them exactly as
-# stuck as no message at all.
-step() { printf '==> %s\n' "$*"; }
-info() { printf '    %s\n' "$*"; }
-# HANDLED is set by anything that has already explained itself — die(), the
-# interrupt handler, and the successful end of the script. The exit trap prints
-# only when it is still 0, i.e. when the run stopped somewhere that said nothing.
-HANDLED=0
-die() {
-  HANDLED=1
-  printf 'ERROR: %s\n' "$1" >&2; shift
-  local line
-  for line in "$@"; do
-    if [ -z "$line" ]; then printf '\n' >&2; else printf '       %s\n' "$line" >&2; fi
-  done
-  exit 1
-}
-
-# Every phase below is resumable — the fetch sentinel and the pre-patch reset
-# both exist so a second run picks up where an interrupted one stopped. So say
-# that, rather than leaving a bare ^C over a half-populated multi-GB directory
-# that anyone would reasonably read as damage.
-PHASE="starting up"
-on_signal() {
-  HANDLED=1
-  printf '\n'
-  info "interrupted — nothing is broken; re-run 'make bootstrap' and it resumes"
-  exit 130
-}
-
-# The exit status has to be forced here. On a `set -e`/`set -u` abort bash runs
-# this trap with $? already reset to 0, and then adopts the trap's own status as
-# the script's — so a handler that just prints and returns turns every one of
-# those aborts into a silent success. That is the exact failure mode this file
-# is meant to remove from someone else's afternoon, so: name the phase, and exit
-# nonzero on purpose.
-on_exit() {
-  local rc=$?
-  [ "$HANDLED" -eq 1 ] && exit "$rc"
-  [ "$rc" -eq 0 ] && rc=1
-  printf '\nERROR: bootstrap failed while %s (exit %d)\n' "$PHASE" "$rc" >&2
-  printf '       re-run '"'"'make bootstrap'"'"' — it resumes rather than starting over.\n' >&2
-  printf '       still stuck? docs/troubleshooting.md, section "Build and flash"\n' >&2
-  exit "$rc"
-}
-trap on_signal INT TERM
-trap on_exit EXIT
-
-# Yes/no for the one thing this script offers to install for you. Mirrors
-# DOCS_AUTO in mk/web.mk, including the rule that no terminal means no.
-#
-#   SETUP_AUTO=1   yes, no prompt   (CI, containers, scripted first-run setup)
-#   SETUP_AUTO=0   no, no prompt    (locked-down machines, or just quiet)
-SETUP_AUTO="${SETUP_AUTO:-}"
-ask() {
-  case "$SETUP_AUTO" in
-    1) return 0 ;;
-    0) info "declined by SETUP_AUTO=0: $1"; return 1 ;;
-  esac
-  if [ ! -t 0 ]; then
-    info "skipped: $1  (no terminal to ask; SETUP_AUTO=1 to allow)"
-    return 1
-  fi
-  printf '    %s [y/N] ' "$1"
-  read -r reply </dev/tty || return 1
-  case "$reply" in
-    y|Y|yes|YES) return 0 ;;
-    *) info "declined"; return 1 ;;
-  esac
-}
+# The dialect both bootstraps speak: step/info/die, the resumable-interrupt and
+# forced-exit-status traps, ask/SETUP_AUTO, the package hints and the disk and
+# network checks. scripts/esp-bootstrap.sh sources the same file, so a machine
+# that stops in one of them stops the same way in the other.
+# shellcheck source=scripts/lib/setup.sh
+. "$TREE/scripts/lib/setup.sh"
+setup_init "bootstrap" "make bootstrap"
 
 # Launch the nRF Util SDK manager toolchain with the configured NCS version, passing through all remaining arguments.
 # ULTRAWIDELOCK_TOOLCHAIN=env skips that wrapper and runs the command directly — for
@@ -136,63 +67,22 @@ fi
 PHASE="checking this machine"
 step "preflight"
 
-# How this host installs things, for the hints below. Unknown is fine: the
-# fallback names the tool and lets the reader's package manager take it.
-if command -v brew >/dev/null 2>&1;       then PKG="brew install"
-elif command -v apt-get >/dev/null 2>&1;  then PKG="sudo apt-get install -y"
-elif command -v dnf >/dev/null 2>&1;      then PKG="sudo dnf install -y"
-elif command -v pacman >/dev/null 2>&1;   then PKG="sudo pacman -S"
-elif command -v zypper >/dev/null 2>&1;   then PKG="sudo zypper install"
-else                                           PKG=""
-fi
-pkg_hint() {   # $1 = package name
-  if [ -n "$PKG" ]; then printf '%s %s' "$PKG" "$1"
-  else printf 'install %s with this system'\''s package manager' "$1"
-  fi
-}
-
 # The two the fetch and patch phases cannot work around. python3 is here because
 # scripts/integration-patch-id.py stamps the workspace at the end — a miss there
 # wastes the entire fetch, which is the same mistake the toolchain check below
-# was written to stop making. curl is deliberately NOT in this list: only the
+# was written to stop making. curl is deliberately not required: only the
 # optional download below needs it, and a machine that already has nrfutil
 # should not be stopped over a tool this run will never call.
-missing=""
-for t in git python3; do
-  command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
-done
-if [ -n "$missing" ]; then
-  hints=()
-  for t in $missing; do
-    hints+=("$(printf '%-8s %s' "$t" "$(pkg_hint "$t")")")
-  done
-  die "this machine is missing:$missing" "" "${hints[@]}" "" "then re-run: make bootstrap"
-fi
+require_tools git python3
 
-# Disk. The workspace is about 6.5 GB fetched and the toolchain about 2 GB
-# unpacked, and a short disk surfaces as a git or nrfutil failure thousands of
-# lines deep. Ask df instead, and only for what this run will actually pull:
-# a re-run over a populated workspace needs almost nothing.
-need_gb=0
-[ -f "$WS/.ultrawidelock-fetch-done" ] || need_gb=$((need_gb + 8))
-free_gb() {   # $1 = path; echoes GiB free on the filesystem holding it, or nothing
-  local probe="$1" kb
-  while [ ! -d "$probe" ] && [ "$probe" != "/" ]; do probe="$(dirname "$probe")"; done
-  kb="$(df -Pk "$probe" 2>/dev/null | awk 'NR==2 {print $4}')" || return 0
-  case "$kb" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%d' $((kb / 1024 / 1024))
-}
-if [ "$need_gb" -gt 0 ]; then
-  have_gb="$(free_gb "$WS")"
-  if [ -n "$have_gb" ] && [ "$have_gb" -lt "$need_gb" ]; then
-    die "not enough free disk for the workspace" \
-        "need about ${need_gb} GB, ${have_gb} GB free on the volume holding $WS" \
-        "" \
-        "free some space, or put the workspace on another disk:" \
-        "  ULTRAWIDELOCK_WS=/big/disk/ultrawidelock-ws make bootstrap" \
-        "in a linked worktree, 'make ws-seed' clones the primary's workspace for ~0 disk"
-  fi
-  info "disk  ·  ${have_gb:-?} GB free, about ${need_gb} GB needed"
+# Only for what this run will actually pull: a re-run over a populated workspace
+# needs almost nothing.
+if [ ! -f "$WS/.ultrawidelock-fetch-done" ]; then
+  need_disk "$WS" 8 \
+      "free some space, or put the workspace on another disk:" \
+      "  ULTRAWIDELOCK_WS=/big/disk/ultrawidelock-ws make bootstrap" \
+      "in a linked worktree, 'make ws-seed' clones the primary's workspace for ~0 disk"
+  warn_offline
 fi
 
 # The toolchain unpacks under nrfutil's install-dir, which is somewhere in $HOME
@@ -205,16 +95,6 @@ if [ "${ULTRAWIDELOCK_TOOLCHAIN:-}" != env ] && [ -z "${NO_TOOLCHAIN:-}" ]; then
     info "warning: ${home_gb} GB free on the volume holding \$HOME — the NCS toolchain needs about 2 GB"
     info "         'nrfutil sdk-manager config set --install-dir <path>' moves where it lands"
   fi
-fi
-
-# Network. A warning, never a stop: this is one HEAD request against one host,
-# and a proxy that refuses it can still be a proxy the fetch works through.
-# Its value is in the failure that follows — an unreachable github.com explains
-# a 'west update' error far better than the error does.
-if [ ! -f "$WS/.ultrawidelock-fetch-done" ] && command -v curl >/dev/null 2>&1 &&
-   ! curl -sSf -m 10 -o /dev/null -I https://github.com 2>/dev/null; then
-  info "warning: cannot reach github.com right now — the fetch below needs it"
-  info "         behind a proxy? export https_proxy=… and re-run"
 fi
 
 # ---- nrfutil ----------------------------------------------------------------
@@ -338,9 +218,9 @@ if [ "${ULTRAWIDELOCK_TOOLCHAIN:-}" != env ] && [ -z "${NO_TOOLCHAIN:-}" ]; then
   if out="$(nrfutil --json sdk-manager toolchain list 2>/dev/null)"; then
     case "$out" in *"\"$NCS_VER\""*) installed=1 ;; esac
   fi
-  if [ "$installed" -eq 0 ] && nrfutil sdk-manager toolchain list --styling never 2>/dev/null \
-     | grep -q "^${NCS_VER}[[:space:]]"; then
-    installed=1
+  if [ "$installed" -eq 0 ]; then
+    table="$(nrfutil sdk-manager toolchain list --styling never 2>/dev/null || true)"
+    text_has "^${NCS_VER}[[:space:]]" "$table" && installed=1
   fi
 
   if [ "$installed" -eq 1 ]; then
@@ -350,7 +230,7 @@ if [ "${ULTRAWIDELOCK_TOOLCHAIN:-}" != env ] && [ -z "${NO_TOOLCHAIN:-}" ]; then
     # line of Rust error. Ask the index first, and if the pin is not there,
     # answer the question the reader is about to have: what IS there.
     if avail="$(nrfutil sdk-manager search --styling never 2>/dev/null)" &&
-       [ -n "$avail" ] && ! printf '%s\n' "$avail" | grep -q "[[:space:]]${NCS_VER}[[:space:]]"; then
+       [ -n "$avail" ] && ! text_has "[[:space:]]${NCS_VER}[[:space:]]" "$avail"; then
       versions="$(printf '%s\n' "$avail" | awk 'NR>1 {print $2}' | head -8 | tr '\n' ' ')"
       die "NCS $NCS_VER is not one of the versions Nordic publishes a toolchain for" \
           "available: ${versions}…" \
@@ -497,5 +377,4 @@ total_patch_count=$((13 + ${#ha_patches[@]}))
 
 echo "    ✓ pristine upstream + $total_patch_count patches (add-on ×$addon_patch_count, nrf, matter)"
 
-HANDLED=1
-step "ready. Build with:  make build"
+setup_done "ready. Build with:  make build"

@@ -5,14 +5,14 @@ operations, and release workflows.
 
 | Group | Scripts |
 |---|---|
-| Setup and environment | `bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh`, `ws-seed.sh` |
+| Setup and environment | `bootstrap.sh`, `esp-bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh`, `ws-seed.sh` |
 | nRF5340 DK builds | `nrf5340dk-build.sh` |
 | DWM3001CDK operations | `cdk-dfu.sh`, `cdk-find-probe.sh`, `cdk-rtt-elf-check.sh` |
 | Firmware size | `cdk-size.py`, `cdk-size-compare.py`, `cdk-size-baseline.py` |
 | Delta update and SMP | `ultrawidelock_patch.py`, `ultrawidelock_push.py`, `ultrawidelock_smp.py` |
 | Provisioning | `ultrawidelock-enroll.py`, `spake2p_verifier.py` |
 | Release and validation | `release-bundle.sh`, `hitl-run.sh`, `test-runner.sh` |
-| Shared shell library | `lib/ui.sh` |
+| Shared shell library | `lib/ui.sh`, `lib/setup.sh` |
 
 `lib/ui.sh` is sourced, not run: it is the progress display behind the Make
 targets that take minutes (`make test`, `make cbmc`, `make check`). On a
@@ -22,6 +22,13 @@ wrapped command's own output goes to stdout untouched either way. Set
 `ULTRAWIDELOCK_UI=0` to force the plain form, `1` to force the drawn one, and
 run `scripts/lib/ui.sh --self-test` to check it against a terminal that is
 missing colour, UTF-8, width or `$TERM`.
+
+`bootstrap.sh` (NCS, for both Zephyr ports) and `esp-bootstrap.sh` (ESP-IDF and
+esp-matter) both source `lib/setup.sh`, which is the reason they stop, ask and
+resume identically: it owns the phase output, the `die` format, the traps that
+keep an interrupt legible and a `set -e` abort nonzero, `ask`/`SETUP_AUTO`, the
+per-host package hints and the disk and network checks. Neither script knows
+anything about the other's SDK.
 
 `ws-seed.sh` gives a worktree its own west workspace as an APFS copy-on-write
 clone, so branch-bouncing cannot build stale patches. `make ws-seed` seeds the
