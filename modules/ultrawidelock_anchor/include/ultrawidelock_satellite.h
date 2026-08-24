@@ -147,6 +147,43 @@ void ultrawidelock_satellite_observe(struct ultrawidelock_satellite *s, int32_t 
 bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s, int64_t now_ms);
 
 /**
+ * Whether a PASSIVE walk-up unlock may proceed.
+ *
+ * The mirror of ultrawidelock_satellite_may_predict(), for a lock that opens
+ * for someone ARRIVING rather than one that predicts a departure. It withholds
+ * on INSIDE, where the other withholds on OUTSIDE, and both withhold on a
+ * failed triangle.
+ *
+ * @return false only for fresh, paired, sane geometry placing the phone inside,
+ *         and for a pair no phone position could produce. True for OUTSIDE, for
+ *         the dead band, and for every flavour of absence -- no satellite, no
+ *         fresh report, no same-block pair -- which is rule 2 in this header:
+ *         absence degrades the door to single-anchor behaviour, never to a door
+ *         that will not open.
+ */
+bool ultrawidelock_satellite_may_passive_unlock(const struct ultrawidelock_satellite *s,
+						int64_t now_ms);
+
+/**
+ * The raw same-block pair, with the baseline deliberately not consulted.
+ *
+ * For CALIBRATION and nothing else. The baseline is what calibration computes
+ * from these two numbers, so every other accessor here -- which hides a report
+ * until a baseline exists, because an unconfigured baseline is absence and not
+ * evidence -- would make the measurement depend on its own result.
+ *
+ * Everything else the verdict enforces still applies: the report must be fresh,
+ * our own sample must be fresh, and the two must carry the SAME ranging block.
+ *
+ * @param self_mm  out: this node's distance for that block.
+ * @param peer_mm  out: the satellite's reported distance.
+ * @param block    out: the ranging block both describe.
+ * @return true when all three were written; false leaves them untouched.
+ */
+bool ultrawidelock_satellite_pair(const struct ultrawidelock_satellite *s, int64_t now_ms,
+				  int32_t *self_mm, int32_t *peer_mm, uint32_t *block);
+
+/**
  * The second anchor's own distance, if a fresh one is held.
  *
  * For callers that must report WHAT WAS MEASURED alongside the verdict --
@@ -270,6 +307,16 @@ ultrawidelock_satellite_set_verdict(const struct ultrawidelock_satellite_set *se
  */
 bool ultrawidelock_satellite_set_may_predict(const struct ultrawidelock_satellite_set *set,
 					     int64_t now_ms);
+
+/**
+ * Whether a PASSIVE walk-up unlock may proceed, over the whole set.
+ *
+ * The AND of the per-role answers, for the same reason the prediction gate is:
+ * one satellite with real evidence that the phone is already inside withholds,
+ * whatever the others do or do not say. Absence still permits.
+ */
+bool ultrawidelock_satellite_set_may_passive_unlock(const struct ultrawidelock_satellite_set *set,
+						    int64_t now_ms);
 
 /**
  * A fresh peer distance, for the health mask and the log line.
