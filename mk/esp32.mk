@@ -10,9 +10,11 @@
 #   cd examples/esp32/reader && make flash       # same thing, via the forwarder
 #
 # No ESP-IDF or esp-matter version is pinned anywhere in the repo; the paths
-# below are the only thing this file fixes, and both are overridable. The bench
-# builds against ESP-IDF v5.5.4 and esp-matter 93b1680 — a record of what is
-# known to work, not a requirement the build enforces.
+# below are the only thing this file fixes, and both are overridable. What
+# `make esp-bootstrap` installs on a machine that has neither is the pair the
+# bench builds against — a record of what is known to work, not a requirement
+# the build enforces. It is written down once, in scripts/esp-bootstrap.sh, and
+# `make esp-env` prints it.
 
 APP     ?= matter-lock
 TARGET  ?= esp32s3
@@ -133,12 +135,18 @@ endef
 define ESP_CHECK_ENV
 @[ -d "$(ESP_APP_DIR)" ] || { echo "  no such app: APP=$(APP)  ·  try matter-lock, reader, satellite or initiator" >&2; exit 1; }
 @[ -f "$(IDF_EXPORT)" ] || { echo "  ESP-IDF export.sh not found at $(IDF_EXPORT)" >&2; \
-  echo "  set it: make <target> IDF_EXPORT=/path/to/esp-idf/export.sh" >&2; exit 1; }
+  echo "  install it:  make esp-bootstrap APP=$(APP)" >&2; \
+  echo "  or set it:   make <target> IDF_EXPORT=/path/to/esp-idf/export.sh" >&2; exit 1; }
 endef
 ifeq ($(APP),matter-lock)
 define ESP_CHECK_MATTER
 @[ -f "$(ESP_MATTER_PATH)/export.sh" ] || { echo "  esp-matter not found at $(ESP_MATTER_PATH)" >&2; \
-  echo "  set it: make <target> ESP_MATTER_PATH=/path/to/esp-matter" >&2; exit 1; }
+  echo "  install it:  make esp-bootstrap" >&2; \
+  echo "  or set it:   make <target> ESP_MATTER_PATH=/path/to/esp-matter" >&2; exit 1; }
+@[ -d "$(ESP_MATTER_PATH)/connectedhomeip/connectedhomeip/scripts" ] || { \
+  echo "  esp-matter at $(ESP_MATTER_PATH) is cloned but not finished" >&2; \
+  echo "  its connectedhomeip submodule is empty, so this build would fail deep inside cmake" >&2; \
+  echo "  finish it:  make esp-bootstrap" >&2; exit 1; }
 endef
 else
 ESP_CHECK_MATTER :=
@@ -159,7 +167,7 @@ ESP_RELEASE_VER   ?= $(shell git -C $(REPO_ROOT) describe --tags --always --dirt
 export ESP_RELEASE_VER
 
 .PHONY: esp-size-report esp-size-check esp-size-baseline
-.PHONY: esp-check-env esp-set-target esp-build esp-rebuild esp-reconfigure \
+.PHONY: esp-bootstrap esp-check-env esp-set-target esp-build esp-rebuild esp-reconfigure \
         esp-merge-bin esp-release \
         esp-menuconfig esp-size esp-flash esp-app-flash esp-flash-erase \
         esp-monitor esp-go esp-run esp-term esp-lab esp-ports esp-clean esp-env \
@@ -170,6 +178,18 @@ esp-check-env:
 	$(ESP_CHECK_MATTER)
 
 ##@ ESP32  ·  APP=matter-lock|reader|satellite|initiator  TARGET=esp32s3|esp32c5|esp32c6
+## esp-bootstrap: install ESP-IDF (+ esp-matter for matter-lock)  ·  once per machine
+##   Asks before each stage. ESP-IDF alone is ~5 GB and covers reader, satellite
+##   and initiator; matter-lock additionally needs esp-matter, ~15 GB and an hour.
+##   Options: APP= decides whether esp-matter is offered (ESP_MATTER=1/0 overrides)
+##            ESP_TARGETS=esp32s3 which chip toolchains to fetch (all = every chip)
+##            IDF_VER= ESP_MATTER_REV= install something other than the bench pair
+##            ESP_HOST_TOOLS=1 also build chip-tool and chip-cert (tens of minutes)
+##            SETUP_AUTO=1 yes to every stage without asking (0 = never)
+esp-bootstrap:
+	@APP='$(APP)' IDF_EXPORT='$(IDF_EXPORT)' ESP_MATTER_PATH='$(ESP_MATTER_PATH)' \
+	  $(REPO_ROOT)/scripts/esp-bootstrap.sh
+
 ## esp-set-target: regenerate this build's sdkconfig from scratch for TARGET
 esp-set-target: esp-check-env
 	@cd "$(ESP_APP_DIR)" && $(IDFPY) set-target $(TARGET)
@@ -294,6 +314,7 @@ esp-env: esp-check-env
 	@cd "$(ESP_APP_DIR)" && $(IDFPY) --version
 	@printf '  APP             = %s\n  TARGET          = %s\n  VARIANT         = %s\n  BUILD           = %s\n  IDF_EXPORT      = %s\n  ESP_MATTER_PATH = %s\n' \
 	  '$(APP)' '$(TARGET)' '$(if $(VARIANT),$(VARIANT),(none))' '$(ESP_BUILD)' '$(IDF_EXPORT)' '$(ESP_MATTER_PATH)'
+	@$(REPO_ROOT)/scripts/esp-bootstrap.sh --print-pins | sed 's/^/  esp-bootstrap:  /'
 
 ## esp-term: serial console via tio  ·  no ESP backtrace decode, but robust
 esp-term:

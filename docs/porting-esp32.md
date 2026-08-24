@@ -97,10 +97,12 @@ core-pinning mattered for the ranging task.
 
 ### Toolchain
 
-- Use the ESP-IDF version esp-matter recommends, and install esp-matter on top of that
-  same tree. The two apps share one toolchain. Locally, the Makefiles pin only paths
-  (`IDF_EXPORT`, `ESP_MATTER_PATH`) and check that the export scripts exist: treat the
-  pair of installs as an external prerequisite you manage. CI pins its own copy (an
+- `make esp-bootstrap` installs the pair on a machine that has neither: ESP-IDF at the
+  version esp-matter recommends, then esp-matter on top of that same tree, each stage
+  asked for separately. The two apps share one toolchain. The Makefiles still pin only
+  paths (`IDF_EXPORT`, `ESP_MATTER_PATH`) and still only check that the export scripts
+  exist, so an install you manage yourself is untouched by any of this and `make tools`
+  reports whichever one the build will use. CI pins its own copy (an
   ESP-IDF container digest plus a bench-validated esp-matter revision, in
   `.github/workflows/firmware-builds.yml` and `release.yml`).
 - Stage the install if disk is tight: plain ESP-IDF with the `esp32s3` target is enough
