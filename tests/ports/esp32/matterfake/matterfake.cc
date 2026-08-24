@@ -1276,7 +1276,7 @@ void sat_fusion_observe(int32_t self_mm, uint32_t self_block, int64_t now_ms)
 	mfk_sat_last_block = self_block;
 }
 
-bool sat_fusion_may_predict(int64_t now_ms)
+bool sat_fusion_may_passive_unlock(int64_t now_ms)
 {
 	bool answer;
 

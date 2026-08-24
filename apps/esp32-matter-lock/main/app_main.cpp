@@ -398,7 +398,7 @@ static void ultrawidelock_reader_task(void *arg)
 		// positively says INSIDE.
 		if ((act == ULTRAWIDELOCK_APPROACH_UNLOCK_PREDICT ||
 		     act == ULTRAWIDELOCK_APPROACH_UNLOCK_THRESHOLD) &&
-		    !sat_fusion_may_predict(now)) {
+		    !sat_fusion_may_passive_unlock(now)) {
 			ESP_LOGI(TAG, "passive unlock withheld: second anchor says inside");
 			ultrawidelock_lab_evi("side.veto", "cm",
 					      ultrawidelock_approach_est_cm(&approach));

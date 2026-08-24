@@ -94,7 +94,9 @@ length-checks those where they are written.
 | esp32 | key | `lk` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | esp32 | key | `ch` | 15 | `ports/esp32/components/ultrawidelock_satlink/ultrawidelock_satlink.c` |
 | esp32 | namespace | `satfuse` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
-| esp32 | key | `bl` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
+| esp32 | key | `bl1` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
+| esp32 | key | `bl2` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
+| esp32 | key | `bl3` | 15 | `apps/esp32-matter-lock/main/sat_fusion.c` |
 | zephyr | subtree | `msub` | 64 | `apps/dwm3001cdk-lock/src/matter_commission.c` |
 | zephyr | key | `srp/hid` | 64 | `ports/zephyr/matter/matter_thread_port.c` |
 | zephyr | subtree | `uwl/latch` | 64 | `apps/dwm3001cdk-lock/src/main.c` |

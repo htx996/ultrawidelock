@@ -719,11 +719,11 @@ recorded is what the code does and where it will fail first.
 
 #### What is the same
 
-The fusion, the WV3/WV4 codecs, the AES-CCM envelope and every link decision
-are the *same source files* as the nRF pair -- `modules/ultrawidelock_anchor`,
-reached through role manifests. There is one implementation of "what to send,
-what an arriving datagram is, whether to believe it"
-(`ultrawidelock_link.c`), and both carriers call it. A sealed frame is
+The fusion, the WV3/WV4 codecs and the AES-CCM envelope are the *same source
+files* as the nRF pair -- `modules/ultrawidelock_anchor`, reached through role
+manifests. The ESP-NOW carrier and the Zephyr satellite also share
+`ultrawidelock_link.c`; the nRF lock keeps its multi-key witness manager but
+applies the same challenge and per-role replay rules. A sealed frame is
 byte-identical on both, so a mixed bench -- nRF lock, ESP32 satellite -- is
 possible in principle. Untested.
 
@@ -732,7 +732,7 @@ possible in principle. Untested.
 | | nRF pair | ESP32 pair |
 |---|---|---|
 | Carrier | Thread UDP, mesh-local all-nodes | **ESP-NOW broadcast** (the S3 has no 802.15.4 radio) |
-| Storage | `zephyr/settings` | **NVS** (`satlink`/`lk`, `satlink`/`ch`, `satfuse`/`bl`) |
+| Storage | `zephyr/settings` | **NVS** (`satlink`/`lk`, `satlink`/`ch`, `satfuse`/`bl1..3`) |
 | Console | Zephyr shell, `sat` command tree | **flat verbs** (`esp_console` has no subcommand tree) |
 | Joining | `sat dataset <tlv-hex>`, then the mesh | **nothing** -- ESP-NOW has no network to join |
 | Channel | irrelevant | **must be discovered** (see below) |
@@ -752,14 +752,16 @@ Satellite (`examples/esp32/satellite`):
 Lock (`apps/esp32-matter-lock`):
 
     sat_anckey <hex32>     the link key; same 32 hex as the satellite's sat_key
-    sat_baseline <mm>|cal  the anchor separation: set it, or measure it
-    sat_status             side, delta, geometry, may-predict
+    sat_baseline [role] <mm>|cal  set or measure one role's anchor separation
+    sat_status             side, delta, geometry, may-unlock
 
-`sat_baseline cal` is the nRF lock's `BL cal` under another name: hold the
-phone still about a metre past one anchor and roughly in line with both, and
-the median of 25 paired readings becomes the baseline. Median, not mean,
-because the NLOS tail is one-sided -- a body in the path only ever adds
-distance.
+`sat_baseline 2 cal` is the nRF lock's `BL cal` under another name, targeted at
+the companion image's default role 2: hold the phone still about a metre past
+one anchor and roughly in line with both, and the median of 25 exact-block
+pairs becomes that role's baseline. Once a role has reported, the role argument
+may be omitted. Median, not mean, because the NLOS tail is one-sided -- a body
+in the path only ever adds distance. Calibration reads the raw pair before a
+baseline exists; the baseline is its output, not a prerequisite.
 
 #### ESP-NOW only crosses on one channel
 
@@ -783,6 +785,25 @@ Two details that are load-bearing rather than decorative. The lock alone
 answers, or two satellites would find each other instead of the lock. And the
 answer is deliberately *not* a challenge frame -- if it were, two locks in
 radio range would answer each other's answers forever.
+
+After the channel reply, the lock also sends a carrier-marked freshness beacon
+with its own random nonce. The satellite restores the shared challenge marker
+before handing it to `ultrawidelock_link.c`; locks ignore that carrier marker,
+so two nearby locks cannot turn freshness beacons into a reply loop. A report
+must echo the current lock-owned nonce, and a satellite whose boot id changes
+must wait for the next beacon before its restarted counter is believed.
+Replaying an old channel probe therefore cannot roll the report receiver back
+to an old boot and counter window.
+
+Two nonces, never one, and the split is the point: what a board ECHOES is
+learned from an unauthenticated frame, and what a board REQUIRES is set only
+locally by whoever broadcast it. On ESP-NOW the lock hears every satellite's
+channel probe, so a single shared field would let anyone in radio range choose
+the lock's freshness epoch. Every probe is answered, but a probe rolls the
+epoch at most once per 2 s (`FRESHNESS_MIN_MS`): a roll retires the reports
+already in flight, so an unthrottled roll is a denial of service one broadcast
+wide. The nRF lock arms the same rule from `nonce_roll()`, the one place its
+challenge changes.
 
 `sat_link` on the satellite prints which of "hunting" and "found on channel N"
 is true. Check it before blaming the UWB.
@@ -810,8 +831,9 @@ the single-anchor round.
    <hex32>` on the lock. Nothing else is provisioned by hand.
 3. Watch the satellite for `lock found on Wi-Fi channel N`. Until that line
    appears, no report can arrive however well the UWB works.
-4. Set the geometry: `sat_baseline <mm>` from a tape measure, or
-   `sat_baseline cal` and hold the phone still.
+4. Set the role-2 geometry: `sat_baseline 2 <mm>` from a tape measure, or
+   `sat_baseline 2 cal` and hold the phone still. After the first report, the
+   shorthand without `2` targets the most recently reporting role.
 5. Confirm `ULTRAWIDELOCK_ANCHOR_SELF_INSIDE` matches how the boards are
    actually mounted. It fails no test and silently inverts every verdict.
 6. Walk up. The lock should log `SAT joined from the sealed link` with nothing

@@ -50,11 +50,17 @@ void sat_fusion_observe(int32_t self_mm, uint32_t self_block, int64_t now_ms);
 /**
  * May a passive unlock proceed?
  *
- * True unless the geometry positively says the phone is inside. Consulted for
- * the PREDICT and THRESHOLD paths only — a credential the user physically
- * presented is not a passive unlock and is never gated here.
+ * True with no usable pair, or when fresh sane geometry places the phone
+ * outside or in the dead band. False for INSIDE or impossible geometry.
+ * Consulted for the PREDICT and THRESHOLD paths only — a credential the user
+ * physically presented is not a passive unlock and is never gated here.
+ *
+ * NOT ultrawidelock_satellite_may_predict()'s question, and named apart from
+ * it deliberately: that one gates an inside latch predicting a DEPARTURE and
+ * withholds on OUTSIDE. This lock opens for an ARRIVAL and withholds on
+ * INSIDE. The two answers are opposite for the same geometry.
  */
-bool sat_fusion_may_predict(int64_t now_ms);
+bool sat_fusion_may_passive_unlock(int64_t now_ms);
 
 /**
  * Hand the satellite the session it must join: the URSK and ranging config the

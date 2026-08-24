@@ -34,6 +34,8 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -94,14 +96,23 @@ _Static_assert(sizeof(SATLINK_CHAN) - 1 <= NVS_KEY_NAME_MAX_SIZE - 1,
 #define HEARTBEAT_TICKS    100u		/* probe the lock every 15 s once found */
 #define HEARTBEAT_MISS_MAX 3u		/* rescan after 45 s of silence */
 
-/* The probe answer's first byte: the challenge version with the top bit set.
- * Nine bytes long like the probe, but not a frame the shared link parser
- * accepts -- deliberately, see the CHANNEL DISCOVERY comment. */
+/* Carrier-only first bytes. A reply proves which channel heard a probe. A
+ * freshness beacon carries a lock-owned nonce but must not look like a probe,
+ * or nearby locks would answer one another's beacons indefinitely. */
 #define SCAN_REPLY_MARK ((uint8_t)(ULTRAWIDELOCK_WITNESS_MSG_VER | 0x80u))
+#define FRESHNESS_MARK  ((uint8_t)(ULTRAWIDELOCK_WITNESS_MSG_VER | 0x40u))
+
+/* Floor between epoch rolls. Well under the fusion's staleness window, so a
+ * genuinely rebooted satellite is believed again within one report or two,
+ * and far above the rate a probe flood could force. */
+#define FRESHNESS_MIN_MS 2000
 
 static const uint8_t BCAST[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static struct ultrawidelock_link s_link;
+static SemaphoreHandle_t s_link_mutex;
+/* When the freshness epoch last rolled. See freshness_challenge_send(). */
+static int64_t s_fresh_ms;
 static bool s_up;
 static ultrawidelock_satlink_report_cb s_report_cb;
 static ultrawidelock_satlink_join_cb s_join_cb;
@@ -125,6 +136,16 @@ static uint32_t s_ticks;
 static uint32_t s_misses;
 static esp_timer_handle_t s_scan_timer;
 
+static bool link_take(TickType_t wait)
+{
+	return s_link_mutex != NULL && xSemaphoreTake(s_link_mutex, wait) == pdTRUE;
+}
+
+static void link_give(void)
+{
+	xSemaphoreGive(s_link_mutex);
+}
+
 void ultrawidelock_satlink_set_report_cb(ultrawidelock_satlink_report_cb cb)
 {
 	s_report_cb = cb;
@@ -137,7 +158,13 @@ void ultrawidelock_satlink_set_join_cb(ultrawidelock_satlink_join_cb cb)
 
 bool ultrawidelock_satlink_ready(void)
 {
-	return s_up && ultrawidelock_link_ready(&s_link);
+	bool ready = false;
+
+	if (s_up && link_take(0u)) {
+		ready = ultrawidelock_link_ready(&s_link);
+		link_give();
+	}
+	return ready;
 }
 
 /** Load the stored link key, if there is one. Absence is not an error. */
@@ -151,7 +178,10 @@ static void key_load(void)
 		return;
 	}
 	if (nvs_get_blob(h, SATLINK_KEY, key, &len) == ESP_OK) {
-		(void)ultrawidelock_link_set_key(&s_link, key, len);
+		if (link_take(portMAX_DELAY)) {
+			(void)ultrawidelock_link_set_key(&s_link, key, len);
+			link_give();
+		}
 	}
 	nvs_close(h);
 	memset(key, 0, sizeof(key));
@@ -161,10 +191,16 @@ int ultrawidelock_satlink_set_key(const uint8_t *key, size_t len)
 {
 	nvs_handle_t h;
 	esp_err_t e;
+	int rc;
 
 	/* Install first: a key the link refuses must never reach flash, or the
 	 * next boot loads something that cannot seal and says nothing about it. */
-	if (ultrawidelock_link_set_key(&s_link, key, len) != 0) {
+	if (!link_take(portMAX_DELAY)) {
+		return -1;
+	}
+	rc = ultrawidelock_link_set_key(&s_link, key, len);
+	link_give();
+	if (rc != 0) {
 		ESP_LOGE(TAG, "link key must be %u bytes", (unsigned)ULTRAWIDELOCK_SEAL_KEY_LEN);
 		return -1;
 	}
@@ -195,6 +231,52 @@ static void tx(const uint8_t *buf, size_t len)
 	if (e != ESP_OK) {
 		ESP_LOGW(TAG, "send failed (%s)", esp_err_to_name(e));
 	}
+}
+
+/**
+ * Broadcast the lock's freshness challenge, rolling it at most every
+ * FRESHNESS_MIN_MS.
+ *
+ * Every probe gets an answer, because a satellite that missed the last beacon
+ * has no other way to learn the current epoch. But a probe does not get to
+ * ROLL the epoch: a roll retires every report already in flight, so an
+ * attacker broadcasting probes at line rate would otherwise keep the lock
+ * permanently between epochs and starve the geometry it is supposed to
+ * protect. Answering with the standing nonce costs the attacker the effect and
+ * costs an honest satellite nothing.
+ */
+static void freshness_challenge_send(void)
+{
+	uint8_t frame[ULTRAWIDELOCK_LINK_CHALLENGE_LEN];
+	int64_t now = esp_timer_get_time() / 1000;
+	uint64_t nonce;
+	size_t len;
+
+	/* Expected state is local, never learned from an unauthenticated
+	 * incoming probe. Replaying an old probe therefore cannot make an old
+	 * report fresh. */
+	if (!link_take(0u)) {
+		return;
+	}
+	nonce = s_link.expected_echo_nonce;
+	if (nonce == 0u || (now - s_fresh_ms) >= FRESHNESS_MIN_MS) {
+		/* Never zero: the link core reads zero as UNARMED, so a draw that
+		 * happened to be zero would retire the freshness rule rather than
+		 * roll it. */
+		do {
+			nonce = ((uint64_t)esp_random() << 32) | esp_random();
+		} while (nonce == 0u);
+		ultrawidelock_link_expect_echo(&s_link, nonce);
+		s_fresh_ms = now;
+	}
+	link_give();
+
+	len = ultrawidelock_link_build_challenge(nonce, frame, sizeof(frame));
+	if (len == 0u) {
+		return;
+	}
+	frame[0] = FRESHNESS_MARK;
+	tx(frame, len);
 }
 
 /** The last channel the lock was heard on; SCAN_CHAN_MIN when never found. */
@@ -306,6 +388,8 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
 	struct ultrawidelock_anchor_msg am;
 	struct ultrawidelock_join_msg jm;
 	enum ultrawidelock_link_rx rx;
+	uint8_t shared_challenge[ULTRAWIDELOCK_LINK_CHALLENGE_LEN];
+	uint64_t received_challenge = 0u;
 
 	(void)info;
 	if (data == NULL || len <= 0) {
@@ -315,8 +399,7 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
 	/* The carrier's own probe answer, read before the shared parser (which
 	 * rightly does not know it). Only the satellite hunts, and only the
 	 * echo of the nonce it just sent means "the lock heard THIS probe on
-	 * THIS channel"; every other 9-byte frame falls through and is ignored
-	 * by the length rules below. */
+	 * THIS channel". */
 	if (len == ULTRAWIDELOCK_LINK_CHALLENGE_LEN && data[0] == SCAN_REPLY_MARK &&
 	    s_role != ULTRAWIDELOCK_LINK_HANDOFF_ROLE) {
 		uint64_t n = 0u;
@@ -329,12 +412,30 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
 		}
 		return;
 	}
+	/* A lock-owned freshness beacon is carrier-marked so another lock never
+	 * mistakes it for a channel probe. Restore the shared challenge marker
+	 * only on a satellite, immediately before the shared parser consumes it. */
+	if (len == ULTRAWIDELOCK_LINK_CHALLENGE_LEN && data[0] == FRESHNESS_MARK) {
+		if (s_role == ULTRAWIDELOCK_LINK_HANDOFF_ROLE) {
+			return;
+		}
+		memcpy(shared_challenge, data, sizeof(shared_challenge));
+		shared_challenge[0] = ULTRAWIDELOCK_WITNESS_MSG_VER;
+		data = shared_challenge;
+	}
 
 	memset(&am, 0, sizeof(am));
 	memset(&jm, 0, sizeof(jm));
+	/* Never wait on the high-priority Wi-Fi task. A concurrent key update or
+	 * send costs this datagram; absence is the link's fail-permissive state. */
+	if (!link_take(0u)) {
+		return;
+	}
 	rx = ultrawidelock_link_consume(&s_link, data, (size_t)len,
 					s_report_cb != NULL ? &am : NULL,
 					s_join_cb != NULL ? &jm : NULL);
+	received_challenge = s_link.tx_echo_nonce;
+	link_give();
 
 	switch (rx) {
 	case ULTRAWIDELOCK_LINK_RX_REPORT:
@@ -363,20 +464,24 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
 		break;
 	case ULTRAWIDELOCK_LINK_RX_CHALLENGE:
 		/* A satellite is hunting for our channel; consume() stored its
-		 * probe's nonce in s_link.echo_nonce. Answer with the carrier's
+		 * probe's nonce in s_link.tx_echo_nonce. Answer with the carrier's
 		 * reply frame echoing it. Only the lock answers -- a satellite
 		 * answering would let two satellites find each other -- and the
 		 * answer is deliberately not a challenge frame, or two locks in
 		 * radio range would answer each other's answers forever. */
 		if (s_role == ULTRAWIDELOCK_LINK_HANDOFF_ROLE) {
 			uint8_t reply[ULTRAWIDELOCK_LINK_CHALLENGE_LEN];
-			uint64_t n = s_link.echo_nonce;
+			uint64_t n = received_challenge;
 
 			reply[0] = SCAN_REPLY_MARK;
 			for (int i = 0; i < 8; i++) {
 				reply[1 + i] = (uint8_t)(n >> (56 - 8 * i));
 			}
 			tx(reply, sizeof(reply));
+			/* The echoed probe only proves the channel. This second,
+			 * lock-owned nonce is what the next sealed report must echo;
+			 * an attacker cannot reset it by replaying an old probe. */
+			freshness_challenge_send();
 		}
 		break;
 	case ULTRAWIDELOCK_LINK_RX_IGNORED:
@@ -394,7 +499,17 @@ int ultrawidelock_satlink_init(uint8_t role)
 	esp_now_peer_info_t peer;
 	esp_err_t e;
 
+	if (s_link_mutex == NULL) {
+		s_link_mutex = xSemaphoreCreateMutex();
+		if (s_link_mutex == NULL) {
+			return ESP_ERR_NO_MEM;
+		}
+	}
+	if (!link_take(portMAX_DELAY)) {
+		return ESP_ERR_TIMEOUT;
+	}
 	ultrawidelock_link_init(&s_link, role, esp_random());
+	link_give();
 	s_role = role;
 	key_load();
 
@@ -457,7 +572,7 @@ int ultrawidelock_satlink_init(uint8_t role)
 	}
 
 	s_up = true;
-	if (!ultrawidelock_link_ready(&s_link)) {
+	if (!ultrawidelock_satlink_ready()) {
 		/* Loud on purpose. An anchor that ranges perfectly and reports
 		 * nothing is indistinguishable from one that never booted. */
 		ESP_LOGW(TAG, "no link key stored: ranging will work, reporting will not");
@@ -501,10 +616,11 @@ void ultrawidelock_satlink_report(int32_t peer_mm, uint32_t ranging_block)
 	uint8_t frame[ULTRAWIDELOCK_LINK_MAX_FRAME];
 	size_t n;
 
-	if (!ultrawidelock_satlink_ready()) {
+	if (!s_up || !link_take(pdMS_TO_TICKS(10))) {
 		return;
 	}
 	n = ultrawidelock_link_build_report(&s_link, peer_mm, ranging_block, frame, sizeof(frame));
+	link_give();
 	if (n != 0u) {
 		tx(frame, n);
 	}
@@ -516,11 +632,12 @@ void ultrawidelock_satlink_send_handoff(const uint8_t *ursk, const uint8_t *rcfg
 	uint8_t frame[ULTRAWIDELOCK_LINK_MAX_FRAME];
 	size_t n;
 
-	if (!ultrawidelock_satlink_ready()) {
+	if (!s_up || !link_take(pdMS_TO_TICKS(10))) {
 		return;
 	}
 	n = ultrawidelock_link_build_join(&s_link, ursk, rcfg, channel, sync_code_index, frame,
 					  sizeof(frame));
+	link_give();
 	if (n != 0u) {
 		tx(frame, n);
 	}
@@ -541,10 +658,19 @@ void ultrawidelock_satlink_challenge(uint64_t nonce)
 	uint8_t frame[ULTRAWIDELOCK_LINK_CHALLENGE_LEN];
 	size_t n;
 
-	if (!s_up) {
+	/* Zero is the link core's UNARMED value. Broadcasting it would retire the
+	 * freshness rule for every reporter, which is never what a caller asking
+	 * to challenge means. */
+	if (!s_up || nonce == 0u || !link_take(pdMS_TO_TICKS(10))) {
 		return;
 	}
 	n = ultrawidelock_link_build_challenge(nonce, frame, sizeof(frame));
+	if (n != 0u) {
+		ultrawidelock_link_expect_echo(&s_link, nonce);
+		s_fresh_ms = esp_timer_get_time() / 1000;
+		frame[0] = FRESHNESS_MARK;
+	}
+	link_give();
 	if (n != 0u) {
 		tx(frame, n);
 	}

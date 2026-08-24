@@ -23,6 +23,8 @@
 #include "esp_console.h"
 #include "esp_log.h"
 #include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 
 #include "ultrawidelock_fusion.h"
 #include "ultrawidelock_port.h" /* ultrawidelock_uptime_ms */
@@ -42,17 +44,32 @@
 static const char *TAG = "satfuse";
 
 /* NVS. The baseline is measured at install and must survive a reflash, or
- * every triangle test is sized for a geometry nobody has. Both names are in
+ * every triangle test is sized for a geometry nobody has. The names are in
  * PORTING.md's storage table and asserted against NVS's caps here. */
 #define SATFUSE_NS "satfuse"
-#define SATFUSE_BL "bl"
+#define SATFUSE_BL1 "bl1"
+#define SATFUSE_BL2 "bl2"
+#define SATFUSE_BL3 "bl3"
 _Static_assert(sizeof(SATFUSE_NS) - 1 <= NVS_NS_NAME_MAX_SIZE - 1,
 	       "NVS namespace name is longer than NVS allows (NVS_NS_NAME_MAX_SIZE - 1)");
-_Static_assert(sizeof(SATFUSE_BL) - 1 <= NVS_KEY_NAME_MAX_SIZE - 1,
+_Static_assert(sizeof(SATFUSE_BL3) - 1 <= NVS_KEY_NAME_MAX_SIZE - 1,
 	       "NVS key name is longer than NVS allows (NVS_KEY_NAME_MAX_SIZE - 1)");
+
+static const char *const s_baseline_key[ULTRAWIDELOCK_SATELLITE_MAX_ROLES] = {
+	SATFUSE_BL1,
+	SATFUSE_BL2,
+	SATFUSE_BL3,
+};
 
 static struct ultrawidelock_satellite_set s_set;
 static bool s_up;
+static uint8_t s_last_role;
+/* Reports arrive on the Wi-Fi task; observations and verdicts run on the
+ * reader task; console commands are a third task. The critical sections below
+ * cover bounded RAM work only -- a fixed ring walk, a fixed-size median -- and
+ * never NVS, logging, or radio work, which is why a portMUX is the right shape
+ * here and why the results are published after the section, not inside it. */
+static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 /*
  * The frontier bias must stay several sigma below the baseline or noise decides
@@ -64,12 +81,27 @@ static bool s_up;
  * baseline this returns the configured bias exactly. Mirrors baseline_bias() in
  * apps/dwm3001cdk-lock/src/main.c.
  */
-static int32_t baseline_bias(int32_t baseline_mm)
+static int32_t configured_baseline(uint8_t role)
 {
-	const int32_t gap = CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM -
-			    CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM;
+	switch (role) {
+	case 1u:
+		return CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_MM;
+	case 2u:
+		return CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_2_MM;
+	case 3u:
+		return CONFIG_ULTRAWIDELOCK_ANCHOR_BASELINE_3_MM;
+	default:
+		return 0;
+	}
+}
 
-	if (CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM == 0) {
+static int32_t baseline_bias(uint8_t role, int32_t baseline_mm)
+{
+	const int32_t configured = configured_baseline(role);
+	const int32_t gap = configured - CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM;
+
+	if (CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM == 0 ||
+	    configured <= CONFIG_ULTRAWIDELOCK_ANCHOR_BOUNDARY_BIAS_MM) {
 		return 0;
 	}
 	return baseline_mm > gap ? baseline_mm - gap : 0;
@@ -88,68 +120,70 @@ static bool baseline_sane(int32_t mm)
 	return mm >= 300 && mm <= 10000;
 }
 
-/*
- * Role 1's slot only. A separation measured against one board is not the
- * separation to another, so roles 2 and 3 keep their configured baselines --
- * writing this number into their slots would size their triangle test for the
- * wrong geometry.
- */
-static void baseline_apply(int32_t mm, bool save)
+/* Apply only to the named role. One board's separation must never overwrite
+ * another role's geometry. */
+static int32_t baseline_apply_locked(uint8_t role, int32_t mm)
 {
-	struct ultrawidelock_satellite *sat = &s_set.peer[0];
-	nvs_handle_t h;
+	struct ultrawidelock_satellite *sat = &s_set.peer[role - 1u];
+	int32_t bias = baseline_bias(role, mm);
 
 	sat->cfg.baseline_mm = mm;
-	sat->cfg.boundary_bias_mm = baseline_bias(mm);
-	ESP_LOGI(TAG, "anchor baseline %d mm (frontier bias %d)", (int)mm,
-		 (int)sat->cfg.boundary_bias_mm);
-	if (!save) {
-		return;
-	}
+	sat->cfg.boundary_bias_mm = bias;
+	return bias;
+}
+
+static bool baseline_save(uint8_t role, int32_t mm)
+{
+	nvs_handle_t h;
+	bool ok = false;
+
 	if (nvs_open(SATFUSE_NS, NVS_READWRITE, &h) != ESP_OK) {
-		ESP_LOGE(TAG, "baseline not saved");
-		return;
+		return false;
 	}
-	if (nvs_set_i32(h, SATFUSE_BL, mm) != ESP_OK || nvs_commit(h) != ESP_OK) {
-		ESP_LOGE(TAG, "baseline not saved");
+	if (nvs_set_i32(h, s_baseline_key[role - 1u], mm) == ESP_OK &&
+	    nvs_commit(h) == ESP_OK) {
+		ok = true;
 	}
 	nvs_close(h);
+	return ok;
+}
+
+static void baseline_apply(uint8_t role, int32_t mm, bool save)
+{
+	int32_t bias;
+
+	portENTER_CRITICAL(&s_mux);
+	bias = baseline_apply_locked(role, mm);
+	portEXIT_CRITICAL(&s_mux);
+	ESP_LOGI(TAG, "anchor role %u baseline %d mm (frontier bias %d)", (unsigned)role,
+		 (int)mm, (int)bias);
+	if (save && !baseline_save(role, mm)) {
+		ESP_LOGE(TAG, "role %u baseline not saved", (unsigned)role);
+	}
 }
 
 static void baseline_load(void)
 {
 	nvs_handle_t h;
-	int32_t mm = 0;
 
 	if (nvs_open(SATFUSE_NS, NVS_READONLY, &h) != ESP_OK) {
 		return;
 	}
-	if (nvs_get_i32(h, SATFUSE_BL, &mm) == ESP_OK && baseline_sane(mm)) {
-		baseline_apply(mm, false);
+	for (uint8_t role = 1u; role <= ULTRAWIDELOCK_SATELLITE_MAX_ROLES; role++) {
+		int32_t mm = 0;
+
+		if (nvs_get_i32(h, s_baseline_key[role - 1u], &mm) == ESP_OK &&
+		    baseline_sane(mm)) {
+			int32_t bias;
+
+			portENTER_CRITICAL(&s_mux);
+			bias = baseline_apply_locked(role, mm);
+			portEXIT_CRITICAL(&s_mux);
+			ESP_LOGI(TAG, "anchor role %u baseline %d mm (frontier bias %d)",
+				 (unsigned)role, (int)mm, (int)bias);
+		}
 	}
 	nvs_close(h);
-}
-
-/**
- * A sealed, replay-checked distance from the second anchor.
- *
- * STORES ONLY, into that role's slot. Which of our measurements it belongs with
- * is settled later, by its ranging block, against the ring of recent samples --
- * so a report delayed by a block or two still finds its partner instead of
- * being matched against whatever we happen to hold at this instant.
- *
- * Runs on the Wi-Fi task (ESP-NOW receive).
- */
-static void on_anchor_report(uint8_t role, int32_t peer_mm, uint16_t ranging_block)
-{
-	int64_t now = ultrawidelock_uptime_ms();
-
-	ultrawidelock_satellite_set_report(&s_set, role, peer_mm, ranging_block, now);
-	/* Logged at the SINK, because an unpaired report and a report that never
-	 * arrived are the same silence otherwise, and they have completely
-	 * different causes. */
-	ESP_LOGD(TAG, "anchor role=%u report blk=%u mm=%d", (unsigned)role,
-		 (unsigned)ranging_block, (int)peer_mm);
 }
 
 /*
@@ -162,15 +196,25 @@ static void on_anchor_report(uint8_t role, int32_t peer_mm, uint16_t ranging_blo
  * between phone and anchor only ever adds distance, so a handful of long
  * readings would drag an average out and leave the geometry quietly wrong.
  *
- * Ported from apps/dwm3001cdk-lock/src/main.c, sampling the same two numbers:
- * this node's own range, and ultrawidelock_satellite_set_peer_mm()'s fresh
- * peer distance (the lock's uwb_range_mm and uwb_peer_mm).
+ * Ported from apps/dwm3001cdk-lock/src/main.c, but takes an exact-block raw pair
+ * so a zero baseline can be calibrated rather than hiding its own inputs.
  */
 #define CAL_N 25u
 
 static int32_t s_cal[CAL_N];
 static uint8_t s_cal_n;
 static bool s_cal_on;
+static uint8_t s_cal_role;
+static bool s_cal_have_block;
+static uint32_t s_cal_last_block;
+
+struct cal_result {
+	bool finished;
+	bool valid;
+	uint8_t role;
+	int32_t mm;
+	int32_t bias;
+};
 
 /** Insertion sort, then the middle sample. Small n, and it shrugs off the tail. */
 static int32_t cal_median(int32_t *v, size_t n)
@@ -187,18 +231,26 @@ static int32_t cal_median(int32_t *v, size_t n)
 	return v[n / 2];
 }
 
-static void cal_sample(int32_t self_mm)
+/** Try the target role's newest exact-block pair. Caller holds s_mux. */
+static void cal_try_locked(uint8_t role, int64_t now_ms, struct cal_result *result)
 {
+	uint32_t block;
+	int32_t self_mm;
 	int32_t peer_mm;
 	int32_t m;
 
-	if (!s_cal_on || self_mm < 0) {
+	if (!s_cal_on || role != s_cal_role || result == NULL ||
+	    !ultrawidelock_satellite_pair(&s_set.peer[role - 1u], now_ms, &self_mm, &peer_mm,
+					  &block)) {
 		return;
 	}
-	peer_mm = ultrawidelock_satellite_set_peer_mm(&s_set, ultrawidelock_uptime_ms());
-	if (peer_mm < 0) {
+	/* on_anchor_report() and sat_fusion_observe() both call this so either
+	 * arrival order completes a pair. Count the block once, not once per task. */
+	if (s_cal_have_block && block == s_cal_last_block) {
 		return;
 	}
+	s_cal_have_block = true;
+	s_cal_last_block = block;
 
 	s_cal[s_cal_n++] = self_mm - peer_mm;
 	if (s_cal_n < CAL_N) {
@@ -209,36 +261,94 @@ static void cal_sample(int32_t self_mm)
 	m = m < 0 ? -m : m;
 	s_cal_on = false;
 	s_cal_n = 0;
+	s_cal_have_block = false;
+	result->finished = true;
+	result->role = role;
+	result->mm = m;
 	/* A median outside the window means the phone was not held past one
 	 * anchor -- most often it sat between them, where the difference is
 	 * near zero. Refusing beats writing a geometry nothing was measured at. */
 	if (!baseline_sane(m)) {
-		ESP_LOGW(TAG, "baseline cal failed (median %d mm): not held past an anchor?",
-			 (int)m);
 		return;
 	}
-	baseline_apply(m, true);
+	result->valid = true;
+	result->bias = baseline_apply_locked(role, m);
+}
+
+static void cal_publish(const struct cal_result *result)
+{
+	if (result == NULL || !result->finished) {
+		return;
+	}
+	if (!result->valid) {
+		ESP_LOGW(TAG, "role %u baseline cal failed (median %d mm): not held past an anchor?",
+			 (unsigned)result->role, (int)result->mm);
+		return;
+	}
+	ESP_LOGI(TAG, "anchor role %u baseline %d mm (frontier bias %d)",
+		 (unsigned)result->role, (int)result->mm, (int)result->bias);
+	if (!baseline_save(result->role, result->mm)) {
+		ESP_LOGE(TAG, "role %u baseline not saved", (unsigned)result->role);
+	}
+}
+
+static void on_anchor_report(uint8_t role, int32_t peer_mm, uint16_t ranging_block)
+{
+	struct cal_result result = {0};
+	int64_t now = ultrawidelock_uptime_ms();
+
+	if (role < 1u || role > ULTRAWIDELOCK_SATELLITE_MAX_ROLES) {
+		return;
+	}
+	portENTER_CRITICAL(&s_mux);
+	ultrawidelock_satellite_set_report(&s_set, role, peer_mm, ranging_block, now);
+	s_last_role = role;
+	cal_try_locked(role, now, &result);
+	portEXIT_CRITICAL(&s_mux);
+	cal_publish(&result);
+	/* Logged at the SINK, because an unpaired report and a report that never
+	 * arrived are the same silence otherwise, and they have completely
+	 * different causes. */
+	ESP_LOGD(TAG, "anchor role=%u report blk=%u mm=%d", (unsigned)role,
+		 (unsigned)ranging_block, (int)peer_mm);
 }
 
 void sat_fusion_observe(int32_t self_mm, uint32_t self_block, int64_t now_ms)
 {
+	struct cal_result result = {0};
+
+	portENTER_CRITICAL(&s_mux);
 	if (s_up) {
 		ultrawidelock_satellite_set_observe(&s_set, self_mm, self_block, now_ms);
-		cal_sample(self_mm);
+		if (s_cal_on) {
+			cal_try_locked(s_cal_role, now_ms, &result);
+		}
 	}
+	portEXIT_CRITICAL(&s_mux);
+	cal_publish(&result);
 }
 
-bool sat_fusion_may_predict(int64_t now_ms)
+bool sat_fusion_may_passive_unlock(int64_t now_ms)
 {
+	bool may;
+
 	/* Before init, permit: this is the single-anchor lock's behaviour, and
 	 * it is what an image with no satellite mounted must keep doing. */
-	return !s_up || ultrawidelock_satellite_set_may_predict(&s_set, now_ms);
+	portENTER_CRITICAL(&s_mux);
+	may = !s_up || ultrawidelock_satellite_set_may_passive_unlock(&s_set, now_ms);
+	portEXIT_CRITICAL(&s_mux);
+	return may;
 }
 
 void sat_fusion_send_handoff(const uint8_t *ursk, size_t ursk_len, const uint8_t *rcfg,
 			     size_t rcfg_len, uint8_t channel, uint8_t sync_code_index)
 {
-	if (!s_up) {
+	bool up;
+
+	portENTER_CRITICAL(&s_mux);
+	up = s_up;
+	portEXIT_CRITICAL(&s_mux);
+	if (!up) {
 		return;
 	}
 	/* A size the codec cannot carry means this build and the ranging engine
@@ -316,30 +426,78 @@ static int cmd_anckey(int argc, char **argv)
 	return 0;
 }
 
+static bool parse_role(const char *s, uint8_t *role)
+{
+	char *end = NULL;
+	long v;
+
+	if (s == NULL || role == NULL || *s == '\0') {
+		return false;
+	}
+	v = strtol(s, &end, 10);
+	if (*end != '\0' || v < 1 || v > ULTRAWIDELOCK_SATELLITE_MAX_ROLES) {
+		return false;
+	}
+	*role = (uint8_t)v;
+	return true;
+}
+
+static bool parse_baseline_mm(const char *s, int32_t *mm)
+{
+	char *end = NULL;
+	long v;
+
+	if (s == NULL || mm == NULL || *s == '\0') {
+		return false;
+	}
+	v = strtol(s, &end, 10);
+	if (*end != '\0' || v < 300 || v > 10000) {
+		return false;
+	}
+	*mm = (int32_t)v;
+	return true;
+}
+
 static int cmd_baseline(int argc, char **argv)
 {
+	const char *value;
+	uint8_t role = 0u;
 	int32_t mm;
 
-	if (argc != 2) {
-		printf("usage: sat_baseline <mm>|cal   (anchor separation, measured at install)\n");
+	if (argc == 2) {
+		portENTER_CRITICAL(&s_mux);
+		role = s_last_role;
+		portEXIT_CRITICAL(&s_mux);
+		if (role == 0u) {
+			printf("no reporting role yet; use sat_baseline <role> <mm>|cal\n");
+			return 1;
+		}
+		value = argv[1];
+	} else if (argc == 3 && parse_role(argv[1], &role)) {
+		value = argv[2];
+	} else {
+		printf("usage: sat_baseline [role] <mm>|cal   (role 1..3)\n");
 		return 1;
 	}
 	/* `cal` measures it instead of being told it: hold the phone still, a
 	 * metre past one anchor and roughly in line with both, and the median
 	 * of the next CAL_N paired readings becomes the baseline. */
-	if (strcmp(argv[1], "cal") == 0) {
+	if (strcmp(value, "cal") == 0) {
+		portENTER_CRITICAL(&s_mux);
 		s_cal_n = 0;
 		s_cal_on = true;
-		printf("baseline cal: hold the phone still ~1 m past one anchor (%u readings)\n",
-		       (unsigned)CAL_N);
+		s_cal_role = role;
+		s_cal_have_block = false;
+		portEXIT_CRITICAL(&s_mux);
+		printf("role %u baseline cal: hold the phone still ~1 m past one anchor (%u paired readings)\n",
+		       (unsigned)role, (unsigned)CAL_N);
 		return 0;
 	}
-	mm = (int32_t)strtol(argv[1], NULL, 10);
-	if (!baseline_sane(mm)) {
-		printf("baseline must be 300..10000 mm (got %d)\n", (int)mm);
+	if (!parse_baseline_mm(value, &mm)) {
+		printf("baseline must be an integer from 300..10000 mm\n");
 		return 1;
 	}
-	baseline_apply(mm, true);
+	baseline_apply(role, mm, true);
 	return 0;
 }
 
@@ -347,14 +505,26 @@ static int cmd_status(int argc, char **argv)
 {
 	int64_t now = ultrawidelock_uptime_ms();
 	struct ultrawidelock_fusion_verdict fv;
+	int32_t baseline[ULTRAWIDELOCK_SATELLITE_MAX_ROLES];
+	int32_t bias[ULTRAWIDELOCK_SATELLITE_MAX_ROLES];
+	int32_t peer_mm;
+	uint8_t last_role;
 
 	(void)argc;
 	(void)argv;
+	portENTER_CRITICAL(&s_mux);
 	fv = ultrawidelock_satellite_set_verdict(&s_set, now);
+	peer_mm = ultrawidelock_satellite_set_peer_mm(&s_set, now);
+	last_role = s_last_role;
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		baseline[i] = s_set.peer[i].cfg.baseline_mm;
+		bias[i] = s_set.peer[i].cfg.boundary_bias_mm;
+	}
+	portEXIT_CRITICAL(&s_mux);
 	printf("anchor link:  %s\n", ultrawidelock_satlink_ready() ? "up, keyed" : "not reporting");
-	printf("baseline:     %d mm (bias %d)\n", (int)s_set.peer[0].cfg.baseline_mm,
-	       (int)s_set.peer[0].cfg.boundary_bias_mm);
-	printf("peer distance: %d mm\n", (int)ultrawidelock_satellite_set_peer_mm(&s_set, now));
+	printf("baselines:    r1=%d/%d r2=%d/%d r3=%d/%d mm/bias\n", (int)baseline[0],
+	       (int)bias[0], (int)baseline[1], (int)bias[1], (int)baseline[2], (int)bias[2]);
+	printf("peer:         role %u, %d mm\n", (unsigned)last_role, (int)peer_mm);
 	printf("side:         %s%s\n",
 	       fv.side == ULTRAWIDELOCK_SIDE_INSIDE
 		       ? "INSIDE"
@@ -363,7 +533,8 @@ static int cmd_status(int argc, char **argv)
 	/* The sign is the whole measurement; print it so a bench walk can be
 	 * checked against ground truth without decoding the verdict. */
 	printf("delta:        %d mm (negative = nearer the inside anchor)\n", (int)fv.delta_mm);
-	printf("may predict:  %s\n", sat_fusion_may_predict(now) ? "yes" : "no (geometry says inside)");
+	printf("may unlock:   %s\n",
+	       sat_fusion_may_passive_unlock(now) ? "yes" : "no (inside/bad geometry)");
 	return 0;
 }
 
@@ -375,7 +546,7 @@ static void console_register(void)
 		 .hint = NULL,
 		 .func = cmd_anckey},
 		{.command = "sat_baseline",
-		 .help = "anchor separation: <mm> to set it, `cal` to measure it",
+		 .help = "role baseline: sat_baseline [role] <mm>|cal",
 		 .hint = NULL,
 		 .func = cmd_baseline},
 		{.command = "sat_status",
@@ -393,6 +564,8 @@ static void console_register(void)
 
 void sat_fusion_init(void)
 {
+	int32_t baseline[ULTRAWIDELOCK_SATELLITE_MAX_ROLES];
+
 	/*
 	 * One geometry per role: the baseline is the distance to THAT satellite,
 	 * and the tolerances are properties of the ranging, so they are shared.
@@ -423,6 +596,7 @@ void sat_fusion_init(void)
 
 	ultrawidelock_satellite_set_init(&s_set, cfg, CONFIG_ULTRAWIDELOCK_ANCHOR_STALE_MS,
 					 SAT_SELF_INSIDE);
+	baseline_load();
 
 	/* Before the carrier comes up, so a report cannot arrive with the sink
 	 * still unset. */
@@ -438,13 +612,18 @@ void sat_fusion_init(void)
 	/* The satellite cannot range until it holds this session's keys, and a
 	 * human relaying them by console is the bench workaround this replaces. */
 	ultrawidelock_uwb_set_handoff_listener(on_uwb_handoff);
-	baseline_load();
 	console_register();
+	portENTER_CRITICAL(&s_mux);
 	s_up = true;
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		baseline[i] = s_set.peer[i].cfg.baseline_mm;
+	}
+	portEXIT_CRITICAL(&s_mux);
 	/* The round shape, said out loud: a count mismatch with the satellite
 	 * build diverges every derived STS and the only symptom is silence, so
 	 * both consoles print their number for the bench to compare. */
-	ESP_LOGI(TAG, "two-anchor gate armed (baseline %d mm, round %d/%d)",
-		 (int)s_set.peer[0].cfg.baseline_mm, CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX,
+	ESP_LOGI(TAG, "two-anchor gate armed (baselines %d/%d/%d mm, round %d/%d)",
+		 (int)baseline[0], (int)baseline[1], (int)baseline[2],
+		 CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX,
 		 CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS);
 }
