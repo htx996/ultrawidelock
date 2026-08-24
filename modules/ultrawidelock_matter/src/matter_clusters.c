@@ -35,13 +35,10 @@
 #define TAG_CAPMIN_CASE_SESSIONS 0u
 #define TAG_CAPMIN_SUBSCRIPTIONS 1u
 
-/*
- * Strings this node reports about itself. Build-time, not per-device: this port
- * has no factory data partition and no per-board serial to read out of one.
- */
+/* Strings this node reports about itself. */
 #define MATTER_VENDOR_NAME   "ultrawidelock"
 #define MATTER_PRODUCT_NAME  "DWM3001CDK credential Reader"
-#define MATTER_SERIAL_NUMBER "DWM3001CDK-0001"
+#define MATTER_SERIAL_NUMBER_FALLBACK "DWM3001CDK-UNKNOWN"
 
 /* Descriptor/Structs.h:43-44, DeviceTypeStruct. */
 #define TAG_DEVTYPE_TYPE     0u
@@ -657,6 +654,8 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 			case MATTER_ATTR_UWB_DEVICE_IN_RANGE:
 			case MATTER_ATTR_UWB_DISTANCE_MM:
 			case MATTER_ATTR_UWB_DEVICE_ID:
+			case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
+			case MATTER_ATTR_UWB_MOVEMENT_STATE:
 			case MATTER_ATTR_FEATURE_MAP:
 			case MATTER_ATTR_CLUSTER_REVISION:
 			case MATTER_ATTR_ATTRIBUTE_LIST:
@@ -905,6 +904,8 @@ static const uint32_t k_uwb_presence_attrs[] = {
 	MATTER_ATTR_UWB_DEVICE_IN_RANGE,
 	MATTER_ATTR_UWB_DISTANCE_MM,
 	MATTER_ATTR_UWB_DEVICE_ID,
+	MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM,
+	MATTER_ATTR_UWB_MOVEMENT_STATE,
 	MATTER_ATTR_FEATURE_MAP,
 	MATTER_ATTR_CLUSTER_REVISION,
 	MATTER_ATTR_ATTRIBUTE_LIST,
@@ -1080,6 +1081,12 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 			return;
 		case MATTER_ATTR_UWB_DEVICE_ID:
 			(void)matter_tlv_put_u64(w, tag, info->uwb_device_id);
+			return;
+		case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_unlock_threshold_cm);
+			return;
+		case MATTER_ATTR_UWB_MOVEMENT_STATE:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_movement_state);
 			return;
 		case MATTER_ATTR_FEATURE_MAP:
 			(void)matter_tlv_put_u64(w, tag, 0u);
@@ -1399,14 +1406,13 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 			return;
 		case MATTER_ATTR_BASIC_SERIAL_NUMBER:
 		case MATTER_ATTR_BASIC_UNIQUE_ID:
-			/*
-			 * The same string for both, and it is a BUILD-TIME
-			 * constant: this port has no per-device serial to read.
-			 * Two boards running this image are indistinguishable
-			 * here, which matters the moment a home holds both.
-			 */
-			(void)matter_tlv_put_utf8(w, tag, MATTER_SERIAL_NUMBER,
-						  strlen(MATTER_SERIAL_NUMBER));
+			{
+				const char *serial = info->serial_number[0] != '\0'
+							   ? info->serial_number
+							   : MATTER_SERIAL_NUMBER_FALLBACK;
+
+				(void)matter_tlv_put_utf8(w, tag, serial, strlen(serial));
+			}
 			return;
 		case MATTER_ATTR_BASIC_CAPABILITY_MINIMA:
 			(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);

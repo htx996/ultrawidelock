@@ -70,7 +70,13 @@ extern "C" {
 #define MATTER_ATTR_UWB_DEVICE_IN_RANGE 0x0000u
 #define MATTER_ATTR_UWB_DISTANCE_MM     0x0001u
 #define MATTER_ATTR_UWB_DEVICE_ID       0x0002u
-#define MATTER_UWB_PRESENCE_CLUSTER_REV 1u
+#define MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM 0x0003u
+#define MATTER_ATTR_UWB_MOVEMENT_STATE      0x0004u
+#define MATTER_UWB_MOVEMENT_UNKNOWN         0u
+#define MATTER_UWB_MOVEMENT_STATIONARY      1u
+#define MATTER_UWB_MOVEMENT_APPROACHING     2u
+#define MATTER_UWB_MOVEMENT_LEAVING         3u
+#define MATTER_UWB_PRESENCE_CLUSTER_REV     2u
 
 /*
  * AdministratorCommissioning. This is what Apple Home's "Turn On Pairing Mode"
@@ -637,6 +643,9 @@ struct matter_lock_event {
 #define MATTER_ATTR_BASIC_SPECIFICATION_VERSION 0x0015u
 #define MATTER_ATTR_BASIC_MAX_PATHS_PER_INVOKE  0x0016u
 
+/** Matter Basic Information limits SerialNumber and UniqueID to 32 bytes. */
+#define MATTER_SERIAL_NUMBER_MAX 32u
+
 /*
  * What this node reports about itself.
  *
@@ -870,6 +879,8 @@ struct matter_fabric_acl {
 struct matter_device_info {
 	uint16_t vendor_id;
 	uint16_t product_id;
+	/** Stable, per-device serial supplied by the hardware port. */
+	char serial_number[MATTER_SERIAL_NUMBER_MAX + 1u];
 	/**
 	 * AliroReaderGroupSubIdentifier, filled by the port.
 	 *
@@ -925,6 +936,8 @@ struct matter_device_info {
 	bool uwb_device_in_range;
 	int32_t uwb_distance_mm;
 	uint32_t uwb_device_id;
+	uint32_t uwb_unlock_threshold_cm;
+	uint8_t uwb_movement_state;
 	/**
 	 * The LockOperation events waiting to be reported, oldest first.
 	 *

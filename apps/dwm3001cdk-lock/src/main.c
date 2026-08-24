@@ -359,6 +359,75 @@ static uint32_t authenticated_credential_id(void)
 	return v;
 }
 
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+#define UWB_MOVEMENT_ENTER_CM_S       20
+#define UWB_MOVEMENT_STATIONARY_CM_S   8
+#define UWB_MOVEMENT_CONFIRM_SAMPLES   2u
+#define UWB_MOVEMENT_STATIONARY_MS   500
+#define UWB_MOVEMENT_HOLD_MS         300
+
+struct uwb_movement_filter {
+	enum matter_uwb_movement_state state;
+	enum matter_uwb_movement_state candidate;
+	uint8_t candidate_samples;
+	int64_t candidate_since_ms;
+	int64_t hold_until_ms;
+};
+
+static void uwb_movement_reset(struct uwb_movement_filter *filter)
+{
+	memset(filter, 0, sizeof(*filter));
+	filter->state = MATTER_UWB_MOVEMENT_STATE_UNKNOWN;
+	filter->candidate = MATTER_UWB_MOVEMENT_STATE_UNKNOWN;
+}
+
+static enum matter_uwb_movement_state
+uwb_movement_state(struct uwb_movement_filter *filter, int32_t velocity_cm_s,
+		   int64_t now_ms)
+{
+	enum matter_uwb_movement_state candidate;
+	int64_t dwell_ms;
+
+	if (velocity_cm_s >= UWB_MOVEMENT_ENTER_CM_S) {
+		candidate = MATTER_UWB_MOVEMENT_STATE_APPROACHING;
+	} else if (velocity_cm_s <= -UWB_MOVEMENT_ENTER_CM_S) {
+		candidate = MATTER_UWB_MOVEMENT_STATE_LEAVING;
+	} else if (velocity_cm_s >= -UWB_MOVEMENT_STATIONARY_CM_S &&
+		   velocity_cm_s <= UWB_MOVEMENT_STATIONARY_CM_S) {
+		candidate = MATTER_UWB_MOVEMENT_STATE_STATIONARY;
+	} else {
+		filter->candidate = filter->state;
+		filter->candidate_samples = 0u;
+		filter->candidate_since_ms = now_ms;
+		return filter->state;
+	}
+	if (candidate == filter->state) {
+		filter->candidate = candidate;
+		filter->candidate_samples = 0u;
+		filter->candidate_since_ms = now_ms;
+		return filter->state;
+	}
+	if (candidate != filter->candidate) {
+		filter->candidate = candidate;
+		filter->candidate_samples = 1u;
+		filter->candidate_since_ms = now_ms;
+	} else if (filter->candidate_samples < UINT8_MAX) {
+		filter->candidate_samples++;
+	}
+	dwell_ms = candidate == MATTER_UWB_MOVEMENT_STATE_STATIONARY
+			   ? UWB_MOVEMENT_STATIONARY_MS
+			   : 0;
+	if (filter->candidate_samples >= UWB_MOVEMENT_CONFIRM_SAMPLES &&
+	    now_ms >= filter->hold_until_ms &&
+	    now_ms - filter->candidate_since_ms >= dwell_ms) {
+		filter->state = candidate;
+		filter->candidate_samples = 0u;
+		filter->hold_until_ms = now_ms + UWB_MOVEMENT_HOLD_MS;
+	}
+	return filter->state;
+}
+#endif
+
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 /*
  * The inside veto. The side gate classifies each window; this decides what a
@@ -592,6 +661,9 @@ int main(void)
 	 * grew past trivial; the 4 KB main stack is not the place to discover that,
 	 * and in .bss the cost shows up in the measured RAM budget instead. */
 	static struct ultrawidelock_approach approach;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	static struct uwb_movement_filter movement_filter;
+#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR)
 	/*
 	 * Second-anchor geometry. Nothing feeds this yet -- the satellite
@@ -752,6 +824,10 @@ int main(void)
 	 * ranging started does not open it. See ultrawidelock_approach_cfg::approach_cm. */
 	ultrawidelock_approach_init(&approach, NULL);
 	approach.cfg.near_dwell = CONFIG_ULTRAWIDELOCK_APPROACH_NEAR_DWELL;
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+	uwb_movement_reset(&movement_filter);
+	matter_commission_set_uwb_unlock_threshold((uint32_t)approach.cfg.unlock_cm);
+#endif
 
 	/* Same seam the ESP32 matter-lock uses (app_main.cpp on_uwb_range): the engine
 	 * signals, this thread decides. Both lines run before the listener can fire --
@@ -1055,13 +1131,6 @@ int main(void)
 			last_gen = gen;
 			last_obs_gen = gen;
 			present = true;
-#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-			{
-				uint32_t device_id = authenticated_credential_id();
-
-				matter_commission_update_uwb_presence(true, cm * 10, device_id);
-			}
-#endif
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_ANCHOR_PAIR_LOG)
 			/* On the MAIN THREAD, not the ranging callback: the per-frame
 			 * trace is forced off above precisely because synchronous
@@ -1208,6 +1277,12 @@ int main(void)
 			witness_link_set_range_mm(cm * 10);
 #endif
 			act = ml_feed_range(&approach, now, cm);
+#if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
+			matter_commission_update_uwb_presence(
+				true, cm * 10, authenticated_credential_id(),
+				uwb_movement_state(&movement_filter,
+					ultrawidelock_approach_vel_cm_s(&approach), now));
+#endif
 		} else {
 			/*
 			 * A fresh range the integrity consensus will not vouch
@@ -1472,7 +1547,9 @@ int main(void)
 			}
 			present = false;
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
-			matter_commission_update_uwb_presence(false, -1, 0u);
+			uwb_movement_reset(&movement_filter);
+			matter_commission_update_uwb_presence(
+				false, -1, 0u, MATTER_UWB_MOVEMENT_STATE_UNKNOWN);
 #endif
 		}
 

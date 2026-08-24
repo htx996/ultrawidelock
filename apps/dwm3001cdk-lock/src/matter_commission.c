@@ -2225,6 +2225,8 @@ static void notify_uwb_presence(struct sub_state *s)
 		MATTER_ATTR_UWB_DEVICE_IN_RANGE,
 		MATTER_ATTR_UWB_DISTANCE_MM,
 		MATTER_ATTR_UWB_DEVICE_ID,
+		MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM,
+		MATTER_ATTR_UWB_MOVEMENT_STATE,
 	};
 	struct matter_im_read read;
 	struct matter_tx_slot *packet;
@@ -4427,8 +4429,22 @@ bool matter_commission_take_deliberate_unlock(void)
 	return atomic_clear(&s_deliberate_unlock) != 0;
 }
 
+void matter_commission_set_uwb_unlock_threshold(uint32_t threshold_cm)
+{
+	bool report;
+
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	report = s_info.uwb_unlock_threshold_cm != threshold_cm;
+	s_info.uwb_unlock_threshold_cm = threshold_cm;
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+	if (report) {
+		k_work_submit(&s_uwb_notify_work);
+	}
+}
+
 void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
-					   uint32_t device_id)
+					   uint32_t device_id,
+					   enum matter_uwb_movement_state movement_state)
 {
 	static int64_t last_report_ms;
 	static int32_t last_report_mm = -1;
@@ -4442,10 +4458,12 @@ void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
 	}
 
 	ultrawidelock_mutex_lock(&s_owner_lock);
-	report = in_range != last_report_in_range || device_id != s_info.uwb_device_id;
+	report = in_range != last_report_in_range || device_id != s_info.uwb_device_id ||
+		 movement_state != s_info.uwb_movement_state;
 	s_info.uwb_device_in_range = in_range;
 	s_info.uwb_distance_mm = in_range ? distance_mm : -1;
 	s_info.uwb_device_id = in_range ? device_id : 0u;
+	s_info.uwb_movement_state = in_range ? movement_state : MATTER_UWB_MOVEMENT_UNKNOWN;
 	if (in_range && !report && (now - last_report_ms) >= 1000 &&
 	    (last_report_mm < 0 || distance_delta >= 100)) {
 		report = true;
@@ -4506,6 +4524,14 @@ int matter_commission_init(void)
 		uint32_t id[2] = { NRF_FICR->DEVICEID[0], NRF_FICR->DEVICEID[1] };
 		struct ultrawidelock_sha256 h;
 		uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
+		int serial_len;
+
+		serial_len = snprintf(s_info.serial_number, sizeof(s_info.serial_number),
+				      "DWM3001CDK-%08X%08X",
+				      (unsigned int)id[1], (unsigned int)id[0]);
+		if (serial_len < 0 || (size_t)serial_len >= sizeof(s_info.serial_number)) {
+			s_info.serial_number[0] = '\0';
+		}
 
 		ultrawidelock_sha256_init(&h);
 		ultrawidelock_sha256_update(&h, (const uint8_t *)"ultrawidelock-group-sub-id", 18u);

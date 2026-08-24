@@ -65,13 +65,24 @@ bool matter_commission_window_open(void);
  */
 bool matter_commission_take_deliberate_unlock(void);
 
+enum matter_uwb_movement_state {
+	MATTER_UWB_MOVEMENT_STATE_UNKNOWN = 0,
+	MATTER_UWB_MOVEMENT_STATE_STATIONARY = 1,
+	MATTER_UWB_MOVEMENT_STATE_APPROACHING = 2,
+	MATTER_UWB_MOVEMENT_STATE_LEAVING = 3,
+};
+
+/** Publish the read-only UWB unlock threshold through the vendor cluster. */
+void matter_commission_set_uwb_unlock_threshold(uint32_t threshold_cm);
+
 /**
  * Publish the latest trusted UWB observation through the vendor Matter
  * cluster. Reports are internally rate-limited; presence edges are immediate.
  * @p device_id is a privacy-safe credential-derived identifier, or zero.
  */
 void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
-					   uint32_t device_id);
+					   uint32_t device_id,
+					   enum matter_uwb_movement_state movement_state);
 
 /**
  * Finish the one packet previously accepted by the Matter BLE transport.
