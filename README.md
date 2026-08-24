@@ -37,6 +37,10 @@ make flash                  # over the on-board J-Link
 make monitor                # console, over RTT
 ```
 
+`make bootstrap` checks the machine before it fetches anything, names what is missing and
+how to get it, and offers to install nRF Util if it is not here. It is resumable: interrupt
+it and run it again. `SETUP_AUTO=1` answers yes to that offer without a prompt.
+
 `make help` lists every target. `make tools` says what this machine is missing.
 
 <div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
