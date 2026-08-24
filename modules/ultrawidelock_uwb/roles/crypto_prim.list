@@ -1,0 +1,4 @@
+# ultrawidelock_uwb tier: thin CCC/Matter AES-ECB adapter over ultrawidelock_prim.
+# Consumers: the Zephyr module, ESP-IDF and FreeRTOS ports, nRF5340 initiator,
+# and host tests. One repo-root-relative path per line; add HERE only.
+modules/ultrawidelock_uwb/src/ccc/ccc_crypto_prim.c

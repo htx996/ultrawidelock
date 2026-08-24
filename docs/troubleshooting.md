@@ -142,16 +142,36 @@ and needs no key. Same key and same target as the DWM3001CDK, so if you have
 built that board you already have one.
 
 **`make nrf-build` can't find the toolchain.** `make bootstrap` installs the NCS v3.3.0
-toolchain as its second phase, so this normally means bootstrap has not been run here.
+toolchain, so this normally means bootstrap has not been run here (`make tools` says
+whether it is installed).
 All builds go through `nrfutil sdk-manager toolchain launch … west`; a bare `west` is
 not used. If your toolchain is managed some other way, `nrfutil sdk-manager config show`
 names the directory bootstrap looks in, and `ULTRAWIDELOCK_TOOLCHAIN=env` uses whatever is
 already on `PATH` instead.
 
 **`make bootstrap` says nrfutil is not on PATH.** It is what installs the toolchain, so
-bootstrap stops there rather than after the 6.5 GB fetch. `make tools` gets it on
-macOS; elsewhere it is a
+bootstrap stops in its preflight rather than after the 6.5 GB fetch. On macOS and Linux
+it offers to install it for you: one 5 MB binary from Nordic into `~/.local/bin`, `y` to
+accept. `SETUP_AUTO=1 make bootstrap` accepts without asking (for CI and containers) and
+`SETUP_AUTO=0` never asks. Prefer to do it yourself, or on another platform: it is a
 [download from Nordic](https://www.nordicsemi.com/Products/Development-tools/nrf-util).
+`make tools` reports what this machine has.
+
+**`nrfutil` is installed but `make bootstrap` still fails on `sdk-manager`.** nrfutil is a
+launcher that ships with no commands inside it, so having the binary does not mean having
+the toolchain manager. Bootstrap now adds it (`nrfutil install sdk-manager`, a few seconds)
+when it is missing; run that by hand if you are driving nrfutil directly. `make tools`
+lists `nrfutil`, `sdk-manager` and `toolchain` as three separate rows for this reason.
+
+**`make bootstrap` stops in preflight over disk, or a missing `git`/`curl`/`python3`.** It
+reports every gap in one pass with the install command for this host, because the phases
+after it cost several GB and many minutes. For disk, `ULTRAWIDELOCK_WS=/big/disk/ws make
+bootstrap` puts the workspace on another volume, and in a linked worktree `make ws-seed`
+clones the primary's workspace for ~0 disk.
+
+**`make bootstrap` was interrupted.** Re-run it. Every phase resumes: the toolchain install
+is skipped once installed, a half-finished clone is repaired and re-pinned, the fetch
+sentinel keeps `west update` from starting over, and the patches are reset and reapplied.
 
 **A config change flashed but did not take effect.** A change to net-core configuration
 needs a full erase: use `make nrf-flash-erase`, not `make nrf-flash`. `make nrf-flash` is

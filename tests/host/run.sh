@@ -18,6 +18,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # One build root for the whole repo; the host suites own build/host.
 OUT="${ULTRAWIDELOCK_BUILD_ROOT:-$ROOT/build}/host"
 mkdir -p "$OUT"
+# Belt to pl_start's braces: with no binary left from the last run, a stage that
+# somehow reaches its run line without compiling has nothing stale to succeed
+# against. A false PASS over a compile error is the one failure this suite must
+# never have, so it is prevented twice.
+rm -f "$OUT"/host_test_*
 # SAN=1: same suite rebuilt under ASan + UBSan (`make test-san`).
 san_flags=
 if [ -n "${SAN:-}" ]; then
@@ -91,23 +96,15 @@ stage_uwb_driver() {
 	ULTRAWIDELOCK_TEST_QUIET=1 "$OUT/host_test_drv"
 }
 
-# 2) PSA/mbedTLS crypto seams over recording fakes (psafake/). The two backend
-#    files define the same crypto_aes_ecb_encrypt symbol as aes_ref.c, so each
-#    is compiled alone with a -D rename (a compile flag, not a source edit).
+# 2) The PSA primitive provider and portable CCC adapter over recording fakes
+#    (psafake/). This checks the one target crypto boundary; AES truth remains
+#    in the core suite's FIPS-197 reference provider.
 stage_crypto_backends() {
 	psa_flags=(-std=c11 -O1 -w -I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_uwb/include"
-		-I"$SRC/ccc")
-	# shellcheck disable=SC2086
-	"${CC:-cc}" "${psa_flags[@]}" $san_flags -c \
-		-Dcrypto_aes_ecb_encrypt=ultrawidelock_test_psa_ecb \
-		"$SRC/ccc/ccc_crypto_psa.c" -o "$OUT/ccc_crypto_psa_host.o"
-	# shellcheck disable=SC2086
-	"${CC:-cc}" "${psa_flags[@]}" $san_flags -c \
-		-Dcrypto_aes_ecb_encrypt=ultrawidelock_test_mbedtls_ecb \
-		"$SRC/ccc/ccc_crypto_mbedtls.c" -o "$OUT/ccc_crypto_mbedtls_host.o"
+		-I"$SRC/ccc" -I"$ROOT/modules/ultrawidelock_cred/include")
 	# ultrawidelock_seal.c belongs to this stage and not to the shared-core
-	# binary: it is the third PSA seam, and the shared-core build has no PSA
-	# at all. Its sources come from the role manifest, like every other
+	# binary: it calls the primitive seam, whose host provider is PSA-backed.
+	# Its sources come from the role manifest, like every other
 	# consumer's, so the host suite and the two ports cannot disagree.
 	# seal + link + the WV2/WV3/WV4 codec the link speaks. Three roles, read
 	# the same way every other consumer reads them.
@@ -127,8 +124,8 @@ stage_crypto_backends() {
 		"$HOSTD/test.c" "$HOSTD/test_psa_backends.c" "$HOSTD/psafake/psafake.c" \
 		"$HOSTD/test_ultrawidelock_seal.c" "$HOSTD/test_ultrawidelock_link.c" \
 		"${seal_srcs[@]}" \
+		"$SRC/ccc/ccc_crypto_prim.c" \
 		"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c" \
-		"$OUT/ccc_crypto_psa_host.o" "$OUT/ccc_crypto_mbedtls_host.o" \
 		-o "$OUT/host_test_psa"
 	"$OUT/host_test_psa"
 }
@@ -161,13 +158,16 @@ stage_cdk_port() {
 		-I"$HOSTD" -I"$HOSTD/settingsfake" -I"$HOSTD/logfake" \
 		-I"$ROOT/modules/ultrawidelock_matter/include" \
 		-I"$ROOT/modules/ultrawidelock_cred/include" -I"$ROOT/ports/zephyr/store" \
+		-I"$ROOT/modules/ultrawidelock_port/include" \
 		"$HOSTD/test.c" "$HOSTD/test_matter_fab_settings.c" \
+		"$HOSTD/test_kv_zephyr.c" \
 		"$HOSTD/settingsfake/settingsfake.c" \
 		"$ROOT/ports/zephyr/store/matter_fab_settings.c" \
+		"$ROOT/ports/zephyr/store/kv_zephyr.c" \
 		"$ROOT/ports/zephyr/store/ultrawidelock_prov_settings.c" \
 		"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prov.c" \
-		-o "$ROOT/build/host_test_cdk"
-	"$ROOT/build/host_test_cdk"
+		-o "$OUT/host_test_cdk"
+	"$OUT/host_test_cdk"
 	"$ROOT/tests/ports/zephyr/matter_srp_lifecycle_check.sh"
 	"$ROOT/tests/ports/zephyr/ble_link_liveness_check.sh"
 }
@@ -193,14 +193,16 @@ stage_delta_update() {
 		-DCONFIG_MCUMGR_GRP_OS_RESET_HOOK=1 -DCONFIG_MCUMGR_GRP_ENUM_DETAILS_NAME=1 \
 		-DCONFIG_MCUMGR_SMP_LEGACY_RC_BEHAVIOUR=1 \
 		-I"$HOSTD" -I"$HOSTD/dfufake" -I"$HOSTD/smpfake" -I"$HOSTD/logfake" \
-		-I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_port/include" \
-		-I"$ROOT/modules/ultrawidelock_dfu/include" -I"$ROOT/modules/ultrawidelock_dfu/src" \
+			-I"$HOSTD/psafake" -I"$ROOT/modules/ultrawidelock_port/include" \
+			-I"$ROOT/modules/ultrawidelock_cred/include" \
+			-I"$ROOT/modules/ultrawidelock_dfu/include" -I"$ROOT/modules/ultrawidelock_dfu/src" \
 		"$HOSTD/test.c" "$HOSTD/test_dfu.c" "$HOSTD/test_dfu_smp.c" \
 		"$HOSTD/dfufake/dfufake.c" "$HOSTD/smpfake/smpfake.c" "$HOSTD/psafake/psafake.c" \
 		"$ROOT/tests/host/port/osal_host.c" "$ROOT/tests/host/port/flash_host.c" \
-		"$ROOT/modules/ultrawidelock_dfu/src/dfu_crc.c" \
-		"$ROOT/modules/ultrawidelock_dfu/src/dfu_receiver.c" \
-		"$ROOT/modules/ultrawidelock_dfu/src/dfu_applier.c" \
+			"$ROOT/modules/ultrawidelock_dfu/src/dfu_crc.c" \
+			"$ROOT/modules/ultrawidelock_dfu/src/dfu_receiver.c" \
+			"$ROOT/modules/ultrawidelock_cred/src/ultrawidelock_prim_psa.c" \
+			"$ROOT/modules/ultrawidelock_dfu/src/dfu_applier.c" \
 		"$ROOT/ports/zephyr/dfu/dfu_smp_img.c" \
 		-o "$OUT/host_test_dfu"
 	"$OUT/host_test_dfu"

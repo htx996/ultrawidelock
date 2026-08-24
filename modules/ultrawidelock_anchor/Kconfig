@@ -168,13 +168,12 @@ config ULTRAWIDELOCK_ANCHOR_LINK
 	  The block travels with the distance because a distance without the round
 	  it belongs to cannot be paired with this node's own.
 
-	  NOT YET STANDALONE. The anchor's identity, key, enrolment command,
-	  replay window and settings subtree are all its own, and the advertiser
-	  picker is witness-only. But witness_link.c still contains the WV2
-	  consumer inline, woven through the nonce and health paths, so an image
-	  with ANCHOR_LINK and no WITNESS_LINK_OT does not link yet. Carving that
-	  out is a refactor of a security-sensitive file and is deliberately not
-	  bundled with this. Every shipping config enables both.
+	  NOT YET STANDALONE. The anchor's identity, numeric KV key, enrolment
+	  command and replay window are all its own, and the advertiser picker is
+	  witness-only. But witness_link.c still contains the WV2 consumer inline,
+	  woven through the nonce and health paths, so an image with ANCHOR_LINK and
+	  no WITNESS_LINK_OT does not link yet. Splitting that application transport
+	  is a separate refactor; every shipping config enables both.
 
 config ULTRAWIDELOCK_WITNESS_LINK_OT
 	bool "Ingest BLE witness reports over Thread UDP"

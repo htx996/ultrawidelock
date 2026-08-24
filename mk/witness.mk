@@ -3,7 +3,7 @@
 # ONE image for every dongle. The role used to be a build flag (WITNESS_ROLE),
 # which meant a distinct image per mounting position and a reflash to move one
 # from inside to outside; it is provisioned at install now and lives in the
-# witness's own settings. There is nothing to choose at build time.
+# witness's persistent KV record. There is nothing to choose at build time.
 
 WITNESS_APP   := $(REPO_ROOT)/examples/zephyr/ble-witness
 WITNESS_BOARD ?= nrf52840dongle/nrf52840
@@ -61,7 +61,8 @@ witness-prov-help:
 	  '' \
 	  '  role         inside | outside | threshold   (one dongle per role)' \
 	  '  link-key     16 bytes, DIFFERENT per dongle. Seals that witness'"'"'s' \
-	  '               reports; the lock stores the same bytes under uwl/wit/k/<role>.' \
+	  '               reports; the lock stores the same bytes at numeric key' \
+	  '               0x4000 + role (inside=1, outside=2, threshold=3).' \
 	  '  group-key    16 bytes, THE SAME on every dongle and NOT on the lock.' \
 	  '               Labels advertisers so inside and outside can be compared.' \
 	  '  dataset      the Thread active operational dataset TLVs, hex.' \

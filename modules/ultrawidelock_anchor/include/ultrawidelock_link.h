@@ -17,12 +17,9 @@
  * to what those two already exchange, deliberately: a mixed bench — nRF lock,
  * ESP32 satellite — must keep working.
  *
- * NOT YET ADOPTED BY THE ZEPHYR APPS. They still carry their own copies of
- * these decisions. Porting them onto this is a refactor of a bench-proven
- * security path and is deliberately not bundled with the ESP32 port; until it
- * happens, a change to the wire or the freshness rules must be made in BOTH
- * places. That is the cost of not having done it, stated so it is not
- * discovered by a bench that half-works.
+ * Both Zephyr apps and the ESP32 satellite use this core. Carrier setup, key
+ * persistence and dispatch stay with each consumer; wire and freshness rules
+ * live here once, so a mixed bench cannot drift one endpoint at a time.
  *
  * WHAT THIS DOES NOT DECIDE. Whether an accepted report should move a door.
  * A datagram that unseals and clears the replay window is authentic and fresh;
@@ -63,6 +60,11 @@ extern "C" {
  */
 #define ULTRAWIDELOCK_LINK_HANDOFF_ROLE 0xFFu
 
+/** Valid satellite roles. These bounds and the handoff role above are one
+ * nonce-space contract: widening one requires reviewing the other. */
+#define ULTRAWIDELOCK_LINK_ROLE_MIN 1u
+#define ULTRAWIDELOCK_LINK_ROLE_MAX 3u
+
 /**
  * The lock's challenge beacon: version byte then 8 bytes of nonce, in the
  * clear. Unauthenticated on purpose — it is a freshness beacon, not a command.
@@ -70,6 +72,9 @@ extern "C" {
  * happen, which is why it needs no seal.
  */
 #define ULTRAWIDELOCK_LINK_CHALLENGE_LEN 9u
+
+/** A challenge with the lock's opaque 24-bit picked-label hint appended. */
+#define ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN 12u
 
 /**
  * The largest sealed frame this link can produce: the WV4 handoff, which
@@ -107,7 +112,8 @@ enum ultrawidelock_link_rx {
  * One end of the link. Caller-owned; zero it, then ultrawidelock_link_init().
  *
  * The key lives here in RAM. Where it is kept between boots is the caller's
- * problem and differs per platform (Zephyr settings, ESP-IDF NVS).
+ * problem and differs per platform (the portable KV seam, or ESP-IDF NVS in
+ * the legacy consumer).
  */
 struct ultrawidelock_link {
 	uint8_t key[ULTRAWIDELOCK_SEAL_KEY_LEN];
@@ -128,10 +134,13 @@ struct ultrawidelock_link {
 	/** The lock's current challenge, echoed back so it can tell a live
 	 *  report from a recorded one. Zero until one is heard. */
 	uint64_t echo_nonce;
-	/** THE FAR END's replay window. Shared between the report and handoff
-	 *  directions on purpose: WV3 and WV4 carry boot_id and ctr in the same
-	 *  places and mean the same thing by them. */
-	struct ultrawidelock_witness_seen peer;
+	/** THE SATELLITES' replay windows, one per authenticated role. A single
+	 *  window is unsafe: alternating boot IDs from two roles would continually
+	 *  reset it and make an old report from either role fresh again. */
+	struct ultrawidelock_witness_seen report_peer[ULTRAWIDELOCK_LINK_ROLE_MAX];
+	/** THE LOCK's replay window at a satellite. WV4 has one lock sender and no
+	 *  role field, so it must not share a role-indexed WV3 window. */
+	struct ultrawidelock_witness_seen join_peer;
 };
 
 /**
@@ -195,13 +204,22 @@ size_t ultrawidelock_link_build_join(struct ultrawidelock_link *l, const uint8_t
 size_t ultrawidelock_link_build_challenge(uint64_t nonce, uint8_t *out, size_t cap);
 
 /**
+ * Compose the 12-byte challenge variant used by the lock: the ordinary nonce
+ * followed by the low 24 bits of @p hint in network byte order. A satellite
+ * ignores the trailer; BLE witnesses use it to retain the picked label.
+ *
+ * @return ULTRAWIDELOCK_LINK_CHALLENGE_HINT_LEN, or 0 if @p cap is too small.
+ */
+size_t ultrawidelock_link_build_challenge_hint(uint64_t nonce, uint32_t hint, uint8_t *out,
+				       size_t cap);
+
+/**
  * Decide what one arriving datagram is, and whether to believe it.
  *
  * On ULTRAWIDELOCK_LINK_RX_REPORT the report is in @p am; on _RX_JOIN the
  * handoff is in @p jm. Either may be NULL if this end does not expect that
- * direction — the datagram is then still authenticated and replay-checked, and
- * reported as IGNORED, so a message with nowhere to go cannot slip past the
- * window and be believed later.
+ * direction. Such a datagram is reported as IGNORED without opening it or
+ * moving a replay window; a later delivery to a real sink can still land.
  *
  * ORDER MATTERS AND IS NOT NEGOTIABLE: seal first, then decode, then freshness.
  * Checking freshness before the seal would let anyone who can forge a counter

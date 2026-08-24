@@ -26,11 +26,12 @@ ultrawidelock_role_sources("${CRED}/roles/device.list" ULTRAWIDELOCK_DEVICE_SRCS
 ultrawidelock_role_sources("${CRED}/roles/apdu.list" ULTRAWIDELOCK_APDU_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/crypto.list" ULTRAWIDELOCK_CRYPTO_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/hash.list" ULTRAWIDELOCK_HASH_SRCS)
+ultrawidelock_role_sources("${CRED}/roles/prim_provider.list" ULTRAWIDELOCK_PRIM_PROVIDER_SRCS)
 set(UWBROLES "${REPO_ROOT}/modules/ultrawidelock_uwb/roles")
 ultrawidelock_role_sources("${UWBROLES}/ultrawidelock_device.list" UWB_DEVICE_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/ultrawidelock_codec.list" UWB_CODEC_SRCS)
 ultrawidelock_role_sources("${UWBROLES}/ccc_keys.list" UWB_CCC_KEYS_SRCS)
-ultrawidelock_role_sources("${UWBROLES}/crypto_psa.list" UWB_CRYPTO_SRCS)
+ultrawidelock_role_sources("${UWBROLES}/crypto_prim.list" UWB_CRYPTO_SRCS)
 
 target_sources(app PRIVATE
 	src/main.c
@@ -43,11 +44,12 @@ target_sources(app PRIVATE
 	${REPO_ROOT}/ports/zephyr/ble/ultrawidelock_ble_central_zephyr.c
 	${ULTRAWIDELOCK_BLE_CENTRAL_SRCS}
 	# Access Protocol, device side (roles device + apdu), plus the key schedule
-	# and the PSA primitive backend (roles crypto + hash).
+	# and the PSA primitive backend (roles crypto + hash + prim_provider).
 	${ULTRAWIDELOCK_DEVICE_SRCS}
 	${ULTRAWIDELOCK_APDU_SRCS}
 	${ULTRAWIDELOCK_CRYPTO_SRCS}
 	${ULTRAWIDELOCK_HASH_SRCS}
+	${ULTRAWIDELOCK_PRIM_PROVIDER_SRCS}
 	# UWB ranging SETUP, device side. Roles, not the ultrawidelock_uwb Zephyr module:
 	# that module's CMakeLists gates everything on CONFIG_ULTRAWIDELOCK_UWB_RESPONDER and
 	# builds the reader's session, adapter and CCC engine, none of which a device
@@ -63,9 +65,8 @@ target_sources(app PRIVATE
 	# and would drag in the reader's session, adapter and RX engine. The CCC
 	# key schedule and MAC (role ccc_keys) are role-neutral -- nothing in
 	# ccc_kdf.c or ccc_mac.c knows which end it is on -- so the initiator links
-	# the same translation units the reader does. crypto_psa is the AES-ECB
-	# seam behind the key schedule, matching the reader on nRF;
-	# ccc_crypto_mbedtls.c is the ESP32 branch and is not wanted here.
+	# the same translation units the reader does. crypto_prim is the thin
+	# AES-ECB adapter over the provider already compiled above.
 	src/prepoll_tx.c
 	${UWB_CCC_KEYS_SRCS}
 	${UWB_CRYPTO_SRCS}

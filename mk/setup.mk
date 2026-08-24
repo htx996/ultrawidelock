@@ -9,9 +9,12 @@ tools:
 	@$(REPO_ROOT)/scripts/toolchain.sh
 
 ## bootstrap: set this machine up for the repo  ·  the only command before build
+##   Checks the host first, then installs the NCS toolchain and fetches the
+##   workspace. Interrupt it whenever: every phase resumes on the next run.
 ##   In a linked worktree with no ./workspace yet, this delegates to ws-seed: a COW
 ##   clone of the primary's tree costs ~0 disk, where refetching costs 6.5 GB.
 ##   Options: NO_SEED=1 in a worktree, fetch a full independent workspace anyway
+##            SETUP_AUTO=1 install missing nrfutil without asking (0 = never ask)
 bootstrap:
 	@if [ -z "$(NO_SEED)" ] && [ ! -d workspace/.west ] && \
 	    [ "$$(git rev-parse --git-common-dir)" != "$$(git rev-parse --git-dir)" ]; then \

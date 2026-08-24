@@ -5,14 +5,14 @@
  * That gap is why this exists. Every defect this port has hit on hardware lived
  * in the Zephyr glue, never in the ultrawidelock_matter protocol modules (which are 14/14
  * covered), and the glue was never compiled by anything but a developer's local
- * `make cdk-*`. This compiles the REAL source unmodified against a fake settings
- * backend, so what passes is the code that ships.
+ * `make cdk-*`. This compiles the REAL source unmodified against the Zephyr KV
+ * backend over a fake settings store, so what passes is the code that ships.
  *
  * What it can and cannot prove: the fake is an in-RAM key/value store, so
  * nothing here says anything about NVS durability, wear or garbage collection.
  * What it does prove is the branch logic around failure — and one failure in
  * particular, the TORN WRITE, which is otherwise only reachable by cutting power
- * to a real board between two of seven settings_save_one() calls.
+ * to a real board between two of seven persistent writes.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -23,15 +23,37 @@
 #include "matter_fab_settings.h"
 #include "settingsfake.h"
 #include "test.h"
+#include "ultrawidelock_kv.h"
 #include "ultrawidelock_prov.h"
 
-#define K_META "mf2/meta"
-#define K_FAB0 "mf2/f0"
-#define K_FAB1 "mf2/f1"
-#define K_ACL0 "mf2/a0"
-#define K_ACL1 "mf2/a1"
-#define K_NET  "mf2/net"
-#define K_ICAC "mf2/ic"
+#define K_META ULTRAWIDELOCK_KV_KEY_MATTER_MF2_META
+#define K_FAB0 (ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 0u)
+#define K_FAB1 (ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + 1u)
+#define K_ACL0 (ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 0u)
+#define K_ACL1 (ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + 1u)
+#define K_NET  ULTRAWIDELOCK_KV_KEY_MATTER_MF2_NET
+#define K_ICAC ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ICAC
+#if MATTER_FEATURE_CLIENT
+#define K_BIND ULTRAWIDELOCK_KV_KEY_MATTER_MF2_BINDING
+#endif
+
+static bool kv_has(uint16_t key)
+{
+	size_t len = 0u;
+
+	return ultrawidelock_kv_get(key, NULL, &len) == ULTRAWIDELOCK_KV_OK;
+}
+
+/* Corruption is deliberately injected below the seam. name_of() is already
+ * pinned exhaustively by test_kv_zephyr.c; this helper only reaches the fake's
+ * stored bytes after addressing the record by its public numeric key. */
+static bool kv_corrupt(uint16_t key)
+{
+	char name[9];
+
+	(void)snprintf(name, sizeof(name), "uwl/%04x", (unsigned int)key);
+	return settingsfake_corrupt(name);
+}
 
 static void fill_identity(struct matter_device_info *info)
 {
@@ -94,11 +116,20 @@ void test_matter_fab_settings(void)
 
 	rc = store_identity(&stored);
 	T_EQ("store succeeds", rc, 0);
-	T_OK("epoch key written", settingsfake_has(K_META));
-	T_OK("fabric 0 written", settingsfake_has(K_FAB0));
-	T_OK("fabric 1 written", settingsfake_has(K_FAB1));
-	T_OK("dataset written before the first fabric", settingsfake_has(K_NET));
-	T_OK("ACLs are scoped per fabric", settingsfake_has(K_ACL0) && settingsfake_has(K_ACL1));
+#if MATTER_FEATURE_CLIENT
+	stored.binding.count = 1u;
+	stored.binding.e[0].fabric_index = 1u;
+	stored.binding.e[0].node_id = 0x0123456789abcdefULL;
+	stored.binding.e[0].has_node = true;
+	T_EQ("binding table store succeeds",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_BINDING, 0u, NULL, 0u), 0);
+	T_OK("binding table has its own key", kv_has(K_BIND));
+#endif
+	T_OK("epoch key written", kv_has(K_META));
+	T_OK("fabric 0 written", kv_has(K_FAB0));
+	T_OK("fabric 1 written", kv_has(K_FAB1));
+	T_OK("dataset written before the first fabric", kv_has(K_NET));
+	T_OK("ACLs are scoped per fabric", kv_has(K_ACL0) && kv_has(K_ACL1));
 
 	memset(&loaded, 0, sizeof(loaded));
 	rc = matter_fab_load(&loaded);
@@ -115,6 +146,12 @@ void test_matter_fab_settings(void)
 	     loaded.fabric_acls[0].len == 3u && loaded.fabric_acls[1].len == 3u &&
 		     memcmp(loaded.fabric_acls[0].data, "one", 3u) == 0 &&
 		     memcmp(loaded.fabric_acls[1].data, "two", 3u) == 0);
+#if MATTER_FEATURE_CLIENT
+	T_OK("binding table survives on its fabric",
+	     loaded.binding.count == 1u && loaded.binding.e[0].fabric_index == 1u &&
+		     loaded.binding.e[0].node_id == 0x0123456789abcdefULL &&
+		     loaded.binding.e[0].has_node);
+#endif
 
 	t_group("matter_fab_settings: nothing stored");
 	settingsfake_reset();
@@ -157,7 +194,7 @@ void test_matter_fab_settings(void)
 	settingsfake_reset();
 	fill_identity(&stored);
 	T_EQ("two fabrics stored for corruption", store_identity(&stored), 0);
-	T_OK("second authority record corrupted", settingsfake_corrupt(K_FAB1));
+	T_OK("second authority record corrupted", kv_corrupt(K_FAB1));
 	memset(&loaded, 0, sizeof(loaded));
 	T_EQ("the intact neighbour still loads", matter_fab_load(&loaded), 0);
 	T_EQ("first fabric survives isolated corruption", loaded.fabrics[0].index, 1u);
@@ -172,7 +209,7 @@ void test_matter_fab_settings(void)
 	stored.icac.len = 8u;
 	memcpy(stored.icac.buf, "testicac", 8u);
 	T_EQ("two fabrics and an ICAC stored", store_identity(&stored), 0);
-	T_OK("shared ICAC record corrupted", settingsfake_corrupt(K_ICAC));
+	T_OK("shared ICAC record corrupted", kv_corrupt(K_ICAC));
 	memset(&loaded, 0, sizeof(loaded));
 	T_EQ("the independent neighbour still loads", matter_fab_load(&loaded), 0);
 	T_EQ("fabric without an ICAC survives", loaded.fabrics[0].index, 1u);
@@ -204,19 +241,25 @@ void test_matter_fab_settings(void)
 	T_EQ("a torn erase leaves the old epoch authoritative", matter_fab_load(&loaded), 0);
 	T_EQ("and the old fabric remains intact", loaded.fabrics[0].index, 1u);
 	T_EQ("erase succeeds", matter_fab_erase(), 0);
-	T_OK("the epoch tombstone remains", settingsfake_has(K_META));
+	T_OK("the epoch tombstone remains", kv_has(K_META));
 
 	memset(&loaded, 0, sizeof(loaded));
 	T_EQ("load after erase reports an empty store", matter_fab_load(&loaded), 1);
 
 	t_group("matter_fab_settings: v0.3 Matter identity is a clean break");
 	settingsfake_reset();
-	T_EQ("legacy record injected", settings_save_one("mfab/f0", &stored.fabrics[0],
-						    sizeof(stored.fabrics[0])), 0);
+	T_EQ("legacy numeric record injected",
+	     ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0,
+				  &stored.fabrics[0], sizeof(stored.fabrics[0])),
+	     (long)ULTRAWIDELOCK_KV_OK);
+	T_EQ("unowned legacy Zephyr record injected",
+	     settings_save_one("mfab/f0", &stored.fabrics[0], sizeof(stored.fabrics[0])), 0);
 	memset(&loaded, 0, sizeof(loaded));
 	T_EQ("legacy identity is not loaded", matter_fab_load(&loaded), 1);
 	T_EQ("no legacy fabric reaches RAM", loaded.fabrics[0].index, 0u);
-	T_OK("legacy Matter key is reclaimed", !settingsfake_has("mfab/f0"));
+	T_OK("owned legacy numeric key is reclaimed",
+	     !kv_has(ULTRAWIDELOCK_KV_KEY_MATTER_FAB_SLOT0));
+	T_OK("non-owned settings record is left alone", settingsfake_has("mfab/f0"));
 
 	/*
 	 * The two attributes a controller WRITES, which lived only in RAM until
@@ -231,8 +274,9 @@ void test_matter_fab_settings(void)
 	stored.approach_direction = 0x05u;
 	T_EQ("both changed values are stored", matter_dl_attr_store(&stored, 0u, 0x07u), 0);
 	T_EQ("and each got its own key", settingsfake_key_count(), 2);
-	T_OK("under a tree of their own, not the identity's",
-	     settingsfake_has("mdl/art") && settingsfake_has("mdl/apd"));
+	T_OK("under keys of their own, not the identity's",
+	     kv_has(ULTRAWIDELOCK_KV_KEY_MATTER_DL_AUTO_RELOCK) &&
+		     kv_has(ULTRAWIDELOCK_KV_KEY_MATTER_DL_APPROACH));
 
 	memset(&loaded, 0, sizeof(loaded));
 	loaded.auto_relock_time_s = 999u;
@@ -305,7 +349,8 @@ void test_matter_fab_settings(void)
 	T_EQ("attributes stored", matter_dl_attr_store(&stored, 0u, 0u), 0);
 	T_EQ("erasing the identity succeeds", matter_fab_erase(), 0);
 	T_OK("and the attributes are still there",
-	     settingsfake_has("mdl/art") && settingsfake_has("mdl/apd"));
+	     kv_has(ULTRAWIDELOCK_KV_KEY_MATTER_DL_AUTO_RELOCK) &&
+		     kv_has(ULTRAWIDELOCK_KV_KEY_MATTER_DL_APPROACH));
 
 	memset(&loaded, 0, sizeof(loaded));
 	(void)matter_dl_attr_load(&loaded);
@@ -351,9 +396,12 @@ static void test_ultrawidelock_prov_settings(void)
 	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), ULTRAWIDELOCK_PROV_LOAD_EMPTY);
 	T_OK("empty store exposes only marked recovery identity", loaded_id.is_dev);
 	T_EQ("empty store exposes no trust anchors", loaded_ts.count, 0);
-	T_EQ("unrelated sibling can be stored",
+	/* The record is addressed by key now, so a foreign name cannot be mistaken
+	 * for it the way a sibling under the old "ultrawidelock" subtree could. Kept
+	 * as an assertion because the erase path still has to leave it alone. */
+	T_EQ("an unrelated record can be stored",
 	     settings_save_one("ultrawidelock/other", malformed, sizeof(malformed)), 0);
-	T_EQ("unrelated sibling is not treated as provisioning",
+	T_EQ("an unrelated record is not treated as provisioning",
 	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), ULTRAWIDELOCK_PROV_LOAD_EMPTY);
 
 	t_group("ultrawidelock_prov_settings: valid round trip");
@@ -381,8 +429,12 @@ static void test_ultrawidelock_prov_settings(void)
 
 	t_group("ultrawidelock_prov_settings: corrupt storage fails closed");
 	settingsfake_reset();
+	/* Injected through the seam, not by spelling the derived name: the name
+	 * kv_zephyr.c builds is pinned in test_kv_zephyr.c, and pinning it twice
+	 * would make this suite fail for a reason that is not about provisioning. */
 	T_EQ("malformed record can be injected",
-	     settings_save_one("ultrawidelock/prov", malformed, sizeof(malformed)), 0);
+	     ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, malformed, sizeof(malformed)),
+	     (long)ULTRAWIDELOCK_KV_OK);
 	memset(&loaded_id, 0, sizeof(loaded_id));
 	memset(&loaded_ts, 0xff, sizeof(loaded_ts));
 	T_EQ("malformed record is an explicit error",
@@ -391,7 +443,8 @@ static void test_ultrawidelock_prov_settings(void)
 	T_EQ("malformed record cannot expose trust anchors", loaded_ts.count, 0);
 	settingsfake_reset();
 	T_EQ("oversized record can be injected",
-	     settings_save_one("ultrawidelock/prov", oversized, sizeof(oversized)), 0);
+	     ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, oversized, sizeof(oversized)),
+	     (long)ULTRAWIDELOCK_KV_OK);
 	T_EQ("oversized record preserves handler errno",
 	     ultrawidelock_prov_load(&loaded_id, &loaded_ts), -EINVAL);
 	T_OK("oversized record remains fail-closed", loaded_id.is_dev && loaded_ts.count == 0u);
@@ -406,10 +459,13 @@ static void test_ultrawidelock_prov_settings(void)
 	T_EQ("erase removes exact provisioning key", settingsfake_key_count(), 0);
 }
 
+void test_kv_zephyr(void); /* test_kv_zephyr.c, same stage, same fake */
+
 int main(void)
 {
 	test_matter_fab_settings();
 	test_ultrawidelock_prov_settings();
+	test_kv_zephyr();
 
 	if (t_fail > 0) {
 		printf("  cdk-fab-settings: FAIL (%d of %d)\n", t_fail, t_fail + t_pass);

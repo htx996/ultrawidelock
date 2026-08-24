@@ -12,6 +12,7 @@ ultrawidelock_role_sources("${CRED}/roles/device.list" ULTRAWIDELOCK_DEVICE_SRCS
 ultrawidelock_role_sources("${CRED}/roles/apdu.list" ULTRAWIDELOCK_APDU_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/crypto.list" ULTRAWIDELOCK_CRYPTO_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/hash.list" ULTRAWIDELOCK_HASH_SRCS)
+ultrawidelock_role_sources("${CRED}/roles/prim_provider.list" ULTRAWIDELOCK_PRIM_PROVIDER_SRCS)
 
 idf_component_register(
 	SRCS
@@ -21,6 +22,7 @@ idf_component_register(
 		${ULTRAWIDELOCK_APDU_SRCS}
 		${ULTRAWIDELOCK_CRYPTO_SRCS}
 		${ULTRAWIDELOCK_HASH_SRCS}
+		${ULTRAWIDELOCK_PRIM_PROVIDER_SRCS}
 	INCLUDE_DIRS "."
 	PRIV_INCLUDE_DIRS "${CRED}/include" "${CRED}/src"
 	REQUIRES mbedtls

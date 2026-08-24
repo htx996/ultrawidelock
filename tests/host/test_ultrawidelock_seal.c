@@ -194,12 +194,16 @@ void test_ultrawidelock_seal(void)
 	t_group("unseal: a failing backend is a rejection, not a pass");
 	psafake_reset();
 	psafake.import_ret = -1;
+	back_len = 0xA55Au;
 	T_EQ("import failure -> false",
 	     ultrawidelock_unseal(KEY, out, n, back, sizeof(back), &back_len), 0);
+	T_EQ("import failure leaves length untouched", back_len, 0xA55Au);
 	psafake_reset();
 	psafake.aead_dec_ret = -1;
+	back_len = 0x5AA5u;
 	T_EQ("tag failure -> false",
 	     ultrawidelock_unseal(KEY, out, n, back, sizeof(back), &back_len), 0);
+	T_EQ("tag failure leaves length untouched", back_len, 0x5AA5u);
 	T_EQ("key still destroyed on failure", psafake.destroy_calls, 1);
 
 	t_group("envelope: the constants the firmware sizes buffers with");

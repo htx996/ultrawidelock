@@ -161,9 +161,9 @@ static void scenario_erase(void)
 	size_t length;
 
 	memset(ot_value, 0x77, sizeof(ot_value));
-	CHECK("kv init succeeds", ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	CHECK("kv init succeeds", ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 	CHECK("a neighbouring OpenThread key stores",
-	      ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + 1u, ot_value,
+	      ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + 1u, ot_value,
 					    sizeof(ot_value)) == ULTRAWIDELOCK_KV_OK);
 
 	make_identity(&id, &ts);
@@ -181,7 +181,7 @@ static void scenario_erase(void)
 	 */
 	length = sizeof(ot_read);
 	CHECK("erase leaves the OpenThread key alone",
-	      ultrawidelock_freertos_kv_get(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + 1u, ot_read,
+	      ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + 1u, ot_read,
 					    &length) == ULTRAWIDELOCK_KV_OK &&
 		      length == sizeof(ot_value) && memcmp(ot_read, ot_value, length) == 0);
 
@@ -196,9 +196,9 @@ static void scenario_malformed(void)
 	uint8_t garbage[12];
 
 	memset(garbage, 0x33, sizeof(garbage));
-	CHECK("kv init succeeds", ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	CHECK("kv init succeeds", ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 	CHECK("garbage stores under the prov key",
-	      ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, garbage,
+	      ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, garbage,
 					    sizeof(garbage)) == ULTRAWIDELOCK_KV_OK);
 
 	CHECK("a malformed blob reports an error", ultrawidelock_prov_load(&id, &ts) == -1);
@@ -217,9 +217,9 @@ static void scenario_oversized(void)
 	static uint8_t big[ULTRAWIDELOCK_PROV_BLOB_MAX + 4u];
 
 	memset(big, 0x22, sizeof(big));
-	CHECK("kv init succeeds", ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	CHECK("kv init succeeds", ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 	CHECK("an oversized record stores",
-	      ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, big, sizeof(big)) ==
+	      ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, big, sizeof(big)) ==
 		      ULTRAWIDELOCK_KV_OK);
 
 	CHECK("an oversized record reports an error", ultrawidelock_prov_load(&id, &ts) == -1);
@@ -233,7 +233,7 @@ static void scenario_store_fails(void)
 	struct ultrawidelock_trust_store ts;
 
 	make_identity(&id, &ts);
-	CHECK("kv init succeeds", ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	CHECK("kv init succeeds", ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 
 	/* Fail the next write, which is the one carrying the record header. */
 	fake_flash_fail_write_after = 1;

@@ -19,6 +19,7 @@ ultrawidelock_role_sources("${CRED}/roles/device.list" ULTRAWIDELOCK_DEVICE_SRCS
 ultrawidelock_role_sources("${CRED}/roles/apdu.list" ULTRAWIDELOCK_APDU_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/crypto.list" ULTRAWIDELOCK_CRYPTO_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/hash.list" ULTRAWIDELOCK_HASH_SRCS)
+ultrawidelock_role_sources("${CRED}/roles/prim_provider.list" ULTRAWIDELOCK_PRIM_PROVIDER_SRCS)
 
 target_sources(app PRIVATE
 	src/main.c
@@ -27,6 +28,7 @@ target_sources(app PRIVATE
 	${ULTRAWIDELOCK_APDU_SRCS}
 	${ULTRAWIDELOCK_CRYPTO_SRCS}
 	${ULTRAWIDELOCK_HASH_SRCS}
+	${ULTRAWIDELOCK_PRIM_PROVIDER_SRCS}
 )
 target_include_directories(app PRIVATE ${CRED}/include ${CRED}/src)
 target_compile_definitions(app PRIVATE ULTRAWIDELOCK_DEVICE_HAVE_EC)

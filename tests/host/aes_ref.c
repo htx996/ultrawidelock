@@ -1,10 +1,10 @@
 /**
- * @file aes_ref.c — Host AES-128/256 ECB block, the host double for crypto_aes_ecb_encrypt().
+ * @file aes_ref.c — Host AES-128/256 ECB primitive provider.
  *
- * On-target this seam is PSA/CC312 (ccc_crypto_psa.c). On the host it is this
- * self-contained FIPS-197 reference so the CCC key schedule can be exercised
- * without a crypto backend. Correctness is pinned by the FIPS-197 known-answer
- * vectors checked in test_ccc.c before any golden value is trusted.
+ * On target ultrawidelock_prim_psa.c implements the same contract. On the host
+ * this self-contained FIPS-197 reference lets the thin CCC adapter and key
+ * schedule run without a platform crypto backend. Correctness is pinned by
+ * the FIPS-197 known-answer vectors checked in test_ccc_kdf.c.
  */
 
 #include <errno.h>
@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "ccc_kdf.h" /* crypto_aes_ecb_encrypt prototype (the seam). */
+#include "ultrawidelock_prim.h"
 
 /** @brief FIPS-197 S-box. */
 static const uint8_t SBOX[256] = {
@@ -112,8 +112,8 @@ static void sub_shift_mix_add(uint8_t s[16], const uint8_t *rk, int mix)
 	}
 }
 
-int crypto_aes_ecb_encrypt(const uint8_t *key, size_t key_bits, const uint8_t in[16],
-			   uint8_t out[16])
+int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
+				  const uint8_t in[16], uint8_t out[16])
 {
 	uint8_t rk[240]; /* 4*(14+1)*4 = 240 bytes, the AES-256 worst case. */
 	uint8_t s[16];
@@ -143,4 +143,9 @@ int crypto_aes_ecb_encrypt(const uint8_t *key, size_t key_bits, const uint8_t in
 	sub_shift_mix_add(s, &rk[nr * 16], 0); /* Final round: no MixColumns. */
 	memcpy(out, s, 16);
 	return 0;
+}
+
+int ultrawidelock_aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+{
+	return ultrawidelock_aes_ecb_encrypt(key, 128u, in, out);
 }

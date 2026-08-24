@@ -85,7 +85,7 @@ static void scenario_unknown_path(void)
 	struct loaded got;
 	uint32_t v = 7u;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 
 	CHECK("saving an unknown path is refused",
 	      settings_save_one("nope/x", &v, sizeof(v)) == -22);
@@ -102,7 +102,7 @@ static void scenario_dl_attrs(void)
 	uint8_t approach = 0x05u;
 	uint16_t wrong = 0xbeefu;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 
 	CHECK("AutoRelockTime saves as a u32",
 	      settings_save_one("mdl/art", &relock, sizeof(relock)) == 0);
@@ -128,7 +128,7 @@ static void scenario_dl_attrs(void)
 	{
 		struct loaded got;
 
-		(void)ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_DL_APPROACH,
+		(void)ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_DL_APPROACH,
 						    &wrong, sizeof(wrong));
 		memset(&got, 0, sizeof(got));
 		CHECK("a stored record of the wrong width is ignored on load",
@@ -145,7 +145,7 @@ static void scenario_msub_slots(void)
 	bool all_saved = true;
 	bool all_loaded = true;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 
 	for (i = 0u; i < 6u; i++) {
 		(void)snprintf(path, sizeof(path), "msub/%u", i);
@@ -183,7 +183,7 @@ static void scenario_mf2_paths(void)
 	char path[8];
 	bool ok = true;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 	memset(record, 0xa5, sizeof(record));
 	for (size_t i = 0u; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
 		if (settings_save_one(fixed[i], record, sizeof(record)) != 0 ||
@@ -218,25 +218,25 @@ static void scenario_five_fabric_live_set(void)
 	uint8_t small[32];
 	bool ok = true;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 	memset(large, 0x55, sizeof(large));
 	memset(medium, 0x66, sizeof(medium));
 	memset(small, 0x77, sizeof(small));
 
 	/* The other consumers sharing these pages at their bounded live sizes. */
-	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, large,
+	ok &= ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, large,
 					       sizeof(large)) == ULTRAWIDELOCK_KV_OK;
-	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE, medium,
+	ok &= ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE, medium,
 					       sizeof(medium)) == ULTRAWIDELOCK_KV_OK;
 	for (uint16_t i = 1u; i <= 12u; i++) {
-		ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + i,
+		ok &= ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_OPENTHREAD_BASE + i,
 						       small, sizeof(small)) == ULTRAWIDELOCK_KV_OK;
 	}
-	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, small,
+	ok &= ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, small,
 					       sizeof(small)) == ULTRAWIDELOCK_KV_OK;
-	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_SLOT0, medium, 96u) ==
+	ok &= ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_SLOT0, medium, 96u) ==
 	      ULTRAWIDELOCK_KV_OK;
-	ok &= ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_SRP_HOST_ID, small, 8u) ==
+	ok &= ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_SRP_HOST_ID, small, 8u) ==
 	      ULTRAWIDELOCK_KV_OK;
 	for (unsigned i = 0u; i < 6u; i++) {
 		char path[8];
@@ -303,7 +303,7 @@ static void scenario_populate_then_reboot(void)
 	uint8_t approach = 0x03u;
 	uint8_t sub[16];
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 	memset(sub, 0x5a, sizeof(sub));
 
 	CHECK("AutoRelockTime stored before the reboot",
@@ -322,7 +322,7 @@ static void scenario_after_reboot(void)
 	uint8_t sub[16];
 	struct loaded got;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 	memset(sub, 0x5a, sizeof(sub));
 
 	CHECK("AutoRelockTime survives the reboot",

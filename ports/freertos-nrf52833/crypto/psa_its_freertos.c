@@ -88,7 +88,7 @@ static void dir_load(void)
 	memset(&s_dir, 0, sizeof(s_dir));
 	s_dir.version = ITS_DIR_VERSION;
 
-	if (ultrawidelock_freertos_kv_get(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, &s_dir, &length) == 0) {
+	if (ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, &s_dir, &length) == 0) {
 		if (length != sizeof(s_dir) || s_dir.version != ITS_DIR_VERSION) {
 			ultrawidelock_freertos_log(ULTRAWIDELOCK_FREERTOS_LOG_WARNING, ITS_TAG,
 					 "stored directory is %u bytes v%u, expected %u v%u; "
@@ -104,7 +104,7 @@ static void dir_load(void)
 
 static int dir_store(void)
 {
-	return ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, &s_dir, sizeof(s_dir));
+	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_PSA_ITS_DIR, &s_dir, sizeof(s_dir));
 }
 
 /** @return slot index, or -1. */
@@ -178,7 +178,7 @@ psa_status_t psa_its_set(psa_storage_uid_t uid, uint32_t data_length, const void
 
 	/* Slot first. A crash before the directory is written leaves bytes
 	 * nothing points at, which the next allocation reuses. */
-	if (ultrawidelock_freertos_kv_set(slot_key(slot), p_data, data_length) != 0) {
+	if (ultrawidelock_kv_set(slot_key(slot), p_data, data_length) != 0) {
 		return PSA_ERROR_STORAGE_FAILURE;
 	}
 
@@ -210,7 +210,7 @@ psa_status_t psa_its_get(psa_storage_uid_t uid, uint32_t data_offset, uint32_t d
 	if (p_data == NULL || p_data_length == NULL) {
 		return PSA_ERROR_INVALID_ARGUMENT;
 	}
-	if (ultrawidelock_freertos_kv_get(slot_key(slot), s_record, &length) != 0) {
+	if (ultrawidelock_kv_get(slot_key(slot), s_record, &length) != 0) {
 		/*
 		 * The directory names a slot the store does not have. That is
 		 * the inconsistency the write ordering is meant to prevent, so
@@ -262,6 +262,6 @@ psa_status_t psa_its_remove(psa_storage_uid_t uid)
 		s_dir_loaded = false;
 		return PSA_ERROR_STORAGE_FAILURE;
 	}
-	(void)ultrawidelock_freertos_kv_delete(slot_key(slot));
+	(void)ultrawidelock_kv_delete(slot_key(slot));
 	return PSA_SUCCESS;
 }

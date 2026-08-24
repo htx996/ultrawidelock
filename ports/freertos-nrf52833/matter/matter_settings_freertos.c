@@ -177,7 +177,7 @@ int settings_load_subtree_direct(const char *subtree, settings_load_direct_cb cb
 				 "no key for settings path '%s'", subtree);
 		return -22; /* -EINVAL */
 	}
-	if (ultrawidelock_freertos_kv_get(s->key, s_record, &length) != 0) {
+	if (ultrawidelock_kv_get(s->key, s_record, &length) != 0) {
 		/* Nothing stored yet. Zephyr reports this by not calling the
 		 * callback, and the caller reads that as "mint one". */
 		return 0;
@@ -212,7 +212,7 @@ int settings_save_one(const char *name, const void *value, size_t val_len)
 				 (unsigned)val_len, (unsigned)s->len);
 		return -22;
 	}
-	return ultrawidelock_freertos_kv_set(s->key, value, val_len);
+	return ultrawidelock_kv_set(s->key, value, val_len);
 }
 
 int settings_delete(const char *name)
@@ -230,7 +230,7 @@ int settings_delete(const char *name)
 	 * this on every key when forgetting one, so "already absent" is the
 	 * normal case on a node that was never commissioned.
 	 */
-	(void)ultrawidelock_freertos_kv_delete(s->key);
+	(void)ultrawidelock_kv_delete(s->key);
 	return 0;
 }
 
@@ -312,7 +312,7 @@ int settings_load_subtree(const char *subtree)
 		if (strncmp(s->path, subtree, tree_len) != 0 || s->path[tree_len] != '/') {
 			continue;
 		}
-		if (ultrawidelock_freertos_kv_get(s->key, s_record, &length) != 0) {
+		if (ultrawidelock_kv_get(s->key, s_record, &length) != 0) {
 			continue;
 		}
 		/* The handler is given the leaf, as Zephyr gives it. */

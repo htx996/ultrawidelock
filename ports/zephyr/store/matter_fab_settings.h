@@ -15,13 +15,14 @@
 #include "matter_clusters.h"
 
 /**
- * Write the operational identity to the settings store.
+ * Write the operational identity to the persistent key-value store.
  *
  * Call after anything that changes the fabric table or the Thread dataset.
  * Cheap enough to call on every such event and far cheaper than being wrong:
  * the alternative is a node that looks commissioned until it reboots.
  *
- * @return 0, or a negative errno from the settings backend.
+ * @return 0; `-EINVAL` for an invalid request; or a negative
+ *         ultrawidelock_kv_result from the storage backend.
  */
 int matter_fab_commit(const struct matter_device_info *info,
 		      enum matter_fabric_store_operation operation, uint8_t slot,
@@ -31,13 +32,18 @@ int matter_fab_commit(const struct matter_device_info *info,
  * Read it back into @p info.
  *
  * @return 1 when nothing was stored (never commissioned), 0 when a fabric was
- *         restored, negative on a settings error. A stored record written by a
- *         different firmware layout is DISCARDED rather than trusted -- see the
- *         note on the size check in the .c file.
+ *         restored, `-EINVAL` when @p info is NULL, or a negative
+ *         ultrawidelock_kv_result on a backend error. A stored record written
+ *         by a different firmware layout is DISCARDED rather than trusted --
+ *         see the note on the size check in the .c file.
  */
 int matter_fab_load(struct matter_device_info *info);
 
-/** Forget it, so the next boot comes up commissionable. */
+/**
+ * Forget it, so the next boot comes up commissionable.
+ *
+ * @return 0, or a negative ultrawidelock_kv_result from the backend.
+ */
 int matter_fab_erase(void);
 
 /**
@@ -48,8 +54,9 @@ int matter_fab_erase(void);
  * for: a controller re-writing a value it already set should cost no flash.
  * Call after a successful attribute write.
  *
- * @return 0, or the first negative errno from the settings backend. A failure
- *         is not fatal -- the RAM value stands for this boot.
+ * @return 0; `-EINVAL` for an invalid request; or the first negative
+ *         ultrawidelock_kv_result from the backend. A failure is not fatal --
+ *         the RAM value stands for this boot.
  */
 int matter_dl_attr_store(const struct matter_device_info *info, uint32_t prev_auto_relock_s,
 			 uint8_t prev_approach_direction);
@@ -60,11 +67,17 @@ int matter_dl_attr_store(const struct matter_device_info *info, uint32_t prev_au
  * Fields with nothing stored are LEFT ALONE rather than zeroed, because zero is
  * a legal value for both and the caller's boot default is the better answer.
  *
- * @return 0 always; there is nothing here a caller could do differently.
+ * @return 0, or `-EINVAL` when @p info is NULL. Backend failures leave the
+ *         caller's defaults untouched and are deliberately not returned.
  */
 int matter_dl_attr_load(struct matter_device_info *info);
 
-/** Forget them, so the next boot uses the port's defaults. */
+/**
+ * Forget them, so the next boot uses the port's defaults.
+ *
+ * @return 0 when both keys are absent or removed, or the first negative
+ *         ultrawidelock_kv_result from the backend.
+ */
 int matter_dl_attr_erase(void);
 
 #endif /* MATTER_FAB_SETTINGS_H */

@@ -52,19 +52,13 @@ if(CONFIG_ULTRAWIDELOCK_UWB)
         # the two seams it would supply.
         ${SRC}/driver/uwb_rxdiag.c)
 
-      # AES-ECB crypto seam (ccc_kdf.h): PSA on nRF (default), mbedTLS for SoCs
-      # without a PSA provider (e.g. ESP32-S3).
-      if(CONFIG_ULTRAWIDELOCK_CRYPTO_MBEDTLS)
-        ultrawidelock_role_sources(${ROLES}/crypto_mbedtls.list UWB_CRYPTO_MBEDTLS_SRCS)
-        zephyr_library_sources(${UWB_CRYPTO_MBEDTLS_SRCS})
-        # Put mbedTLS headers (<mbedtls/aes.h>) on this library's include path.
-        # The PSA branch gets its headers from nrf_security; the mbedTLS branch
-        # must pull them from the mbedTLS interface target explicitly.
-        zephyr_library_link_libraries(mbedTLS)
-      else()
-        ultrawidelock_role_sources(${ROLES}/crypto_psa.list UWB_CRYPTO_PSA_SRCS)
-        zephyr_library_sources(${UWB_CRYPTO_PSA_SRCS})
-      endif()
+      # The CCC/Matter AES-ECB compatibility symbol is now only a thin adapter;
+      # all platform crypto reaches the provider behind ultrawidelock_prim.
+      ultrawidelock_role_sources(${ROLES}/crypto_prim.list UWB_CRYPTO_PRIM_SRCS)
+      zephyr_library_sources(${UWB_CRYPTO_PRIM_SRCS})
+      zephyr_library_include_directories(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../ultrawidelock_cred/include)
+      zephyr_library_link_libraries(ultrawidelock_prim)
 
       # The PRETTY log backend (ultrawidelock_logfmt/ultrawidelock_logquiet, CONFIG_ULTRAWIDELOCK_PRETTY_SHELL)
       # and the `ultrawidelock` console (ultrawidelock_shell, CONFIG_ULTRAWIDELOCK_UWB_SHELL) are Zephyr

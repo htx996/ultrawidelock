@@ -4,9 +4,9 @@
  * @file anchor_link.c — the satellite's half of the sealed link.
  *
  * Sends one WV3 report per accepted range: this anchor's own measured distance
- * to the phone, and the ranging block it was measured in. Same socket, same
- * seal and same port as the lock's other peers; the version byte is what tells
- * them apart, so nothing here needs to know about any other message family.
+ * to the phone, and the ranging block it was measured in. Same link, same seal
+ * and same port as the lock's other peers; the version byte is what tells them
+ * apart, so nothing here needs to know about any other message family.
  *
  * The block is not decoration. A distance without the round it belongs to
  * cannot be paired with the lock's own -- the two anchors only mean something
@@ -25,82 +25,58 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
-#include <zephyr/settings/settings.h>
 
+/*
+ * The bring-up half only. Moving bytes is ultrawidelock_dgram.h's job now, but
+ * starting the mesh is not: a dataset, a device role and otIp6SetEnabled are
+ * OpenThread's own lifecycle, they have no counterpart on a transport that is
+ * not Thread, and inventing a seam over them would be inventing one nothing
+ * else needs. So the socket calls left this file and the stack calls did not.
+ */
 #include <openthread/dataset.h>
 #include <openthread/instance.h>
 #include <openthread/ip6.h>
-#include <openthread/message.h>
 #include <openthread/thread.h>
-#include <openthread/udp.h>
 #include <zephyr/net/openthread.h>
 
 #include "anchor_link.h"
+#include "ultrawidelock_dgram.h"
+#include "ultrawidelock_kv.h"
 #include "ultrawidelock_link.h"
-#include "ultrawidelock_seal.h"
-#include "ultrawidelock_witness_msg.h"
 
 LOG_MODULE_REGISTER(anclink, LOG_LEVEL_INF);
 
-/* The envelope's own constants, from the ONE definition of it. Aliased rather
- * than redefined: this file used to carry its own copies, which is how a wire
- * format grows two versions of itself. */
 #define KEY_LEN     ULTRAWIDELOCK_SEAL_KEY_LEN
 #define ANCHOR_PORT CONFIG_ULTRAWIDELOCK_WITNESS_PORT
 
-static otUdpSocket s_sock;
-static bool s_open;
-/*
- * Every decision about a datagram -- what to send, what an arriving one is,
- * whether to believe it -- belongs to ultrawidelock_link.h, shared with the
- * ESP-NOW carrier. The key, the boot id, the counter, the echoed challenge and
- * the lock's replay window all live inside it, so the two transports cannot
- * come to different conclusions about the same bytes. What stays in this file
- * is OpenThread: sockets, messages and addresses.
- */
+/* Carrier-free WV3/WV4 state. This file owns only Thread lifecycle, durable
+ * storage and callback dispatch now. */
 static struct ultrawidelock_link s_link;
-/* Where a surviving handoff goes. */
 static anchor_link_join_cb s_join_cb;
 
 /**
- * Two different things arrive on this socket, and the link core tells them
- * apart: a 9-byte CHALLENGE is unauthenticated on purpose (a freshness beacon,
- * not a command; echoing the wrong one costs a report its standing and nothing
- * more), while a sealed HANDOFF carries a key this board acts on and must
- * prove the link key and clear the replay window first.
+ * Two different things arrive on this socket.
  *
- * Our own WV3 reports come back off the all-nodes address too. They are not
- * mistaken for input: the core demultiplexes on length, and a report is not
- * the length of a handoff.
+ * A 9- or 12-byte CHALLENGE is unauthenticated on purpose -- a freshness beacon, not a
+ * command; echoing the wrong one costs a report its standing and nothing more.
+ * A sealed HANDOFF is the opposite: it carries a key and this board acts on it,
+ * so it must prove the link key and clear the replay window first.
  */
-static void udp_rx(void *ctx, otMessage *msg, const otMessageInfo *info)
+static void link_rx(void *ctx, const uint8_t *body, size_t len)
 {
-	uint8_t body[ULTRAWIDELOCK_LINK_MAX_FRAME];
-	struct ultrawidelock_join_msg jm;
-	uint16_t len;
+	struct ultrawidelock_join_msg jm = {0};
+	enum ultrawidelock_link_rx rx;
 
 	ARG_UNUSED(ctx);
-	ARG_UNUSED(info);
-
-	len = otMessageGetLength(msg) - otMessageGetOffset(msg);
-	if (len == 0u || len > sizeof(body)) {
+	rx = ultrawidelock_link_consume(&s_link, body, len, NULL,
+					 s_join_cb != NULL ? &jm : NULL);
+	if (rx == ULTRAWIDELOCK_LINK_RX_REPLAYED) {
+		LOG_WRN("handoff replayed or stale (ctr %u); ignored", (unsigned)jm.ctr);
+		memset(&jm, 0, sizeof(jm));
 		return;
 	}
-	if (otMessageRead(msg, otMessageGetOffset(msg), body, len) != len) {
-		return;
-	}
-
-	memset(&jm, 0, sizeof(jm));
-	switch (ultrawidelock_link_consume(&s_link, body, len, NULL,
-					   s_join_cb != NULL ? &jm : NULL)) {
-	case ULTRAWIDELOCK_LINK_RX_JOIN:
+	if (rx == ULTRAWIDELOCK_LINK_RX_JOIN) {
 		s_join_cb(jm.ursk, jm.rcfg, jm.channel, jm.sync_code_index);
-		break;
-	case ULTRAWIDELOCK_LINK_RX_REPLAYED:
-		LOG_WRN("handoff replayed or stale; ignored");
-		break;
-	default:
-		break;
 	}
 	/* The URSK lives on inside the ranging engine; this copy must not. */
 	memset(&jm, 0, sizeof(jm));
@@ -114,49 +90,30 @@ void anchor_link_set_join_cb(anchor_link_join_cb cb)
 void anchor_link_report(int32_t peer_mm, uint32_t ranging_block)
 {
 	uint8_t sealed[ULTRAWIDELOCK_LINK_MAX_FRAME];
-	otInstance *ot = openthread_get_default_instance();
-	otMessageInfo info;
-	otMessage *msg;
 	size_t sealed_len;
 
-	if (!s_open || ot == NULL) {
+	if (!ultrawidelock_dgram_ready() || !ultrawidelock_link_ready(&s_link) || peer_mm < 0) {
 		return;
 	}
-
-	/* Composes the WV3, stamps this boot id and the next counter, echoes the
-	 * lock's challenge and seals it -- one call, the same one the ESP-NOW
-	 * carrier makes. A negative distance and an unprovisioned link are
-	 * refused inside it. */
 	sealed_len = ultrawidelock_link_build_report(&s_link, peer_mm, ranging_block, sealed,
-						     sizeof(sealed));
+						      sizeof(sealed));
 	if (sealed_len == 0u) {
 		return;
 	}
 
-	msg = otUdpNewMessage(ot, NULL);
-	if (msg == NULL) {
-		return;
-	}
-	if (otMessageAppend(msg, sealed, (uint16_t)sealed_len) != OT_ERROR_NONE) {
-		otMessageFree(msg);
-		return;
-	}
-	memset(&info, 0, sizeof(info));
 	/*
-	 * Mesh-local all-nodes, matching the witness link's reasoning: this board
-	 * is never told the lock's address, so replacing the lock or letting its
+	 * To the group, matching the witness link's reasoning: this board is
+	 * never told the lock's address, so replacing the lock or letting its
 	 * address change costs no re-provisioning. Only a holder of the link key
 	 * can produce a report, so the broadcast costs a frame and reveals a
 	 * distance to nobody who could not already measure one.
+	 *
+	 * Runs on the app thread out of the ranging loop in main.c, not in the
+	 * receive callback, so the transport may take its lock. That rule is
+	 * ultrawidelock_dgram.h's to state now; it used to be a paragraph here
+	 * and another one in the witness link, saying the same thing twice.
 	 */
-	info.mPeerAddr.mFields.m8[0] = 0xFFu;
-	info.mPeerAddr.mFields.m8[1] = 0x03u;
-	info.mPeerAddr.mFields.m8[15] = 0x01u;
-	info.mPeerPort = ANCHOR_PORT;
-
-	if (otUdpSend(ot, &s_sock, msg, &info) != OT_ERROR_NONE) {
-		otMessageFree(msg); /* takes ownership only on success */
-	}
+	(void)ultrawidelock_dgram_send(sealed, sealed_len);
 }
 
 /**
@@ -254,24 +211,6 @@ bool anchor_link_attached(void)
 	       role == OT_DEVICE_ROLE_LEADER;
 }
 
-static int anchor_settings_set(const char *name, size_t len, settings_read_cb read_cb,
-			       void *cb_arg)
-{
-	uint8_t key[KEY_LEN];
-
-	if (len != KEY_LEN || strcmp(name, "lk") != 0) {
-		return -ENOENT;
-	}
-	if (read_cb(cb_arg, key, KEY_LEN) != (ssize_t)KEY_LEN) {
-		return -EINVAL;
-	}
-	(void)ultrawidelock_link_set_key(&s_link, key, KEY_LEN);
-	memset(key, 0, sizeof(key));
-	return 0;
-}
-
-SETTINGS_STATIC_HANDLER_DEFINE(anchor_link, "sat", NULL, anchor_settings_set, NULL, NULL);
-
 int anchor_link_set_key(const uint8_t *key, size_t len)
 {
 	int rc;
@@ -279,49 +218,55 @@ int anchor_link_set_key(const uint8_t *key, size_t len)
 	if (key == NULL || len != KEY_LEN) {
 		return -EINVAL;
 	}
-	rc = settings_save_one("sat/lk", key, len);
+	rc = ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_SATELLITE_KEY, key, len);
 	if (rc != 0) {
 		return rc;
 	}
-	return ultrawidelock_link_set_key(&s_link, key, len);
+	return ultrawidelock_link_set_key(&s_link, key, len) == 0 ? 0 : -EINVAL;
 }
 
 bool anchor_link_ready(void)
 {
-	return s_open && ultrawidelock_link_ready(&s_link);
+	return ultrawidelock_dgram_ready() && ultrawidelock_link_ready(&s_link);
 }
 
 void anchor_link_init(void)
 {
 	otInstance *ot;
 	bool commissioned;
-
+	uint8_t key[KEY_LEN];
+	size_t key_len = sizeof(key);
 	uint32_t boot_id;
 
 	/* Never zero: a zero boot_id is what an uninitialised variable looks
 	 * like, and the lock treats a change of boot_id as permission to accept
-	 * a counter that went backwards. Before the settings load, which
-	 * installs the stored key into the same struct this initialises. */
+	 * a counter that went backwards. */
 	do {
 		boot_id = sys_rand32_get();
 	} while (boot_id == 0u);
 	ultrawidelock_link_init(&s_link, (uint8_t)CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE, boot_id);
 
-	(void)settings_subsys_init();
-	(void)settings_load_subtree("sat");
+	if (ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK &&
+	    ultrawidelock_kv_get(ULTRAWIDELOCK_KV_KEY_LINK_SATELLITE_KEY, key, &key_len) ==
+		    ULTRAWIDELOCK_KV_OK) {
+		(void)ultrawidelock_link_set_key(&s_link, key, key_len);
+	}
+	memset(key, 0, sizeof(key));
 
 	ot = openthread_get_default_instance();
 	if (ot == NULL) {
 		LOG_WRN("no Thread instance; anchor reports will not be sent");
 		return;
 	}
-	openthread_mutex_lock();
-	if (otUdpOpen(ot, &s_sock, udp_rx, NULL) == OT_ERROR_NONE) {
-		otSockAddr addr = {0};
+	/*
+	 * Outside the OpenThread lock, and it has to be: the transport takes that
+	 * lock itself, and taking it here first would be the caller holding it
+	 * twice. This is the shape the seam asks for -- a consumer that has no
+	 * lock of its own to interleave.
+	 */
+	(void)ultrawidelock_dgram_open(ANCHOR_PORT, link_rx, NULL);
 
-		addr.mPort = ANCHOR_PORT;
-		s_open = (otUdpBind(ot, &s_sock, &addr, OT_NETIF_THREAD) == OT_ERROR_NONE);
-	}
+	openthread_mutex_lock();
 	(void)otSetStateChangedCallback(ot, role_changed, NULL);
 	commissioned = otDatasetIsCommissioned(ot);
 	openthread_mutex_unlock();
@@ -342,8 +287,8 @@ void anchor_link_init(void)
 		LOG_WRN("no Thread dataset; run `sat dataset <tlv-hex>`");
 	}
 
-	if (!s_open) {
-		LOG_WRN("anchor link socket did not open");
+	if (!ultrawidelock_dgram_ready()) {
+		LOG_WRN("anchor link did not open");
 	} else if (!ultrawidelock_link_ready(&s_link)) {
 		/* Loud, because it fails closed and silently otherwise: an
 		 * un-provisioned anchor ranges perfectly and reports nothing,

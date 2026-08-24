@@ -22,7 +22,6 @@
  * forged header can only destroy the installed image, never install code.
  */
 
-#include <psa/crypto.h>
 #include <errno.h>
 #include <string.h>
 
@@ -34,6 +33,7 @@
 #include "ultrawidelock_log.h"
 #include "ultrawidelock_osal.h"
 #include "ultrawidelock_port.h"
+#include "ultrawidelock_prim.h"
 
 LOG_MODULE_REGISTER(ultrawidelock_dfu, CONFIG_ULTRAWIDELOCK_DFU_LOG_LEVEL);
 
@@ -319,26 +319,15 @@ static int patch_write(const uint8_t *data, size_t len)
  */
 static bool head_verifies(void)
 {
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_id_t key = PSA_KEY_ID_NULL;
-	psa_status_t st;
-
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_MESSAGE);
-	psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-	psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
-	psa_set_key_bits(&attr, 256);
-
-	st = psa_import_key(&attr, ultrawidelock_dfu_pubkey, sizeof(ultrawidelock_dfu_pubkey), &key);
-	if (st != PSA_SUCCESS) {
-		LOG_ERR("pubkey import failed (%d)", (int)st);
+	/* The primitive contract requires explicit, idempotent provider init. Do it
+	 * here as well as in full reader applications so the DFU module remains a
+	 * self-contained consumer and fails closed in a smaller image. */
+	if (ultrawidelock_prim_init() != 0) {
 		return false;
 	}
-
-	st = psa_verify_message(key, PSA_ALG_ECDSA(PSA_ALG_SHA_256), s_rx.head, ULTRAWIDELOCK_DFU_HDR_LEN,
-				s_rx.head + ULTRAWIDELOCK_DFU_HDR_LEN, ULTRAWIDELOCK_DFU_SIG_LEN);
-	(void)psa_destroy_key(key);
-
-	return st == PSA_SUCCESS;
+	return ultrawidelock_ecdsa_p256_verify(
+		       ultrawidelock_dfu_pubkey, s_rx.head, ULTRAWIDELOCK_DFU_HDR_LEN,
+		       s_rx.head + ULTRAWIDELOCK_DFU_HDR_LEN) == 0;
 }
 
 /* ---- frame handling ------------------------------------------------------- */

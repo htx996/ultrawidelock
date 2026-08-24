@@ -8,10 +8,10 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
-# modules/ultrawidelock_cred is listed for its Kconfig alone: the reader sources use the
-# LOG_MODULE the `module = ULTRAWIDELOCK_CRED` template declares, so CONFIG_ULTRAWIDELOCK_CRED_LOG_LEVEL
-# has to exist. Its CMakeLists is gated on CONFIG_ULTRAWIDELOCK_CRED_STACK, which stays n
-# here, so it contributes no sources and the nRF5340 build is unaffected.
+# modules/ultrawidelock_cred supplies this app's Kconfig and its named primitive
+# provider. The reader sources remain listed directly below; keeping
+# CONFIG_ULTRAWIDELOCK_CRED_STACK=n prevents the credential library from being
+# compiled a second time.
 # modules/ultrawidelock_anchor is listed on the same terms: its CMakeLists is gated on
 # CONFIG_ULTRAWIDELOCK_ANCHOR, which is default n, so listing it here costs the default
 # build nothing and only makes `overlay-anchor.conf` able to turn it on.
@@ -67,7 +67,9 @@ set(PORTZ "${REPO_ROOT}/ports/zephyr")
 
 # Reader-role source sets come from the role manifests (modules/ultrawidelock_cred/
 # roles/*.list) — the same lists the ESP32 components, the nRF5340 apps and the
-# host suite read, so each role's file set exists in exactly one place.
+# host suite read, so each role's file set exists in exactly one place. The
+# crypto role is composition only; this image's PSA implementation is the
+# named ultrawidelock_prim library contributed by the credential module.
 include("${REPO_ROOT}/cmake/ultrawidelock_roles.cmake")
 ultrawidelock_role_sources("${CRED}/roles/reader.list" ULTRAWIDELOCK_READER_SRCS)
 ultrawidelock_role_sources("${CRED}/roles/reader_policy.list" ULTRAWIDELOCK_POLICY_SRCS)
@@ -94,13 +96,14 @@ target_sources(app PRIVATE
 	${ULTRAWIDELOCK_HASH_SRCS}
 	${ULTRAWIDELOCK_DYNTAG_SRCS}
 )
+target_link_libraries(app PRIVATE ultrawidelock_prim)
 if(CONFIG_ULTRAWIDELOCK_BENCH_CRED_O2)
 	set_source_files_properties(
 		"${CRED}/src/ultrawidelock_reader.c"
 		"${CRED}/src/ultrawidelock_crypto.c"
 		"${CRED}/src/ultrawidelock_hash.c"
-		"${CRED}/src/ultrawidelock_prim_psa.c"
 		PROPERTIES COMPILE_OPTIONS "-O2")
+	target_compile_options(ultrawidelock_prim PRIVATE -O2)
 endif()
 # Provisioning console (USB CDC-ACM, provisioning mode only). Dropped by
 # 4bdfd44a, which replaced this line with the side_feed one below instead of

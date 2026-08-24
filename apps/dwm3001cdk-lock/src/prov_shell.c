@@ -21,14 +21,13 @@
  * image, and the image that uses them has no console. See cmd_witkey.
  */
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
-#include <zephyr/settings/settings.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/util.h>
 
+#include "ultrawidelock_kv.h"
 #include "ultrawidelock_prov.h"
 #include "witness_link.h"
 #include <ultrawidelock/reader.h>
@@ -258,7 +257,6 @@ static unsigned int witness_role_of(const char *word)
 static int cmd_witkey(const struct shell *sh, size_t argc, char **argv)
 {
 	uint8_t key[WITNESS_LINK_KEY_LEN];
-	char name[32];
 	unsigned int role;
 	size_t hex_len;
 
@@ -288,21 +286,16 @@ static int cmd_witkey(const struct shell *sh, size_t argc, char **argv)
 		return -EINVAL;
 	}
 
-	/* Spelled here, and split so the record name appears as its own literal:
-	 * tests/tooling/port_purity_check.sh reads it out of this file and
-	 * matches it against PORTING.md, which is the only check there is that
-	 * the writer and witness_link.c's reader still agree. */
-	(void)snprintf(name, sizeof(name), "uwl/wit/k" "/%u", role);
+	int rc = ultrawidelock_kv_init();
 
-	int rc = settings_subsys_init();
-
-	if (rc != 0) {
-		shell_error(sh, "settings init rc=%d; nothing stored", rc);
+	if (rc != ULTRAWIDELOCK_KV_OK) {
+		shell_error(sh, "persistent store init rc=%d; nothing stored", rc);
 		return rc;
 	}
-	rc = settings_save_one(name, key, sizeof(key));
-	if (rc != 0) {
-		shell_error(sh, "storing %s rc=%d", name, rc);
+	rc = ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role,
+				 key, sizeof(key));
+	if (rc != ULTRAWIDELOCK_KV_OK) {
+		shell_error(sh, "storing the %s witness key rc=%d", s_witness_roles[role], rc);
 		return rc;
 	}
 
@@ -340,16 +333,14 @@ static int cmd_anckey(const struct shell *sh, size_t argc, char **argv)
 		return -EINVAL;
 	}
 
-	rc = settings_subsys_init();
-	if (rc != 0) {
-		shell_error(sh, "settings init rc=%d; nothing stored", rc);
+	rc = ultrawidelock_kv_init();
+	if (rc != ULTRAWIDELOCK_KV_OK) {
+		shell_error(sh, "persistent store init rc=%d; nothing stored", rc);
 		return rc;
 	}
-	/* Split literal for the same reason as witkey's: port_purity_check.sh
-	 * matches this against PORTING.md to catch the writer and the reader in
-	 * witness_link.c drifting apart. */
-	rc = settings_save_one("uwl/anc/k" "", key, sizeof(key));
-	if (rc != 0) {
+	rc = ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_LINK_ANCHOR_KEY,
+				 key, sizeof(key));
+	if (rc != ULTRAWIDELOCK_KV_OK) {
 		shell_error(sh, "storing the anchor key rc=%d", rc);
 		return rc;
 	}

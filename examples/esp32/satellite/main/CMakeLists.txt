@@ -5,8 +5,8 @@ idf_component_register(
 		ultrawidelock_uwb
 		# the sealed link: ESP-NOW carrier, and through it the link core,
 		# the WV3/WV4 codec and the AES-CCM envelope
-		ultrawidelock_satlink ultrawidelock_anchor
-		console nvs_flash mbedtls
+		ultrawidelock_satlink ultrawidelock_anchor ultrawidelock_crypto
+		console nvs_flash
 )
 
 # The responder count and index come from the PROJECT CMakeLists, which is the

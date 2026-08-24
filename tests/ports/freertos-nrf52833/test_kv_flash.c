@@ -49,7 +49,7 @@ void ultrawidelock_freertos_log(enum ultrawidelock_freertos_log_level level, con
 static int get(uint16_t key, void *buffer, size_t capacity, size_t *length)
 {
 	*length = capacity;
-	return ultrawidelock_freertos_kv_get(key, buffer, length);
+	return ultrawidelock_kv_get(key, buffer, length);
 }
 
 static void fill(uint8_t *buffer, size_t length, uint8_t seed)
@@ -72,23 +72,23 @@ static void scenario_basics(void)
 	fill(value, sizeof(value), 0x10);
 
 	CHECK("a blank part mounts as an empty store",
-	      ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	      ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 	CHECK("nothing is stored yet",
 	      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_NOT_FOUND);
 
 	CHECK("a value that is not a whole number of words round-trips",
-	      ultrawidelock_freertos_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
 		      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK &&
 		      length == sizeof(value) && memcmp(out, value, sizeof(value)) == 0);
 
 	fill(value, sizeof(value), 0x80);
 	CHECK("rewriting a key returns the new value, not the old",
-	      ultrawidelock_freertos_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
 		      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK &&
 		      memcmp(out, value, sizeof(value)) == 0);
 
 	CHECK("a second key does not disturb the first",
-	      ultrawidelock_freertos_kv_set(OT_KEY, "thread", 6) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_set(OT_KEY, "thread", 6) == ULTRAWIDELOCK_KV_OK &&
 		      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK && length == 6 &&
 		      memcmp(out, "thread", 6) == 0 &&
 		      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK &&
@@ -99,28 +99,28 @@ static void scenario_basics(void)
 	 * older one left valid would resurrect a value the caller deleted.
 	 */
 	CHECK("deleting a key that was written twice forgets both copies",
-	      ultrawidelock_freertos_kv_delete(PROV_KEY) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_delete(PROV_KEY) == ULTRAWIDELOCK_KV_OK &&
 		      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_NOT_FOUND);
 	CHECK("deleting it again reports that it was not there",
-	      ultrawidelock_freertos_kv_delete(PROV_KEY) == ULTRAWIDELOCK_KV_NOT_FOUND);
+	      ultrawidelock_kv_delete(PROV_KEY) == ULTRAWIDELOCK_KV_NOT_FOUND);
 	CHECK("and the other key survived the delete",
 	      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK && length == 6);
 
 	CHECK("a zero-length value is a value, not an absence",
-	      ultrawidelock_freertos_kv_set(OT_KEY, NULL, 0) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_set(OT_KEY, NULL, 0) == ULTRAWIDELOCK_KV_OK &&
 		      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK && length == 0);
 
 	length = 0;
 	CHECK("a buffer too small reports the stored length rather than truncating",
-	      ultrawidelock_freertos_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
 		      get(PROV_KEY, out, 4, &length) == ULTRAWIDELOCK_KV_INVALID &&
 		      length == sizeof(value));
 
 	CHECK("an oversized value is refused",
-	      ultrawidelock_freertos_kv_set(PROV_KEY, out, ULTRAWIDELOCK_KV_VALUE_MAX + 1u) ==
+	      ultrawidelock_kv_set(PROV_KEY, out, ULTRAWIDELOCK_KV_VALUE_MAX + 1u) ==
 		      ULTRAWIDELOCK_KV_INVALID);
 	CHECK("the erased-flash key is not a key",
-	      ultrawidelock_freertos_kv_set(ULTRAWIDELOCK_KV_KEY_NONE, value, 4) ==
+	      ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_NONE, value, 4) ==
 			      ULTRAWIDELOCK_KV_INVALID &&
 		      get(ULTRAWIDELOCK_KV_KEY_NONE, out, sizeof(out), &length) ==
 			      ULTRAWIDELOCK_KV_INVALID);
@@ -137,7 +137,7 @@ static void scenario_compaction(void)
 	unsigned erases_before;
 	unsigned i;
 
-	(void)ultrawidelock_freertos_kv_init();
+	(void)ultrawidelock_kv_init();
 	CHECK("a fresh store has most of a page free",
 	      ultrawidelock_freertos_kv_free_bytes() > 4000u);
 
@@ -147,14 +147,14 @@ static void scenario_compaction(void)
 	 */
 	fill(value, 200, 0x40);
 	CHECK("a long-lived key is stored, and rewritten",
-	      ultrawidelock_freertos_kv_set(OT_KEY, value, 200) == ULTRAWIDELOCK_KV_OK &&
-		      ultrawidelock_freertos_kv_set(OT_KEY, value, 200) == ULTRAWIDELOCK_KV_OK &&
-		      ultrawidelock_freertos_kv_set(OT_KEY, value, 200) == ULTRAWIDELOCK_KV_OK);
+	      ultrawidelock_kv_set(OT_KEY, value, 200) == ULTRAWIDELOCK_KV_OK &&
+		      ultrawidelock_kv_set(OT_KEY, value, 200) == ULTRAWIDELOCK_KV_OK &&
+		      ultrawidelock_kv_set(OT_KEY, value, 200) == ULTRAWIDELOCK_KV_OK);
 
 	erases_before = fake_flash_erase_calls;
 	for (i = 0; i < 12u; i++) {
 		fill(value, sizeof(value), (uint8_t)i);
-		if (ultrawidelock_freertos_kv_set(PROV_KEY, value, sizeof(value)) != ULTRAWIDELOCK_KV_OK) {
+		if (ultrawidelock_kv_set(PROV_KEY, value, sizeof(value)) != ULTRAWIDELOCK_KV_OK) {
 			break;
 		}
 	}
@@ -183,10 +183,10 @@ static void scenario_compaction(void)
 	      ultrawidelock_freertos_kv_free_bytes() > 1400u);
 
 	CHECK("erasing everything leaves a store, not a hole",
-	      ultrawidelock_freertos_kv_erase_all() == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_erase_all() == ULTRAWIDELOCK_KV_OK &&
 		      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_NOT_FOUND &&
 		      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_NOT_FOUND &&
-		      ultrawidelock_freertos_kv_set(PROV_KEY, "again", 5) == ULTRAWIDELOCK_KV_OK);
+		      ultrawidelock_kv_set(PROV_KEY, "again", 5) == ULTRAWIDELOCK_KV_OK);
 }
 
 /* Leaves a store with two keys behind for the reboot scenario to find. */
@@ -196,8 +196,8 @@ static void scenario_write_then_reboot(void)
 
 	fill(value, sizeof(value), 0x30);
 	CHECK("values are written before the reset",
-	      ultrawidelock_freertos_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
-		      ultrawidelock_freertos_kv_set(OT_KEY, "srp", 3) == ULTRAWIDELOCK_KV_OK);
+	      ultrawidelock_kv_set(PROV_KEY, value, sizeof(value)) == ULTRAWIDELOCK_KV_OK &&
+		      ultrawidelock_kv_set(OT_KEY, "srp", 3) == ULTRAWIDELOCK_KV_OK);
 }
 
 static void scenario_after_reboot(void)
@@ -208,7 +208,7 @@ static void scenario_after_reboot(void)
 
 	fill(expect, sizeof(expect), 0x30);
 	CHECK("a store written before the reset mounts again",
-	      ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	      ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 	CHECK("and both values are still there",
 	      get(PROV_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK &&
 		      length == sizeof(expect) && memcmp(out, expect, sizeof(expect)) == 0 &&
@@ -224,7 +224,7 @@ static void scenario_after_reboot(void)
 static void scenario_torn_write_then_reboot(void)
 {
 	CHECK("the good value is stored first",
-	      ultrawidelock_freertos_kv_set(OT_KEY, "good", 4) == ULTRAWIDELOCK_KV_OK);
+	      ultrawidelock_kv_set(OT_KEY, "good", 4) == ULTRAWIDELOCK_KV_OK);
 	/*
 	 * Three writes make a record: header, payload, state. Failing the third
 	 * is the power loss that leaves a payload nobody claimed.
@@ -232,7 +232,7 @@ static void scenario_torn_write_then_reboot(void)
 	fake_flash_write_calls = 0;
 	fake_flash_fail_write_after = 3;
 	CHECK("a write whose state word never lands reports the failure",
-	      ultrawidelock_freertos_kv_set(OT_KEY, "torn", 4) == ULTRAWIDELOCK_KV_IO);
+	      ultrawidelock_kv_set(OT_KEY, "torn", 4) == ULTRAWIDELOCK_KV_IO);
 }
 
 static void scenario_after_torn_write(void)
@@ -241,12 +241,12 @@ static void scenario_after_torn_write(void)
 	size_t length;
 
 	CHECK("the store still mounts after a torn record",
-	      ultrawidelock_freertos_kv_init() == ULTRAWIDELOCK_KV_OK);
+	      ultrawidelock_kv_init() == ULTRAWIDELOCK_KV_OK);
 	CHECK("and the unclaimed value is not visible",
 	      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK && length == 4 &&
 		      memcmp(out, "good", 4) == 0);
 	CHECK("writing again after the torn record still works",
-	      ultrawidelock_freertos_kv_set(OT_KEY, "after", 5) == ULTRAWIDELOCK_KV_OK &&
+	      ultrawidelock_kv_set(OT_KEY, "after", 5) == ULTRAWIDELOCK_KV_OK &&
 		      get(OT_KEY, out, sizeof(out), &length) == ULTRAWIDELOCK_KV_OK && length == 5);
 }
 

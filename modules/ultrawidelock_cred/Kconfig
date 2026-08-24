@@ -5,6 +5,18 @@
 # Distinct from ULTRAWIDELOCK_CRED in modules/ultrawidelock_uwb, which names the CCC/STS *ranging*
 # engine below this layer and is unrelated.
 
+config ULTRAWIDELOCK_PRIM
+	bool
+	default y if ULTRAWIDELOCK_CRED_STACK
+	default y if ULTRAWIDELOCK_CRED
+	default y if ULTRAWIDELOCK_SEALED_LINK
+	default y if ULTRAWIDELOCK_DFU_RECEIVER
+	help
+	  Build the image's single PSA implementation of the portable primitive
+	  contract. This is internal plumbing shared by the credential stack, CCC
+	  ranging, sealed peer links and DFU signature verification; it has no
+	  user-facing policy of its own.
+
 config ULTRAWIDELOCK_CRED_STACK
 	bool "UltraWideLock credential-auth stack (open libaliro replacement)"
 	help

@@ -669,7 +669,8 @@ Nothing here has been run on hardware. Stage E is not passed until it is.
    attaching with the DK's target reads like a dead board). Two probes on one
    machine enumerate in a different order twenty minutes apart -- pass
    `PROBE=` rather than trusting the order.
-   **Never `--erase` a provisioned board**: the link key lives in settings.
+   **Never `--erase` a provisioned board**: the link key lives in the
+   persistent key-value store.
 2. **First light on the UART, radio off.** `make sat-term`, confirm the shell
    answers, before any Thread dataset goes in. This is the wire that separates a
    protocol failure from radio coexistence, and it is why the plain build exists.
@@ -678,8 +679,9 @@ Nothing here has been run on hardware. Stage E is not passed until it is.
    - **role** -- build-time, `CONFIG_ULTRAWIDELOCK_ANCHOR_ROLE`. A MOUNTING
      FACT. Backwards it fails no test and inverts the side verdict. One
      satellite = role 2 (outside).
-   - **link key** -- the anchor key, shared with the lock (`uwl/anc`), which is
-     safe across satellites only because the role is in the nonce.
+   - **link key** -- the anchor key, shared with the lock at
+     `ULTRAWIDELOCK_KV_KEY_LINK_ANCHOR_KEY`, which is safe across satellites
+     only because the role is in the nonce.
    - **Thread dataset** -- `sat dataset <tlvs>`, 226 characters; the RX rings on
      both transports are sized for it.
 4. **Baseline.** Measure lock-to-satellite centre-to-centre and set

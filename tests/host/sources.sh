@@ -102,6 +102,7 @@ unit_srcs_from_role "$CRED/roles/reader_policy.list"
 # flight recorder's replay half. base_driver/responder_driver need a DW3000 and
 # are absent by design.
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ccc_keys.list"
+unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/crypto_prim.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ccc_engine.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ultrawidelock_adapter.list"
 unit_srcs_from_role "$ROOT/modules/ultrawidelock_uwb/roles/ultrawidelock_codec.list"
@@ -189,10 +190,12 @@ SHIM_SRCS=(
 	"$SHIM/dw_rx_stub.c"
 	"$HOST/logfake/logfake.c"
 	"$HOST/spakefake/spakefake.c"
-	# The host OSAL/flash backends double as the test fakes (ultrawidelock_osal.h).
+	# The host OSAL/flash/kv/dgram backends double as the test fakes.
 	"$ROOT/tests/host/port/osal_host.c"
 	"$ROOT/tests/host/matterfake/thread_host.c"
 	"$ROOT/tests/host/port/flash_host.c"
+	"$ROOT/tests/host/port/kv_host.c"
+	"$ROOT/tests/host/port/dgram_host.c"
 )
 
 # Include search path: shim first so <zephyr/...> resolves to the stubs;

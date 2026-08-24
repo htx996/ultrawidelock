@@ -40,6 +40,7 @@ set(ULTRAWIDELOCK_MDK "${ULTRAWIDELOCK_BSP}/mdk")
 get_filename_component(ULTRAWIDELOCK_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(ULTRAWIDELOCK_MODULES_DIR "${ULTRAWIDELOCK_REPO_ROOT}/modules")
 set(ULTRAWIDELOCK_CMSIS "${ULTRAWIDELOCK_NCS_WORKSPACE}/modules/hal/cmsis/CMSIS/Core/Include")
+include("${ULTRAWIDELOCK_REPO_ROOT}/cmake/ultrawidelock_roles.cmake")
 
 foreach(_ultrawidelock_path "${ULTRAWIDELOCK_FREERTOS_SRC}/source/tasks.c" "${ULTRAWIDELOCK_MDK}/nrf52833.h"
                   "${ULTRAWIDELOCK_CMSIS}/core_cm4.h")
@@ -541,9 +542,15 @@ add_library(ultrawidelock_storage STATIC
   # role, below: naming it in two places would put one object in two archives.
 )
 # The provisioning backend implements a contract owned by the shared credential
-# module, not by this port, so the module's public headers are on the path.
+# module, not by this port, so the module's public headers are on the path. The
+# key-value store is the same arrangement one layer down: ultrawidelock_kv.h is
+# the seam every port implements, and ultrawidelock_freertos_kv.h now includes
+# it. PUBLIC because everything that reaches the store -- the credential
+# backend, OpenThread's settings, Matter's fabric records, PSA's trusted
+# storage -- links this target to get there.
 target_include_directories(ultrawidelock_storage PUBLIC
   "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_cred/include"
+  "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_port/include"
 )
 target_link_libraries(ultrawidelock_storage PUBLIC ultrawidelock_radio)
 
@@ -560,6 +567,22 @@ target_link_libraries(ultrawidelock_storage PUBLIC ultrawidelock_radio)
 # start-up by ultrawidelock_flash_area_open() so the two cannot drift in silence.
 target_compile_definitions(ultrawidelock_storage
   PRIVATE ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_BASE=0x00074000u)
+
+# ----------------------------------------------------------------------------
+# Primitive provider: the image's single PSA implementation.
+#
+# Kept separate from the credential library because UWB and DFU consume the
+# primitive contract directly. Defining it before UWB also avoids manufacturing
+# a UWB <-> credential target cycle merely to obtain a crypto backend.
+# ----------------------------------------------------------------------------
+set(ULTRAWIDELOCK_CRED_ROLES "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_cred/roles")
+ultrawidelock_role_sources(
+  "${ULTRAWIDELOCK_CRED_ROLES}/prim_provider.list"
+  ULTRAWIDELOCK_PRIM_PROVIDER_SRCS)
+add_library(ultrawidelock_prim STATIC ${ULTRAWIDELOCK_PRIM_PROVIDER_SRCS})
+target_include_directories(ultrawidelock_prim PUBLIC
+  "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_cred/include")
+target_link_libraries(ultrawidelock_prim PUBLIC ultrawidelock_mbedtls)
 
 # ----------------------------------------------------------------------------
 # UWB layer: the ranging engine, the vendored decadriver, and the DW3110
@@ -580,7 +603,6 @@ include("${ULTRAWIDELOCK_PORT_DIR}/uwb/uwb.cmake")
 # and it is short because ultrawidelock_radio already owns the host: see its header for
 # why bonding is off and what turning it on would cost.
 # ----------------------------------------------------------------------------
-set(ULTRAWIDELOCK_CRED_ROLES "${ULTRAWIDELOCK_MODULES_DIR}/ultrawidelock_cred/roles")
 set(ULTRAWIDELOCK_CRED_ROLE_LISTS
   "${ULTRAWIDELOCK_CRED_ROLES}/reader.list"
   "${ULTRAWIDELOCK_CRED_ROLES}/reader_policy.list"
@@ -627,8 +649,12 @@ if(ULTRAWIDELOCK_MATTER)
   )
 endif()
 # ultrawidelock_radio for the NimBLE host and its hooks, ultrawidelock_storage for the provisioning
-# backend the identity is read through, ultrawidelock_uwb for the ranging contract.
-target_link_libraries(ultrawidelock_cred PUBLIC ultrawidelock_radio ultrawidelock_storage ultrawidelock_uwb)
+# backend the identity is read through, ultrawidelock_uwb for the ranging
+# contract. The primitive provider is private composition, not part of the
+# credential API surface.
+target_link_libraries(ultrawidelock_cred
+  PUBLIC ultrawidelock_radio ultrawidelock_storage ultrawidelock_uwb
+  PRIVATE ultrawidelock_prim)
 
 # ----------------------------------------------------------------------------
 # The Matter node.
@@ -1099,10 +1125,13 @@ target_include_directories(ultrawidelock_dfu PUBLIC
 target_include_directories(ultrawidelock_dfu PRIVATE
   "${ULTRAWIDELOCK_DFU_DIR}/src"
 )
-# ultrawidelock_storage for the flash driver underneath the area backend, ultrawidelock_mbedtls for
-# the PSA signature check the receiver makes before anything is staged, and
-# ultrawidelock_nimble for the transport in front of it.
-target_link_libraries(ultrawidelock_dfu PUBLIC ultrawidelock_storage ultrawidelock_mbedtls ultrawidelock_nimble)
+# ultrawidelock_storage for the flash driver underneath the area backend and
+# ultrawidelock_nimble for the transport in front of it. The receiver reaches
+# signature verification only through the primitive contract; PRIVATE supplies
+# the image's one provider without exporting it as part of the DFU API.
+target_link_libraries(ultrawidelock_dfu
+  PUBLIC ultrawidelock_storage ultrawidelock_nimble
+  PRIVATE ultrawidelock_prim)
 
 # ----------------------------------------------------------------------------
 # USB device: the provisioning console's transport.
@@ -1305,6 +1334,12 @@ endforeach()
 # reason. The rest still applies -- this is the port's own code and the shared
 # backend, not vendor source.
 target_compile_options(ultrawidelock_cred PRIVATE
+  -Wall
+  -Wextra
+  -Werror
+  -Wshadow
+)
+target_compile_options(ultrawidelock_prim PRIVATE
   -Wall
   -Wextra
   -Werror
