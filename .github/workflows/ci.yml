@@ -4,21 +4,21 @@
 # python3, cmake and a C compiler are all `gates` and `secrets` need, which is
 # what makes them cheap enough to run on every pull request.
 #
-# `cdk-client` is the exception, and it is the answer to a hole those two left:
+# `cdk-images` is the exception, and it is the answer to a hole those two left:
 # NOTHING HERE USED TO COMPILE FIRMWARE. The host suites build the portable C
 # under modules/ and exactly one of the thirteen C files under
 # apps/dwm3001cdk-lock/src -- matter_client.c, against the fakes in tests/host.
 # The other twelve, every Kconfig fragment, the devicetree overlay, the
 # partition map and the flash fit were compiled by no check at all, so a syntax
-# or type error in main.c merged with every tick green. That job builds one real
-# image in the NCS toolchain container and closes it. It is scoped by path and
-# it is slow; both are explained on the job itself.
+# or type error in main.c merged with every tick green. That job builds two real
+# images in the NCS toolchain container and takes the count to nine of thirteen.
+# It is scoped by path and it is slow; both are explained on the job itself.
 #
 # Still not covered, and still a bench's job: the ESP32 images (ESP-IDF and
-# esp-matter, hours), the six other DWM3001CDK configurations, the size gate and
+# esp-matter, hours), the remaining DWM3001CDK configurations, the size gate and
 # the hardware. `make regress` covers those where the boards are, and
 # `make regress-hil` goes on to prove them on air; `make esp-release` covers the
-# ESP32. A green run here means one CDK image compiles and links, and that
+# ESP32. A green run here means two CDK images compile and link, and that
 # nothing else broke that a host can see.
 #
 # `gates` is a serial list of steps rather than parallel jobs: each job pays a
@@ -46,11 +46,11 @@
 #            removes it; the diff is clean and the object is still there
 #            forever. This repository's history was swept clean by hand before
 #            it was ever pushed, so a full scan is affordable and stays green.
-#   cdk      one real DWM3001CDK image compiles, links and fits in flash. The
-#            only check anywhere that runs a compiler over the application, the
+#   cdk      two real DWM3001CDK images compile, link and fit in flash. The only
+#            check anywhere that runs a compiler over the application, the
 #            Kconfig tree, the devicetree overlay and the partition map. Costs a
 #            toolchain container and a cached 6.5 GB west workspace, so unlike
-#            the three above it runs only when the change can reach the image.
+#            the three above it runs only when the change can reach an image.
 name: ci
 
 on:
@@ -192,13 +192,13 @@ jobs:
 
   # Does this event touch anything that can change a firmware image?
   #
-  # A SEPARATE JOB, and cheap on purpose: `cdk-client` below runs in a
+  # A SEPARATE JOB, and cheap on purpose: `cdk-images` below runs in a
   # container, and Actions pulls a job's image before its first step runs. Doing
   # the decision inside that job would mean paying the image pull to discover
   # that the answer was no. This one is a checkout and a `git diff`.
   #
   # JOB-LEVEL `if:`, NOT A WORKFLOW-LEVEL `paths:` FILTER, and the difference
-  # matters the moment `cdk-client` is made a required check. A workflow filtered
+  # matters the moment `cdk-images` is made a required check. A workflow filtered
   # by `paths:` does not run at all on a change it excludes, so its check never
   # appears and branch protection waits for it forever. A job skipped by `if:`
   # reports the `skipped` conclusion, which GitHub counts as success. Same
@@ -287,30 +287,54 @@ jobs:
   # buying that risk -- it keys on preprocessed input, so a stale entry is not
   # reachable the way a stale CMake cache is.
   #
-  # WHAT IT COSTS. MEASURED on an 8-core Apple M1 against this workspace, both
-  # runs `make build CLIENT=1 PRISTINE=1`: 232 s with an empty ccache, 95 s with
-  # a warm one (91% hit rate), and the whole image's objects occupy 50 MB of
-  # ccache. A 4-vCPU Actions runner is the slower machine, and on top of the
-  # build it pays the toolchain container pull and the workspace cache restore,
-  # neither of which the bench figure includes. Budget roughly ten to fifteen
+  # WHAT IT COSTS. MEASURED on an 8-core Apple M1 against this workspace,
+  # `make build CLIENT=1 PRISTINE=1`: 232 s with an empty ccache, 95 s with a
+  # warm one (91% hit rate), and the whole image's objects occupy 50 MB of
+  # ccache. The anchorlink image below adds 152.7 s on top of a ccache the
+  # client build has already warmed.
+  #
+  # A 4-vCPU Actions runner is the slower machine, and on top of the builds it
+  # pays the toolchain container pull and the workspace cache restore, neither of
+  # which the bench figures include. Budget roughly fifteen to twenty-five
   # minutes warm against the two minutes `gates` takes, and a cold workspace --
   # an evicted cache entry, or a patch edit that changes the key -- is the
   # ~6.5 GB upstream bootstrap, which is what the timeout below is sized for.
   # That ratio is the entire reason for the `scope` job above: this runs when a
-  # change can reach the image, not on every push.
+  # change can reach an image, not on every push.
   #
-  # WHAT THIS DOES NOT COVER, stated so nobody reads a green tick for more than
-  # it says. Six of the thirteen C files under apps/dwm3001cdk-lock/src are
-  # compiled by this configuration -- main.c, ml_feed.c, status_led.c,
-  # matter_commission.c, uwb_matter_presence.c and matter_client.c. The other
-  # seven sit behind target_sources_ifdef guards this image does not set:
-  # prov_shell.c, side_feed.c, witness_link.c, thread_gate.c, door_alarm.c,
-  # cirdiag_capture.c and case_bench.c. Before this job the count was one, and
-  # that one only against the host fakes in tests/host. Reaching the other seven
-  # means building the other configurations, which is what `make regress` does on
-  # a bench.
-  cdk-client:
-    name: cdk client image (NCS v3.3.0)
+  # WHY A SECOND IMAGE, and why THAT one. The client image compiles six of the
+  # thirteen C files under apps/dwm3001cdk-lock/src -- main.c, ml_feed.c,
+  # status_led.c, matter_commission.c, uwb_matter_presence.c and matter_client.c.
+  # The other seven sit behind target_sources_ifdef guards it does not set, and
+  # the only way to compile them is to build a configuration that does.
+  #
+  # MEASURED, same bench, each `PRISTINE=1` on top of a ccache already warm from
+  # the client build, counting only the app sources each one ADDS:
+  #
+  #   anchorlink  152.7 s  witness_link.c, side_feed.c, door_alarm.c   51 s/file
+  #   cirdiag     165.5 s  cirdiag_capture.c                          166 s/file
+  #   reader      193.4 s  prov_shell.c                               193 s/file
+  #
+  # So `anchorlink` is taken and the other two are not. The ratio is most of the
+  # argument, but not all of it: anchorlink is also the one covering code that
+  # SHIPS -- the deployed witness transport, the side gate and the two
+  # DoorLockAlarms -- while prov_shell.c and cirdiag_capture.c are bench tools
+  # that a broken build inconveniences rather than a lock. Its own build
+  # directory, because `-p auto` does not reconfigure for changed -D flags.
+  #
+  # That puts CI at nine of thirteen. It was ONE before this job, and that one
+  # only against the host fakes in tests/host.
+  #
+  # THE LAST TWO ARE NOT REACHABLE AT ALL and this is not an oversight to fix
+  # later without deciding something. thread_gate.c and case_bench.c are guarded
+  # by CONFIG_ULTRAWIDELOCK_THREAD_GATE and CONFIG_ULTRAWIDELOCK_CASE_BENCH,
+  # both `default n`, and NOTHING in apps/ or mk/ sets either to y -- no overlay,
+  # no target, no flag combination. Both files say in their own headers that they
+  # are measurement-only and compile out of every image. Gating them would mean
+  # inventing a CI-only overlay whose sole purpose is to compile dormant code,
+  # which is a different decision from this one and should be made on its own.
+  cdk-images:
+    name: cdk images (NCS v3.3.0)
     needs: scope
     if: needs.scope.outputs.firmware == 'true'
     runs-on: ubuntu-latest
@@ -404,9 +428,9 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
-          key: ccache-cdk-client-${{ github.run_id }}
+          key: ccache-cdk-images-${{ github.run_id }}
           restore-keys: |
-            ccache-cdk-client-
+            ccache-cdk-images-
 
       - name: make sure make exists
         # THE NCS CONTAINER HAS NO make. Its toolchain bundle ships cmake, ninja
@@ -474,13 +498,24 @@ jobs:
           export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
           make build CLIENT=1 PRISTINE=1
 
-      - name: the image exists
-        # The build fails on a flash overflow by itself, and on a link error
-        # before that; this asserts the artifact is actually on disk, so a recipe
-        # that silently stopped producing one cannot pass as green.
+      - name: build the anchorlink image (decawave_dwm3001cdk)
+        # The three application sources the client image cannot reach:
+        # witness_link.c, side_feed.c and door_alarm.c compile only here. See the
+        # measurements on the job above for why this configuration and not
+        # `reader` or `cirdiag`. Its own build directory, which mk/cdk.mk already
+        # gives it.
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make anchorlink PRISTINE=1
+
+      - name: both images exist
+        # Each build fails on a flash overflow by itself, and on a link error
+        # before that; this asserts the artifacts are actually on disk, so a
+        # recipe that silently stopped producing one cannot pass as green.
         run: |
           test -f build/cdk-matter/merged.hex
-          ls -l build/cdk-matter/merged.hex
+          test -f build/cdk-anchorlink/merged.hex
+          ls -l build/cdk-matter/merged.hex build/cdk-anchorlink/merged.hex
           { command -v ccache >/dev/null && ccache -s | head -n 6; } || echo "no ccache on PATH"
 
       - name: save the compiler cache
@@ -490,4 +525,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
-          key: ccache-cdk-client-${{ github.run_id }}
+          key: ccache-cdk-images-${{ github.run_id }}

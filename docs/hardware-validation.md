@@ -1,9 +1,11 @@
 # Hardware validation
 
 CI gates the host-side logic (`make ci`: the KAT suite, sanitizers, CBMC, the
-tooling gates) and compile-gates one DWM3001CDK image -- the `CLIENT=1` build,
-the tightest configuration in the tree, in the NCS toolchain container. It does
-not build the other six configurations, the size baseline or anything ESP32, so
+tooling gates) and compile-gates two DWM3001CDK images in the NCS toolchain
+container: the `CLIENT=1` build, the tightest configuration in the tree, and
+`anchorlink`, which reaches the witness transport, the side gate and the door
+alarms. Between them that is nine of the thirteen application sources. It does
+not build the remaining configurations, the size baseline or anything ESP32, so
 `make regress` still compile-gates those on a bench. What none of that can
 exercise is the product itself, which runs against a live iPhone.
 
