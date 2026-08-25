@@ -105,23 +105,24 @@ override CDK_MLGATE_BUILD   := $(abspath $(CDK_MLGATE_BUILD))
 override CDK_ANCHORLINK_BUILD := $(abspath $(CDK_ANCHORLINK_BUILD))
 override CDK_RTT_BUILD      := $(abspath $(CDK_RTT_BUILD))
 
-# PRISTINE=1 forces a from-scratch build. `-p auto` re-runs CMake when the board
-# or the app directory changes, and NOT when the -D flags do, so switching an
-# existing build dir between the reader and the Matter build needs this.
+# PRISTINE=1 forces a from-scratch build. The recipes below hash their complete
+# CMake argument tail and pass it again when an option changes, so supported
+# switches reconfigure in place. It is still required when deliberately sharing
+# one build directory between structurally different targets such as `reader`
+# and `build`: each omits whole variable families that the other may have cached.
 CDK_PRISTINE := $(if $(PRISTINE),always,auto)
 
 # CIRDIAG_WINDOWS=1 re-arms the windowed-CIR dump in the `cirdiag` image. Off by
 # default because with it armed this board never transmits a Response at all
 # (measured, see the cirdiag target), and the taps it buys are worth 0.14 accuracy
-# points to the classifier the capture feeds. Same `-p auto` caveat as RELEASE:
-# switching it in an existing build dir needs PRISTINE=1.
-CDK_CIRDIAG_WINDOWS := $(if $(CIRDIAG_WINDOWS),-DCONFIG_ULTRAWIDELOCK_CIRDIAG_CAPTURE_WINDOWS=y,)
+# points to the classifier the capture feeds. Both states are explicit because
+# CMake retains an omitted command-line Kconfig value in an existing cache.
+CDK_CIRDIAG_WINDOWS := -DCONFIG_ULTRAWIDELOCK_CIRDIAG_CAPTURE_WINDOWS=$(if $(CIRDIAG_WINDOWS),y,n)
 
 # RELEASE=1 appends the release overlay, which trades the 8 KB RTT ring for
 # 7,168 B of RAM. Semicolon because EXTRA_CONF_FILE is a CMake list and later
-# files win, so this can only ever override overlay-thread.conf. Note `-p auto`
-# does NOT re-run CMake when these -D flags change (see CDK_PRISTINE above), so
-# switching RELEASE on or off in an existing build dir needs PRISTINE=1.
+# files win, so this can only ever override overlay-thread.conf. Changing the
+# list changes the recipe's argument hash and reconfigures the existing build.
 #
 # LTO IS ON BY DEFAULT. `LTO=0` (also n/no/off) opts out, which is what you want
 # when a stack trace has to name every frame.
@@ -232,9 +233,8 @@ INSTRUMENT_MAKE        ?= make
 # writes a command-line cache variable through verbatim, and a Kconfig string
 # without quotes is a syntax error rather than a fallback.
 #
-# Applied to all three images. `-p auto` does NOT re-run CMake when a -D flag
-# changes (see CDK_PRISTINE), so pointing an existing build dir at a new key
-# needs PRISTINE=1.
+# Applied to every CDK build variant. Changing it changes the recipe's argument
+# hash, so an existing build directory is reconfigured with the new key.
 CDK_KEY  ?= $(SIGN_KEY)
 CDK_SIGN := -DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE='"$(CDK_KEY)"'
 
@@ -301,10 +301,10 @@ CDK_DFU  := -DEXTRA_ZEPHYR_MODULES='$(REPO_ROOT)/modules/ultrawidelock_dfu' \
 # The application re-initialises the RTT control block on every boot
 # (CONFIG_SEGGER_RTT_INIT_MODE_ALWAYS in prj.conf, and it has to), so anything
 # the bootloader printed is gone the moment the application starts.
-CDK_DFU_LOG := $(if $(DFU_LOG),-Dmcuboot_CONFIG_ULTRAWIDELOCK_DFU_APPLIER_LOG=y \
-                               -Dmcuboot_CONFIG_PRINTK=y \
-                               -Dmcuboot_CONFIG_USE_SEGGER_RTT=y \
-                               -Dmcuboot_CONFIG_RTT_CONSOLE=y)
+CDK_DFU_LOG := -Dmcuboot_CONFIG_ULTRAWIDELOCK_DFU_APPLIER_LOG=$(if $(DFU_LOG),y,n) \
+               -Dmcuboot_CONFIG_PRINTK=$(if $(DFU_LOG),y,n) \
+               -Dmcuboot_CONFIG_USE_SEGGER_RTT=$(if $(DFU_LOG),y,n) \
+               -Dmcuboot_CONFIG_RTT_CONSOLE=$(if $(DFU_LOG),y,n)
 
 # ---- over-the-air update -----------------------------------------------------
 #
@@ -404,6 +404,10 @@ CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_S
 # CMAKE_CONFIGURE_DEPENDS is for. VERIFIED by touching overlay-thread.conf with no
 # tail: exactly one reconfigure, and a zephyr/.config byte-identical to the one
 # the always-reconfigure recipe writes.
+#
+# A toggleable command-line Kconfig value must encode BOTH states. If its `=n`
+# form disappears when switched off, CMake keeps the earlier cached `=y` even
+# though this mechanism correctly notices the changed tail and reconfigures.
 #
 # The stamp holds a checksum rather than the arguments themselves so the
 # comparison stays a single make word -- the real value carries a

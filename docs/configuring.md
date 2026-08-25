@@ -14,7 +14,7 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 
 | Option | Effect |
 |---|---|
-| `PRISTINE=1` | from-scratch build. Needed whenever a `-D` flag below changes, because `-p auto` does not re-run CMake for those |
+| `PRISTINE=1` | force a from-scratch build. Supported option changes reconfigure in place; use this only when the cache itself must be replaced |
 | `LTO=0` | opt out of link-time optimisation, which is on by default and worth 41,084 B. Use it when a stack trace has to name every frame |
 | `RELEASE=1` | trade the 8 KB RTT ring for 7,168 B of RAM, and set errors-only logging to save 20,568 B of flash. Codegen is identical either way |
 | `SMP=1` | add mcumgr over Bluetooth, which is what nRF Device Manager speaks. `make build SMP=1` is a valid debug configuration and leaves 12,764 B free. `RELEASE=1` remains the shipping configuration |
@@ -62,11 +62,11 @@ selected by the options above:
 The rest are applied by hand, because they exist to answer a question rather
 than to build a shipping image. There is no `make` option for them: override
 `CDK_CONF`, which is what `make build` hands to `-DEXTRA_CONF_FILE`, and repeat
-the overlays you still want (`;`-separated, later files win). A pristine build is
-needed because west does not re-run CMake when these change:
+the overlays you still want (`;`-separated, later files win). The CDK recipes
+detect that argument change and reconfigure the existing build directory:
 
 ```sh
-make build PRISTINE=1 \
+make build \
   CDK_CONF="overlay-thread.conf;overlay-lto.conf;overlays/bench.conf;overlays/bench-uwb-k2.conf"
 ```
 
