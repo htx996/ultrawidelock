@@ -24,7 +24,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(matter_thread, CONFIG_ULTRAWIDELOCK_MATTER_BLE_LOG_LEVEL);
+LOG_MODULE_REGISTER(matter_thread, CONFIG_ULTRAWIDELOCK_MATTER_THREAD_LOG_LEVEL);
 
 /* CONFIG_OPENTHREAD, not CONFIG_NET_L2_OPENTHREAD: every call below is either
  * OpenThread's own API or one of the four openthread_*() helpers that the
