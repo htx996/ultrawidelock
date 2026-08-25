@@ -80,6 +80,15 @@
 #define CONFIG_ULTRAWIDELOCK_MATTER_BLE_LOG_LEVEL 3
 
 /*
+ * matter_thread_port.c names its own level symbol on the Zephyr side, so it is
+ * defined here too rather than left dangling for whoever greps for it. It does
+ * not gate anything yet: matter_compat/zephyr/logging/log.h discards the level
+ * LOG_MODULE_REGISTER is given and compares every line against the BLE symbol
+ * above, which is one switch for the whole shared transport.
+ */
+#define CONFIG_ULTRAWIDELOCK_MATTER_THREAD_LOG_LEVEL CONFIG_ULTRAWIDELOCK_MATTER_BLE_LOG_LEVEL
+
+/*
  * Advertised in the commissionable service's "VP" TXT record. Values match the
  * Zephyr oracle's Kconfig defaults, so both images present the same node to a
  * commissioner: 0xFFF1 is CHIP's test vendor, which a phone will commission
