@@ -8,10 +8,10 @@
 CDK_SIZE_AGE_WARN ?= 25
 
 ##@ Housekeeping
-## fw-check: compile-gate the Zephyr images  ·  CDK lock + all three witness roles
+## fw-check: compile-gate the Zephyr images  ·  CDK lock + the witness
 fw-check:
 	@$(MAKE) --no-print-directory build
-	@$(MAKE) --no-print-directory witness-trio
+	@$(MAKE) --no-print-directory witness-build
 
 ## fw-regress: every DWM3001CDK configuration, then the size gate  ·  needs the NCS toolchain
 ##   fw-check builds one image. This builds all of them, because the ways this
@@ -32,7 +32,7 @@ fw-regress:
 	@$(MAKE) --no-print-directory cirdiag
 	@$(MAKE) --no-print-directory mlgate
 	@$(MAKE) --no-print-directory anchorlink
-	@$(MAKE) --no-print-directory witness-trio
+	@$(MAKE) --no-print-directory witness-build
 	@# A west build can exit 0 with no image when the app it was pointed at
 	@# produced nothing linkable, so the artifacts are checked rather than the
 	@# exit codes alone.
