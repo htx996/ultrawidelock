@@ -4523,7 +4523,22 @@ int matter_commission_init(void)
 		}
 
 		ultrawidelock_sha256_init(&h);
-		ultrawidelock_sha256_update(&h, (const uint8_t *)"ultrawidelock-group-sub-id", 18u);
+		/*
+		 * "ultrawidelock-grou" is not a typo. This read
+		 * "ultrawidelock-group-sub-id" with a length of 18, so 18 bytes are
+		 * all that was ever hashed -- and those 18 bytes are what every
+		 * group_sub_id in the field already derives from, including the ones
+		 * baked into provisioned reader_ids (see the note below on why
+		 * group_sub_id is never overwritten). The string now says what it
+		 * hashes.
+		 *
+		 * Do NOT restore the full spelling. A domain separator only has to be
+		 * distinct, which this is; lengthening it changes group_sub_id on
+		 * every enrolled board and invalidates the reader_id that
+		 * scripts/ultrawidelock-enroll.py wrote into their credentials.
+		 */
+		ultrawidelock_sha256_update(&h, (const uint8_t *)"ultrawidelock-grou",
+					    sizeof("ultrawidelock-grou") - 1u);
 		ultrawidelock_sha256_update(&h, (const uint8_t *)id, sizeof(id));
 		ultrawidelock_sha256_final(&h, digest);
 		memcpy(s_info.ultrawidelock_group_sub_id, digest, MATTER_ALIRO_GROUP_ID_LEN);
