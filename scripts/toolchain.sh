@@ -17,7 +17,7 @@ cd "$ROOT" || exit 1
 # a machine without one still runs a green `make check` -- reported, never fatal.
 TOOLS=(cc python3 llvm-cov cbmc)
 OPT_TOOLS=(cppcheck gitleaks CodeChecker)
-FW_TOOLS=(tio nrfutil sdk-manager toolchain esp-idf esp-matter probe-rs mcumgr)
+FW_TOOLS=(tio nrfutil sdk-manager toolchain jlink esp-idf esp-matter probe-rs mcumgr)
 
 # The NCS version the Zephyr ports build against. Kept in step with the Makefile
 # and scripts/bootstrap.sh, and only used to say which toolchain to look for.
@@ -43,6 +43,7 @@ tool_gate() {
 	nrfutil) echo "make bootstrap / build / flash" ;;
 	sdk-manager) echo "nrfutil's own toolchain command" ;;
 	toolchain) echo "every Zephyr build here" ;;
+	jlink) echo "make flash / make flash-erase" ;;
 	esp-idf) echo "every ESP32 build here" ;;
 	esp-matter) echo "make esp-build APP=matter-lock" ;;
 	probe-rs) echo "make cdk-rtt (CDK console)" ;;
@@ -61,6 +62,7 @@ tool_note() {
 	tio) echo "brew install tio / apt install tio" ;;
 	nrfutil) echo "make bootstrap installs it" ;;
 	sdk-manager | toolchain) echo "make bootstrap" ;;
+	jlink) echo "brew install --cask segger-jlink / https://www.segger.com/downloads/jlink/" ;;
 	esp-idf) echo "make esp-bootstrap APP=reader" ;;
 	esp-matter) echo "make esp-bootstrap" ;;
 	probe-rs) echo "https://probe.rs/docs/getting-started/installation/" ;;
@@ -73,6 +75,8 @@ tool_note() {
 #   llvm-cov  macOS keeps it inside the Xcode SDK, reachable only via xcrun —
 #             which is how tests/host/coverage.sh calls it.
 #   mcumgr    has no --version flag; `mcumgr version` is a subcommand.
+#   jlink     the binary is JLinkExe and it has no version flag at all, so
+#             the banner comes from an interactive session fed on stdin.
 tool_probe() {
 	case "$1" in
 	llvm-cov)
@@ -129,6 +133,19 @@ tool_probe() {
 	mcumgr)
 		command -v mcumgr >/dev/null 2>&1 || return 1
 		mcumgr version 2>&1 | head -1
+		;;
+	jlink)
+		# Report the DLL, not the commander: nrfutil loads libjlinkarm to
+		# reach a probe, and it is that half `west flash` needs. Without it
+		# nrfutil still LISTS the board -- it just cannot open a session,
+		# and the flash fails at "cannot connect to the probe", which reads
+		# like dead hardware rather than a missing host package.
+		command -v JLinkExe >/dev/null 2>&1 || return 1
+		jb="$(printf 'exit\n' | JLinkExe -NoGui 1 2>&1)"
+		v="$(printf '%s\n' "$jb" | grep -i '^DLL version' | head -1)"
+		[ -n "$v" ] || v="$(printf '%s\n' "$jb" | head -1)"
+		[ -n "$v" ] || return 1
+		printf '%s\n' "$v"
 		;;
 	*)
 		command -v "$1" >/dev/null 2>&1 || return 1
