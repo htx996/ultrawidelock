@@ -8,10 +8,10 @@
 CDK_SIZE_AGE_WARN ?= 25
 
 ##@ Housekeeping
-## fw-check: compile-gate the Zephyr images  ·  CDK lock + all three witness roles
+## fw-check: compile-gate the Zephyr images  ·  CDK lock + the witness
 fw-check:
 	@$(MAKE) --no-print-directory build
-	@$(MAKE) --no-print-directory witness-trio
+	@$(MAKE) --no-print-directory witness-build
 
 ## fw-regress: every DWM3001CDK configuration, then the size gate  ·  needs the NCS toolchain
 ##   fw-check builds one image. This builds all of them, because the ways this
@@ -31,14 +31,15 @@ fw-regress:
 	@$(MAKE) --no-print-directory selftest
 	@$(MAKE) --no-print-directory cirdiag
 	@$(MAKE) --no-print-directory mlgate
-	@$(MAKE) --no-print-directory witness-trio
+	@$(MAKE) --no-print-directory anchorlink
+	@$(MAKE) --no-print-directory witness-build
 	@# A west build can exit 0 with no image when the app it was pointed at
 	@# produced nothing linkable, so the artifacts are checked rather than the
 	@# exit codes alone.
 	@root='$(ULTRAWIDELOCK_BUILD_ROOT)'; miss=0; \
-	for d in cdk-matter cdk-shipping cdk-reader cdk-selftest cdk-cirdiag cdk-mlgate; do \
-	  if [ ! -f "$$root/$$d/merged.hex" ] && [ ! -f "$$root/$$d/dwm3001cdk-lock/zephyr/zephyr.hex" ]; then \
-	    printf '  FAIL  %s built no image\n' "$$d"; miss=1; \
+	for d in cdk-matter cdk-shipping cdk-reader cdk-selftest cdk-cirdiag cdk-mlgate cdk-anchorlink; do \
+	  if [ ! -f "$$root/$$d/merged.hex" ] || [ ! -f "$$root/$$d/dwm3001cdk-lock/zephyr/zephyr.signed.hex" ]; then \
+	    printf '  FAIL  %s missing merged.hex or zephyr.signed.hex\n' "$$d"; miss=1; \
 	  else printf '  ok    %s\n' "$$d"; fi; \
 	done; \
 	[ "$$miss" = 0 ] || { printf '\n  fw-regress: a configuration produced no image\n' >&2; exit 1; }

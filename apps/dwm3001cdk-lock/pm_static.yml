@@ -137,11 +137,12 @@ mcuboot_primary_app:
 # enforces the real limit at sign time against this size, so an image that no
 # longer fits fails the build rather than the boot.
 #
-# THE TWO SIDES DISAGREE ABOUT THE TAIL, AND IMGTOOL IS THE ONE THAT DECIDES.
+# THE TWO SIDES DISAGREE SLIGHTLY ABOUT THE TAIL, AND IMGTOOL IS THE ONE THAT
+# DECIDES WHETHER AN IMAGE MAY BE SIGNED. What each side reserves, RE-DERIVED
+# from the trees in ./workspace:
 # Sizing the app against this partition, or against the linker's FLASH region,
 # is what lets a build link and then refuse to sign -- MEASURED at 1,735 B of
-# apparent headroom that was not there. What each side reserves, RE-DERIVED
-# from the trees in ./workspace:
+# apparent headroom that was not there before imgtool's sector count was pinned.
 #
 #   MCUboot needs      48 B   CONFIG_SINGLE_APPLICATION_SLOT makes
 #                             boot_status_entry_sz() return 0, so
@@ -149,24 +150,17 @@ mcuboot_primary_app:
 #                             boot_trailer_info_sz() = BOOT_MAX_ALIGN * 4 +
 #                             BOOT_MAGIC_ALIGN_SIZE = 32 + 16
 #                             (boot/bootutil/src/bootutil_area.c)
-#   imgtool reserves 1,584 B  _trailer_size() = max_sectors * 3 * align
-#                             + max_align * 4 + magic, and it does NOT know
-#                             about single-slot mode. The build passes neither
-#                             --max-sectors nor --overwrite-only, so it uses
-#                             DEFAULT_MAX_SECTORS = 128 with --align 4:
-#                             128 * 3 * 4 + 8 * 4 + 16
+#   imgtool reserves    60 B   _trailer_size() = max_sectors * 3 * align
+#                             + max_align * 4 + magic. prj.conf passes
+#                             --max-sectors 1 with --align 4:
+#                             1 * 3 * 4 + 8 * 4 + 16
 #                             (scripts/imgtool/image.py)
 #
-# So 1,536 B of this slot is a swap status area that a single-slot image can
-# never use. Reclaiming it is worth about 1.5 KB of margin and is NOT done
-# here, because it changes what the bootloader finds at the end of the slot
-# and no host gate can prove that -- it needs a board that boots, updates and
-# boots again.
-#
-# WHEN SOMEONE DOES IT: pass `--max-sectors 1` to imgtool, which lowers its
-# reservation to 1 * 3 * 4 + 32 + 16 = 60 B, still clear of the 48 B MCUboot
-# computes. CONFIG_BOOT_MAX_IMG_SECTORS is NOT the lever: in single-slot mode
-# MCUboot's own trailer does not depend on it.
+# That leaves a conservative 12 B guard over MCUboot's calculation and removes
+# 1,524 B of impossible swap-status reservation. These signing commands do not
+# use --pad, so max-sectors changes only imgtool's overflow check; it does not
+# add, remove or move bytes in the signed image. CONFIG_BOOT_MAX_IMG_SECTORS is
+# NOT the lever: in single-slot mode MCUboot's own trailer does not depend on it.
 #
 # DO NOT REACH FOR CONFIG_MCUBOOT_IMGTOOL_OVERWRITE_ONLY. It looks like the
 # same fix and is a trap: it takes the overwrite_only branch of _trailer_size(),

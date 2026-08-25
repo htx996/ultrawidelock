@@ -319,10 +319,11 @@ _PART_VAL = re.compile(r"^  (address|size|end_address|region):\s*(\S+)\s*$")
 #
 #   max_sectors * 3 * align  +  MAX_ALIGN * 4  +  magic
 #
-# with imgtool's own defaults of 128 sectors, MAX_ALIGN 8 and a 16 B magic. At
+# with imgtool's own default of 128 sectors, MAX_ALIGN 8 and a 16 B magic. At
 # the --align 4 this board signs with, that is 1536 + 32 + 16 = 1,584 = 0x630 --
-# exactly the number imgtool reported above. The build passes neither
-# --max-sectors nor --overwrite-only, so the defaults are what apply.
+# exactly the number imgtool reported above. The single-slot build now passes
+# --max-sectors 1, so its check reserves 60 B instead. Read both arguments from
+# the generated command: this report must follow what imgtool actually enforces.
 IMGTOOL_MAX_ALIGN = 8
 IMGTOOL_MAGIC = 16
 IMGTOOL_DEFAULT_MAX_SECTORS = 128
@@ -333,25 +334,29 @@ def imgtool_trailer(align, max_sectors=IMGTOOL_DEFAULT_MAX_SECTORS):
     return max_sectors * 3 * align + IMGTOOL_MAX_ALIGN * 4 + IMGTOOL_MAGIC
 
 
-def sign_align(build):
-    """The --align imgtool is invoked with, read from the generated build rules.
-
-    Read rather than assumed because it scales the trailer by 384x. Falls back
-    to 4, the write-block size of this part's internal flash; a wrong fallback
-    would show up as a budget that disagrees with a real signing failure.
-    """
+def imgtool_signing_options(image_build):
+    """Read trailer-affecting imgtool options from the generated image rule."""
+    options = {"align": 4, "max_sectors": IMGTOOL_DEFAULT_MAX_SECTORS}
     for rel in ("build.ninja", os.path.join("zephyr", "build.ninja")):
-        path = os.path.join(build, rel)
+        path = os.path.join(image_build, rel)
         if not os.path.isfile(path):
             continue
         with open(path, "r", errors="replace") as fh:
-            m = re.search(r"imgtool[^\n]*?--align\s+(\d+)", fh.read())
-        if m:
-            return int(m.group(1))
-    return 4
+            m = re.search(r"imgtool(?:\.py)?\s+sign[^\n]*", fh.read())
+        if not m:
+            continue
+        command = m.group(0)
+        for option, key in (("align", "align"), ("max-sectors", "max_sectors")):
+            value = re.search(
+                rf"(?:^|\s)--{option}\s+(0[xX][0-9a-fA-F]+|\d+)", command
+            )
+            if value:
+                options[key] = int(value.group(1), 0)
+        break
+    return options
 
 
-def signing_budget(imgdir, parts, align):
+def signing_budget(imgdir, parts, signing_options):
     """What the FLASH region may actually hold, once MCUboot has its share.
 
     The per-image overhead (header + TLVs) is MEASURED off the two artifacts
@@ -370,11 +375,14 @@ def signing_budget(imgdir, parts, align):
     overhead = os.path.getsize(signed) - os.path.getsize(raw)
     if overhead < 0:
         return None
-    trailer = imgtool_trailer(align)
+    align = signing_options["align"]
+    max_sectors = signing_options["max_sectors"]
+    trailer = imgtool_trailer(align, max_sectors)
     return {
         "slot": slot,
         "trailer": trailer,
         "align": align,
+        "max_sectors": max_sectors,
         # image header + signature TLVs, measured off this build's artifacts
         "image_overhead": overhead,
         # what the linker region may hold before imgtool refuses to sign
@@ -412,10 +420,9 @@ def read_partitions(path):
 # THE CONFIGURATION IS PART OF THE MEASUREMENT. A delta taken across an LTO flip
 # is worth 41,084 B of flash here and is not a delta at all; reporting it as one
 # is worse than reporting nothing. So everything that could move the numbers
-# without any source changing is recorded beside them, read out of the build
-# rather than out of the make variables that were typed -- a build directory
-# reused with different -D flags keeps the configuration it was configured with
-# (`-p auto` does not re-run CMake on a flag change; see mk/cdk.mk).
+# without any source changing is recorded beside them. Generated state is read
+# back instead of inferred from the requested make variables, and remains the
+# authority after any in-place reconfiguration.
 
 def read_cmake_cache(path, keys):
     out = {}
@@ -621,7 +628,8 @@ def build_report(args):
     sec_used, sec_stored, sec_detail = account_sections(elf, regions)
 
     parts = read_partitions(os.path.join(build, "partitions.yml"))
-    budget = signing_budget(imgdir, parts, sign_align(build))
+    signing_options = imgtool_signing_options(os.path.join(build, image))
+    budget = signing_budget(imgdir, parts, signing_options)
 
     out_regions = {}
     for name, reg in regions.items():

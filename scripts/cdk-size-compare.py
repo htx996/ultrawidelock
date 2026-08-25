@@ -71,9 +71,8 @@ def baselines_of(doc):
 
 # Everything that changes the numbers without any source file changing. Compared
 # exactly, and any difference stops the comparison. Read out of the build by
-# cdk-size.py, not out of the make variables someone typed, because a build
-# directory reused with different -D flags keeps the configuration it was
-# configured with (`-p auto` does not re-run CMake on a flag change).
+# cdk-size.py rather than inferred from the make variables someone typed; the
+# generated configuration remains the authority after an in-place reconfigure.
 CONFIG_FIELDS = (
     "board",
     "image",
@@ -149,9 +148,9 @@ def gate_region(name, base, cur, floor, cap, allow_growth):
     # region, whenever the report carries that figure. The region is the `app`
     # partition; the slot also has to hold the image header, the signature TLVs
     # and the boot trailer, and imgtool refuses at sign time when the total does
-    # not fit. On this board that gap is 1,735 B, so gating on the region passed
-    # images that could not ship -- MEASURED 2026-08-21, when the debug client
-    # image linked with 456 B "free" and then would not sign.
+    # not fit. Before the single-slot sector count was pinned that gap was
+    # 1,735 B, and gating on the region passed images that could not ship --
+    # MEASURED 2026-08-21, when a debug client linked and then would not sign.
     #
     # Optional on purpose: a report produced without signed artifacts, and every
     # synthetic report in tests/tooling/cdk_size_test.sh, has no `signing` block

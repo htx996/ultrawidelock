@@ -3,8 +3,8 @@
 # cdk_size_test.sh — the DWM3001CDK size gate, checked without a build tree.
 #
 # CI builds no firmware (see ci.yml's header), so this cannot measure a real
-# image. What it can do is pin the two things that were actually got wrong while
-# the gate was written, and the refusals that make its numbers trustworthy:
+# image. What it can do is pin the rules that were actually got wrong while the
+# gate was written, and the refusals that make its numbers trustworthy:
 #
 #   1. THE ACCOUNTING RULE. A first version summed PT_LOAD segment sizes and
 #      reported 131,240 B of RAM used against a 131,072 B part -- a negative
@@ -22,6 +22,10 @@
 #      overlay change or an LTO flip is not a delta, and reporting one is worse
 #      than reporting nothing -- LTO alone is worth 41,084 B on this image. It
 #      must exit non-zero rather than produce a number.
+#
+#   4. THE SIGNING COMMAND. The generated --align and --max-sectors values set
+#      imgtool's real ceiling, so the report must parse them rather than model a
+#      default that the build has overridden.
 #
 # Exit 0 clean, 1 on a failure.
 set -uo pipefail
@@ -134,6 +138,47 @@ sys.exit(rc)
 PY
 [ $? -eq 0 ] || fails=$((fails + 1))
 
+printf '\n── cdk size · signing budget follows generated imgtool arguments\n'
+
+python3 - <<'PY'
+import importlib.util
+import os
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("cs", "scripts/cdk-size.py")
+cs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cs)
+
+rc = 0
+with tempfile.TemporaryDirectory() as tmp:
+    ninja = os.path.join(tmp, "build.ninja")
+    cases = [
+        ("imgtool.py sign --align 4 --max-sectors 1 in.bin out.bin\n",
+         {"align": 4, "max_sectors": 1}, 60, "single-slot command"),
+        ("imgtool.py sign --align 4 in.bin out.bin\n",
+         {"align": 4, "max_sectors": 128}, 1584, "imgtool default"),
+    ]
+    for command, want_options, want_trailer, name in cases:
+        with open(ninja, "w") as fh:
+            fh.write(command)
+        got_options = cs.imgtool_signing_options(tmp)
+        got_trailer = cs.imgtool_trailer(
+            got_options["align"], got_options["max_sectors"]
+        )
+        if got_options == want_options and got_trailer == want_trailer:
+            print(f"  ok    {name}: {got_options}, trailer {got_trailer} B")
+        else:
+            print(
+                f"  FAIL  {name}: {got_options}, trailer {got_trailer} B; "
+                f"expected {want_options}, {want_trailer} B"
+            )
+            rc = 1
+
+sys.exit(rc)
+PY
+[ $? -eq 0 ] || fails=$((fails + 1))
+
 printf '\n── cdk size · the comparator refuses what it cannot compare\n'
 
 # A pair of minimal reports. Only the fields the comparator reads are present,
@@ -218,9 +263,9 @@ expect_exit 2 "$?" "a missing report is refused, not passed"
 
 # THE SIGNING BUDGET. The FLASH region is not the ceiling: the slot also holds
 # the image header, the signature TLVs and the boot trailer, and imgtool refuses
-# at sign time when the total does not fit. On this board that gap is 1,735 B,
-# so gating on the region passed images that could not ship -- MEASURED, when a
-# debug client image linked with room to spare and then would not sign.
+# at sign time when the total does not fit. Before the single-slot sector count
+# was pinned, that gap was 1,735 B and the linker passed images that imgtool
+# rejected. The gate must use the generated signing ceiling in either case.
 #
 # Flash used is held equal to the baseline in both cases below so the delta cap
 # cannot fire: what is under test is which ceiling the floor is measured from,
