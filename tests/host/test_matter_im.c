@@ -52,6 +52,7 @@ struct rep {
 	uint8_t vtype; /* wire element type of the value */
 	uint64_t vu;
 	bool vb;
+	bool list_append;
 	/* BasicCommissioningInfo's two fields, when the value is a structure. */
 	uint64_t s0;
 	uint64_t s1;
@@ -72,7 +73,7 @@ struct rep {
 /* Room for every attribute of the widest cluster this node has, plus slack.
  * BasicInformation alone reports 16, which is exactly where this used to sit --
  * and an overflow here reads as a malformed report rather than a full one. */
-#define MAX_REPS 96
+#define MAX_REPS 128
 
 /** Read an AttributePathIB into @p r. Reader is positioned on the list. */
 static int walk_path(struct matter_tlv_reader *rd, struct rep *r)
@@ -91,6 +92,10 @@ static int walk_path(struct matter_tlv_reader *rd, struct rep *r)
 		}
 		if (rc != MATTER_OK) {
 			return rc;
+		}
+		if (matter_tlv_tag(rd) == MATTER_TLV_CTX(5)) {
+			r->list_append = true;
+			continue;
 		}
 		if (matter_tlv_get_u64(rd, &v) != MATTER_OK) {
 			continue;
@@ -860,6 +865,69 @@ void test_matter_im(void)
 			}
 		}
 		one.paths[0].have_cluster = true;
+	}
+
+	t_group("large NOCs list chunks by list item");
+	{
+		struct matter_im_read nocs = {0};
+		static uint8_t big[4096];
+		uint16_t sent = 0u;
+		bool more = true;
+		int chunks = 0;
+		int resets = 0;
+		int appends = 0;
+
+		fill_info(&info);
+		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+			info.fabrics[i].index = (uint8_t)(i + 1u);
+			info.fabrics[i].noc_len = MATTER_NOC_MAX;
+			memset(info.fabrics[i].noc, (int)(0x40u + i), MATTER_NOC_MAX);
+		}
+		matter_clusters_init(&srv, &info);
+		nocs.n_paths = 1u;
+		nocs.paths[0].endpoint = MATTER_ENDPOINT_ROOT;
+		nocs.paths[0].cluster = MATTER_CLUSTER_OPERATIONAL_CREDENTIALS;
+		nocs.paths[0].attribute = MATTER_ATTR_OC_NOCS;
+		nocs.paths[0].have_endpoint = true;
+		nocs.paths[0].have_cluster = true;
+		nocs.paths[0].have_attribute = true;
+
+		T_EQ("whole multi-fabric NOCs value encodes",
+		     matter_im_report_data_encode(&srv, &nocs, big, sizeof(big), &len, &stats),
+		     MATTER_OK);
+		T_OK("whole NOCs value exceeds one Thread report", len > PORT_REPORT_MAX);
+		while (more && chunks < 16) {
+			uint16_t emitted = 0u;
+			int got;
+
+			T_EQ("NOCs chunk encodes",
+			     matter_im_report_data_chunk(&srv, &nocs, sent, big, PORT_REPORT_MAX,
+						 &len, &more, &emitted, &stats),
+			     MATTER_OK);
+			T_OK("NOCs chunk fits Thread payload", len <= PORT_REPORT_MAX);
+			T_OK("NOCs chunk made progress", emitted > 0u);
+			got = walk_report(big, len, reps, &suppress, &revision);
+			T_OK("NOCs chunk decodes", got > 0);
+			for (int i = 0; i < got; i++) {
+				T_EQ("fragment is the NOCs attribute", reps[i].attribute,
+				     MATTER_ATTR_OC_NOCS);
+				if (reps[i].list_append) {
+					appends++;
+					T_EQ("append carries one NOC structure", reps[i].vtype,
+					     MATTER_TLV_STRUCTURE);
+				} else {
+					resets++;
+					T_EQ("reset carries an empty array", reps[i].vtype,
+					     MATTER_TLV_ARRAY);
+				}
+			}
+			sent = (uint16_t)(sent + emitted);
+			chunks++;
+		}
+		T_OK("NOCs list needed multiple chunks", chunks > 1);
+		T_OK("NOCs chunking completed", !more);
+		T_EQ("one replace-all starts the list", resets, 1);
+		T_EQ("every fabric is appended", appends, MATTER_SUPPORTED_FABRICS);
 	}
 
 	/*

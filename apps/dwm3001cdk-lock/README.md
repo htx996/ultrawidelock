@@ -72,6 +72,17 @@ network after Apple Home has already put it on the Apple network.
 No `HA=1` build option is required. That option belongs only to the nRF5340
 generated data-model variant; DWM3001CDK multi-admin is standard Matter.
 
+### Optional Home Assistant integration
+
+The manufacturer-specific UWB cluster can be exposed as native Home Assistant
+entities and dashboard cards using the companion
+[UltraWideLock Home Assistant integration](https://github.com/UWL-HA/UWL-Home-Assistant).
+
+The integration provides live distance, credential presence, movement, policy
+controls, history, and two dashboard cards. Read-only use works without modifying
+Matter Server; writable custom attributes require the optional schema described
+in that repository.
+
 ### Recovery without a factory reset
 
 | Symptom | Recovery |

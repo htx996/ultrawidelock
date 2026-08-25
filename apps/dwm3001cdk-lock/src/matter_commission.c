@@ -124,7 +124,16 @@ static void s_info_defaults(void)
 	/* All three directions permitted, the default the CHIP builds declare;
 	 * zero is a writable value so it cannot mean "never set". */
 	s_info.approach_direction = MATTER_APPROACH_DIRECTION_ALL;
+	s_info.uwb_distance_mm = -1;
+	s_info.uwb_config.version = MATTER_UWB_CONFIG_VERSION;
+	s_info.uwb_config.policy_flags = MATTER_UWB_POLICY_ALL;
+	s_info.uwb_config.unlock_cm = 100u;
+	s_info.uwb_config.approach_cm = 180u;
+	s_info.uwb_config.relock_cm = 250u;
+	s_info.uwb_config.motor_ms = 500u;
 }
+
+static atomic_t s_uwb_config_dirty = ATOMIC_INIT(1);
 
 /* Advertising and the main loop read these outside the Matter owner. Publish
  * only the two scalar predicates they need instead of exposing s_info or the
@@ -1731,6 +1740,8 @@ static void on_invoke_request(const struct matter_exchange_in *in)
  * has finished commissioning and cannot record that it owns the node sits on
  * "Adding to home" until it gives up.
  */
+static void uwb_config_changed(void);
+
 static void on_write_request(const struct matter_exchange_in *in)
 {
 	static struct matter_im_write wr;
@@ -1739,6 +1750,7 @@ static void on_write_request(const struct matter_exchange_in *in)
 	size_t payload_cap;
 	uint32_t prev_relock_s;
 	uint8_t prev_approach;
+	struct matter_uwb_config prev_uwb;
 	size_t resp_len = 0u;
 	int rc;
 
@@ -1765,6 +1777,7 @@ static void on_write_request(const struct matter_exchange_in *in)
 	 */
 	prev_relock_s = s_info.auto_relock_time_s;
 	prev_approach = s_info.approach_direction;
+	prev_uwb = s_info.uwb_config;
 	slot = tx_acquire();
 	if (slot == NULL) {
 		LOG_ERR("no owned packet slot for WriteResponse");
@@ -1778,6 +1791,10 @@ static void on_write_request(const struct matter_exchange_in *in)
 		return;
 	}
 	(void)matter_dl_attr_store(&s_info, prev_relock_s, prev_approach);
+	if (memcmp(&prev_uwb, &s_info.uwb_config, sizeof(prev_uwb)) != 0) {
+		(void)matter_uwb_config_store(&s_info.uwb_config, &prev_uwb);
+		uwb_config_changed();
+	}
 #if MATTER_FEATURE_CLIENT
 	/*
 	 * Keyed on the CLUSTER rather than on the write status: the encoder
@@ -2073,6 +2090,48 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 /** Exchange ids this node originates. Any non-zero value the peer is not using. */
 static uint16_t s_next_init_exchange = 0xE000u;
 
+static int send_subscription_report(struct sub_state *s,
+				    struct matter_im_read *read, size_t *framed)
+{
+	struct matter_tx_slot *packet;
+	uint8_t *payload;
+	size_t payload_cap;
+	size_t tlv_len = 0u;
+	uint8_t slot = case_slot_of(s->session_id);
+	int rc;
+
+	if (slot >= MATTER_CASE_SESSIONS) {
+		return MATTER_E_STATE;
+	}
+	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
+	if (packet == NULL) {
+		return MATTER_E_NOSPACE;
+	}
+	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
+	payload = tx_payload(packet, &payload_cap);
+	rc = matter_im_report_data_encode(&s_im, read, payload, payload_cap, &tlv_len, NULL);
+	if (rc == MATTER_OK) {
+		rc = matter_exchange_send_initiator(
+			&s_case_x[slot], s_next_init_exchange++,
+			MATTER_PROTOCOL_INTERACTION_MODEL, MATTER_IM_OP_REPORT_DATA,
+			payload, tlv_len, packet->data, packet->capacity, framed);
+	}
+	if (rc != MATTER_OK || matter_tx_slot_commit(packet, *framed) != MATTER_OK ||
+	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
+		tx_abort_build(packet);
+		return rc == MATTER_OK ? MATTER_E_STATE : rc;
+	}
+	struct matter_thread_peer peer = s->peer;
+
+	rc = matter_thread_send_to(&peer, packet->data, *framed);
+	if (rc == MATTER_OK) {
+		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
+	} else {
+		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
+	}
+	return rc;
+}
+
 /**
  * Send a Matter lock state subscription report to one CASE session. Builds a TLV-encoded data
  * report for the DoorLock cluster LockState attribute and sends it as an initiator exchange. Logs
@@ -2089,12 +2148,7 @@ static void notify_lock_state(struct sub_state *s)
 	 * over its 3,872 B peak, and this path is shallow.
 	 */
 	struct matter_im_read one;
-	struct matter_tx_slot *packet;
-	uint8_t *payload;
-	size_t payload_cap;
-	size_t tlv_len = 0u;
 	size_t framed = 0u;
-	uint8_t slot;
 	uint16_t session_id;
 	uint32_t subscription_id;
 	int rc;
@@ -2102,18 +2156,6 @@ static void notify_lock_state(struct sub_state *s)
 	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
 		return;
 	}
-	slot = case_slot_of(s->session_id);
-	if (slot >= MATTER_CASE_SESSIONS) {
-		return;
-	}
-	packet = matter_tx_pool_acquire(&s_tx_pool, TX_TRANSPORT_THREAD);
-	if (packet == NULL) {
-		LOG_ERR("  no owned packet slot for LockState report");
-		return;
-	}
-	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
-	payload = tx_payload(packet, &payload_cap);
-
 	memset(&one, 0, sizeof(one));
 	one.n_paths = 1u;
 	one.paths[0].endpoint = MATTER_ENDPOINT_LOCK;
@@ -2139,37 +2181,9 @@ static void notify_lock_state(struct sub_state *s)
 		one.event_min = s->event_min;
 	}
 
-	rc = matter_im_report_data_encode(&s_im, &one, payload, payload_cap, &tlv_len,
-					  NULL);
-	if (rc != MATTER_OK) {
-		LOG_ERR("  cannot build the LockState report (%d)", rc);
-		tx_abort_build(packet);
-		return;
-	}
-
-	rc = matter_exchange_send_initiator(&s_case_x[slot], s_next_init_exchange++,
-					    MATTER_PROTOCOL_INTERACTION_MODEL,
-					    MATTER_IM_OP_REPORT_DATA, payload, tlv_len, packet->data,
-					    packet->capacity, &framed);
-	if (rc != MATTER_OK) {
-		LOG_ERR("  cannot frame the LockState report (%d)", rc);
-		tx_abort_build(packet);
-		return;
-	}
-	if (matter_tx_slot_commit(packet, framed) != MATTER_OK ||
-	    matter_tx_slot_in_flight(packet) != MATTER_OK) {
-		tx_abort_build(packet);
-		return;
-	}
 	session_id = s->session_id;
 	subscription_id = s->id;
-	/* The IN_FLIGHT slot keeps packet and peer bytes stable through the
-	 * synchronous copy into an otMessage. UDP receive never waits on this owner
-	 * (matter_thread_on_datagram below), so this owner-to-OT call has no reverse
-	 * blocking edge. */
-	struct matter_thread_peer peer = s->peer;
-
-	rc = matter_thread_send_to(&peer, packet->data, framed);
+	rc = send_subscription_report(s, &one, &framed);
 	/*
 	 * BACK AT INF after a spell at DBG, and the demotion was a mistake worth
 	 * recording: this line reports whether a controller was TOLD, and rc is
@@ -2179,11 +2193,6 @@ static void notify_lock_state(struct sub_state *s)
 	 */
 	LOG_INF("  LockState report to subscription 0x%08x, %u B, rc=%d", (unsigned int)s->id,
 		(unsigned int)framed, rc);
-	if (rc == MATTER_OK) {
-		(void)matter_tx_pool_complete(&s_tx_pool, packet->token);
-	} else {
-		(void)matter_tx_pool_reject(&s_tx_pool, packet->token);
-	}
 	/*
 	 * Advance the watermark only on a report that went out. Moving it before
 	 * the send would drop an unlock on a failed transmit, and the subscriber
@@ -2210,6 +2219,79 @@ static void notify_work_fn(struct k_work *w)
 }
 
 static K_WORK_DEFINE(s_notify_work, notify_work_fn);
+
+static bool sub_path_matches(const struct matter_im_path *p, uint32_t attribute)
+{
+	return (!p->have_endpoint || p->endpoint == MATTER_ENDPOINT_LOCK) &&
+	       (!p->have_cluster || p->cluster == MATTER_CLUSTER_UWB_PRESENCE) &&
+	       (!p->have_attribute || p->attribute == attribute);
+}
+
+static void notify_uwb_presence(struct sub_state *s)
+{
+	static const uint32_t attrs[] = {
+		MATTER_ATTR_UWB_DEVICE_IN_RANGE,
+		MATTER_ATTR_UWB_DISTANCE_MM,
+		MATTER_ATTR_UWB_DEVICE_ID,
+		MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM,
+		MATTER_ATTR_UWB_MOVEMENT_STATE,
+		MATTER_ATTR_UWB_APPROACH_CM,
+		MATTER_ATTR_UWB_RELOCK_CM,
+		MATTER_ATTR_UWB_MOTOR_MS,
+		MATTER_ATTR_UWB_DISTANCE_RELOCK,
+		MATTER_ATTR_UWB_BOUND_UNLOCK,
+		MATTER_ATTR_UWB_LOCK_RELOCK,
+		MATTER_ATTR_UWB_LOCK_UNLOCK,
+	};
+	struct matter_im_read read;
+	size_t framed = 0u;
+	int rc;
+
+	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
+		return;
+	}
+	memset(&read, 0, sizeof(read));
+	for (size_t a = 0u; a < ARRAY_SIZE(attrs); a++) {
+		for (uint8_t p = 0u; p < s->read.n_paths; p++) {
+			if (sub_path_matches(&s->read.paths[p], attrs[a])) {
+				struct matter_im_path *out = &read.paths[read.n_paths++];
+
+				out->endpoint = MATTER_ENDPOINT_LOCK;
+				out->have_endpoint = true;
+				out->cluster = MATTER_CLUSTER_UWB_PRESENCE;
+				out->have_cluster = true;
+				out->attribute = attrs[a];
+				out->have_attribute = true;
+				break;
+			}
+		}
+	}
+	if (read.n_paths == 0u) {
+		return;
+	}
+	read.subscription_id = s->id;
+	rc = send_subscription_report(s, &read, &framed);
+	LOG_DBG("  UWB presence report to subscription 0x%08x, %u B, rc=%d",
+		(unsigned int)s->id, (unsigned int)framed, rc);
+}
+
+static void uwb_notify_work_fn(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
+		notify_uwb_presence(&s_subs[i]);
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+}
+
+static K_WORK_DEFINE(s_uwb_notify_work, uwb_notify_work_fn);
+
+static void uwb_config_changed(void)
+{
+	atomic_set(&s_uwb_config_dirty, 1);
+	k_work_submit(&s_uwb_notify_work);
+}
 static void heartbeat_work_fn(struct k_work *w);
 static K_WORK_DELAYABLE_DEFINE(s_heartbeat_work, heartbeat_work_fn);
 
@@ -4330,6 +4412,54 @@ bool matter_commission_take_deliberate_unlock(void)
 	return atomic_clear(&s_deliberate_unlock) != 0;
 }
 
+bool matter_commission_take_uwb_config(struct matter_uwb_config *config)
+{
+	if (config == NULL || atomic_clear(&s_uwb_config_dirty) == 0) {
+		return false;
+	}
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	*config = s_info.uwb_config;
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+	return true;
+}
+
+void matter_commission_update_uwb_presence(bool in_range, int32_t distance_mm,
+					   uint32_t device_id,
+					   enum matter_uwb_movement_state movement_state)
+{
+	static int64_t last_report_ms;
+	static int32_t last_report_mm = -1;
+	static bool last_report_in_range;
+	int64_t now = k_uptime_get();
+	int32_t distance_delta = distance_mm - last_report_mm;
+	bool report;
+
+	if (distance_delta < 0) {
+		distance_delta = -distance_delta;
+	}
+
+	ultrawidelock_mutex_lock(&s_owner_lock);
+	report = in_range != last_report_in_range || device_id != s_info.uwb_device_id ||
+		 movement_state != s_info.uwb_movement_state;
+	s_info.uwb_device_in_range = in_range;
+	s_info.uwb_distance_mm = in_range ? distance_mm : -1;
+	s_info.uwb_device_id = in_range ? device_id : 0u;
+	s_info.uwb_movement_state = in_range ? movement_state : MATTER_UWB_MOVEMENT_UNKNOWN;
+	if (in_range && !report && (now - last_report_ms) >= 1000 &&
+	    (last_report_mm < 0 || distance_delta >= 100)) {
+		report = true;
+	}
+	if (report) {
+		last_report_in_range = in_range;
+		last_report_mm = in_range ? distance_mm : -1;
+		last_report_ms = now;
+	}
+	ultrawidelock_mutex_unlock(&s_owner_lock);
+	if (report) {
+		k_work_submit(&s_uwb_notify_work);
+	}
+}
+
 int matter_commission_init(void)
 {
 	s_info_defaults();
@@ -4361,12 +4491,13 @@ int matter_commission_init(void)
 	}
 
 	/*
-	 * The credential reader group sub-identifier. Derived from the factory
-	 * EUI-64 rather than drawn from the RNG, because nothing on the Matter
+	 * Stable per-board Matter identifiers. Derived from the factory EUI-64
+	 * rather than drawn from the RNG, because nothing on the Matter
 	 * side of this node is persisted yet (there is no settings handler in
 	 * ultrawidelock_matter at all) and a value regenerated at every boot would make
 	 * this look like a different reader group after each power cycle.
-	 * Hashing keeps the EUI-64 itself off the wire.
+	 * Domain-separated hashes keep the permanent EUI-64 itself off the wire;
+	 * the serial and group sub-identifier cannot be correlated by their value.
 	 *
 	 * The ESP32 lock uses DRBG and caches (ultrawidelock_reader_delegate.cpp:51),
 	 * which is the better answer once Matter state persists. Revisit then.
@@ -4375,6 +4506,21 @@ int matter_commission_init(void)
 		uint32_t id[2] = { NRF_FICR->DEVICEID[0], NRF_FICR->DEVICEID[1] };
 		struct ultrawidelock_sha256 h;
 		uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
+		int serial_len;
+
+		ultrawidelock_sha256_init(&h);
+		ultrawidelock_sha256_update(&h, (const uint8_t *)"ultrawidelock-serial-id", 23u);
+		ultrawidelock_sha256_update(&h, (const uint8_t *)id, sizeof(id));
+		ultrawidelock_sha256_final(&h, digest);
+		serial_len = snprintf(s_info.serial_number, sizeof(s_info.serial_number),
+				      "DWM3001CDK-%02X%02X%02X%02X%02X%02X%02X%02X",
+				      (unsigned int)digest[0], (unsigned int)digest[1],
+				      (unsigned int)digest[2], (unsigned int)digest[3],
+				      (unsigned int)digest[4], (unsigned int)digest[5],
+				      (unsigned int)digest[6], (unsigned int)digest[7]);
+		if (serial_len < 0 || (size_t)serial_len >= sizeof(s_info.serial_number)) {
+			s_info.serial_number[0] = '\0';
+		}
 
 		ultrawidelock_sha256_init(&h);
 		ultrawidelock_sha256_update(&h, (const uint8_t *)"ultrawidelock-group-sub-id", 18u);
@@ -4460,6 +4606,8 @@ int matter_commission_init(void)
 	 * not survive -- the next commissioner reads what the last one set.
 	 */
 	(void)matter_dl_attr_load(&s_info);
+	(void)matter_uwb_config_load(&s_info.uwb_config);
+	atomic_set(&s_uwb_config_dirty, 1);
 #if MATTER_FEATURE_CLIENT
 	/*
 	 * AFTER matter_clusters_init, which zeroes the binding table this

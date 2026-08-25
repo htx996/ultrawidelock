@@ -1051,6 +1051,42 @@ void test_matter_clusters(void)
 		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
 	}
 
+	t_group("Basic Information uses the port's per-device serial");
+	{
+		static const char serial[] = "DWM3001CDK-0123456789ABCDEF";
+		struct matter_tlv_writer w;
+		struct matter_tlv_reader r;
+		const char *value = NULL;
+		size_t value_len = 0u;
+		uint8_t out[64];
+
+		reset_doubles();
+		fill_info(&info);
+		memcpy(info.serial_number, serial, sizeof(serial));
+		matter_clusters_init(&srv, &info);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_BASIC_INFORMATION,
+			  MATTER_ATTR_BASIC_SERIAL_NUMBER, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("serial decodes", matter_tlv_next(&r) == 0 &&
+				       matter_tlv_get_utf8(&r, &value, &value_len) == 0);
+		T_EQ("serial length matches", value_len, sizeof(serial) - 1u);
+		T_OK("serial value matches", memcmp(value, serial, value_len) == 0);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_BASIC_INFORMATION,
+			  MATTER_ATTR_BASIC_UNIQUE_ID, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		value = NULL;
+		value_len = 0u;
+		T_OK("unique id decodes", matter_tlv_next(&r) == 0 &&
+					  matter_tlv_get_utf8(&r, &value, &value_len) == 0);
+		T_EQ("unique id length matches", value_len, sizeof(serial) - 1u);
+		T_OK("unique id uses the same hardware identity",
+		     memcmp(value, serial, value_len) == 0);
+	}
+
 	t_group("AutoRelockTime is the lock endpoint's writable attribute");
 	{
 		struct matter_im_path path;
@@ -1233,6 +1269,133 @@ void test_matter_clusters(void)
 		path.attribute = MATTER_ATTR_CLUSTER_REVISION;
 		T_EQ("the cluster's globals are read-only",
 		     srv.write(srv.ctx, &path, tlv, 4u), MATTER_IM_STATUS_UNSUPPORTED_WRITE);
+	}
+
+	t_group("the vendor UWB cluster exposes live presence state");
+	{
+		struct matter_tlv_writer w;
+		struct matter_tlv_reader r;
+		uint8_t out[32];
+		const uint32_t *ids = NULL;
+		uint64_t v = 0u;
+		bool b = false;
+		bool listed = false;
+		size_t n;
+
+		reset_doubles();
+		fill_info(&info);
+		info.uwb_device_in_range = true;
+		info.uwb_distance_mm = 1370;
+		info.uwb_device_id = 0x12345678u;
+		info.uwb_config = (struct matter_uwb_config){
+			.version = MATTER_UWB_CONFIG_VERSION,
+			.policy_flags = MATTER_UWB_POLICY_ALL,
+			.unlock_cm = 100u,
+			.approach_cm = 180u,
+			.relock_cm = 250u,
+			.motor_ms = 500u,
+		};
+		info.uwb_movement_state = MATTER_UWB_MOVEMENT_APPROACHING;
+		matter_clusters_init(&srv, &info);
+
+		n = srv.list_clusters(srv.ctx, MATTER_ENDPOINT_LOCK, &ids);
+		for (size_t i = 0u; i < n; i++) {
+			listed |= ids[i] == MATTER_CLUSTER_UWB_PRESENCE;
+		}
+		T_OK("the lock endpoint lists the UWB cluster", listed);
+		T_EQ("and recognizes the distance attribute",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DISTANCE_MM),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and recognizes the unlock threshold attribute",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and recognizes the movement state attribute",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_MOVEMENT_STATE),
+			     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and recognizes the writable relock switch",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DISTANCE_RELOCK),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and recognizes the writable UltraWideLock unlock switch",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_LOCK_UNLOCK),
+		     MATTER_IM_STATUS_SUCCESS);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_DEVICE_IN_RANGE, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("presence decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_bool(&r, &b) == 0 && b);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_DISTANCE_MM, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("distance decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("distance is reported in millimetres", (long)v, 1370);
+
+		{
+			struct matter_im_path path = {
+				.endpoint = MATTER_ENDPOINT_LOCK,
+				.cluster = MATTER_CLUSTER_UWB_PRESENCE,
+				.attribute = MATTER_ATTR_UWB_MOTOR_MS,
+			};
+			uint8_t tlv[16];
+
+			matter_tlv_writer_init(&w, tlv, sizeof(tlv));
+			(void)matter_tlv_put_u64(&w, MATTER_TLV_ANON, 750u);
+			T_EQ("motor time is writable", srv.write(srv.ctx, &path, tlv, w.len),
+			     MATTER_IM_STATUS_SUCCESS);
+			T_EQ("and updates the shared config", info.uwb_config.motor_ms, 750u);
+
+			path.attribute = MATTER_ATTR_UWB_DISTANCE_RELOCK;
+			matter_tlv_writer_init(&w, tlv, sizeof(tlv));
+			(void)matter_tlv_put_bool(&w, MATTER_TLV_ANON, false);
+			T_EQ("distance relock is writable", srv.write(srv.ctx, &path, tlv, w.len),
+			     MATTER_IM_STATUS_SUCCESS);
+			T_EQ("and updates the shared config",
+			     info.uwb_config.policy_flags & MATTER_UWB_POLICY_BOUND_RELOCK, 0u);
+
+			path.attribute = MATTER_ATTR_UWB_LOCK_UNLOCK;
+			matter_tlv_writer_init(&w, tlv, sizeof(tlv));
+			(void)matter_tlv_put_bool(&w, MATTER_TLV_ANON, false);
+			T_EQ("UltraWideLock unlock is writable",
+			     srv.write(srv.ctx, &path, tlv, w.len), MATTER_IM_STATUS_SUCCESS);
+			T_EQ("and only clears its policy bit",
+			     info.uwb_config.policy_flags,
+			     MATTER_UWB_POLICY_ALL & (uint8_t)~MATTER_UWB_POLICY_BOUND_RELOCK &
+				     (uint8_t)~MATTER_UWB_POLICY_LOCK_UNLOCK);
+		}
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_DEVICE_ID, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("device id decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("device id is privacy-safe credential hash prefix", (long)v, 0x12345678u);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("unlock threshold decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("unlock threshold is reported in centimetres", (long)v, 100);
+
+		matter_tlv_writer_init(&w, out, sizeof(out));
+		srv.value(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			  MATTER_ATTR_UWB_MOVEMENT_STATE, false, &w, MATTER_TLV_ANON);
+		matter_tlv_reader_init(&r, out, w.len);
+		T_OK("movement state decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("movement state reports approaching", (long)v,
+		     MATTER_UWB_MOVEMENT_APPROACHING);
 	}
 
 	t_group("the lock endpoint answers its own commands");

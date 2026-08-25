@@ -35,13 +35,10 @@
 #define TAG_CAPMIN_CASE_SESSIONS 0u
 #define TAG_CAPMIN_SUBSCRIPTIONS 1u
 
-/*
- * Strings this node reports about itself. Build-time, not per-device: this port
- * has no factory data partition and no per-board serial to read out of one.
- */
+/* Strings this node reports about itself. */
 #define MATTER_VENDOR_NAME   "ultrawidelock"
 #define MATTER_PRODUCT_NAME  "DWM3001CDK credential Reader"
-#define MATTER_SERIAL_NUMBER "DWM3001CDK-0001"
+#define MATTER_SERIAL_NUMBER_FALLBACK "DWM3001CDK-UNKNOWN"
 
 /* Descriptor/Structs.h:43-44, DeviceTypeStruct. */
 #define TAG_DEVTYPE_TYPE     0u
@@ -81,6 +78,7 @@ static const uint32_t k_lock_servers[] = {
 	MATTER_CLUSTER_DESCRIPTOR,
 	MATTER_CLUSTER_DOOR_LOCK,
 	MATTER_CLUSTER_APPROACH_DIRECTION,
+	MATTER_CLUSTER_UWB_PRESENCE,
 #if MATTER_FEATURE_CLIENT
 	/*
 	 * Advertised as a SERVER even though the point of it is to make this
@@ -541,7 +539,8 @@ static bool has_cluster(void *ctx, uint16_t endpoint, uint32_t cluster)
 #if MATTER_FEATURE_CLIENT
 		       cluster == MATTER_CLUSTER_BINDING ||
 #endif
-		       cluster == MATTER_CLUSTER_APPROACH_DIRECTION;
+		       cluster == MATTER_CLUSTER_APPROACH_DIRECTION ||
+		       cluster == MATTER_CLUSTER_UWB_PRESENCE;
 	}
 	if (endpoint != MATTER_ENDPOINT_ROOT) {
 		return false;
@@ -640,6 +639,30 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 		if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			switch (attribute) {
 			case MATTER_ATTR_APPROACH_DIRECTION:
+			case MATTER_ATTR_FEATURE_MAP:
+			case MATTER_ATTR_CLUSTER_REVISION:
+			case MATTER_ATTR_ATTRIBUTE_LIST:
+			case MATTER_ATTR_ACCEPTED_CMD_LIST:
+			case MATTER_ATTR_GENERATED_CMD_LIST:
+				return MATTER_IM_STATUS_SUCCESS;
+			default:
+				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
+			}
+		}
+		if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			switch (attribute) {
+			case MATTER_ATTR_UWB_DEVICE_IN_RANGE:
+			case MATTER_ATTR_UWB_DISTANCE_MM:
+			case MATTER_ATTR_UWB_DEVICE_ID:
+			case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
+			case MATTER_ATTR_UWB_MOVEMENT_STATE:
+			case MATTER_ATTR_UWB_APPROACH_CM:
+			case MATTER_ATTR_UWB_RELOCK_CM:
+			case MATTER_ATTR_UWB_MOTOR_MS:
+			case MATTER_ATTR_UWB_DISTANCE_RELOCK:
+			case MATTER_ATTR_UWB_BOUND_UNLOCK:
+			case MATTER_ATTR_UWB_LOCK_RELOCK:
+			case MATTER_ATTR_UWB_LOCK_UNLOCK:
 			case MATTER_ATTR_FEATURE_MAP:
 			case MATTER_ATTR_CLUSTER_REVISION:
 			case MATTER_ATTR_ATTRIBUTE_LIST:
@@ -884,6 +907,26 @@ static const uint32_t k_approach_attrs[] = {
 	MATTER_ATTR_GENERATED_CMD_LIST,
 };
 
+static const uint32_t k_uwb_presence_attrs[] = {
+	MATTER_ATTR_UWB_DEVICE_IN_RANGE,
+	MATTER_ATTR_UWB_DISTANCE_MM,
+	MATTER_ATTR_UWB_DEVICE_ID,
+	MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM,
+	MATTER_ATTR_UWB_MOVEMENT_STATE,
+	MATTER_ATTR_UWB_APPROACH_CM,
+	MATTER_ATTR_UWB_RELOCK_CM,
+	MATTER_ATTR_UWB_MOTOR_MS,
+	MATTER_ATTR_UWB_DISTANCE_RELOCK,
+	MATTER_ATTR_UWB_BOUND_UNLOCK,
+	MATTER_ATTR_UWB_LOCK_RELOCK,
+	MATTER_ATTR_UWB_LOCK_UNLOCK,
+	MATTER_ATTR_FEATURE_MAP,
+	MATTER_ATTR_CLUSTER_REVISION,
+	MATTER_ATTR_ATTRIBUTE_LIST,
+	MATTER_ATTR_ACCEPTED_CMD_LIST,
+	MATTER_ATTR_GENERATED_CMD_LIST,
+};
+
 #if MATTER_FEATURE_CLIENT
 /*
  * The manufacturer-specific PIN attribute is deliberately NOT in this list.
@@ -1038,6 +1081,75 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 		}
 	}
 
+	if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+		switch (attribute) {
+		case MATTER_ATTR_UWB_DEVICE_IN_RANGE:
+			(void)matter_tlv_put_bool(w, tag, info->uwb_device_in_range);
+			return;
+		case MATTER_ATTR_UWB_DISTANCE_MM:
+			if (info->uwb_device_in_range && info->uwb_distance_mm >= 0) {
+				(void)matter_tlv_put_u64(w, tag, (uint32_t)info->uwb_distance_mm);
+			} else {
+				(void)matter_tlv_put_null(w, tag);
+			}
+			return;
+		case MATTER_ATTR_UWB_DEVICE_ID:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_device_id);
+			return;
+		case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.unlock_cm);
+			return;
+		case MATTER_ATTR_UWB_MOVEMENT_STATE:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_movement_state);
+			return;
+		case MATTER_ATTR_UWB_APPROACH_CM:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.approach_cm);
+			return;
+		case MATTER_ATTR_UWB_RELOCK_CM:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.relock_cm);
+			return;
+		case MATTER_ATTR_UWB_MOTOR_MS:
+			(void)matter_tlv_put_u64(w, tag, info->uwb_config.motor_ms);
+			return;
+		case MATTER_ATTR_UWB_DISTANCE_RELOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_BOUND_RELOCK) != 0u);
+			return;
+		case MATTER_ATTR_UWB_BOUND_UNLOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_BOUND_UNLOCK) != 0u);
+			return;
+		case MATTER_ATTR_UWB_LOCK_RELOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_LOCK_RELOCK) != 0u);
+			return;
+		case MATTER_ATTR_UWB_LOCK_UNLOCK:
+			(void)matter_tlv_put_bool(w, tag,
+						  (info->uwb_config.policy_flags &
+						   MATTER_UWB_POLICY_LOCK_UNLOCK) != 0u);
+			return;
+		case MATTER_ATTR_FEATURE_MAP:
+			(void)matter_tlv_put_u64(w, tag, 0u);
+			return;
+		case MATTER_ATTR_CLUSTER_REVISION:
+			(void)matter_tlv_put_u64(w, tag, MATTER_UWB_PRESENCE_CLUSTER_REV);
+			return;
+		case MATTER_ATTR_ATTRIBUTE_LIST:
+			put_id_list(w, tag, k_uwb_presence_attrs,
+				    sizeof(k_uwb_presence_attrs) / sizeof(k_uwb_presence_attrs[0]));
+			return;
+		case MATTER_ATTR_ACCEPTED_CMD_LIST:
+		case MATTER_ATTR_GENERATED_CMD_LIST:
+			put_id_list(w, tag, NULL, 0u);
+			return;
+		default:
+			return;
+		}
+	}
+
 	if (cluster != MATTER_CLUSTER_DOOR_LOCK) {
 		return;
 	}
@@ -1171,6 +1283,75 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
  * including Door Lock, Descriptor, Basic Information, Network Commissioning, Access Control,
  * Operational Credentials, Admin Commissioning, and General Commissioning.
  */
+static bool noc_visible(const struct matter_device_info *info, const struct matter_fabric *f,
+			bool fabric_filtered)
+{
+	return f->index != 0u &&
+	       (!fabric_filtered || f->index == info->accessing_fabric_index);
+}
+
+static void put_noc_entry(const struct matter_device_info *info, const struct matter_fabric *f,
+			  struct matter_tlv_writer *w, matter_tlv_tag_t tag)
+{
+	(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_NOC), f->noc, f->noc_len);
+	if (f->icac_len > 0u && info->icac.owner_index == f->index &&
+	    info->icac.len == f->icac_len) {
+		(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_ICAC), info->icac.buf,
+					   f->icac_len);
+	} else {
+		(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_NOC_ICAC));
+	}
+	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_INDEX), f->index);
+	(void)matter_tlv_end_container(w);
+}
+
+static size_t list_fragments(void *ctx, uint16_t endpoint, uint32_t cluster,
+			     uint32_t attribute, bool fabric_filtered)
+{
+	const struct matter_device_info *info = ctx;
+	size_t count = 1u; /* The empty replace-all. */
+
+	if (endpoint != MATTER_ENDPOINT_ROOT || cluster != MATTER_CLUSTER_OPERATIONAL_CREDENTIALS ||
+	    attribute != MATTER_ATTR_OC_NOCS) {
+		return 0u;
+	}
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		if (noc_visible(info, &info->fabrics[i], fabric_filtered)) {
+			count++;
+		}
+	}
+	return count;
+}
+
+static void list_fragment_value(void *ctx, uint16_t endpoint, uint32_t cluster,
+				uint32_t attribute, bool fabric_filtered, size_t index,
+				struct matter_tlv_writer *w, matter_tlv_tag_t tag)
+{
+	const struct matter_device_info *info = ctx;
+	size_t visible = 0u;
+
+	(void)endpoint;
+	(void)cluster;
+	(void)attribute;
+	if (index == 0u) {
+		(void)matter_tlv_start_container(w, tag, MATTER_TLV_ARRAY);
+		(void)matter_tlv_end_container(w);
+		return;
+	}
+	for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
+		const struct matter_fabric *f = &info->fabrics[i];
+
+		if (!noc_visible(info, f, fabric_filtered)) {
+			continue;
+		}
+		if (++visible == index) {
+			put_noc_entry(info, f, w, tag);
+			return;
+		}
+	}
+}
+
 static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t attribute,
 		       bool fabric_filtered, struct matter_tlv_writer *w, matter_tlv_tag_t tag)
 {
@@ -1268,14 +1449,13 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 			return;
 		case MATTER_ATTR_BASIC_SERIAL_NUMBER:
 		case MATTER_ATTR_BASIC_UNIQUE_ID:
-			/*
-			 * The same string for both, and it is a BUILD-TIME
-			 * constant: this port has no per-device serial to read.
-			 * Two boards running this image are indistinguishable
-			 * here, which matters the moment a home holds both.
-			 */
-			(void)matter_tlv_put_utf8(w, tag, MATTER_SERIAL_NUMBER,
-						  strlen(MATTER_SERIAL_NUMBER));
+			{
+				const char *serial = info->serial_number[0] != '\0'
+							   ? info->serial_number
+							   : MATTER_SERIAL_NUMBER_FALLBACK;
+
+				(void)matter_tlv_put_utf8(w, tag, serial, strlen(serial));
+			}
 			return;
 		case MATTER_ATTR_BASIC_CAPABILITY_MINIMA:
 			(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
@@ -1477,22 +1657,7 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
 				    (fabric_filtered && f->index != info->accessing_fabric_index)) {
 					continue;
 				}
-				(void)matter_tlv_start_container(w, MATTER_TLV_ANON,
-								 MATTER_TLV_STRUCTURE);
-				(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_NOC), f->noc,
-							   f->noc_len);
-				if (f->icac_len > 0u && info->icac.owner_index == f->index &&
-				    info->icac.len == f->icac_len) {
-					(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_NOC_ICAC),
-								   info->icac.buf, f->icac_len);
-				} else {
-					/* Nullable, and null is the answer when
-					 * the root signed the NOC directly. */
-					(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_NOC_ICAC));
-				}
-				(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_FABRIC_INDEX),
-							 f->index);
-				(void)matter_tlv_end_container(w);
+				put_noc_entry(info, f, w, MATTER_TLV_ANON);
 			}
 			(void)matter_tlv_end_container(w);
 			return;
@@ -1682,6 +1847,10 @@ static size_t list_attrs(void *ctx, uint16_t endpoint, uint32_t cluster, const u
 		if (cluster == MATTER_CLUSTER_APPROACH_DIRECTION) {
 			*out = k_approach_attrs;
 			return sizeof(k_approach_attrs) / sizeof(k_approach_attrs[0]);
+		}
+		if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			*out = k_uwb_presence_attrs;
+			return sizeof(k_uwb_presence_attrs) / sizeof(k_uwb_presence_attrs[0]);
 		}
 #if MATTER_FEATURE_CLIENT
 		if (cluster == MATTER_CLUSTER_BINDING) {
@@ -3678,6 +3847,67 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 			return MATTER_IM_STATUS_SUCCESS;
 		}
 #endif
+		if (path->cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			struct matter_uwb_config next = info->uwb_config;
+			struct matter_tlv_reader r;
+			uint64_t v = 0u;
+			bool enabled = false;
+
+			if (data == NULL || data_len == 0u) {
+				return MATTER_IM_STATUS_INVALID_COMMAND;
+			}
+			matter_tlv_reader_init(&r, data, data_len);
+			if (matter_tlv_next(&r) != MATTER_OK) {
+				return MATTER_IM_STATUS_INVALID_COMMAND;
+			}
+			if (path->attribute >= MATTER_ATTR_UWB_DISTANCE_RELOCK &&
+			    path->attribute <= MATTER_ATTR_UWB_LOCK_UNLOCK) {
+				static const uint8_t flags[] = {
+					MATTER_UWB_POLICY_BOUND_RELOCK,
+					MATTER_UWB_POLICY_BOUND_UNLOCK,
+					MATTER_UWB_POLICY_LOCK_RELOCK,
+					MATTER_UWB_POLICY_LOCK_UNLOCK,
+				};
+				uint8_t flag = flags[path->attribute - MATTER_ATTR_UWB_DISTANCE_RELOCK];
+
+				if (matter_tlv_get_bool(&r, &enabled) != MATTER_OK) {
+					return MATTER_IM_STATUS_INVALID_COMMAND;
+				}
+				if (enabled) {
+					next.policy_flags |= flag;
+				} else {
+					next.policy_flags &= (uint8_t)~flag;
+				}
+			} else {
+				if (matter_tlv_get_u64(&r, &v) != MATTER_OK || v > UINT16_MAX) {
+					return MATTER_IM_STATUS_INVALID_COMMAND;
+				}
+				switch (path->attribute) {
+				case MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM:
+					next.unlock_cm = (uint16_t)v;
+					break;
+				case MATTER_ATTR_UWB_APPROACH_CM:
+					next.approach_cm = (uint16_t)v;
+					break;
+				case MATTER_ATTR_UWB_RELOCK_CM:
+					next.relock_cm = (uint16_t)v;
+					break;
+				case MATTER_ATTR_UWB_MOTOR_MS:
+					next.motor_ms = (uint16_t)v;
+					break;
+				default:
+					return MATTER_IM_STATUS_UNSUPPORTED_WRITE;
+				}
+			}
+			if (next.unlock_cm < 20u || next.unlock_cm >= next.approach_cm ||
+			    next.approach_cm >= next.relock_cm || next.relock_cm > 1000u ||
+			    next.motor_ms < 100u || next.motor_ms > 5000u) {
+				return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+			}
+			next.version = MATTER_UWB_CONFIG_VERSION;
+			info->uwb_config = next;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
 		if (path->cluster != MATTER_CLUSTER_DOOR_LOCK) {
 			return has_cluster(ctx, path->endpoint, path->cluster)
 				       ? MATTER_IM_STATUS_UNSUPPORTED_WRITE
@@ -3920,6 +4150,8 @@ void matter_clusters_init(struct matter_im_server *srv, struct matter_device_inf
 	srv->value = attr_value;
 	srv->has_cluster = has_cluster;
 	srv->list_attrs = list_attrs;
+	srv->list_fragments = list_fragments;
+	srv->list_fragment_value = list_fragment_value;
 	srv->list_endpoints = list_endpoints;
 	srv->list_clusters = list_clusters;
 	srv->command = command;

@@ -70,6 +70,9 @@ void matter_client_init(struct matter_device_info *info);
  */
 void matter_client_want(bool unlocked);
 
+/** Rearm a future UnlockDoor without sending LockDoor on this departure. */
+void matter_client_rearm_unlock(void);
+
 /**
  * Is @p session_id the client's own secure session?
  *

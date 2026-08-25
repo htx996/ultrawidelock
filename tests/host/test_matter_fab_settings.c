@@ -336,6 +336,56 @@ void test_matter_fab_settings(void)
 	T_EQ("erase succeeds", matter_dl_attr_erase(), 0);
 	T_EQ("both keys are gone", settingsfake_key_count(), 0);
 
+	t_group("matter_uwb_config: one durable record");
+	settingsfake_reset();
+	{
+		const struct matter_uwb_config defaults = {
+			.version = MATTER_UWB_CONFIG_VERSION,
+			.policy_flags = MATTER_UWB_POLICY_ALL,
+			.unlock_cm = 100u,
+			.approach_cm = 180u,
+			.relock_cm = 250u,
+			.motor_ms = 500u,
+		};
+		struct matter_uwb_config changed = defaults;
+		struct matter_uwb_config readback = { 0 };
+
+		changed.unlock_cm = 90u;
+		changed.motor_ms = 650u;
+		T_EQ("changed settings store together",
+		     matter_uwb_config_store(&changed, &defaults), 0);
+		T_EQ("that costs one save", settingsfake_save_count(), 1);
+		T_EQ("the settings load", matter_uwb_config_load(&readback), 0);
+		T_OK("and all fields survive", memcmp(&readback, &changed, sizeof(readback)) == 0);
+		T_EQ("re-storing the same block succeeds",
+		     matter_uwb_config_store(&changed, &changed), 0);
+		T_EQ("without another flash write", settingsfake_save_count(), 1);
+	}
+
+	settingsfake_reset();
+	{
+		const struct matter_uwb_config defaults = {
+			.version = MATTER_UWB_CONFIG_VERSION,
+			.policy_flags = MATTER_UWB_POLICY_ALL,
+			.unlock_cm = 100u,
+			.approach_cm = 180u,
+			.relock_cm = 250u,
+			.motor_ms = 500u,
+		};
+		struct matter_uwb_config legacy = defaults;
+		struct matter_uwb_config readback = defaults;
+
+		legacy.version = 1u;
+		legacy.policy_flags = 0u;
+		T_EQ("legacy UWB settings store", matter_uwb_config_store(&legacy, &defaults), 0);
+		T_EQ("legacy UWB settings load", matter_uwb_config_load(&readback), 0);
+		T_EQ("the old disabled departure relock stays disabled",
+		     readback.policy_flags & MATTER_UWB_POLICY_BOUND_RELOCK, 0u);
+		T_EQ("new policy actions default enabled",
+		     readback.policy_flags,
+		     MATTER_UWB_POLICY_ALL & (uint8_t)~MATTER_UWB_POLICY_BOUND_RELOCK);
+	}
+
 	/*
 	 * And the two trees stay separate. A factory reset un-commissions the
 	 * node; forgetting the owner's auto-lock timing is not part of that.

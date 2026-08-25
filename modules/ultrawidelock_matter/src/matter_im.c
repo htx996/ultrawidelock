@@ -540,6 +540,10 @@ static void put_path(struct matter_tlv_writer *w, matter_tlv_tag_t tag,
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_ENDPOINT), p->endpoint);
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_CLUSTER), p->cluster);
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_ATTRIBUTE), p->attribute);
+	if (p->have_list_index) {
+		/* Null is AppendItem. Numeric list indices are not used here. */
+		(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_PATH_LIST_INDEX));
+	}
 	(void)matter_tlv_end_container(w);
 }
 
@@ -593,6 +597,26 @@ static void put_report(struct matter_tlv_writer *w, const struct matter_im_serve
 	(void)matter_tlv_end_container(w);
 }
 
+static void put_list_fragment_report(struct matter_tlv_writer *w,
+				     const struct matter_im_server *srv,
+				     const struct matter_im_path *p, bool fabric_filtered,
+				     size_t index)
+{
+	struct matter_im_path path = *p;
+
+	/* Fragment zero replaces the old list with []; later fragments append
+	 * exactly one item to it. This is Matter's standard chunked-list shape. */
+	path.have_list_index = index > 0u;
+	(void)matter_tlv_start_container(w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_start_container(w, MATTER_TLV_CTX(TAG_AREPORT_DATA), MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_ADATA_VERSION), DATA_VERSION);
+	put_path(w, MATTER_TLV_CTX(TAG_ADATA_PATH), &path);
+	srv->list_fragment_value(srv->ctx, path.endpoint, path.cluster, path.attribute,
+				 fabric_filtered, index, w, MATTER_TLV_CTX(TAG_ADATA_DATA));
+	(void)matter_tlv_end_container(w);
+	(void)matter_tlv_end_container(w);
+}
+
 /**
  * Report a wildcard path whose endpoint is now settled.
  *
@@ -633,6 +657,44 @@ static int report_encode(const struct matter_im_server *srv, const struct matter
 static void emit(struct matter_tlv_writer *w, const struct matter_im_server *srv,
 		 const struct matter_im_path *p, bool fabric_filtered, struct chunk_ctx *cc)
 {
+	size_t fragments = 0u;
+	size_t fragment;
+
+	if (cc != NULL && srv->list_fragments != NULL && srv->list_fragment_value != NULL) {
+		fragments = srv->list_fragments(srv->ctx, p->endpoint, p->cluster,
+						p->attribute, fabric_filtered);
+	}
+	if (fragments > 0u) {
+		for (fragment = 0u; fragment < fragments; fragment++) {
+			size_t save_len;
+			int save_rc;
+			uint8_t save_depth;
+
+			if (cc->full) {
+				return;
+			}
+			if (cc->seen++ < cc->skip) {
+				continue;
+			}
+			save_len = w->len;
+			save_rc = w->rc;
+			save_depth = w->depth;
+			put_list_fragment_report(w, srv, p, fabric_filtered, fragment);
+			if (w->rc != MATTER_TLV_OK || w->len + cc->reserve > w->cap) {
+				w->len = save_len;
+				w->rc = save_rc;
+				w->depth = save_depth;
+				cc->full = true;
+				if (cc->emitted == 0u && !cc->have_stuck) {
+					cc->stuck = *p;
+					cc->have_stuck = true;
+				}
+				return;
+			}
+			cc->emitted++;
+		}
+		return;
+	}
 	size_t save_len;
 	int save_rc;
 	uint8_t save_depth;
