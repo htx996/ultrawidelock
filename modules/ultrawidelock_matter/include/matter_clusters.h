@@ -1330,6 +1330,23 @@ size_t matter_clusters_event_count(const struct matter_device_info *info);
 void matter_clusters_failsafe_expire(struct matter_device_info *info);
 
 /**
+ * May the identity currently set in @p info->accessing_* read the UWB presence
+ * cluster's telemetry?
+ *
+ * For a report this node ORIGINATES. A read that arrives as a request is
+ * already gated inside the data model, and nothing outside needs to ask. A
+ * subscription report is different: it is built from paths the node chose, and
+ * a subscriber that wildcarded the whole node subscribed to this cluster
+ * without ever naming it. Encoding it anyway turns every presence change into a
+ * report of UNSUPPORTED_ACCESS entries for a subscriber that Matter says should
+ * simply have had those paths skipped.
+ *
+ * Set the accessing identity from the subscription's own CASE session before
+ * calling; the answer is about that identity, not about the node.
+ */
+bool matter_clusters_uwb_presence_readable(const struct matter_device_info *info);
+
+/**
  * Bring a restored identity back onto the network.
  *
  * A node that reloads its fabric table from storage is commissioned but not

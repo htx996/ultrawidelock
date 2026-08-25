@@ -164,6 +164,7 @@ static size_t fabric_slot_for_request(const struct matter_device_info *info, uin
 }
 
 #define MATTER_AC_PRIVILEGE_OPERATE     3u
+#define MATTER_AC_PRIVILEGE_MANAGE      4u
 #define MATTER_AC_PRIVILEGE_ADMINISTER  5u
 #define MATTER_AC_AUTH_MODE_CASE        2u
 /**
@@ -436,6 +437,60 @@ static bool fabric_slot_has_privilege(const struct matter_device_info *info, siz
 	}
 }
 
+/*
+ * May the accessor read attribute @p attribute of the UWB presence cluster?
+ *
+ * The five global attributes are always readable. The core spec's global
+ * elements table gives each of them read access V, so their read privilege is
+ * View wherever they appear and this cluster does not get to raise it. They are
+ * metadata anyway: FeatureMap, ClusterRevision, AttributeList and the two
+ * command lists describe the cluster, not the person standing outside the door.
+ *
+ * The other twelve are Manage, and the spec's rule is that a readable attribute
+ * SHALL define the single privilege required to read it -- a manufacturer
+ * cluster is not exempt from that and gets no special floor beyond View. The
+ * DEFAULT, for an attribute that declares nothing, is View: that is what
+ * LockState takes, and it was defensible because "locked" or "unlocked" is one
+ * bit about a bolt. These twelve are not that. DeviceInRange, DistanceMm,
+ * DeviceId and MovementState are where a person is and which credential they
+ * carry, sampled continuously; the eight tuning attributes say at what range
+ * this lock opens, which is worth knowing to somebody intending to be at that
+ * range. The one place Door Lock departs from View is exactly this kind of
+ * data -- the seven Aliro reader attributes read at Administer, and the user
+ * and credential records are only reachable through GetUser and
+ * GetCredentialStatus, which invoke at Administer.
+ *
+ * Manage rather than Administer because Administer would leave presence
+ * readable only by the hub that commissioned the lock, and watching the
+ * approach is what a household's own automation controller exists to do; Manage
+ * is the privilege such a controller is granted. Below it, a guest holding
+ * Operate can still unlock the door and can no longer watch the household walk
+ * up to it, which is the whole point.
+ *
+ * Writes to this cluster were already Administer (see attr_write); this is the
+ * read half, which had no check at all.
+ */
+static bool uwb_presence_read_allowed(const struct matter_device_info *info, uint32_t attribute)
+{
+	switch (attribute) {
+	case MATTER_ATTR_FEATURE_MAP:
+	case MATTER_ATTR_CLUSTER_REVISION:
+	case MATTER_ATTR_ATTRIBUTE_LIST:
+	case MATTER_ATTR_ACCEPTED_CMD_LIST:
+	case MATTER_ATTR_GENERATED_CMD_LIST:
+		return true;
+	default:
+		break;
+	}
+	if (info == NULL) {
+		return false;
+	}
+	return fabric_slot_has_privilege(info,
+					 fabric_slot_for_index(info, info->accessing_fabric_index),
+					 MATTER_AC_PRIVILEGE_MANAGE, MATTER_ENDPOINT_LOCK,
+					 MATTER_CLUSTER_UWB_PRESENCE);
+}
+
 /** How many fabrics hold a complete identity. */
 static uint8_t fabric_count(const struct matter_device_info *info)
 {
@@ -612,7 +667,8 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 				(const struct matter_device_info *)ctx;
 
 			/*
-			 * The one place in this function that reads ctx, and it
+			 * One of the two places in this function that read ctx
+			 * -- the UWB presence gate below is the other -- and it
 			 * has to: the PIN attribute's id is built from this
 			 * node's vendor id (MATTER_ATTR_BINDING_PIN), so there
 			 * is no constant to put in a case label. A node with no
@@ -668,7 +724,24 @@ static uint8_t attr_status(void *ctx, uint16_t endpoint, uint32_t cluster, uint3
 			case MATTER_ATTR_ATTRIBUTE_LIST:
 			case MATTER_ATTR_ACCEPTED_CMD_LIST:
 			case MATTER_ATTR_GENERATED_CMD_LIST:
-				return MATTER_IM_STATUS_SUCCESS;
+				/*
+				 * Supported first, permitted second, and the
+				 * order is the answer here too: refusing an
+				 * attribute this cluster does not have with
+				 * UNSUPPORTED_ACCESS tells a controller its
+				 * privilege was the problem when its path was.
+				 *
+				 * This is the ONLY cluster on this node whose
+				 * reads are gated, and the gate lives here
+				 * rather than in attr_value() because status is
+				 * what every read path consults first --
+				 * including the wildcard expansion, which drops
+				 * a path this refuses instead of reporting it.
+				 */
+				return uwb_presence_read_allowed(
+					       (const struct matter_device_info *)ctx, attribute)
+					       ? MATTER_IM_STATUS_SUCCESS
+					       : MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
 			default:
 				return MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
 			}
@@ -927,6 +1000,24 @@ static const uint32_t k_uwb_presence_attrs[] = {
 	MATTER_ATTR_GENERATED_CMD_LIST,
 };
 
+/*
+ * What a wildcard read expands to for an accessor without Manage: the five
+ * global attributes and nothing else.
+ *
+ * Not a second AttributeList. AttributeList still reports all seventeen,
+ * because it describes the cluster rather than the accessor and a controller is
+ * entitled to know which attribute it was refused. This array exists only so
+ * that a wildcard SKIPS the gated twelve -- see list_attrs() and
+ * uwb_presence_read_allowed().
+ */
+static const uint32_t k_uwb_presence_public_attrs[] = {
+	MATTER_ATTR_FEATURE_MAP,
+	MATTER_ATTR_CLUSTER_REVISION,
+	MATTER_ATTR_ATTRIBUTE_LIST,
+	MATTER_ATTR_ACCEPTED_CMD_LIST,
+	MATTER_ATTR_GENERATED_CMD_LIST,
+};
+
 #if MATTER_FEATURE_CLIENT
 /*
  * The manufacturer-specific PIN attribute is deliberately NOT in this list.
@@ -1082,6 +1173,19 @@ static void lock_attr_value(const struct matter_device_info *info, uint32_t clus
 	}
 
 	if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+		/*
+		 * attr_status() has already refused this read, and put_report()
+		 * does not call here after a refusal. Repeated all the same,
+		 * because this function is what actually copies presence into a
+		 * report: a caller that reaches it without asking status first
+		 * would publish the telemetry, and there is no way to tell from
+		 * in here that it did. Null keeps the one-element contract this
+		 * function owes its writer.
+		 */
+		if (!uwb_presence_read_allowed(info, attribute)) {
+			(void)matter_tlv_put_null(w, tag);
+			return;
+		}
 		switch (attribute) {
 		case MATTER_ATTR_UWB_DEVICE_IN_RANGE:
 			(void)matter_tlv_put_bool(w, tag, info->uwb_device_in_range);
@@ -1724,6 +1828,11 @@ static void attr_value(void *ctx, uint16_t endpoint, uint32_t cluster, uint32_t 
  * here that attr_status() refuses turns a wildcard into a report full of
  * UNSUPPORTED_ATTRIBUTE, which is worse than the silence it replaced.
  *
+ * One list is not static for that reason. UWB presence is the one cluster whose
+ * reads are privilege-gated, so what attr_status() answers SUCCESS for there
+ * depends on WHO is asking; list_attrs() picks the matching array per accessor
+ * rather than naming ids that same accessor is about to be refused.
+ *
  * The global attributes (FeatureMap 0xFFFC, ClusterRevision 0xFFFD and the
  * rest) are deliberately absent. Nothing has asked for them, and a wildcard
  * that names them commits this node to answering them individually too.
@@ -1833,7 +1942,7 @@ static size_t list_clusters(void *ctx, uint16_t endpoint, const uint32_t **out)
  */
 static size_t list_attrs(void *ctx, uint16_t endpoint, uint32_t cluster, const uint32_t **out)
 {
-	(void)ctx;
+	const struct matter_device_info *info = (const struct matter_device_info *)ctx;
 
 	if (endpoint == MATTER_ENDPOINT_LOCK) {
 		if (cluster == MATTER_CLUSTER_DESCRIPTOR) {
@@ -1849,6 +1958,24 @@ static size_t list_attrs(void *ctx, uint16_t endpoint, uint32_t cluster, const u
 			return sizeof(k_approach_attrs) / sizeof(k_approach_attrs[0]);
 		}
 		if (cluster == MATTER_CLUSTER_UWB_PRESENCE) {
+			/*
+			 * The gated twelve come out of the wildcard list for an
+			 * accessor that may not read them. This is the coupling
+			 * the comment above k_gc_attrs states, in its second
+			 * form: expand_on_endpoint() emits every id this returns
+			 * and put_report() then asks attr_status() about each,
+			 * so an id here that attr_status() refuses becomes an
+			 * UNSUPPORTED_ACCESS entry in the report rather than an
+			 * absence. Matter expects a wildcard to skip what the
+			 * accessor cannot have and a CONCRETE path to be told
+			 * why -- returning the shorter list here is what makes
+			 * the first half true.
+			 */
+			if (!uwb_presence_read_allowed(info, MATTER_ATTR_UWB_DEVICE_IN_RANGE)) {
+				*out = k_uwb_presence_public_attrs;
+				return sizeof(k_uwb_presence_public_attrs) /
+				       sizeof(k_uwb_presence_public_attrs[0]);
+			}
 			*out = k_uwb_presence_attrs;
 			return sizeof(k_uwb_presence_attrs) / sizeof(k_uwb_presence_attrs[0]);
 		}
@@ -3695,6 +3822,16 @@ int matter_clusters_resume(struct matter_device_info *info)
 	 */
 	advertise_operational(info);
 	return MATTER_OK;
+}
+
+bool matter_clusters_uwb_presence_readable(const struct matter_device_info *info)
+{
+	/*
+	 * Asked about one of the gated twelve, not a global: the globals are
+	 * View and would answer true for everybody, which is the opposite of
+	 * what a caller wants to know.
+	 */
+	return uwb_presence_read_allowed(info, MATTER_ATTR_UWB_DEVICE_IN_RANGE);
 }
 
 /**
