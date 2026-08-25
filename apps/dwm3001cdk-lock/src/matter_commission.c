@@ -4491,12 +4491,13 @@ int matter_commission_init(void)
 	}
 
 	/*
-	 * The credential reader group sub-identifier. Derived from the factory
-	 * EUI-64 rather than drawn from the RNG, because nothing on the Matter
+	 * Stable per-board Matter identifiers. Derived from the factory EUI-64
+	 * rather than drawn from the RNG, because nothing on the Matter
 	 * side of this node is persisted yet (there is no settings handler in
 	 * ultrawidelock_matter at all) and a value regenerated at every boot would make
 	 * this look like a different reader group after each power cycle.
-	 * Hashing keeps the EUI-64 itself off the wire.
+	 * Domain-separated hashes keep the permanent EUI-64 itself off the wire;
+	 * the serial and group sub-identifier cannot be correlated by their value.
 	 *
 	 * The ESP32 lock uses DRBG and caches (ultrawidelock_reader_delegate.cpp:51),
 	 * which is the better answer once Matter state persists. Revisit then.
@@ -4507,9 +4508,16 @@ int matter_commission_init(void)
 		uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
 		int serial_len;
 
+		ultrawidelock_sha256_init(&h);
+		ultrawidelock_sha256_update(&h, (const uint8_t *)"ultrawidelock-serial-id", 23u);
+		ultrawidelock_sha256_update(&h, (const uint8_t *)id, sizeof(id));
+		ultrawidelock_sha256_final(&h, digest);
 		serial_len = snprintf(s_info.serial_number, sizeof(s_info.serial_number),
-				      "DWM3001CDK-%08X%08X",
-				      (unsigned int)id[1], (unsigned int)id[0]);
+				      "DWM3001CDK-%02X%02X%02X%02X%02X%02X%02X%02X",
+				      (unsigned int)digest[0], (unsigned int)digest[1],
+				      (unsigned int)digest[2], (unsigned int)digest[3],
+				      (unsigned int)digest[4], (unsigned int)digest[5],
+				      (unsigned int)digest[6], (unsigned int)digest[7]);
 		if (serial_len < 0 || (size_t)serial_len >= sizeof(s_info.serial_number)) {
 			s_info.serial_number[0] = '\0';
 		}

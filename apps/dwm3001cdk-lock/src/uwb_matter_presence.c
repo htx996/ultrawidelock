@@ -22,20 +22,32 @@ struct movement_filter {
 };
 
 static struct movement_filter s_movement;
+/* Ranging publishes many samples for one authenticated credential. Keep its
+ * derived ID until the public key changes, then replace both cache entries. */
+static uint8_t s_credential_pub[65];
+static uint32_t s_credential_id;
+static bool s_have_credential;
 
 static uint32_t credential_id(void)
 {
 	uint8_t cred_pub[65];
 	uint8_t digest[ULTRAWIDELOCK_SHA256_LEN];
-	uint32_t id;
 
 	if (!ultrawidelock_reader_authenticated_credential(cred_pub)) {
 		return 0u;
 	}
+	if (s_have_credential && memcmp(cred_pub, s_credential_pub, sizeof(cred_pub)) == 0) {
+		return s_credential_id;
+	}
 	ultrawidelock_sha256(cred_pub, sizeof(cred_pub), digest);
-	id = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
-	     ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
-	return id == 0u || id == UINT32_MAX ? 1u : id;
+	s_credential_id = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
+			  ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
+	if (s_credential_id == 0u || s_credential_id == UINT32_MAX) {
+		s_credential_id = 1u;
+	}
+	memcpy(s_credential_pub, cred_pub, sizeof(cred_pub));
+	s_have_credential = true;
+	return s_credential_id;
 }
 
 static void movement_reset(void)
@@ -92,6 +104,7 @@ static enum matter_uwb_movement_state movement_state(int32_t velocity_cm_s,
 
 void uwb_matter_presence_init(void)
 {
+	s_have_credential = false;
 	movement_reset();
 }
 
