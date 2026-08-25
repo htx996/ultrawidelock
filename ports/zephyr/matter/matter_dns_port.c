@@ -32,7 +32,7 @@
 #include "matter_status.h"
 #include "matter_thread.h"
 
-LOG_MODULE_DECLARE(matter_thread, CONFIG_LOG_DEFAULT_LEVEL);
+LOG_MODULE_DECLARE(matter_thread, CONFIG_ULTRAWIDELOCK_MATTER_THREAD_LOG_LEVEL);
 
 /*
  * The Matter operational service, and the domain an SRP server serves its

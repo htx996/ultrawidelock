@@ -607,6 +607,15 @@ module = ULTRAWIDELOCK_MATTER_CLIENT
 module-str = matter_client
 source "subsys/logging/Kconfig.template.log_config"
 
+# THREAD logs separately for the same reason the client does. matter_thread_port.c
+# and matter_dns_port.c narrate SRP registration and DNS-SD resolution, which is
+# how "the bound lock did not resolve" gets diagnosed; matter_ble carries
+# commissioning and fabric handling. Sharing one symbol meant neither could be
+# turned down or up without the other.
+module = ULTRAWIDELOCK_MATTER_THREAD
+module-str = matter_thread
+source "subsys/logging/Kconfig.template.log_config"
+
 endif # ULTRAWIDELOCK_MATTER_BLE
 
 config ULTRAWIDELOCK_BLE_CENTRAL
