@@ -13,6 +13,9 @@ __pycache__/
 # Local virtualenv; the runners resolve it themselves ($PY in
 # tests/host/sources.sh), so it is never activated and never on PATH.
 .venv/
+# where `make tools-install` puts CodeChecker; the sca gate finds it via
+# $CODECHECKER, so this one is never on PATH either.
+.venv-sca/
 
 # Build output. One root for the whole repo: every producer writes its own
 # subdirectory under ./build (cdk-matter, nrf5340dk, esp32-<app>-<target>,
