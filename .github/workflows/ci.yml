@@ -10,16 +10,17 @@
 # apps/dwm3001cdk-lock/src -- matter_client.c, against the fakes in tests/host.
 # The other twelve, every Kconfig fragment, the devicetree overlay, the
 # partition map and the flash fit were compiled by no check at all, so a syntax
-# or type error in main.c merged with every tick green. That job builds two real
-# images in the NCS toolchain container and takes the count to nine of thirteen.
-# It is scoped by path and it is slow; both are explained on the job itself.
+# or type error in main.c merged with every tick green. That job builds four real
+# images in the NCS toolchain container -- the client, the shipping image,
+# anchorlink and the satellite -- and takes the count to nine of thirteen. It is
+# scoped by path and it is slow; both are explained on the job itself.
 #
 # Still not covered, and still a bench's job: the ESP32 images (ESP-IDF and
-# esp-matter, hours), the remaining DWM3001CDK configurations, the size gate and
-# the hardware. `make regress` covers those where the boards are, and
-# `make regress-hil` goes on to prove them on air; `make esp-release` covers the
-# ESP32. A green run here means two CDK images compile and link, and that
-# nothing else broke that a host can see.
+# esp-matter, hours), the nRF5340 DK lock, the remaining DWM3001CDK
+# configurations, the size gate and the hardware. `make regress` covers those
+# where the boards are, and `make regress-hil` goes on to prove them on air;
+# `make esp-release` covers the ESP32. A green run here means four images compile
+# and link, and that nothing else broke that a host can see.
 #
 # `gates` is a serial list of steps rather than parallel jobs: each job pays a
 # checkout to save less time than it spends, and one list reads better in a pull
@@ -46,9 +47,10 @@
 #            removes it; the diff is clean and the object is still there
 #            forever. This repository's history was swept clean by hand before
 #            it was ever pushed, so a full scan is affordable and stays green.
-#   cdk      two real DWM3001CDK images compile, link and fit in flash. The only
-#            check anywhere that runs a compiler over the application, the
-#            Kconfig tree, the devicetree overlay and the partition map. Costs a
+#   cdk      four real images compile, link and fit in flash -- three
+#            DWM3001CDK configurations and the nRF5340 satellite. The only check
+#            anywhere that runs a compiler over the applications, the Kconfig
+#            tree, the devicetree overlays and the partition maps. Costs a
 #            toolchain container and a cached 6.5 GB west workspace, so unlike
 #            the three above it runs only when the change can reach an image.
 name: ci
@@ -287,20 +289,32 @@ jobs:
   # buying that risk -- it keys on preprocessed input, so a stale entry is not
   # reachable the way a stale CMake cache is.
   #
-  # WHAT IT COSTS. MEASURED on an 8-core Apple M1 against this workspace,
-  # `make build CLIENT=1 PRISTINE=1`: 232 s with an empty ccache, 95 s with a
-  # warm one (91% hit rate), and the whole image's objects occupy 50 MB of
-  # ccache. The anchorlink image below adds 152.7 s on top of a ccache the
-  # client build has already warmed.
+  # WHAT IT COSTS. MEASURED on an 8-core Apple M1 against this workspace, every
+  # figure PRISTINE=1, each one after the ones above it have warmed the ccache:
+  #
+  #   client (CLIENT=1)          95 s warm, 232 s from an empty ccache
+  #   shipping (SMP+RELEASE)    252.6 s   -- most of the warm entries do not apply
+  #   anchorlink                152.7 s
+  #   satellite (nrf5340dk)      59.9 s
+  #                             -------
+  #                             ~9.3 min on this bench
+  #
+  # The client image's objects alone occupy 50 MB of ccache.
   #
   # A 4-vCPU Actions runner is the slower machine, and on top of the builds it
   # pays the toolchain container pull and the workspace cache restore, neither of
-  # which the bench figures include. Budget roughly fifteen to twenty-five
+  # which the bench figures include. Budget roughly twenty-five to thirty-five
   # minutes warm against the two minutes `gates` takes, and a cold workspace --
   # an evicted cache entry, or a patch edit that changes the key -- is the
   # ~6.5 GB upstream bootstrap, which is what the timeout below is sized for.
   # That ratio is the entire reason for the `scope` job above: this runs when a
   # change can reach an image, not on every push.
+  #
+  # IF THIS EVER HAS TO GET CHEAPER, drop images from the bottom of that list
+  # upward by what each one is the ONLY cover for: the satellite is the only
+  # build of apps/satellite, the shipping image is the only build of what users
+  # install, and anchorlink is the only build of three application sources. The
+  # client image is last to go -- it is the tightest fit in the tree.
   #
   # WHY A SECOND IMAGE, and why THAT one. The client image compiles six of the
   # thirteen C files under apps/dwm3001cdk-lock/src -- main.c, ml_feed.c,
@@ -498,6 +512,33 @@ jobs:
           export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
           make build CLIENT=1 PRISTINE=1
 
+      - name: build the SHIPPING image (decawave_dwm3001cdk, SMP + RELEASE + LTO)
+        # THE CONFIGURATION THAT ACTUALLY GOES ON A BOARD, and the one with the
+        # least CI history: `make release` wraps exactly this, and that target
+        # cannot run here because it refuses any key but the offline release one
+        # (mk/cdk.mk). So without this step the image every user installs would
+        # be the least-built configuration in the tree, and a Kconfig or
+        # flash-fit break in it would surface while cutting a release -- the
+        # worst possible moment to find one.
+        #
+        # THE CLIENT STEP DOES NOT COVER IT. RELEASE and SMP move the Kconfig
+        # tree, the RAM budget and the partition fit, in opposite directions on
+        # each region: 92.95% FLASH and 90.26% RAM here against 98.72% and
+        # 95.94% there. Neither image's fit implies the other's.
+        #
+        # It adds no application source the client image has not already
+        # compiled -- its value is the configuration, not new files. MEASURED at
+        # 252.6 s, which is MORE than the client image costs from a cold ccache,
+        # because RELEASE and SMP change enough of the Kconfig tree that most of
+        # the warm entries do not apply.
+        #
+        # Its own build directory: `-p auto` does not re-run CMake when a -D flag
+        # changes, so one directory holding both configurations in turn would
+        # silently keep the first.
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make build PRISTINE=1 SMP=1 RELEASE=1 CDK_BUILD=build/cdk-shipping
+
       - name: build the anchorlink image (decawave_dwm3001cdk)
         # The three application sources the client image cannot reach:
         # witness_link.c, side_feed.c and door_alarm.c compile only here. See the
@@ -508,14 +549,38 @@ jobs:
           export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
           make anchorlink PRISTINE=1
 
-      - name: both images exist
+      - name: build the satellite (nrf5340dk)
+        # THE OTHER HALF OF THE SEALED LINK. anchorlink above is the LOCK side --
+        # it receives a sealed distance report; apps/satellite is the board that
+        # SENDS one, and nothing else in this workflow compiles a line of it.
+        # Its own app, its own board, and until this step no check anywhere built
+        # it.
+        #
+        # LAST, and cheapest: MEASURED at 59.9 s, against 60 KB of headroom to
+        # spare (FLASH 13.19%, RAM 15.77% of an nRF5340). It is a different board
+        # from the three above so it shares little of their ccache, which is why
+        # its position in the list does not buy anything -- it is here because it
+        # is the smallest thing that can fail.
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make sat-build PRISTINE=1
+
+      - name: all four images exist
         # Each build fails on a flash overflow by itself, and on a link error
         # before that; this asserts the artifacts are actually on disk, so a
         # recipe that silently stopped producing one cannot pass as green.
+        #
+        # The satellite path carries SAT_BOARD_TAG, so it tracks SAT_BOARD in
+        # mk/satellite.mk (nrf5340dk/nrf5340/cpuapp, slashes to underscores).
+        # Change that default and this line changes with it.
         run: |
           test -f build/cdk-matter/merged.hex
+          test -f build/cdk-shipping/merged.hex
           test -f build/cdk-anchorlink/merged.hex
-          ls -l build/cdk-matter/merged.hex build/cdk-anchorlink/merged.hex
+          test -f build/satellite-nrf5340dk_nrf5340_cpuapp/merged.hex
+          ls -l build/cdk-matter/merged.hex build/cdk-shipping/merged.hex \
+                build/cdk-anchorlink/merged.hex \
+                build/satellite-nrf5340dk_nrf5340_cpuapp/merged.hex
           { command -v ccache >/dev/null && ccache -s | head -n 6; } || echo "no ccache on PATH"
 
       - name: save the compiler cache

@@ -1,12 +1,14 @@
 # Hardware validation
 
 CI gates the host-side logic (`make ci`: the KAT suite, sanitizers, CBMC, the
-tooling gates) and compile-gates two DWM3001CDK images in the NCS toolchain
-container: the `CLIENT=1` build, the tightest configuration in the tree, and
-`anchorlink`, which reaches the witness transport, the side gate and the door
-alarms. Between them that is nine of the thirteen application sources. It does
-not build the remaining configurations, the size baseline or anything ESP32, so
-`make regress` still compile-gates those on a bench. What none of that can
+tooling gates) and compile-gates four images in the NCS toolchain container: the
+`CLIENT=1` build (the tightest configuration in the tree), the shipping image
+(`SMP=1 RELEASE=1`, what `make release` wraps), `anchorlink` (the witness
+transport, the side gate and the door alarms), and the nRF5340 satellite.
+Between them that is nine of the thirteen DWM3001CDK application sources, plus
+the satellite app. It does not build the nRF5340 DK lock, the remaining CDK
+configurations, the size baseline or anything ESP32, so `make regress` still
+compile-gates those on a bench. What none of that can
 exercise is the product itself, which runs against a live iPhone.
 
 This checklist is the manual gate: run every applicable item before cutting a
