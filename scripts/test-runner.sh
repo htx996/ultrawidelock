@@ -16,6 +16,8 @@
 #                                               emscripten SDK is present
 #   ui         scripts/lib/ui.sh --self-test    the progress display keeps the
 #                                               output it wraps byte for byte
+#   relnotes   scripts/release-notes.sh --self-test  the release body renders,
+#                                               and picks the right changelog
 #
 # Opt-in, not in the default set:
 #
@@ -63,6 +65,7 @@ suite_cmd() {
 	twin) echo "bash tests/tooling/twin_suite.sh" ;;
 	ui) echo "bash scripts/lib/ui.sh --self-test" ;;
 	bindhelper) echo "python3 scripts/bind-helper.py --self-test" ;;
+	relnotes) echo "bash scripts/release-notes.sh --self-test" ;;
 	freertos) echo "bash tests/ports/freertos-nrf52833/run.sh" ;;
 	patchdrift) echo "bash tests/tooling/patch_drift_check.sh" ;;
 	esac
@@ -83,6 +86,7 @@ suite_label() {
 	twin) echo "wasm twin" ;;
 	ui) echo "progress display" ;;
 	bindhelper) echo "binding helper" ;;
+	relnotes) echo "release notes" ;;
 	freertos) echo "FreeRTOS port" ;;
 	patchdrift) echo "integration patches" ;;
 	esac
@@ -260,7 +264,7 @@ run_suite() { # <suite> <outfile> <metafile>
 	fi
 }
 
-SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt twin ui bindhelper}"
+SEL="${SUITES:-firmware shared sdk drift seam scope purity lint sizegate zopt twin ui bindhelper relnotes}"
 declare -a NAMES OUTS METAS PIDS
 n=0
 for s in $SEL; do
