@@ -441,9 +441,15 @@ jobs:
           path: workspace
           key: ${{ steps.ws.outputs.cache-primary-key }}
 
-      # Keyed per run so every run writes a fresh entry, restored from the most
-      # recent one by prefix. PRISTINE=1 throws the build directory away each
-      # time, so this is the only thing that carries work forward between runs.
+      # Restored by prefix from the newest entry main left behind. The primary
+      # key carries the run id and so essentially never hits -- that is the
+      # intent, and it is the standard idiom: a guaranteed miss that falls
+      # through to restore-keys, which pick the most recent prefix match.
+      # PRISTINE=1 throws the build directory away each time, so this is the
+      # only thing that carries work forward between runs.
+      #
+      # EVERY RUN RESTORES, ONLY main SAVES -- see the save step at the end of
+      # this job for why the write side is not symmetric.
       - name: restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -590,9 +596,24 @@ jobs:
           { command -v ccache >/dev/null && ccache -s | head -n 6; } || echo "no ccache on PATH"
 
       - name: save the compiler cache
+        # ONLY ON main, and this asymmetry is the point.
+        #
+        # A repository gets 10 GB of Actions cache, LRU-evicted. The bootstrapped
+        # west workspace is ~6.5 GB of that on its own, and it is the entry that
+        # actually hurts to lose: losing the ccache costs minutes, losing the
+        # workspace costs a multi-GB upstream fetch and a full bootstrap. If
+        # every pull request run wrote its own ~300 MB ccache entry, a busy week
+        # would spend the whole remaining budget on near-identical copies, all of
+        # them competing with the one entry worth protecting.
+        #
+        # Pull requests therefore read the cache and do not write it. They still
+        # get a warm build -- restore-keys hands them whatever main last saved,
+        # which is the same objects they would have written -- so this costs a
+        # pull request nothing measurable and stops the churn entirely.
+        #
         # `always()`, so a build that failed still leaves its objects behind and
         # the rerun after the fix is a warm one.
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
