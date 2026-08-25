@@ -107,4 +107,23 @@ ultrawidelock_fusion_eval(const struct ultrawidelock_fusion_cfg *cfg, int32_t d_
  */
 bool ultrawidelock_fusion_may_predict(const struct ultrawidelock_fusion_verdict *v);
 
+/**
+ * @brief Whether a verdict may release a PASSIVE walk-up unlock.
+ *
+ * The other side of the same coin, for the other kind of lock. A walk-up lock
+ * opens for someone ARRIVING, so the verdict that must stop it is INSIDE: a
+ * phone already indoors, moving past the door, is not an arrival and opening
+ * for it is the failure this second anchor exists to prevent.
+ *
+ * True for OUTSIDE and, deliberately, for UNKNOWN -- for the same reason
+ * ultrawidelock_fusion_may_predict() permits UNKNOWN. A quiet satellite, a
+ * phone in the doorway or a fresh boot must degrade to single-anchor
+ * behaviour, not to a door that will not open.
+ *
+ * A failed triangle withholds it, exactly as it withholds prediction. That is
+ * the one verdict carrying positive evidence that the pair describes no phone
+ * position at all, and no side may be read out of it in either direction.
+ */
+bool ultrawidelock_fusion_may_passive_unlock(const struct ultrawidelock_fusion_verdict *v);
+
 #endif /* ULTRAWIDELOCK_FUSION_H */

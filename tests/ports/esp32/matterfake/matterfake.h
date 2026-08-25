@@ -869,7 +869,22 @@ extern int mfk_last_have;
 extern int32_t mfk_last_cm;
 extern int mfk_trusted_have;
 extern int32_t mfk_trusted_cm;
+/* The ranging block a trusted range came from. The two-anchor gate pairs on it,
+ * so a test that drives the gate must be able to say which round it means. */
+extern uint32_t mfk_trusted_block;
 extern void (*mfk_range_listener)(void);
+
+/* The two-anchor gate (sat_fusion.h), stubbed. mfk_may_predict is the knob:
+ * TRUE is the real gate's fail-open answer, so tests that do not care about
+ * the second anchor see today's single-anchor behaviour unchanged. */
+extern int mfk_may_predict;
+extern unsigned mfk_sat_init_calls;
+extern unsigned mfk_sat_observe_calls;
+extern unsigned mfk_sat_predict_asks;
+/* Called after each gate answer, to change the NEXT one. */
+extern void (*mfk_predict_hook)(void);
+extern int32_t mfk_sat_last_mm;
+extern uint32_t mfk_sat_last_block;
 
 /* reset every scriptable knob + counter to boot defaults (the ESP32Config
  * store and the production singletons are NOT touched). */

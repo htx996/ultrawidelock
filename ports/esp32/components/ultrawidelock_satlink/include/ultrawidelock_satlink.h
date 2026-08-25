@@ -77,12 +77,25 @@ void ultrawidelock_satlink_set_join_cb(ultrawidelock_satlink_join_cb cb);
  * and it says so on the console — an anchor that ranges perfectly and reports
  * nothing looks exactly like one that never booted.
  *
+ * On a satellite this also starts the Wi-Fi channel hunt: ESP-NOW only
+ * crosses between boards sharing a channel, the lock sits wherever its AP
+ * put it, and the satellite sweeps until the lock answers a probe (see the
+ * CHANNEL DISCOVERY comment in the .c). The found channel persists in NVS.
+ *
  * @param role this node's mounting side, 1..3
- *        (enum ultrawidelock_witness_role). A MOUNTING FACT: getting it
- *        backwards fails no test and silently inverts the side verdict.
+ *        (enum ultrawidelock_witness_role) -- a MOUNTING FACT: getting it
+ *        backwards fails no test and silently inverts the side verdict -- or
+ *        ULTRAWIDELOCK_LINK_HANDOFF_ROLE on the lock, which answers channel
+ *        probes and never retunes the radio it shares with Matter.
  * @return 0 on success, or an esp_err_t.
  */
 int ultrawidelock_satlink_init(uint8_t role);
+
+/**
+ * Where the channel hunt stands: the channel the lock was found on, 0 while
+ * still hunting, -1 where no hunt runs (the lock, or a borrowed radio).
+ */
+int ultrawidelock_satlink_channel(void);
 
 /** Store the 16-byte link key in NVS and install it. @return 0 or -1. */
 int ultrawidelock_satlink_set_key(const uint8_t *key, size_t len);

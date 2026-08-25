@@ -54,7 +54,11 @@ static const uint8_t RCFG[ULTRAWIDELOCK_JOIN_RCFG_LEN] = {
 void test_ultrawidelock_link(void)
 {
 	struct ultrawidelock_link sat;
+	struct ultrawidelock_link sat2;
 	struct ultrawidelock_link lock;
+	/* A receiver that never arms an epoch, for the rules that must keep
+	 * holding without one. */
+	struct ultrawidelock_link unarmed;
 	struct ultrawidelock_anchor_msg am;
 	struct ultrawidelock_join_msg jm;
 	uint8_t frame[ULTRAWIDELOCK_LINK_MAX_FRAME];
@@ -118,6 +122,32 @@ void test_ultrawidelock_link(void)
 	ultrawidelock_link_init(&lock, 1u, 0x11223344u);
 	T_EQ("lock keyed", ultrawidelock_link_set_key(&lock, KEY, 16u), 0);
 
+	t_group("challenge: issued locally, echoed by the reporter");
+	/*
+	 * Two nonces, never one. What we ECHO is learned from an unauthenticated
+	 * frame; what we REQUIRE is set only by the local caller that broadcast
+	 * it. One field for both would let anyone able to send a challenge --
+	 * on ESP-NOW, anyone at all -- choose the receiver's freshness epoch.
+	 */
+	psafake_reset();
+	T_EQ("built", ultrawidelock_link_build_challenge(0x0102030405060708ULL, chal,
+							sizeof(chal)),
+	     ULTRAWIDELOCK_LINK_CHALLENGE_LEN);
+	t_vec("challenge bytes", chal, sizeof(chal), "020102030405060708");
+	T_EQ("too small a buffer -> 0", ultrawidelock_link_build_challenge(1u, chal, 8u), 0);
+	ultrawidelock_link_expect_echo(&lock, 0x0102030405060708ULL);
+	T_EQ("satellite takes it",
+	     ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL),
+	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
+	T_EQ("the reporter's outgoing echo is set", (long)(sat.tx_echo_nonce & 0xFFFFFFFFu),
+	     (long)0x05060708u);
+	T_EQ("the receiver's expectation is not", (long)sat.expected_echo_nonce, (long)0);
+	T_EQ("the receiver expects what it issued",
+	     (long)(lock.expected_echo_nonce & 0xFFFFFFFFu), (long)0x05060708u);
+	T_EQ("hearing a challenge did not arm the receiver",
+	     (long)(lock.tx_echo_nonce & 0xFFFFFFFFu), (long)0);
+	T_EQ("no key was consulted for it", psafake.import_calls, 0);
+
 	t_group("report: composed, carried, believed");
 	psafake_reset();
 	n = ultrawidelock_link_build_report(&sat, 1234, 42u, frame, sizeof(frame));
@@ -168,21 +198,91 @@ void test_ultrawidelock_link(void)
 	     ultrawidelock_link_consume(&lock, frame2, n2, &am, NULL),
 	     ULTRAWIDELOCK_LINK_RX_REPLAYED);
 
-	t_group("replay: a new boot id resets the window, as it must");
+	t_group("replay: unarmed, a new boot id resets the window, as it must");
 	/*
 	 * A satellite that loses power restarts its counter at zero and is
-	 * telling the truth. Without this the lock's only options would be
-	 * accepting replays forever or locking out a peer that was unplugged.
+	 * telling the truth. A receiver that has issued no challenge has nothing
+	 * better to go on, so it must accept that: the alternative is accepting
+	 * replays forever or locking out a peer that was unplugged.
 	 */
 	psafake_reset();
-	ultrawidelock_link_init(&sat, 2u, 0x99887766u);
+	ultrawidelock_link_init(&unarmed, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, 0x44556677u);
+	(void)ultrawidelock_link_set_key(&unarmed, KEY, 16u);
+	ultrawidelock_link_init(&sat, 2u, 0x0BADB001u);
+	(void)ultrawidelock_link_set_key(&sat, KEY, 16u);
+	n = ultrawidelock_link_build_report(&sat, 1010, 49u, frame, sizeof(frame));
+	T_EQ("the first boot lands",
+	     ultrawidelock_link_consume(&unarmed, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+	ultrawidelock_link_init(&sat, 2u, 0x99887766u); /* the power cut */
 	(void)ultrawidelock_link_set_key(&sat, KEY, 16u);
 	n = ultrawidelock_link_build_report(&sat, 1111, 50u, frame, sizeof(frame));
 	memset(&am, 0, sizeof(am));
 	T_EQ("counter 1 under a new boot id is fresh",
-	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ultrawidelock_link_consume(&unarmed, frame, n, &am, NULL),
 	     ULTRAWIDELOCK_LINK_RX_REPORT);
 	T_EQ("distance survived", am.peer_mm, 1111);
+
+	t_group("replay: armed, a boot switch waits for the next challenge");
+	/*
+	 * That same reset is how a recording attacks: accept boot A, then boot
+	 * B, then a captured frame from A, and the window rolls backwards every
+	 * time the boot id changes. An epoch admits the change ONCE per
+	 * challenge, so a satellite that really rebooted is believed on the next
+	 * beacon and a replayed old boot is never believed while this one
+	 * stands.
+	 */
+	psafake_reset();
+	ultrawidelock_link_init(&lock, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, 0x11223344u);
+	(void)ultrawidelock_link_set_key(&lock, KEY, 16u);
+	T_EQ("epoch 1 built",
+	     ultrawidelock_link_build_challenge(0x1112131415161718ULL, chal, sizeof(chal)),
+	     ULTRAWIDELOCK_LINK_CHALLENGE_LEN);
+	ultrawidelock_link_expect_echo(&lock, 0x1112131415161718ULL);
+
+	ultrawidelock_link_init(&sat, 2u, 0x0B007A11u);
+	(void)ultrawidelock_link_set_key(&sat, KEY, 16u);
+	T_EQ("boot A takes epoch 1",
+	     ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL),
+	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
+	n = ultrawidelock_link_build_report(&sat, 1010, 49u, frame, sizeof(frame));
+	T_EQ("boot A lands in epoch 1",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+
+	ultrawidelock_link_init(&sat, 2u, 0x99887766u); /* another boot, or a lie */
+	(void)ultrawidelock_link_set_key(&sat, KEY, 16u);
+	T_EQ("boot B takes the SAME epoch",
+	     ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL),
+	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
+	n2 = ultrawidelock_link_build_report(&sat, 1111, 50u, frame2, sizeof(frame2));
+	memset(&am, 0, sizeof(am));
+	T_EQ("a boot switch inside one epoch is held",
+	     ultrawidelock_link_consume(&lock, frame2, n2, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPLAYED);
+	T_EQ("and its distance was cleared", am.peer_mm, 0);
+	T_EQ("while the diagnostic role survives", am.role, 2);
+
+	T_EQ("epoch 2 built",
+	     ultrawidelock_link_build_challenge(0x2122232425262728ULL, chal, sizeof(chal)),
+	     ULTRAWIDELOCK_LINK_CHALLENGE_LEN);
+	ultrawidelock_link_expect_echo(&lock, 0x2122232425262728ULL);
+	T_EQ("boot B takes epoch 2",
+	     ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL),
+	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
+	n2 = ultrawidelock_link_build_report(&sat, 1111, 50u, frame2, sizeof(frame2));
+	memset(&am, 0, sizeof(am));
+	T_EQ("and lands under it",
+	     ultrawidelock_link_consume(&lock, frame2, n2, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+	T_EQ("distance survived", am.peer_mm, 1111);
+	T_EQ("the new echo travelled with it", (long)(am.echo_nonce & 0xFFFFFFFFu),
+	     (long)0x25262728u);
+	memset(&am, 0, sizeof(am));
+	T_EQ("epoch 1's frame cannot roll the window back",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPLAYED);
+	T_EQ("nor is its distance handed back", am.peer_mm, 0);
 
 	t_group("replay: alternating anchor roles cannot reset each other's window");
 	{
@@ -219,20 +319,8 @@ void test_ultrawidelock_link(void)
 		T_EQ("rejected distance remains cleared", am.peer_mm, 0);
 	}
 
-	t_group("challenge: unsealed, and it can only cost a report its standing");
-	psafake_reset();
-	T_EQ("built", ultrawidelock_link_build_challenge(0x0102030405060708ULL, chal,
-							sizeof(chal)),
-	     ULTRAWIDELOCK_LINK_CHALLENGE_LEN);
-	t_vec("challenge bytes", chal, sizeof(chal), "020102030405060708");
-	T_EQ("too small a buffer -> 0", ultrawidelock_link_build_challenge(1u, chal, 8u), 0);
-	T_EQ("satellite takes it",
-	     ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL),
-	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
-	T_EQ("echo nonce updated", (long)(sat.echo_nonce & 0xFFFFFFFFu), (long)0x05060708u);
-	T_EQ("no key was consulted for it", psafake.import_calls, 0);
-
 	t_group("challenge: the 12-byte picked-label hint is accepted and ignored");
+	psafake_reset();
 	T_EQ("hinted challenge built",
 	     ultrawidelock_link_build_challenge_hint(0x0102030405060708ULL, 0x00A1B2C3u,
 						     chal_hint, sizeof(chal_hint)),
@@ -243,19 +331,49 @@ void test_ultrawidelock_link(void)
 	     ultrawidelock_link_build_challenge_hint(1u, 2u, chal_hint,
 						     sizeof(chal_hint) - 1u),
 	     0);
-	sat.echo_nonce = 0u;
+	sat.tx_echo_nonce = 0u;
 	T_EQ("satellite takes the hinted form",
 	     ultrawidelock_link_consume(&sat, chal_hint, sizeof(chal_hint), NULL, NULL),
 	     ULTRAWIDELOCK_LINK_RX_CHALLENGE);
-	T_EQ("trailer did not alter the nonce", (long)(sat.echo_nonce & 0xFFFFFFFFu),
+	T_EQ("trailer did not alter the nonce", (long)(sat.tx_echo_nonce & 0xFFFFFFFFu),
 	     (long)0x05060708u);
+	T_EQ("no key was consulted for it", psafake.import_calls, 0);
 
 	t_group("challenge: the echo travels in the next report");
 	psafake_reset();
+	/* The receiver arms the same challenge the hinted form carried, which is
+	 * what the lock does: one nonce, broadcast in whichever form, armed from
+	 * the single place that rolls it. */
+	ultrawidelock_link_expect_echo(&lock, 0x0102030405060708ULL);
 	n = ultrawidelock_link_build_report(&sat, 1200, 51u, frame, sizeof(frame));
 	memset(&am, 0, sizeof(am));
-	(void)ultrawidelock_link_consume(&lock, frame, n, &am, NULL);
+	T_EQ("believed under the armed challenge",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
 	T_EQ("echo nonce carried", (long)(am.echo_nonce & 0xFFFFFFFFu), (long)0x05060708u);
+
+	t_group("challenge: an armed receiver refuses a report echoing another one");
+	/*
+	 * The rule the whole epoch rests on. A perfectly sealed report with a
+	 * perfectly advancing counter is still a recording if it answers a
+	 * challenge this end has retired.
+	 */
+	psafake_reset();
+	ultrawidelock_link_expect_echo(&lock, 0x3132333435363738ULL);
+	n = ultrawidelock_link_build_report(&sat, 1250, 52u, frame, sizeof(frame));
+	memset(&am, 0, sizeof(am));
+	T_EQ("a stale echo is refused",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPLAYED);
+	T_EQ("with no distance handed back", am.peer_mm, 0);
+	(void)ultrawidelock_link_build_challenge(0x3132333435363738ULL, chal, sizeof(chal));
+	(void)ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL);
+	n = ultrawidelock_link_build_report(&sat, 1250, 52u, frame, sizeof(frame));
+	memset(&am, 0, sizeof(am));
+	T_EQ("the same reporter is believed once it answers the current one",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+	T_EQ("distance survived", am.peer_mm, 1250);
 
 	t_group("handoff: the lock's direction, under the same key");
 	psafake_reset();
@@ -309,6 +427,50 @@ void test_ultrawidelock_link(void)
 	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
 	     ULTRAWIDELOCK_LINK_RX_REPORT);
 
+	t_group("replay: armed, the per-role windows stay independent");
+	/*
+	 * The per-role windows and the epoch are two rules over the same state,
+	 * and the epoch stamps ITS bookkeeping per role too. Two satellites
+	 * answering one challenge must therefore still not disturb each other:
+	 * role 2 landing may not re-open role 1's counter, nor may it re-open
+	 * role 1's boot-switch allowance.
+	 */
+	psafake_reset();
+	ultrawidelock_link_init(&lock, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, 0x11223344u);
+	(void)ultrawidelock_link_set_key(&lock, KEY, 16u);
+	ultrawidelock_link_init(&sat, 1u, 0x10101010u);
+	ultrawidelock_link_init(&sat2, 2u, 0x20202020u);
+	(void)ultrawidelock_link_set_key(&sat, KEY, 16u);
+	(void)ultrawidelock_link_set_key(&sat2, KEY, 16u);
+	(void)ultrawidelock_link_build_challenge(0x4142434445464748ULL, chal, sizeof(chal));
+	ultrawidelock_link_expect_echo(&lock, 0x4142434445464748ULL);
+	(void)ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL);
+	(void)ultrawidelock_link_consume(&sat2, chal, sizeof(chal), NULL, NULL);
+	n = ultrawidelock_link_build_report(&sat, 900, 70u, frame, sizeof(frame));
+	n2 = ultrawidelock_link_build_report(&sat2, 800, 70u, frame2, sizeof(frame2));
+	T_EQ("role 1 accepted", ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+	T_EQ("role 2 accepted without resetting role 1",
+	     ultrawidelock_link_consume(&lock, frame2, n2, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+	T_EQ("role 1 replay still rejected after role 2",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPLAYED);
+	/* Role 1 reboots inside this epoch; role 2's acceptance must not have
+	 * spent the allowance on role 1's behalf. */
+	ultrawidelock_link_init(&sat, 1u, 0x1F1F1F1Fu);
+	(void)ultrawidelock_link_set_key(&sat, KEY, 16u);
+	(void)ultrawidelock_link_consume(&sat, chal, sizeof(chal), NULL, NULL);
+	n = ultrawidelock_link_build_report(&sat, 950, 71u, frame, sizeof(frame));
+	memset(&am, 0, sizeof(am));
+	T_EQ("role 1's boot switch is held in this epoch",
+	     ultrawidelock_link_consume(&lock, frame, n, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPLAYED);
+	n2 = ultrawidelock_link_build_report(&sat2, 810, 71u, frame2, sizeof(frame2));
+	T_EQ("and role 2 carries on regardless",
+	     ultrawidelock_link_consume(&lock, frame2, n2, &am, NULL),
+	     ULTRAWIDELOCK_LINK_RX_REPORT);
+
 	t_group("demux: lengths nothing sends are discarded without a key");
 	psafake_reset();
 	T_EQ("empty", ultrawidelock_link_consume(&lock, frame, 0, &am, &jm),
@@ -338,7 +500,11 @@ void test_ultrawidelock_link(void)
 	T_EQ("no key was consulted for any of them", psafake.import_calls, 0);
 
 	t_group("seal failure is a rejection, never a pass");
+	/* On a receiver with no epoch armed, so what is under test is the seal
+	 * and the counter window alone. */
 	psafake_reset();
+	ultrawidelock_link_init(&lock, ULTRAWIDELOCK_LINK_HANDOFF_ROLE, 0x11223344u);
+	(void)ultrawidelock_link_set_key(&lock, KEY, 16u);
 	n = ultrawidelock_link_build_report(&sat, 1400, 61u, frame, sizeof(frame));
 	psafake_reset();
 	psafake.aead_dec_ret = -1; /* stands in for a tag the fake cannot check */

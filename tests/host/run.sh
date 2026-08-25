@@ -22,7 +22,11 @@ mkdir -p "$OUT"
 # somehow reaches its run line without compiling has nothing stale to succeed
 # against. A false PASS over a compile error is the one failure this suite must
 # never have, so it is prevented twice.
-rm -f "$OUT"/host_test_*
+# -r, not just -f: a SAN=1 run compiles with -g, and on macOS that leaves a
+# host_test_*.dSYM DIRECTORY beside each binary. `rm -f` refuses a directory and
+# exits non-zero, which under `set -e` turned "ran the sanitizer suite first"
+# into a failing `make check` with no FAIL row to explain it.
+rm -rf "$OUT"/host_test_*
 # SAN=1: same suite rebuilt under ASan + UBSan (`make test-san`).
 san_flags=
 if [ -n "${SAN:-}" ]; then

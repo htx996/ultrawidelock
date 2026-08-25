@@ -89,21 +89,19 @@ void ultrawidelock_satellite_report(struct ultrawidelock_satellite *s, int32_t p
 	s->have = true;
 }
 
-static bool fresh(const struct ultrawidelock_satellite *s, int64_t now_ms)
+/**
+ * Has a report arrived, and is it recent enough to still describe the room?
+ *
+ * The baseline is deliberately NOT consulted. This is what calibration needs:
+ * the baseline is calibration's OUTPUT, so a gate that hid the readings until
+ * one existed would make the number unmeasurable from the readings that
+ * determine it. Every judgement about geometry goes through fresh() below.
+ */
+static bool report_fresh(const struct ultrawidelock_satellite *s, int64_t now_ms)
 {
 	int64_t age;
 
 	if (s == NULL || !s->have) {
-		return false;
-	}
-	/*
-	 * An unconfigured baseline is absence, not evidence. Without this check
-	 * it reads as evidence: ultrawidelock_fusion_eval() rejects a zero baseline, every
-	 * pair then fails the triangle test, and a board that was merely
-	 * misconfigured silently stops predicting for ever -- with a verdict that
-	 * looks exactly like a detected attack. Fail back to "no satellite".
-	 */
-	if (s->cfg.baseline_mm <= 0) {
 		return false;
 	}
 	age = now_ms - s->last_ms;
@@ -117,6 +115,49 @@ static bool fresh(const struct ultrawidelock_satellite *s, int64_t now_ms)
 		return false;
 	}
 	return age <= (int64_t)s->stale_ms;
+}
+
+static bool fresh(const struct ultrawidelock_satellite *s, int64_t now_ms)
+{
+	if (s == NULL) {
+		return false;
+	}
+	/*
+	 * An unconfigured baseline is absence, not evidence. Without this check
+	 * it reads as evidence: ultrawidelock_fusion_eval() rejects a zero baseline, every
+	 * pair then fails the triangle test, and a board that was merely
+	 * misconfigured silently stops predicting for ever -- with a verdict that
+	 * looks exactly like a detected attack. Fail back to "no satellite".
+	 */
+	if (s->cfg.baseline_mm <= 0) {
+		return false;
+	}
+	return report_fresh(s, now_ms);
+}
+
+bool ultrawidelock_satellite_pair(const struct ultrawidelock_satellite *s, int64_t now_ms,
+				  int32_t *self_mm, int32_t *peer_mm, uint32_t *block)
+{
+	const struct ultrawidelock_satellite_sample *mine;
+
+	if (s == NULL || self_mm == NULL || peer_mm == NULL || block == NULL) {
+		return false;
+	}
+	if (!report_fresh(s, now_ms)) {
+		return false;
+	}
+	/* The SAME exact-block rule the verdict uses. Calibration skips the
+	 * baseline, never the pairing: a difference taken across two rounds is
+	 * a difference of two phone positions, and averaging those would size
+	 * the geometry from a walk rather than from a stand. */
+	mine = ring_find(s, s->peer_block, now_ms);
+	if (mine == NULL) {
+		return false;
+	}
+	*self_mm = mine->mm;
+	*peer_mm = s->peer_mm;
+	*block = s->peer_block;
+	return true;
 }
 
 struct ultrawidelock_fusion_verdict
@@ -189,6 +230,24 @@ bool ultrawidelock_satellite_may_predict(const struct ultrawidelock_satellite *s
 	}
 	v = ultrawidelock_satellite_verdict(s, now_ms);
 	return ultrawidelock_fusion_may_predict(&v);
+}
+
+bool ultrawidelock_satellite_may_passive_unlock(const struct ultrawidelock_satellite *s,
+						int64_t now_ms)
+{
+	struct ultrawidelock_fusion_verdict v;
+
+	/* The same two degradations may_predict() makes, for the same reasons:
+	 * no satellite and no pair for the reported block are both absence, and
+	 * absence returns the door to single-anchor behaviour. */
+	if (!fresh(s, now_ms)) {
+		return true;
+	}
+	if (ring_find(s, s->peer_block, now_ms) == NULL) {
+		return true;
+	}
+	v = ultrawidelock_satellite_verdict(s, now_ms);
+	return ultrawidelock_fusion_may_passive_unlock(&v);
 }
 
 /* ── more than one satellite ─────────────────────────────────────────────── */
@@ -303,6 +362,23 @@ bool ultrawidelock_satellite_set_may_predict(const struct ultrawidelock_satellit
 	}
 	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
 		if (!ultrawidelock_satellite_may_predict(&set->peer[i], now_ms)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ultrawidelock_satellite_set_may_passive_unlock(const struct ultrawidelock_satellite_set *set,
+						    int64_t now_ms)
+{
+	if (set == NULL) {
+		return true;
+	}
+	/* Any role that withholds withholds for the whole set. A satellite that
+	 * can see the phone indoors is not outvoted by two that cannot see it at
+	 * all -- silence is absence, and absence never outweighs evidence. */
+	for (uint8_t i = 0u; i < ULTRAWIDELOCK_SATELLITE_MAX_ROLES; i++) {
+		if (!ultrawidelock_satellite_may_passive_unlock(&set->peer[i], now_ms)) {
 			return false;
 		}
 	}

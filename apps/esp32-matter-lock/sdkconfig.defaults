@@ -131,3 +131,14 @@ CONFIG_MBEDTLS_ECP_FIXED_POINT_OPTIM=y
 # silently ships the old thresholds.
 CONFIG_ULTRAWIDELOCK_RSSI_GATE_OPEN_DBM=-55
 CONFIG_ULTRAWIDELOCK_RSSI_GATE_CLOSE_DBM=-65
+
+# Two-anchor round: the lock advertises Number_Responder_Nodes=2, reserving
+# slot 3 for the satellite's Response_1 and moving the phone's Final out one
+# slot. The phone honours the layout but only ever reports responder 0 (proven
+# on the nRF bench, cred_round_config.h), so a lock with no satellite powered
+# grants exactly as the 1:1 round does -- the empty slot is ordinary RF
+# silence. Both knobs bake into the SaltedHash: the satellite image must be
+# built with the same count (examples/esp32/satellite pins 2), and =1 here
+# restores the single-anchor round. This node answers in slot 0.
+CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=2
+CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=0

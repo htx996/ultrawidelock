@@ -113,16 +113,24 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 # in the M3 attribute and in rcfg[12] and MUST agree, or every derived STS
 # diverges and nothing decodes.
 #
-# Added ONLY when set. The header already defaults to 1 and 0, so an app that
-# says nothing gets the definitions it got before this existed — the reader and
-# matter-lock images cannot move because of it.
+# The CMake variable wins because it is the explicit, per-project statement
+# (the satellite pins 2/1 this way). When it is absent, the component's
+# Kconfig supplies the value: its defaults are the header's own 1 and 0, so an
+# app whose sdkconfig says nothing still gets the definitions it got before
+# either mechanism existed — the reader image cannot move because of it.
 if(DEFINED ULTRAWIDELOCK_NUM_RESPONDERS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=${ULTRAWIDELOCK_NUM_RESPONDERS})
+elseif(DEFINED CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=${CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS})
 endif()
 if(DEFINED ULTRAWIDELOCK_RESPONDER_INDEX)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=${ULTRAWIDELOCK_RESPONDER_INDEX})
+elseif(DEFINED CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=${CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX})
 endif()
 
 # The CCC STS seam is modules/ultrawidelock_uwb/include/uwb_seam.h: every caller reaches

@@ -62,6 +62,8 @@ static void fresh_report_decides(void)
 	T_OK("fresh.ok", v.geometry_ok);
 	T_EQ("fresh.outside", v.side, ULTRAWIDELOCK_SIDE_OUTSIDE);
 	T_OK("fresh.withholds", !ultrawidelock_satellite_may_predict(&s, 10000));
+	T_OK("fresh.outside_allows_passive",
+	     ultrawidelock_satellite_may_passive_unlock(&s, 10000));
 
 	/* And the other way round, in a new round so neither half is reused. */
 	ultrawidelock_satellite_observe(&s, 800, RND_BLK + 1u, 10000);
@@ -69,6 +71,34 @@ static void fresh_report_decides(void)
 	T_EQ("fresh.inside", ultrawidelock_satellite_verdict(&s, 10000).side,
 	     ULTRAWIDELOCK_SIDE_INSIDE);
 	T_OK("fresh.inside_predicts", ultrawidelock_satellite_may_predict(&s, 10000));
+	T_OK("fresh.inside_withholds_passive",
+	     !ultrawidelock_satellite_may_passive_unlock(&s, 10000));
+}
+
+static void raw_pair_bootstraps_calibration(void)
+{
+	struct ultrawidelock_satellite s;
+	struct ultrawidelock_fusion_cfg unconfigured = k_cfg;
+	int32_t self_mm = -1;
+	int32_t peer_mm = -1;
+	uint32_t block = 0u;
+
+	t_group("sat: calibration can read a pair before a baseline exists");
+	unconfigured.baseline_mm = 0;
+	ultrawidelock_satellite_init(&s, &unconfigured, 1500u, true);
+	ultrawidelock_satellite_observe(&s, 1800, RND_BLK, 10000);
+	ultrawidelock_satellite_report(&s, 600, RND_BLK, 10000);
+
+	T_EQ("cal.unconfigured_peer_hidden", ultrawidelock_satellite_peer_mm(&s, 10000), -1);
+	T_OK("cal.raw_pair_available",
+	     ultrawidelock_satellite_pair(&s, 10000, &self_mm, &peer_mm, &block));
+	T_EQ("cal.self", self_mm, 1800);
+	T_EQ("cal.peer", peer_mm, 600);
+	T_EQ("cal.block", block, RND_BLK);
+	T_OK("cal.unconfigured_permits",
+	     ultrawidelock_satellite_may_passive_unlock(&s, 10000));
+	T_OK("cal.stale_pair_hidden",
+	     !ultrawidelock_satellite_pair(&s, 11501, &self_mm, &peer_mm, &block));
 }
 
 /*
@@ -182,6 +212,8 @@ static void impossible_geometry_withholds(void)
 	ultrawidelock_satellite_report(&s, 300, RND_BLK, 10000);
 	T_OK("bad.not_ok", !ultrawidelock_satellite_verdict(&s, 10000).geometry_ok);
 	T_OK("bad.withholds", !ultrawidelock_satellite_may_predict(&s, 10000));
+	T_OK("bad.withholds_passive",
+	     !ultrawidelock_satellite_may_passive_unlock(&s, 10000));
 }
 
 /*
@@ -363,6 +395,8 @@ static void one_role_is_todays_behaviour(void)
 	T_EQ("set.one.outside", ultrawidelock_satellite_set_verdict(&set, 10000).side,
 	     ULTRAWIDELOCK_SIDE_OUTSIDE);
 	T_OK("set.one.withholds", !ultrawidelock_satellite_set_may_predict(&set, 10000));
+	T_OK("set.one.outside_allows_passive",
+	     ultrawidelock_satellite_set_may_passive_unlock(&set, 10000));
 }
 
 /*
@@ -645,6 +679,7 @@ void test_ultrawidelock_satellite(void)
 {
 	absent_satellite_changes_nothing();
 	fresh_report_decides();
+	raw_pair_bootstraps_calibration();
 	mounting_flag_inverts_the_verdict();
 	stale_report_is_not_a_report();
 	our_own_sample_expires();

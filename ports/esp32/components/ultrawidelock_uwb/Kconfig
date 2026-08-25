@@ -1,0 +1,32 @@
+menu "UltraWideLock UWB round"
+
+    # The menuconfig face of the same two knobs a project can set as CMake
+    # variables before project.cmake (the CMake variable wins; see
+    # CMakeLists.txt). Names, ranges and defaults mirror
+    # modules/ultrawidelock_uwb/Kconfig so a value carries between the Zephyr
+    # lock and this port unchanged.
+
+    config ULTRAWIDELOCK_NUM_RESPONDERS
+        int "Responder count the CCC round is built for"
+        range 1 2
+        default 1
+        help
+            Number_Responder_Nodes advertised in M3 and baked into the
+            RangingConfiguration SaltedHash (cred_round_config.h). Every image
+            in the session -- lock AND satellite -- must be built with the same
+            value, or every derived STS/dURSK/dUDSK diverges and nothing
+            decodes. 1 = validated 1:1 baseline; 2 = dual-anchor round with a
+            second responder transmitting Response_1.
+
+    config ULTRAWIDELOCK_RESPONDER_INDEX
+        int "This node's responder index in the round"
+        range 0 1
+        default 0
+        help
+            Which Response slot this build transmits in: responder l replies
+            at POLL + 1 + l slots / STS index + 1 + l. 0 is the lock, 1 is the
+            satellite. Must be unique per node and less than
+            ULTRAWIDELOCK_NUM_RESPONDERS (compile-enforced in
+            cred_round_config.h).
+
+endmenu

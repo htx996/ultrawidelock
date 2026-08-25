@@ -765,6 +765,15 @@ static jmp_buf mfk_task_jmp;
 
 int mfk_trusted_have;
 int32_t mfk_trusted_cm;
+uint32_t mfk_trusted_block;
+/* Fail-open by default, matching the real gate: UNKNOWN permits. */
+int mfk_may_predict = 1;
+unsigned mfk_sat_init_calls;
+unsigned mfk_sat_observe_calls;
+unsigned mfk_sat_predict_asks;
+void (*mfk_predict_hook)(void);
+int32_t mfk_sat_last_mm;
+uint32_t mfk_sat_last_block;
 int64_t mfk_now_us;
 
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, uint32_t stack, void *arg,
@@ -1227,6 +1236,63 @@ void ultrawidelock_uwb_set_range_listener(void (*cb)(void))
 	mfk_range_listener = cb;
 }
 
+/*
+ * The block a trusted range was measured in. Serves the same value as
+ * ultrawidelock_uwb_trusted_range_cm plus a block number, because the
+ * two-anchor gate cannot pair a distance whose round it does not know.
+ */
+bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_out)
+{
+	if (!mfk_trusted_have) {
+		return false;
+	}
+	*cm_out = mfk_trusted_cm;
+	*block_out = mfk_trusted_block;
+	return true;
+}
+
+/* ---- the two-anchor gate (apps/esp32-matter-lock/main/sat_fusion.c) --------
+ *
+ * Stubbed rather than compiled: sat_fusion.c reaches for esp_console, NVS and
+ * the ESP-NOW carrier, none of which exist here, and this suite exists to prove
+ * app_main's BRANCH LOGIC. What matters to that is the one question app_main
+ * asks -- may a passive unlock proceed -- so that answer is a knob and the rest
+ * are recorders.
+ *
+ * mfk_may_predict defaults TRUE, which is the real gate's fail-open behaviour:
+ * with no satellite, no report or a stale one the verdict is UNKNOWN and
+ * UNKNOWN permits. A test that wants the veto sets it false.
+ */
+void sat_fusion_init(void)
+{
+	mfk_sat_init_calls++;
+}
+
+void sat_fusion_observe(int32_t self_mm, uint32_t self_block, int64_t now_ms)
+{
+	(void)now_ms;
+	mfk_sat_observe_calls++;
+	mfk_sat_last_mm = self_mm;
+	mfk_sat_last_block = self_block;
+}
+
+bool sat_fusion_may_passive_unlock(int64_t now_ms)
+{
+	bool answer;
+
+	(void)now_ms;
+	mfk_sat_predict_asks++;
+	answer = mfk_may_predict;
+	/* Fires AFTER the answer is taken, so a hook that flips mfk_may_predict
+	 * changes the NEXT ask and not this one -- which is what lets a test say
+	 * "refuse once, then relent". The reader task's wake loop blocks in
+	 * ulTaskNotifyTake, not vTaskDelay, so mfk_delay_hook cannot do this. */
+	if (mfk_predict_hook != NULL) {
+		mfk_predict_hook();
+	}
+	return answer;
+}
+
 volatile int ultrawidelock_uwb_diag_on = ULTRAWIDELOCK_UWB_DIAG_DEFAULT;
 
 } /* extern "C" */
@@ -1357,4 +1423,14 @@ void mfk_reset(void)
 	mfk_lat_reports = 0;
 	mfk_last_have = 0;
 	mfk_trusted_have = 0;
+	mfk_trusted_block = 0;
+	/* Back to permitting: a test that vetoed must not leave the next one
+	 * silently unable to unlock. */
+	mfk_may_predict = 1;
+	mfk_sat_init_calls = 0;
+	mfk_sat_observe_calls = 0;
+	mfk_sat_predict_asks = 0;
+	mfk_predict_hook = NULL;
+	mfk_sat_last_mm = 0;
+	mfk_sat_last_block = 0;
 }

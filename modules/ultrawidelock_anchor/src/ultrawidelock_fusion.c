@@ -73,3 +73,17 @@ bool ultrawidelock_fusion_may_predict(const struct ultrawidelock_fusion_verdict 
 	}
 	return v->side != ULTRAWIDELOCK_SIDE_OUTSIDE;
 }
+
+bool ultrawidelock_fusion_may_passive_unlock(const struct ultrawidelock_fusion_verdict *v)
+{
+	if (v == NULL) {
+		return true; /* no verdict at all is the same as no satellite */
+	}
+	/* A failed triangle withholds BOTH directions. It is the one case with
+	 * real evidence that the pair cannot be trusted at all, so neither gate
+	 * may read a side out of it. */
+	if (!v->geometry_ok) {
+		return false;
+	}
+	return v->side != ULTRAWIDELOCK_SIDE_INSIDE;
+}

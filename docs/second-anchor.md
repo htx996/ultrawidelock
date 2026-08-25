@@ -707,6 +707,178 @@ three roles and is host-tested for two and three reporting in one block. The
 lock does need a rebuild for the new baseline value, since it is Kconfig; it
 does not need a code change.
 
+### F. The same pair on ESP32 + DWM3000EVB
+
+The nRF pair above is the reference. The ESP32 pair is the same design on a
+different radio and a different carrier, and exists because the lock this
+project is actually shipping is `apps/esp32-matter-lock` on an ESP32-S3.
+
+Written and gated in software 2026-08-23; **no ESP32 board has run it.** Every
+number below that a bench would measure is left blank on purpose. What is
+recorded is what the code does and where it will fail first.
+
+#### What is the same
+
+The fusion, the WV3/WV4 codecs and the AES-CCM envelope are the *same source
+files* as the nRF pair -- `modules/ultrawidelock_anchor`, reached through role
+manifests. The ESP-NOW carrier and the Zephyr satellite also share
+`ultrawidelock_link.c`; the nRF lock keeps its multi-key witness manager but
+applies the same challenge and per-role replay rules. A sealed frame is
+byte-identical on both, so a mixed bench -- nRF lock, ESP32 satellite -- is
+possible in principle. Untested.
+
+#### What is different, and why
+
+| | nRF pair | ESP32 pair |
+|---|---|---|
+| Carrier | Thread UDP, mesh-local all-nodes | **ESP-NOW broadcast** (the S3 has no 802.15.4 radio) |
+| Storage | `zephyr/settings` | **NVS** (`satlink`/`lk`, `satlink`/`ch`, `satfuse`/`bl1..3`) |
+| Console | Zephyr shell, `sat` command tree | **flat verbs** (`esp_console` has no subcommand tree) |
+| Joining | `sat dataset <tlv-hex>`, then the mesh | **nothing** -- ESP-NOW has no network to join |
+| Channel | irrelevant | **must be discovered** (see below) |
+
+#### The verbs
+
+`sat dataset` is gone; there is no mesh. The rest map one to one, with
+underscores because there is no command tree to hang them from.
+
+Satellite (`examples/esp32/satellite`):
+
+    sat_join <ursk-hex64> <rcfg-hex34> <channel> <sync-code>
+    sat_key <hex32>        the link key; same 32 hex as the lock's sat_anckey
+    sat_stop               stop ranging, quiesce the radio
+    sat_link               key state, and where the channel hunt stands
+
+Lock (`apps/esp32-matter-lock`):
+
+    sat_anckey <hex32>     the link key; same 32 hex as the satellite's sat_key
+    sat_baseline [role] <mm>|cal  set or measure one role's anchor separation
+    sat_status             side, delta, geometry, may-unlock
+
+`sat_baseline 2 cal` is the nRF lock's `BL cal` under another name, targeted at
+the companion image's default role 2: hold the phone still about a metre past
+one anchor and roughly in line with both, and the median of 25 exact-block
+pairs becomes that role's baseline. Once a role has reported, the role argument
+may be omitted. Median, not mean, because the NLOS tail is one-sided -- a body
+in the path only ever adds distance. Calibration reads the raw pair before a
+baseline exists; the baseline is its output, not a prerequisite.
+
+#### ESP-NOW only crosses on one channel
+
+This is the one problem the Thread port does not have, and the one most likely
+to look like broken hardware.
+
+ESP-NOW frames reach a peer only on the same Wi-Fi channel. The lock is a
+station on whatever channel its AP chose; the satellite associates with
+nothing and would otherwise sit on channel 1 forever. If those differ, not one
+frame arrives, the lock hears no reports, the verdict stays UNKNOWN -- and
+UNKNOWN permits, so the door behaves exactly like a single-anchor lock. Silent.
+
+So the satellite hunts. It sends the link's existing unsealed 9-byte challenge
+as a probe on each channel in turn; the lock answers with a reply frame
+carrying the probe's nonce back. A match parks the hunt, the channel is
+persisted (`satlink`/`ch`), a heartbeat re-probes every 15 s, and three misses
+in a row start the hunt again -- an AP that reboots onto a new channel heals
+itself in about a minute.
+
+Two details that are load-bearing rather than decorative. The lock alone
+answers, or two satellites would find each other instead of the lock. And the
+answer is deliberately *not* a challenge frame -- if it were, two locks in
+radio range would answer each other's answers forever.
+
+After the channel reply, the lock also sends a carrier-marked freshness beacon
+with its own random nonce. The satellite restores the shared challenge marker
+before handing it to `ultrawidelock_link.c`; locks ignore that carrier marker,
+so two nearby locks cannot turn freshness beacons into a reply loop. A report
+must echo the current lock-owned nonce, and a satellite whose boot id changes
+must wait for the next beacon before its restarted counter is believed.
+Replaying an old channel probe therefore cannot roll the report receiver back
+to an old boot and counter window.
+
+Two nonces, never one, and the split is the point: what a board ECHOES is
+learned from an unauthenticated frame, and what a board REQUIRES is set only
+locally by whoever broadcast it. On ESP-NOW the lock hears every satellite's
+channel probe, so a single shared field would let anyone in radio range choose
+the lock's freshness epoch. Every probe is answered, but a probe rolls the
+epoch at most once per 2 s (`FRESHNESS_MIN_MS`): a roll retires the reports
+already in flight, so an unthrottled roll is a denial of service one broadcast
+wide. The nRF lock arms the same rule from `nonce_roll()`, the one place its
+challenge changes.
+
+`sat_link` on the satellite prints which of "hunting" and "found on channel N"
+is true. Check it before blaming the UWB.
+
+#### Both boards must agree on the round
+
+The responder count bakes into the RangingConfiguration SaltedHash. If the
+lock advertises a different `NUM_RESPONDERS` than the satellite was built
+with, every derived STS diverges, nothing decodes, and the satellite refuses
+the handoff outright on `rcfg[12]`. Nothing logs an error, because from each
+board's point of view the other simply never spoke.
+
+    apps/esp32-matter-lock/sdkconfig.defaults   NUM_RESPONDERS=2  INDEX=0
+    examples/esp32/satellite/CMakeLists.txt     NUM_RESPONDERS=2  INDEX=1
+
+Both consoles print their round shape at boot. If a bench goes silent, compare
+those two lines before anything else. `NUM_RESPONDERS=1` on the lock restores
+the single-anchor round.
+
+#### Bring-up order
+
+1. Flash both. `make esp-build APP=matter-lock TARGET=esp32s3`, and
+   `APP=satellite` for the other board.
+2. Same link key on both: `sat_key <hex32>` on the satellite, `sat_anckey
+   <hex32>` on the lock. Nothing else is provisioned by hand.
+3. Watch the satellite for `lock found on Wi-Fi channel N`. Until that line
+   appears, no report can arrive however well the UWB works.
+4. Set the role-2 geometry: `sat_baseline 2 <mm>` from a tape measure, or
+   `sat_baseline 2 cal` and hold the phone still. After the first report, the
+   shorthand without `2` targets the most recently reporting role.
+5. Confirm `ULTRAWIDELOCK_ANCHOR_SELF_INSIDE` matches how the boards are
+   actually mounted. It fails no test and silently inverts every verdict.
+6. Walk up. The lock should log `SAT joined from the sealed link` with nothing
+   pasted at either console, then `pair sid= blk= mm=` on both -- the two
+   captures join on the block.
+
+#### The offset walk, and why the collinear one proves nothing
+
+Unchanged from the nRF bench, and it is the whole protocol: **walk past the
+anchors offset from their axis, not along it.** On the axis the two distances
+differ by the baseline no matter which side the phone is on, so the delta sign
+carries no information and the gate can never unlock. A collinear walk that
+"fails" has measured nothing.
+
+`boundary_bias_mm` must stay several sigma below the baseline. At bias equal
+to baseline the INSIDE locus degenerates to the ray behind the anchor and
+noise decides every verdict.
+
+#### To be filled in from the bench
+
+| Measurement | nRF pair | ESP32 pair |
+|---|---|---|
+| Range accuracy at 2 m | 1% | _not measured_ |
+| Delta spread, phone still | | _not measured_ |
+| Blocks to a settled verdict | | _not measured_ |
+| Channel hunt time from cold | n/a | _not measured_ |
+| Chosen `boundary_bias_mm` | 0 (bisector) | _not chosen_ |
+| Offset walk: verdict vs ground truth | passes | _not run_ |
+
+#### What will probably break first
+
+Ranked, and none of it is provable from here.
+
+1. **DW3000 Response_1 slot timing.** The engine is shared and the ESP32 port
+   already ranges as responder 0; transmitting in the second slot on this
+   radio is the least exercised path in the pair.
+2. **Wi-Fi and ESP-NOW coexistence on the lock.** The lock rides Matter's
+   radio rather than configuring its own. If Matter's station activity starves
+   the ESP-NOW receive path, reports arrive late or not at all -- and late is
+   worse than never, because a report that misses its block pairs with
+   nothing and reads as a triangle rejection.
+3. **The seal against real AES-CCM.** The host tests run against a PSA fake.
+   The framing, nonce composition and replay handling are covered; that real
+   mbedTLS emits the same bytes is not, until two boards talk.
+
 ## The transport is not settled: BLE probably beats Thread
 
 Recorded 2026-08-21, deliberately, because the current answer is INHERITED

@@ -49,11 +49,14 @@ include("${REPO_ROOT}/cmake/ultrawidelock_roles.cmake")
 # prints, it simply has nobody to tell.
 target_sources_ifdef(CONFIG_OPENTHREAD app PRIVATE src/anchor_link.c)
 
-# The seal and link decisions are shared roles: ONE AES-CCM envelope and ONE
-# replay/counter implementation. Read them here rather than leave them to the
-# module because this image is ANCHOR_MSG without ANCHOR -- it encodes a report
-# and fuses nothing -- and the module's copies are gated on the ANCHOR tier this
-# node deliberately does not have.
+# The seal and the link decisions are both shared. seal.list is ONE AES-CCM
+# envelope; link.list is the one place that decides what to send, what an
+# arriving datagram is and whether to believe it -- ONE replay/counter
+# implementation -- so this board, the lock and the ESP-NOW carrier cannot
+# drift apart about the same bytes. Read here rather than left to the module,
+# because this image is ULTRAWIDELOCK_ANCHOR_MSG without ULTRAWIDELOCK_ANCHOR
+# -- it encodes a report and fuses nothing -- and the module's copies are gated
+# on the ANCHOR tier this node deliberately does not have.
 if(CONFIG_OPENTHREAD)
 	ultrawidelock_role_sources("${REPO_ROOT}/modules/ultrawidelock_anchor/roles/seal.list" SEAL_SRCS)
 	ultrawidelock_role_sources("${REPO_ROOT}/modules/ultrawidelock_anchor/roles/link.list" LINK_SRCS)

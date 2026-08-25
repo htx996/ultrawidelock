@@ -1090,6 +1090,41 @@ static void section_reader_task(void)
 	/* One bolt drive for the whole run: the unlock, and nothing after it. Run 2
 	 * covers the other half, that a session end in the same position does relock. */
 	okc("standing still drove the bolt once", mfk_dls_set_lock_calls == 1);
+
+	/* run 6: the two-anchor gate refuses the first offer, then relents.
+	 *
+	 * Both unlock paths clear the controller's `locked` BEFORE returning the
+	 * action, so a refusal that does not hand the unlock back leaves it
+	 * believing the bolt is open -- and its own guard is `if (ap->locked &&
+	 * ...)`, which can then never fire again. One veto taken before the
+	 * satellite had settled a verdict would end auto-unlock for the whole
+	 * walk-up, and the settling window is exactly when a veto is most likely.
+	 *
+	 * So this pins the RECOVERY, not the refusal: the gate says no once, then
+	 * yes, and the bolt must still open. Fails if ultrawidelock_approach_veto()
+	 * is dropped from the refusing path. */
+	mfk_notify_unlock_calls = 0;
+	mfk_dls_set_lock_calls = 0;
+	mfk_may_predict = 0;
+	mfk_sat_predict_asks = 0;
+	/* Relent the moment the gate has refused once. Hooked on the ASK, not on
+	 * vTaskDelay: the wake loop blocks in ulTaskNotifyTake, so a delay hook
+	 * would never fire here and the gate would simply refuse forever. */
+	mfk_predict_hook = []() { mfk_may_predict = 1; };
+	mfk_wake_len = 0;
+	mfk_wake_idx = 0;
+	wake_push(1, 1, 200, 10); /* arms the trajectory gate; see run 1 */
+	wake_push(1, 1, 50, 10);
+	wake_push(1, 1, 60, 10);  /* first offer -- the gate vetoes it */
+	wake_push(1, 1, 40, 10);  /* gate has relented: must be offered again */
+	wake_push(1, 1, 45, 10);
+	wake_push(1, 1, 42, 10);
+	mfk_task_run(task, nullptr);
+	okc("the two-anchor gate was consulted", mfk_sat_predict_asks >= 1);
+	okc("a veto that later relents still opens the bolt",
+	    mfk_dls_set_lock_calls >= 1 && mfk_dls_last_state == (int)DlLockState::kUnlocked);
+	mfk_predict_hook = nullptr;
+	mfk_may_predict = 1;
 }
 
 /* ---- I: UWB range listener ---------------------------------------------------------- */

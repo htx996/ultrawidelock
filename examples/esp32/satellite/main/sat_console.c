@@ -109,11 +109,20 @@ static int cmd_key(int argc, char **argv)
 
 static int cmd_link(int argc, char **argv)
 {
+	int ch = ultrawidelock_satlink_channel();
+
 	(void)argc;
 	(void)argv;
 	printf("SAT link: %s\n", ultrawidelock_satlink_ready()
 					 ? "up, keyed — reporting"
 					 : "not reporting (no key, or ESP-NOW down)");
+	/* The other silent failure: a keyed link on the wrong Wi-Fi channel
+	 * reports into the void. Say where the hunt stands. */
+	if (ch > 0) {
+		printf("SAT link: lock heard on Wi-Fi channel %d\n", ch);
+	} else if (ch == 0) {
+		printf("SAT link: hunting for the lock's Wi-Fi channel\n");
+	}
 	return 0;
 }
 

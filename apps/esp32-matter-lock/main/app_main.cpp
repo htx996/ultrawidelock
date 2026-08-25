@@ -48,6 +48,7 @@
 #include <ultrawidelock_lat.h>
 #include <esp_netif_sntp.h>
 #include <ultrawidelock/uwb.h>
+#include "sat_fusion.h" // the two-anchor inside/outside gate
 #ifdef CONFIG_ULTRAWIDELOCK_PRESENCE
 #include <presence_link.h>
 #endif
@@ -263,6 +264,12 @@ static void ultrawidelock_reader_task(void *arg)
 	presence_link_init(false);
 #endif
 
+	/* The two-anchor gate. Before the reader starts advertising, so a
+	 * satellite report cannot arrive with the fusion state uninitialised.
+	 * With no link key stored this brings up nothing and the door keeps its
+	 * single-anchor behaviour. */
+	sat_fusion_init();
+
 	int rc = ultrawidelock_reader_start_attached();
 	ESP_LOGI(TAG, "ultrawidelock_reader_start_attached() = %d (%s)", rc,
 		 rc == 0 ? "reader advertising on shared host" : "reader start FAILED");
@@ -346,6 +353,19 @@ static void ultrawidelock_reader_task(void *arg)
 			// range block gives the approach curve in the Aliro Lab report.
 			ultrawidelock_lab_evi("range", "cm", cm);
 			present = true;
+			{
+				// Our half of the two-anchor pair, keyed by the block it
+				// was measured in so a satellite report delayed by a block
+				// or two still finds its partner. Both distances MUST come
+				// from the same round: mispairing produces triangle
+				// rejections that read as a hardware fault.
+				int32_t bcm = 0;
+				uint32_t blk = 0;
+
+				if (ultrawidelock_uwb_trusted_range_block_cm(&bcm, &blk)) {
+					sat_fusion_observe(bcm * 10, blk, now);
+				}
+			}
 			act = ultrawidelock_approach_feed(&approach, now, cm);
 #ifdef CONFIG_ENABLE_HA_MQTT
 			/* The conditioned estimate the thresholds above act on, not
@@ -361,6 +381,40 @@ static void ultrawidelock_reader_task(void *arg)
 			}
 		} else {
 			act = ultrawidelock_approach_tick(&approach, now);
+		}
+
+		// THE TWO-ANCHOR GATE, on the passive paths only.
+		//
+		// PREDICT and THRESHOLD open a door nobody touched, on the strength of
+		// a distance; those are the two the geometry may veto. Everything else
+		// in this switch either closes the bolt or follows a credential the
+		// user physically presented, and neither is a passive unlock.
+		//
+		// Fails PERMISSIVE, which is the counter-intuitive part: with no
+		// satellite, no report, or a stale one, the verdict is UNKNOWN and
+		// UNKNOWN permits. Absence is not evidence that the phone is outside,
+		// and treating it as such would lock people out the first time an
+		// anchor lost power. What is withheld is the case where the geometry
+		// positively says INSIDE.
+		if ((act == ULTRAWIDELOCK_APPROACH_UNLOCK_PREDICT ||
+		     act == ULTRAWIDELOCK_APPROACH_UNLOCK_THRESHOLD) &&
+		    !sat_fusion_may_passive_unlock(now)) {
+			ESP_LOGI(TAG, "passive unlock withheld: second anchor says inside");
+			ultrawidelock_lab_evi("side.veto", "cm",
+					      ultrawidelock_approach_est_cm(&approach));
+			// Hand the unlock back. Both unlock paths clear `locked`
+			// BEFORE returning the action, so by the time we refuse it
+			// the controller already believes the bolt is open -- and
+			// its own guard is `if (ap->locked && ...)`. Dropping the
+			// action without this would mean one veto, taken before
+			// the satellite had a settled verdict, silently ends
+			// auto-unlock for the whole walk-up. veto() restores
+			// `locked` while deliberately keeping near_dwell and
+			// approach_armed, so the retry does not pay the dwell
+			// again. Same reason apps/dwm3001cdk-lock/src/main.c calls
+			// it on every refusing path.
+			ultrawidelock_approach_veto(&approach);
+			act = ULTRAWIDELOCK_APPROACH_HOLD;
 		}
 
 		switch (act) {
