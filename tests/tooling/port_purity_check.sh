@@ -870,7 +870,7 @@ check_storage_names() {
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
 		sites=$((sites + 1))
-		if ! storage_rows | grep -qF "|$f"; then
+		if ! storage_rows | grep -F "|$f" >/dev/null; then
 			printf '%s  %s stores a record under a name %s does not list%s\n' \
 				"$R" "$f" "$STORAGE_TABLE" "$Z" >&2
 			fails=$((fails + 1))
@@ -1098,14 +1098,14 @@ check_manifests() {
 	allow=$(printf '%s\n' "${NOT_MANIFESTED[@]}" | LC_ALL=C sort -u)
 	while IFS= read -r src; do
 		[ -n "$src" ] || continue
-		printf '%s\n' "$manifested" | grep -qxF "$src" && continue
-		printf '%s\n' "$allow" | grep -qxF "$src" && continue
+		printf '%s\n' "$manifested" | grep -xF "$src" >/dev/null && continue
+		printf '%s\n' "$allow" | grep -xF "$src" >/dev/null && continue
 		printf '%s  unmanifested shared source: %s%s\n' "$R" "$src" "$Z" >&2
 		fails=$((fails + 1))
 	done < <(repo_files "${MANIFEST_ROOTS[@]/%//*.c}")
 
 	for src in "${NOT_MANIFESTED[@]}"; do
-		if [ ! -f "$src" ] || printf '%s\n' "$manifested" | grep -qxF "$src"; then
+		if [ ! -f "$src" ] || printf '%s\n' "$manifested" | grep -xF "$src" >/dev/null; then
 			printf '%s  stale NOT_MANIFESTED entry: %s%s\n' "$R" "$src" "$Z" >&2
 			stale=$((stale + 1))
 		fi
@@ -1189,7 +1189,7 @@ self_test() {
 	)
 
 	for line in "${should_fire[@]}"; do
-		if printf '%s\n' "$line" | grep -qE "$INCLUDE_RE|$KERNEL_RE"; then
+		if printf '%s\n' "$line" | grep -E "$INCLUDE_RE|$KERNEL_RE" >/dev/null; then
 			n=$((n + 1))
 		else
 			printf '%s  self-test FAILED: missed: %s%s\n' "$R" "$line" "$Z" >&2
@@ -1199,7 +1199,7 @@ self_test() {
 	[ "$fails" -ne 0 ] || printf '%s  self-test: detector fires on all %d impure shapes%s\n' "$G" "$n" "$Z"
 
 	for line in "${should_not[@]}"; do
-		if printf '%s\n' "$line" | grep -qE "$INCLUDE_RE|$KERNEL_RE"; then
+		if printf '%s\n' "$line" | grep -E "$INCLUDE_RE|$KERNEL_RE" >/dev/null; then
 			printf '%s  self-test FAILED: fired on a legitimate line: %s%s\n' "$R" "$line" "$Z" >&2
 			fails=$((fails + 1))
 		else
@@ -1217,14 +1217,14 @@ self_test() {
 	local crypto_ok=('ultrawidelock_aes_ecb_encrypt(key, 128u, in, out);'
 		'ultrawidelock_random(nonce, sizeof(nonce));')
 	for line in "${crypto_bad[@]}"; do
-		if ! printf '%s\n' "$line" | grep -qE "$CRYPTO_INCLUDE_RE|$CRYPTO_CALL_RE"; then
+		if ! printf '%s\n' "$line" | grep -E "$CRYPTO_INCLUDE_RE|$CRYPTO_CALL_RE" >/dev/null; then
 			printf '%s  self-test FAILED: crypto boundary missed: %s%s\n' \
 				"$R" "$line" "$Z" >&2
 			fails=$((fails + 1))
 		fi
 	done
 	for line in "${crypto_ok[@]}"; do
-		if printf '%s\n' "$line" | grep -qE "$CRYPTO_INCLUDE_RE|$CRYPTO_CALL_RE"; then
+		if printf '%s\n' "$line" | grep -E "$CRYPTO_INCLUDE_RE|$CRYPTO_CALL_RE" >/dev/null; then
 			printf '%s  self-test FAILED: crypto boundary rejected a primitive call: %s%s\n' \
 				"$R" "$line" "$Z" >&2
 			fails=$((fails + 1))
@@ -1308,12 +1308,12 @@ self_test() {
 	local drop=('12: * uses k_work_reschedule under the hood' '7://	k_msleep(5);')
 	local keep='20:	ultrawidelock_sem_give(&s); /* not k_sem_give */'
 	for line in "${drop[@]}"; do
-		if ! printf '%s\n' "$line" | grep -qE "$COMMENT_LINE_RE"; then
+		if ! printf '%s\n' "$line" | grep -E "$COMMENT_LINE_RE" >/dev/null; then
 			printf '%s  self-test FAILED: comment filter kept: %s%s\n' "$R" "$line" "$Z" >&2
 			fails=$((fails + 1))
 		fi
 	done
-	if printf '%s\n' "$keep" | grep -qE "$COMMENT_LINE_RE"; then
+	if printf '%s\n' "$keep" | grep -E "$COMMENT_LINE_RE" >/dev/null; then
 		printf '%s  self-test FAILED: comment filter dropped a line of code%s\n' "$R" "$Z" >&2
 		fails=$((fails + 1))
 	fi
@@ -1323,24 +1323,24 @@ self_test() {
 	# or check_port_os would ban a tree from the platform it is written for.
 	local zline='#include <zephyr/kernel.h>' eline='#include "freertos/task.h"'
 	local fline='#include "task.h"'
-	printf '%s\n' "$zline" | grep -qE "$ZEPHYR_INC_RE" ||
+	printf '%s\n' "$zline" | grep -E "$ZEPHYR_INC_RE" >/dev/null ||
 		{ printf '%s  self-test FAILED: zephyr half missed its own include%s\n' "$R" "$Z" >&2
 			fails=$((fails + 1)); }
-	printf '%s\n' "$eline" | grep -qE "$ESP_INC_RE" ||
+	printf '%s\n' "$eline" | grep -E "$ESP_INC_RE" >/dev/null ||
 		{ printf '%s  self-test FAILED: esp half missed its own include%s\n' "$R" "$Z" >&2
 			fails=$((fails + 1)); }
-	printf '%s\n' "$fline" | grep -qE "$FREERTOS_INC_RE" ||
+	printf '%s\n' "$fline" | grep -E "$FREERTOS_INC_RE" >/dev/null ||
 		{ printf '%s  self-test FAILED: FreeRTOS half missed its own include%s\n' "$R" "$Z" >&2
 			fails=$((fails + 1)); }
-	if printf '%s\n' "$zline" | grep -qE "$ESP_INC_RE"; then
+	if printf '%s\n' "$zline" | grep -E "$ESP_INC_RE" >/dev/null; then
 		printf '%s  self-test FAILED: esp half fired on a zephyr include%s\n' "$R" "$Z" >&2
 		fails=$((fails + 1))
 	fi
-	if printf '%s\n' "$eline" | grep -qE "$ZEPHYR_INC_RE"; then
+	if printf '%s\n' "$eline" | grep -E "$ZEPHYR_INC_RE" >/dev/null; then
 		printf '%s  self-test FAILED: zephyr half fired on an esp include%s\n' "$R" "$Z" >&2
 		fails=$((fails + 1))
 	fi
-	if printf '%s\n' "$fline" | grep -qE "$ESP_INC_RE|$ZEPHYR_INC_RE"; then
+	if printf '%s\n' "$fline" | grep -E "$ESP_INC_RE|$ZEPHYR_INC_RE" >/dev/null; then
 		printf '%s  self-test FAILED: another OS half fired on a canonical FreeRTOS include%s\n' \
 			"$R" "$Z" >&2
 		fails=$((fails + 1))
@@ -1430,14 +1430,14 @@ self_test() {
 	out=$(cmake_path_list "$fixdir/fix.cmake")
 	local want
 	for want in "$fixdir/src/nope.c" "$fixdir/src/also.c" "./modules/ghost/gone.c"; do
-		if ! printf '%s\n' "$out" | grep -qxF "$want"; then
+		if ! printf '%s\n' "$out" | grep -xF "$want" >/dev/null; then
 			printf '%s  self-test FAILED: path extractor missed: %s%s\n' "$R" "$want" "$Z" >&2
 			fails=$((fails + 1))
 		fi
 	done
 	local nowant
 	for nowant in only.c absent.h UNDEFINED_VAR and/or; do
-		if printf '%s\n' "$out" | grep -qF "$nowant"; then
+		if printf '%s\n' "$out" | grep -F "$nowant" >/dev/null; then
 			printf '%s  self-test FAILED: path extractor emitted: %s%s\n' "$R" "$nowant" "$Z" >&2
 			fails=$((fails + 1))
 		fi
@@ -1575,7 +1575,7 @@ self_test() {
 	fi
 	# The allowlist is exact: a file that IS in a role must not be swallowed.
 	for f in modules/ultrawidelock_cred/src/ultrawidelock_tlv.c modules/ultrawidelock_uwb/src/ccc/ccc_kdf.c; do
-		if printf '%s\n' "${NOT_MANIFESTED[@]}" | grep -qxF "$f"; then
+		if printf '%s\n' "${NOT_MANIFESTED[@]}" | grep -xF "$f" >/dev/null; then
 			printf '%s  self-test FAILED: %s is allowlisted but lives in a role%s\n' \
 				"$R" "$f" "$Z" >&2
 			fails=$((fails + 1))
