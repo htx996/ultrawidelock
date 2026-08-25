@@ -2109,7 +2109,28 @@ static int send_subscription_report(struct sub_state *s,
 	}
 	memset(&s_tx_effects[tx_slot_index(packet)], 0, sizeof(s_tx_effects[0]));
 	payload = tx_payload(packet, &payload_cap);
+	/*
+	 * Whose fabric this report is FOR. A report this node originates runs off
+	 * a work queue, not off a datagram, so the accessing identity the
+	 * receive path leaves on s_info belongs to whoever spoke last -- which
+	 * for a subscription report is the wrong subscriber or, after
+	 * on_message_owned() cleared it, nobody. The data model reads it to
+	 * decide both fabric filtering and, since UWB presence became
+	 * privilege-gated, whether the subscriber may see presence at all: left
+	 * stale, a controller with Manage would get an empty presence report
+	 * because some PASE datagram arrived first.
+	 *
+	 * Cleared again below for the same reason the receive path clears it.
+	 */
+	s_info.accessing_fabric_index = s_case_fabric[slot];
+	s_info.accessing_node_id = s_case_x[slot].peer_op_node_id;
+	memcpy(s_info.accessing_cats, s_case_cats[slot], sizeof(s_info.accessing_cats));
+	s_info.accessing_n_cats = s_case_n_cats[slot];
 	rc = matter_im_report_data_encode(&s_im, read, payload, payload_cap, &tlv_len, NULL);
+	s_info.accessing_fabric_index = 0u;
+	s_info.accessing_node_id = 0u;
+	s_info.accessing_n_cats = 0u;
+	memset(s_info.accessing_cats, 0, sizeof(s_info.accessing_cats));
 	if (rc == MATTER_OK) {
 		rc = matter_exchange_send_initiator(
 			&s_case_x[slot], s_next_init_exchange++,
@@ -2245,9 +2266,43 @@ static void notify_uwb_presence(struct sub_state *s)
 	};
 	struct matter_im_read read;
 	size_t framed = 0u;
+	uint8_t slot;
+	bool allowed;
 	int rc;
 
 	if (!s->in_use || !s->active || s->session_id == 0u || !s->peer.valid) {
+		return;
+	}
+	/*
+	 * Whether this subscriber may see presence at all, decided BEFORE any
+	 * path is built.
+	 *
+	 * Reads that arrive as requests are gated inside the data model, and a
+	 * concrete one is told UNSUPPORTED_ACCESS because a controller that
+	 * named an attribute deserves to know why it was refused. This is not
+	 * that. A controller subscribing to the whole node -- which is what a
+	 * hub does the moment it owns one -- never named this cluster, and
+	 * Matter has a wildcard SKIP what the subscriber may not read. The
+	 * paths below are built by this node, so nothing downstream can still
+	 * tell the wildcard from the concrete case; refusing here is what keeps
+	 * every presence change from becoming twelve status entries on the air
+	 * to a subscriber that asked for none of them.
+	 */
+	slot = case_slot_of(s->session_id);
+	if (slot >= MATTER_CASE_SESSIONS) {
+		return;
+	}
+	s_info.accessing_fabric_index = s_case_fabric[slot];
+	s_info.accessing_node_id = s_case_x[slot].peer_op_node_id;
+	memcpy(s_info.accessing_cats, s_case_cats[slot], sizeof(s_info.accessing_cats));
+	s_info.accessing_n_cats = s_case_n_cats[slot];
+	allowed = matter_clusters_uwb_presence_readable(&s_info);
+	s_info.accessing_fabric_index = 0u;
+	s_info.accessing_node_id = 0u;
+	s_info.accessing_n_cats = 0u;
+	memset(s_info.accessing_cats, 0, sizeof(s_info.accessing_cats));
+	if (!allowed) {
+		LOG_DBG("  subscription 0x%08x may not read UWB presence", (unsigned int)s->id);
 		return;
 	}
 	memset(&read, 0, sizeof(read));

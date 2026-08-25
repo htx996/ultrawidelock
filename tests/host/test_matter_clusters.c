@@ -170,6 +170,66 @@ static size_t acl_one_entry(uint8_t *buf, size_t cap, uint64_t subject, uint8_t 
 	return n;
 }
 
+/**
+ * Turn the accessing node into an ORDINARY member of fabric 1 holding exactly
+ * @p privilege.
+ *
+ * CaseAdminSubject is cleared, which is the point: fill_info() leaves it equal
+ * to the accessing node id, and that alone is a bootstrap grant of ADMINISTER
+ * that would let every one of these reads through without the ACL being
+ * consulted at all. With it gone the ACL entry is the only thing that can
+ * grant, so a test that passes here passes because of the privilege it named.
+ */
+static void grant_privilege(struct matter_device_info *info, uint8_t privilege)
+{
+	uint8_t acl[128];
+	size_t len;
+
+	info->fabrics[0].case_admin_subject = 0u;
+	len = acl_one_entry(acl, sizeof(acl), info->accessing_node_id, privilege);
+	memcpy(info->fabric_acls[0].data, acl, len);
+	info->fabric_acls[0].len = len;
+}
+
+/** Read one attribute into @p out; @return the encoded length. */
+static size_t read_attr(struct matter_im_server *srv, uint16_t endpoint, uint32_t cluster,
+			uint32_t attribute, uint8_t *out, size_t cap)
+{
+	struct matter_tlv_writer w;
+
+	matter_tlv_writer_init(&w, out, cap);
+	srv->value(srv->ctx, endpoint, cluster, attribute, false, &w, MATTER_TLV_ANON);
+	return w.len;
+}
+
+/**
+ * Does the wildcard expansion of the UWB cluster name any GATED attribute?
+ * @p count receives how many ids it named in total.
+ */
+static bool wildcard_lists_telemetry(struct matter_im_server *srv, size_t *count)
+{
+	const uint32_t *ids = NULL;
+	size_t n = srv->list_attrs(srv->ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				   &ids);
+	bool found = false;
+
+	*count = n;
+	for (size_t i = 0u; i < n; i++) {
+		switch (ids[i]) {
+		case MATTER_ATTR_FEATURE_MAP:
+		case MATTER_ATTR_CLUSTER_REVISION:
+		case MATTER_ATTR_ATTRIBUTE_LIST:
+		case MATTER_ATTR_ACCEPTED_CMD_LIST:
+		case MATTER_ATTR_GENERATED_CMD_LIST:
+			break;
+		default:
+			found = true;
+			break;
+		}
+	}
+	return found;
+}
+
 /** Is the accessor allowed an ADMINISTER-gated Door Lock command right now? */
 static bool lock_admin_allowed(struct matter_im_server *srv)
 {
@@ -1396,6 +1456,209 @@ void test_matter_clusters(void)
 		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
 		T_EQ("movement state reports approaching", (long)v,
 		     MATTER_UWB_MOVEMENT_APPROACHING);
+	}
+
+	/*
+	 * The read half of the UWB presence cluster's access control.
+	 *
+	 * Writes to the lock endpoint were ADMINISTER from the start; reads were
+	 * gated by nothing but the secure session, so every commissioned fabric
+	 * member could watch a household's distance, movement and credential id
+	 * whatever privilege it had been granted. LockState being readable by
+	 * anyone was defensible -- one bit about a bolt. This is continuous
+	 * telemetry about a person, so its read privilege is MANAGE.
+	 *
+	 * What is NOT gated matters as much: Basic Information is read over
+	 * PASE, before any fabric exists, and a gate that caught it would stop
+	 * commissioning rather than a snooper. So each case below checks a
+	 * refusal AND an ordinary read that has to keep working under it.
+	 */
+	t_group("reading UWB presence needs MANAGE, and nothing else changed");
+	{
+		const uint32_t *ids = NULL;
+		struct matter_tlv_reader r;
+		uint8_t out[64];
+		size_t n;
+		size_t listed = 0u;
+		uint64_t v = 0u;
+		bool b = false;
+
+		reset_doubles();
+		fill_info(&info);
+		info.uwb_device_in_range = true;
+		info.uwb_distance_mm = 1370;
+		info.uwb_device_id = 0x12345678u;
+		info.uwb_movement_state = MATTER_UWB_MOVEMENT_APPROACHING;
+		info.uwb_config = (struct matter_uwb_config){
+			.version = MATTER_UWB_CONFIG_VERSION,
+			.policy_flags = MATTER_UWB_POLICY_ALL,
+			.unlock_cm = 100u,
+			.approach_cm = 180u,
+			.relock_cm = 250u,
+			.motor_ms = 500u,
+		};
+		matter_clusters_init(&srv, &info);
+
+		/* An OPERATE member: a guest who may unlock the door. */
+		grant_privilege(&info, 3u);
+		T_EQ("presence is refused for ACCESS, not for existing",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DEVICE_IN_RANGE),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_EQ("so is the distance",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DISTANCE_MM),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_EQ("so is the credential id",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DEVICE_ID),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_EQ("so is the movement state",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_MOVEMENT_STATE),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		/* The tuning attributes say at what range this lock opens, which
+		 * is worth knowing to somebody intending to be at that range. */
+		T_EQ("and so is the unlock threshold",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_UNLOCK_THRESHOLD_CM),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+
+		/* Matter fixes the global attributes at View. A controller that
+		 * cannot read them cannot describe the cluster it was refused. */
+		T_EQ("ClusterRevision is still readable",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_CLUSTER_REVISION),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and so is AttributeList",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_ATTRIBUTE_LIST),
+		     MATTER_IM_STATUS_SUCCESS);
+
+		/* Order: an attribute the cluster does not have is reported
+		 * missing, not refused, or a controller reads its own typo as a
+		 * permissions problem. */
+		T_EQ("an attribute the cluster lacks is still UNSUPPORTED_ATTRIBUTE",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				0x00FFu),
+		     MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE);
+
+		/* The coupling: a wildcard SKIPS a path the accessor may not
+		 * read, so the expansion list must not name one. Naming them
+		 * would put twelve UNSUPPORTED_ACCESS entries in the report. */
+		T_OK("the wildcard list names no gated attribute",
+		     !wildcard_lists_telemetry(&srv, &listed));
+		T_EQ("only the five globals remain", listed, 5u);
+		/* Same verdict through the exported predicate, which is what a
+		 * subscription report asks before it builds any path at all: a
+		 * report this node originates has no request to be refused, so
+		 * it has to decide not to send one. */
+		T_OK("and the exported predicate refuses this subscriber",
+		     !matter_clusters_uwb_presence_readable(&info));
+		/* AttributeList is the cluster's own description and is NOT
+		 * filtered: a controller is entitled to know what it was
+		 * refused, and this is the one place the two lists differ. */
+		n = read_attr(&srv, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			      MATTER_ATTR_ATTRIBUTE_LIST, out, sizeof(out));
+		matter_tlv_reader_init(&r, out, n);
+		T_OK("AttributeList still encodes the whole cluster",
+		     matter_tlv_next(&r) == 0 && matter_tlv_is_container(&r));
+
+		/* Defence in depth: the encoder refuses too, so a path that
+		 * reaches it without asking status first publishes nothing. */
+		n = read_attr(&srv, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			      MATTER_ATTR_UWB_DISTANCE_MM, out, sizeof(out));
+		T_EQ("the encoder writes one element", n, 1u);
+		T_EQ("and it is null, not the distance", out[0], 0x14u);
+		matter_tlv_reader_init(&r, out, n);
+		T_OK("which does not decode as a number",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) != 0);
+		n = read_attr(&srv, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			      MATTER_ATTR_UWB_DEVICE_IN_RANGE, out, sizeof(out));
+		matter_tlv_reader_init(&r, out, n);
+		T_OK("nor presence as a boolean",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_bool(&r, &b) != 0);
+
+		/* Everything this member legitimately has is untouched. */
+		T_EQ("the same member still reads LockState",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_DOOR_LOCK,
+				MATTER_ATTR_DL_LOCK_STATE),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and ApproachDirection",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_APPROACH_DIRECTION,
+				MATTER_ATTR_APPROACH_DIRECTION),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and Basic Information",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_BASIC_INFORMATION,
+				MATTER_ATTR_BASIC_VENDOR_NAME),
+		     MATTER_IM_STATUS_SUCCESS);
+
+		/* MANAGE is the line. */
+		grant_privilege(&info, 4u);
+		T_EQ("a MANAGE member reads presence",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DEVICE_IN_RANGE),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_OK("and its wildcard names the gated attributes again",
+		     wildcard_lists_telemetry(&srv, &listed));
+		T_EQ("all seventeen of them", listed, 17u);
+		T_OK("and the exported predicate lets it subscribe",
+		     matter_clusters_uwb_presence_readable(&info));
+		n = read_attr(&srv, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+			      MATTER_ATTR_UWB_DISTANCE_MM, out, sizeof(out));
+		matter_tlv_reader_init(&r, out, n);
+		T_OK("and the distance decodes",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("as the millimetres measured", (long)v, 1370);
+
+		grant_privilege(&info, 5u);
+		T_EQ("so does an ADMINISTER member",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DEVICE_ID),
+		     MATTER_IM_STATUS_SUCCESS);
+
+		grant_privilege(&info, 1u);
+		T_EQ("a VIEW member does not",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DEVICE_ID),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+
+		/*
+		 * PASE. No fabric and no node id -- what a commissioner has
+		 * before AddNOC, and the only identity a stranger holding the
+		 * setup code ever gets. It must not see presence, and it must
+		 * still be able to commission. The ACL below grants ADMINISTER
+		 * and is deliberately left in place: what refuses here is the
+		 * absence of an authenticated CASE identity, not an empty ACL.
+		 */
+		grant_privilege(&info, 5u);
+		info.accessing_fabric_index = 0u;
+		info.accessing_node_id = 0u;
+		T_EQ("a PASE session is refused presence",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_UWB_PRESENCE,
+				MATTER_ATTR_UWB_DEVICE_IN_RANGE),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_OK("and could not have subscribed to it either",
+		     !matter_clusters_uwb_presence_readable(&info));
+		T_EQ("and still reads Basic Information",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_BASIC_INFORMATION,
+				MATTER_ATTR_BASIC_VENDOR_NAME),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and General Commissioning",
+		     srv.status(srv.ctx, MATTER_ENDPOINT_ROOT,
+				MATTER_CLUSTER_GENERAL_COMMISSIONING,
+				MATTER_ATTR_GC_BREADCRUMB),
+		     MATTER_IM_STATUS_SUCCESS);
+		n = read_attr(&srv, MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_BASIC_INFORMATION,
+			      MATTER_ATTR_BASIC_VENDOR_ID, out, sizeof(out));
+		matter_tlv_reader_init(&r, out, n);
+		T_OK("whose values still encode",
+		     matter_tlv_next(&r) == 0 && matter_tlv_get_u64(&r, &v) == 0);
+		T_EQ("with the vendor id intact", (long)v, 0xFFF1);
+		T_OK("and Basic Information's wildcard list is unchanged",
+		     srv.list_attrs(srv.ctx, MATTER_ENDPOINT_ROOT,
+				    MATTER_CLUSTER_BASIC_INFORMATION, &ids) > 0u &&
+			     ids != NULL);
 	}
 
 	t_group("the lock endpoint answers its own commands");
