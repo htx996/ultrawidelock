@@ -1,0 +1,443 @@
+# Release assets — on a version tag, build the three lock firmwares and attach a
+# self-contained bundle for each (firmware + flash script + FLASH.md) to a GitHub
+# release. Firmware bundle sources live in release/<target>/.
+#
+# Locks only. The bench reader, the anchorlink half and the UWB self-test images
+# are development tools and are deliberately not published: someone downloading a
+# release should not have to work out which of five files is the lock.
+#
+# Deliberately cache-free, unlike the cdk-images job in ci.yml: a release binary
+# must not depend on restored CI state (a poisoned workspace or compiler cache
+# would flow straight into shipped firmware), and releases are rare enough that a
+# cold build is a price worth paying. Same containers and scripts as that job, so
+# a green gate there predicts a green build here -- with one gap worth naming:
+# ci.yml builds the CDK and the satellite and nothing else, so the nRF5340 DK and
+# the ESP32 legs below are first compiled at release time. That is the argument
+# for cutting a throwaway tag before a real one.
+#
+# Manual only, and only ever from a version tag. Pushing a tag does not start a
+# release: cutting a tag and shipping one are separate decisions, and a tag push
+# used to commit four hours of firmware builds before anyone could reconsider.
+#
+# workflow_dispatch offers every branch and tag in its ref picker, and GitHub
+# gives no way to restrict that list, so the `guard` job below enforces it and
+# fails rather than skips. A skipped job reads like a pass.
+
+name: release
+
+on:
+  workflow_dispatch:
+
+# Only the release job needs more than read; it raises its own scope.
+permissions:
+  contents: read
+
+# One release build at a time per ref, and never cancel one mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  # The ref check, ahead of everything that costs money. Without it a dispatch
+  # against main still runs all three build jobs (up to four hours, cold and
+  # cache-free by design here) before the release job declines to publish, so
+  # the wrong ref is caught in seconds instead of after the builds.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: this must be a version tag
+        env:
+          # Via the environment, not inline interpolation: a ref name is
+          # attacker-influenced text and must never reach the shell as code.
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::release runs only from a tag, but this dispatch targeted the $REF_TYPE '$REF_NAME'."
+            echo "Re-run from Actions -> release -> Run workflow and pick a vN.N.N tag in the ref picker."
+            exit 1
+          fi
+          case "$REF_NAME" in
+          v[0-9]*) ;;
+          *)
+            echo "::error::'$REF_NAME' is a tag but not a version tag (expected vN.N.N)."
+            exit 1
+            ;;
+          esac
+          echo "releasing from tag $REF_NAME"
+
+  # DWM3001CDK: the primary board, and the only signed image here. MCUboot
+  # embeds the public half of the signing key permanently and a single-slot
+  # bootloader has no second image to fall back to, so the key this job uses
+  # decides what every board flashed from this release will ever accept over
+  # the air, with no revocation path. That is why it is the one job gated on an
+  # environment: `release` carries required reviewers, so a compromised token or
+  # a workflow edit cannot sign anything without a human approving the run.
+  #
+  # NOTE THE CONTRAST WITH ci.yml. That job generates a throwaway key per run
+  # and uploads nothing signed by it, precisely so no image it produces can be
+  # mistaken for an installable one. This job is the only place in the
+  # repository where the real key is used, and the only place that publishes.
+  #
+  # `make release` does the rest, and refuses to run at all without a key rather
+  # than falling back to a default -- mk/cdk.mk has the two guards.
+  dwm3001cdk:
+    needs: guard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # BASH, NOT THE DEFAULT sh, and this is what makes `make` resolvable.
+        # The NCS container puts west, the Zephyr SDK and its own make on PATH
+        # through a BASH_ENV hook, which bash sources for every non-interactive
+        # shell and sh never does. Actions runs container steps with `sh -e {0}`
+        # by default, so `make release` died with "make: not found" and exit 127.
+        # ci.yml's cdk-images job carries the same pair.
+        shell: bash
+    timeout-minutes: 180
+    # The gate. Nothing else in this workflow may reach the signing key: an
+    # environment secret is readable only by a job that names its environment,
+    # which a repository secret would not have been.
+    environment: release
+    container:
+      # Same digest as ci.yml's cdk-images job and the nrf5340dk job below.
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain@sha256:f24d8932ff081ebcd8da9c248f4449bdabe461c0620a7a4ac9e95eb577ba2276 # v3.3.0
+    env:
+      ULTRAWIDELOCK_TOOLCHAIN: env
+      ULTRAWIDELOCK_SHALLOW: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: make sure make exists
+        # Belt and braces with the bash default above, because the NCS container
+        # has shipped without a make of its own before and this job is too
+        # expensive to find out the hard way. Kept byte-identical to the step in
+        # ci.yml and in the nrf5340dk job so a grep finds every copy.
+        run: |
+          if command -v make >/dev/null 2>&1; then
+            echo "make $(make --version | head -1)"
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends make
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache make
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q make
+          else
+            echo "::error::no make and no package manager to install one"
+            exit 1
+          fi
+          command -v make
+      - name: bootstrap the workspace
+        # One retry: bootstrap is resumable (fetch sentinel), so a transient
+        # fetch failure costs a resume, not the whole multi-GB fetch.
+        run: |
+          ./scripts/bootstrap.sh || {
+            echo "::warning::bootstrap failed once -- retrying (resumes the fetch)"
+            ./scripts/bootstrap.sh
+          }
+      - name: no signing key may be present before this job writes one
+        # The dev key is gitignored. If one is ever in a fresh checkout, the
+        # build below would silently sign with it instead of the release key
+        # and strand every board that installed the result. ci.yml runs the
+        # same assertion for the same reason.
+        run: |
+          set -euo pipefail
+          key="$(make print-sign-key)"
+          if [ -e "$key" ]; then
+            echo "::error file=${key}::a signing key is present in a fresh checkout -- it is gitignored and must never be committed"
+            exit 1
+          fi
+      - name: write the signing key
+        # umask first so the file is never briefly world-readable, and through
+        # the environment rather than inline interpolation so the key cannot
+        # reach a command line, a process list or a log. The runner is
+        # ephemeral, so the file dies with it.
+        env:
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment (not a repository secret)."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/release.pem"
+      - name: build, sign and bundle
+        # CDK_RELEASE_VER is passed rather than left to `git describe`: the
+        # checkout is shallow, and the tag is the authority on what this is.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          make release \
+            RELEASE_KEY="$RUNNER_TEMP/release.pem" \
+            CDK_RELEASE_VER="$TAG"
+      # The "no private key in the bundle" check is not a step here: it runs
+      # inside scripts/release-bundle.sh, so all three bundles get it and a
+      # local `make release` gets it too, rather than only a tag build.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-dwm3001cdk
+          path: build/release/ultrawidelock-dwm3001cdk
+          if-no-files-found: error
+
+  # nRF5340 DK: cold-bootstrap the pinned west workspace, build the sysbuild
+  # image, and bundle both cores' hex files with the flash script + guide.
+  nrf5340dk:
+    needs: guard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Same reason as the dwm3001cdk job above: `make nrf-release` is the
+        # entry point, so make has to be resolvable in the step's own shell.
+        shell: bash
+    timeout-minutes: 180
+    container:
+      # Same digest as the dwm3001cdk job; see there for the BASH_ENV and
+      # ULTRAWIDELOCK_TOOLCHAIN=env rationale.
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain@sha256:f24d8932ff081ebcd8da9c248f4449bdabe461c0620a7a4ac9e95eb577ba2276 # v3.3.0
+    env:
+      ULTRAWIDELOCK_TOOLCHAIN: env
+      ULTRAWIDELOCK_SHALLOW: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: make sure make exists
+        # See the dwm3001cdk job. Kept byte-identical to the step there.
+        run: |
+          if command -v make >/dev/null 2>&1; then
+            echo "make $(make --version | head -1)"
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends make
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache make
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q make
+          else
+            echo "::error::no make and no package manager to install one"
+            exit 1
+          fi
+          command -v make
+      - name: bootstrap the workspace
+        run: |
+          ./scripts/bootstrap.sh || {
+            echo "::warning::bootstrap failed once -- retrying (resumes the fetch)"
+            ./scripts/bootstrap.sh
+          }
+      - name: build and bundle (nrf5340dk/nrf5340/cpuapp, sysbuild)
+        # One target for build and packaging, so what CI publishes is what
+        # `make nrf-release` puts in build/release/ on a bench machine. It
+        # pins DFU=0; mk/nrf5340dk.mk explains why.
+        env:
+          NRF_RELEASE_VER: ${{ github.ref_name }}
+        run: make nrf-release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-nrf5340dk
+          path: build/release/ultrawidelock-nrf5340dk
+          if-no-files-found: error
+
+  # ESP32-S3/C5/C6 Matter lock: fetch + install esp-matter at the bench-validated
+  # revision, build all three chips, and merge bootloader + partition table + app
+  # into one image flashable at 0x0 for each.
+  esp32-matter-lock:
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    container:
+      image: espressif/idf@sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5fa3363db892b # v5.5.4
+    env:
+      ESP_MATTER_PATH: /opt/esp/esp-matter
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: read the bench-validated toolchain pins
+        # Read from scripts/esp-bootstrap.sh rather than restated here. The
+        # revision used to be a literal in this file, which meant a bench
+        # re-pin and a release build could disagree silently and nothing would
+        # notice until the images differed. The container digest above is the
+        # one pin that still has to be duplicated -- a digest is not something
+        # a shell script can express -- so the IDF version is asserted instead.
+        run: |
+          set -euo pipefail
+          eval "$(./scripts/esp-bootstrap.sh --print-pins)"
+          echo "ESP_MATTER_REV=$ESP_MATTER_REV" >> "$GITHUB_ENV"
+          echo "esp-matter $ESP_MATTER_REV"
+          . "$IDF_PATH/export.sh" >/dev/null 2>&1
+          # Substring, not a parsed version number: idf.py prints a decorated
+          # string ("ESP-IDF v5.5.4") whose exact shape is not a contract, and a
+          # brittle parse here would fail a release for a cosmetic upstream
+          # change. Containing the pinned tag is the claim worth checking.
+          raw="$(idf.py --version 2>/dev/null || true)"
+          case "$raw" in
+          *"$IDF_VER"*) echo "esp-idf $raw" ;;
+          *)
+            echo "::error::this container reports '$raw' but the bench pins ESP-IDF $IDF_VER -- update the digest above, or the pin in scripts/esp-bootstrap.sh"
+            exit 1
+            ;;
+          esac
+      - name: fetch + install esp-matter
+        # Pinned-SHA clone (git clone --branch takes no SHA, so init + fetch),
+        # then the setup esp-matter documents: shallow esp32 submodules and
+        # install.sh, minus the chip-tool/chip-cert host tools the firmware
+        # build never runs. One from-scratch retry absorbs transient fetch
+        # failures. Subshell + && chain on purpose: the cd stays contained,
+        # and `set -e` is suppressed inside a `||` context, so an explicit
+        # chain is the only reliable early-exit.
+        run: |
+          # Python build headers: esp-matter's own requirements.txt and CHIP's
+          # setup pin packages whose old versions ship no cp312 wheel, so pip
+          # compiles them from source against the container's python 3.12 -- and
+          # this ubuntu:24.04 image has no Python.h. The version seds below only
+          # cover CHIP's files; installing the headers is the root-cause fix
+          # that lets any from-source wheel build succeed, here and in future
+          # domino pins we do not control.
+          apt-get update -q && apt-get install -y -q python3-dev
+          . "$IDF_PATH/export.sh"
+          setup() (
+            rm -rf "$ESP_MATTER_PATH" &&
+            git init -q "$ESP_MATTER_PATH" &&
+            cd "$ESP_MATTER_PATH" &&
+            git remote add origin https://github.com/espressif/esp-matter.git &&
+            git fetch -q --depth 1 origin "$ESP_MATTER_REV" &&
+            git checkout -q FETCH_HEAD &&
+            git submodule update --init --depth 1 &&
+            ./connectedhomeip/connectedhomeip/scripts/checkout_submodules.py \
+              --platform esp32 linux --shallow &&
+            # CHIP pins cffi==1.15.0 for python<3.13, but on Linux the CHIP
+            # venv runs the container's python (3.12 on this ubuntu:24.04
+            # image) -- pigweed's python311.json override only covers darwin
+            # and windows -- and no cffi 1.15.x ships a cp312 wheel, so pip
+            # compiles it from source and dies in this container. 1.17.1 is
+            # CHIP's own pin for python>=3.13 and ships cp312 wheels.
+            sed -i 's/cffi==1.15.0/cffi==1.17.1/' \
+              connectedhomeip/connectedhomeip/scripts/setup/constraints.txt \
+              connectedhomeip/connectedhomeip/scripts/setup/requirements.all.txt &&
+            # Same story one step later: requirements.esp32.txt pins
+            # bitarray==2.6.0, which has no wheel for the container's build
+            # python 3.12, so pip compiles it from source and fails on a
+            # missing Python.h. 2.8.2 is the first release with a cp312
+            # manylinux x86_64 wheel, so pip installs it prebuilt.
+            sed -i 's/bitarray==2.6.0/bitarray==2.8.2/' \
+              connectedhomeip/connectedhomeip/scripts/setup/requirements.esp32.txt &&
+            ./install.sh --no-host-tool
+          )
+          setup || {
+            echo "::warning::esp-matter setup failed once -- retrying from scratch"
+            setup
+          }
+      - name: build every chip and bundle
+        # One target for three builds and the packaging, so what CI publishes
+        # is what `make esp-release` puts in build/release/ on a bench machine.
+        # Each chip still gets its own build directory and sdkconfig, because
+        # set-target wipes both and the S3 image is the hardware-validated one.
+        env:
+          ESP_RELEASE_VER: ${{ github.ref_name }}
+        run: make esp-release IDF_EXPORT="$IDF_PATH/export.sh"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-esp32-matter-lock
+          path: build/release/ultrawidelock-esp32-matter-lock
+          if-no-files-found: error
+
+  # Zip each bundle and publish the release. The tag check is redundant now that
+  # `guard` gates every build job, and it stays anyway: this is the only job here
+  # holding contents:write, so it should not depend on another job for the one
+  # condition that decides whether anything gets published.
+  release:
+    needs: [dwm3001cdk, nrf5340dk, esp32-matter-lock]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
+      # Both are required by attest-build-provenance below and by nothing else. id-token mints
+      # the short-lived Sigstore identity that binds the signature to this workflow; attestations
+      # writes the resulting statement back to the repository. Without them the attest step fails
+      # only when a tag is pushed, which is the worst time to find out.
+      id-token: write
+      attestations: write
+    steps:
+      # This job needs the checkout only for the release-notes template and its
+      # renderer; every firmware artifact arrives from the build jobs above.
+      #
+      # fetch-depth 0, unlike every other checkout here. scripts/release-notes.sh
+      # falls back to the commit subjects between the previous tag and this one
+      # when there is no CHANGELOG.md, and this repository has none, so a shallow
+      # checkout would publish an empty "What changed". The history is the notes.
+      # persist-credentials is off because nothing here talks to git as a remote,
+      # and the one token this job does need is passed to gh explicitly.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+      - name: package the bundles
+        # Artifact transport drops file modes, so restore the scripts' exec bit
+        # before zipping.
+        run: |
+          set -euo pipefail
+          chmod +x dist/ultrawidelock-dwm3001cdk/flash.sh \
+            dist/ultrawidelock-nrf5340dk/flash.sh \
+            dist/ultrawidelock-esp32-matter-lock/flash.sh
+          mkdir out
+          for d in dist/ultrawidelock-dwm3001cdk dist/ultrawidelock-nrf5340dk dist/ultrawidelock-esp32-matter-lock; do
+            b="$(basename "$d")"
+            (cd dist && zip -qr "../out/$b.zip" "$b")
+          done
+          # Loose copies of the three ESP32 images, so `esptool write_flash 0x0`
+          # needs one download and no unzip. The manifest.json that used to be
+          # copied beside them is gone on purpose: it is a checked-in file under
+          # web/flasher/, never staged into the bundle, and its only consumer
+          # (tools/docs_flash.py, which pulled it from the latest release) was
+          # deleted in b0f8856e. The browser flasher now serves its own copy
+          # from the docs site.
+          cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32s3.bin out/
+          cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32c5.bin out/
+          cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32c6.bin out/
+          (cd out && sha256sum ./*.zip ./*.bin > SHA256SUMS.txt)
+          ls -l out
+      # Provenance, before the release exists. SHA256SUMS.txt on its own is a self-referential
+      # claim: it is served from the release it describes, so it proves the download was not
+      # corrupted in transit and nothing else -- anyone who can publish a release can publish
+      # matching sums. This binds each artifact to the workflow, repository and commit that
+      # produced it, verifiable by a third party with no trust in the release page.
+      #
+      # SHA256SUMS.txt is in the subject list deliberately. Attesting it turns the sums file
+      # itself into something signed, so the cheap check (verify one file, then use its hashes)
+      # inherits the guarantee.
+      #
+      # The unzipped bundle contents are in the list too, and that is what makes the check
+      # usable rather than merely available. Attesting only the zips means a user who has
+      # unzipped one -- which is everybody, since flashing requires it -- holds nothing that
+      # can be verified, and the guarantee is real but out of reach. With the contents
+      # attested, each flash.sh can verify the exact image it is about to write to a board.
+      - name: attest the release artifacts
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            out/*.zip
+            out/*.bin
+            out/SHA256SUMS.txt
+            dist/ultrawidelock-dwm3001cdk/*
+            dist/ultrawidelock-nrf5340dk/*
+            dist/ultrawidelock-esp32-matter-lock/*
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        # The body comes from release/NOTES.md.in through scripts/release-notes.sh,
+        # not from a heredoc here. GitHub renders these notes into the notification
+        # email it sends every watcher, which makes this the most-read page the
+        # project has, and it should be reviewable as prose and previewable on a
+        # laptop (`scripts/release-notes.sh v0.5.0`) rather than only on a tag.
+        run: |
+          set -euo pipefail
+          notes="$(mktemp)"
+          ./scripts/release-notes.sh "$TAG" out/SHA256SUMS.txt > "$notes"
+          gh release create "$TAG" --repo "$REPO" --verify-tag \
+            --title "ultrawidelock $TAG" --notes-file "$notes" \
+            out/*.zip out/*.bin out/SHA256SUMS.txt

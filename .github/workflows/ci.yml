@@ -22,6 +22,12 @@
 # `make esp-release` covers the ESP32. A green run here means four images compile
 # and link, and that nothing else broke that a host can see.
 #
+# release.yml is the other half of the story and deliberately shares nothing with
+# this file: it is manual, tag-only, cache-free, and it is the only place the
+# real MCUboot signing key is used or anything is published. The job below signs
+# with a per-run throwaway and uploads nothing, precisely so no image it builds
+# can be mistaken for an installable one.
+#
 # `gates` is a serial list of steps rather than parallel jobs: each job pays a
 # checkout to save less time than it spends, and one list reads better in a pull
 # request's status panel. They are ordered cheapest first, so a broken constant

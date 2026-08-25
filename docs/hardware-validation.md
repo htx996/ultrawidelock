@@ -8,7 +8,10 @@ transport, the side gate and the door alarms), and the nRF5340 satellite.
 Between them that is nine of the thirteen DWM3001CDK application sources, plus
 the satellite app. It does not build the nRF5340 DK lock, the remaining CDK
 configurations, the size baseline or anything ESP32, so `make regress` still
-compile-gates those on a bench. What none of that can
+compile-gates those on a bench. The `release` workflow does build the DK and all
+three ESP32 chips, but only when a release is cut, so those two legs are first
+compiled at the moment they ship -- which is the argument for a throwaway tag
+ahead of a real one. What none of that can
 exercise is the product itself, which runs against a live iPhone.
 
 This checklist is the manual gate: run every applicable item before cutting a
