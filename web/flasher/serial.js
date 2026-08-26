@@ -187,15 +187,21 @@ export class Framer {
     this.pkt = [];
     this.want = 0;
     /* Set when the current line has already run past any legal frame length.
-     * Everything up to the next newline then gets thrown away.
+     * Everything up to the next newline is then thrown away.
      *
-     * THIS FLAG IS NOT OPTIONAL, and the version without it looked fine:
-     * clearing `line` on overrun and carrying on simply restarts the count, so
-     * a long run of rubbish is chopped into 127-byte pieces and whatever is
-     * left over when it ends stays in the buffer -- to be prepended to the
-     * first real frame that follows, corrupting a packet that was never
-     * damaged. Found by the flood case in
-     * tests/tooling/serial_frame_check.mjs, not by reading. */
+     * THIS FLAG IS A BOUND, NOT A BEHAVIOUR, and saying so is worth the space
+     * because the obvious reading is wrong. Dropping over-long input matters --
+     * without it, leftover rubbish is prepended to whatever line follows -- but
+     * the RESYNC below is what actually rescues the next packet, and it rescues
+     * it whether or not this flag exists. A differential fuzz of 3,000 random
+     * noise-and-frame streams found ZERO outputs where removing this flag
+     * changed what was emitted, and one where removing the resync did.
+     *
+     * So it is kept for what it guarantees rather than for what it fixes: that
+     * a line which cannot be a frame is discarded outright, instead of being
+     * carried forward in pieces to be reinterpreted later. The fuzz is in
+     * tests/tooling/serial_frame_check.mjs and asserts the property that
+     * actually matters -- no packet is ever emitted that was not sent. */
     this.overrun = false;
     /* Previous byte, so the 0x06 0x09 resync pair can be spotted across a read
      * boundary as well as inside one. */
@@ -278,7 +284,14 @@ export class Framer {
       this.pkt.splice(0, 2);
     }
 
-    if (this.want === 0 || this.pkt.length < this.want) return null;
+    /* A packet is a body plus its two CRC bytes, so 2 is the smallest length
+     * that can exist -- it describes an empty body, which the vectors cover --
+     * and 1 describes nothing at all. Rejecting only 0 let 1 through, where
+     * `full.length - 2` is -1 and the subarray below silently produced an
+     * empty "packet". Harmless where it lands today, since _feed merges zero
+     * bytes and moves on, but it is one comparison to make a negative slice
+     * unreachable rather than merely unreached. */
+    if (this.want < 2 || this.pkt.length < this.want) return null;
     if (this.pkt.length > this.want) { this._reset(); return null; }
 
     const full = Uint8Array.from(this.pkt);
@@ -338,7 +351,12 @@ export class SerialTransport {
     this.reader = null;
     this.writer = null;
     this.closed = false;
-    this._pump();
+    /* KEPT, not discarded. close() has to wait for this to finish before it
+     * can close the port: reader.cancel() resolves the pending read but does
+     * NOT release the reader's lock -- only _pump's own finally does, and that
+     * runs on a separate microtask chain. Closing while `readable.locked` is
+     * true rejects with InvalidStateError, and the port stays open. */
+    this.pumping = this._pump();
   }
 
   async _pump() {
@@ -366,10 +384,29 @@ export class SerialTransport {
     await this.writer.write(encodePacket(frame));
   }
 
+  /**
+   * Let go of the port, completely.
+   *
+   * THE ORDER IS THE WHOLE POINT. A port left open cannot be reopened by the
+   * next attempt -- requestPort() hands back the same SerialPort object and
+   * open() rejects with InvalidStateError -- and nothing short of closing the
+   * tab recovers it, because the reader still holds its lock. So each step
+   * waits for the one before:
+   *
+   *   cancel   resolves the read that _pump is parked on
+   *   pumping  lets _pump run its finally, which releases the reader's lock
+   *   writer   released explicitly; it has no finally to do it
+   *   close    now legal, because neither stream is locked any more
+   *
+   * Errors are still swallowed per step, because every one of them means "that
+   * half was already let go" -- but they are no longer swallowed while hiding a
+   * port that is genuinely still open.
+   */
   async close() {
     this.closed = true;
     this.cb = null;
     try { await this.reader?.cancel(); } catch { /* already gone */ }
+    try { await this.pumping; } catch { /* it exits through its own finally */ }
     try { this.writer?.releaseLock(); } catch { /* already released */ }
     try { await this.port.close(); } catch { /* already closed */ }
   }

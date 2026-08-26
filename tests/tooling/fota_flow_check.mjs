@@ -259,41 +259,85 @@ function fakeSerialPort(board, serial) {
     if (wake) { const w = wake; wake = null; w(); }
   });
 
+  /*
+   * THE LOCKS ARE MODELLED, and they have to be. WebSerial refuses to close a
+   * port whose readable or writable is still locked -- reader.cancel() resolves
+   * the pending read but does NOT release the lock, only the reader's own
+   * finally does. A fake whose releaseLock() is a no-op cannot tell a correct
+   * close from one that throws InvalidStateError and leaves the port open, and
+   * an open port is unrecoverable for the user: requestPort() hands back the
+   * same object and open() rejects. The first version of this fake was that
+   * no-op, and it passed against code that leaked.
+   */
   const port = {
+    isOpen: false,
     closed: false,
-    /* requestPort() opens the port before handing it over, exactly as a real
-     * one has to be opened before it has a readable or a writable. */
     opened: null,
-    async open(options) { port.opened = options; },
+    readLocked: false,
+    writeLocked: false,
+
+    async open(options) {
+      if (port.isOpen) {
+        const e = new Error("the port is already open");
+        e.name = "InvalidStateError";
+        throw e;
+      }
+      port.isOpen = true;
+      port.closed = false;
+      port.opened = options;
+    },
+
     readable: {
-      getReader: () => ({
-        async read() {
-          for (;;) {
-            if (queue.length) return { value: queue.shift(), done: false };
-            if (port.closed) return { value: undefined, done: true };
-            await new Promise((r) => { wake = r; });
-          }
-        },
-        releaseLock() {},
-        async cancel() {
-          port.closed = true;
-          if (wake) { const w = wake; wake = null; w(); }
-        },
-      }),
+      get locked() { return port.readLocked; },
+      getReader: () => {
+        if (port.readLocked) throw new Error("readable is already locked");
+        port.readLocked = true;
+        return {
+          async read() {
+            for (;;) {
+              if (queue.length) return { value: queue.shift(), done: false };
+              if (port.closed) return { value: undefined, done: true };
+              await new Promise((r) => { wake = r; });
+            }
+          },
+          releaseLock() { port.readLocked = false; },
+          async cancel() {
+            /* Resolves the parked read. Deliberately does NOT release the
+             * lock -- that is the behaviour the bug hid behind. */
+            port.closed = true;
+            if (wake) { const w = wake; wake = null; w(); }
+          },
+        };
+      },
     },
+
     writable: {
-      getWriter: () => ({
-        async write(bytes) {
-          /* Unframe exactly as the firmware would, then hand the board the SMP
-           * frame it would have seen over GATT. */
-          for (const frame of framer.feed(bytes)) {
-            await board.writeValueWithoutResponse(frame);
-          }
-        },
-        releaseLock() {},
-      }),
+      get locked() { return port.writeLocked; },
+      getWriter: () => {
+        if (port.writeLocked) throw new Error("writable is already locked");
+        port.writeLocked = true;
+        return {
+          async write(bytes) {
+            /* Unframe exactly as the firmware would, then hand the board the
+             * SMP frame it would have seen over GATT. */
+            for (const frame of framer.feed(bytes)) {
+              await board.writeValueWithoutResponse(frame);
+            }
+          },
+          releaseLock() { port.writeLocked = false; },
+        };
+      },
     },
-    async close() { port.closed = true; },
+
+    async close() {
+      if (port.readLocked || port.writeLocked) {
+        const e = new Error("cannot close a port with a locked stream");
+        e.name = "InvalidStateError";
+        throw e;
+      }
+      port.isOpen = false;
+      port.closed = true;
+    },
   };
   return port;
 }
@@ -506,10 +550,46 @@ async function clickAndRun(label) {
 
   check("unknown board: says no update applies", said("No over-the-air update applies"));
   check("unknown board: explains the single slot", said("one MCUboot slot"));
-  check("unknown board: points at the J-Link", said("J-Link"));
+  /* WITH a whole image published, the answer is the option in the dropdown --
+   * not a trip to find a probe. Telling someone to fetch a J-Link while
+   * "Reinstall over USB" sits beside them is the worst version of this
+   * message, and it is what this used to say. */
+  check("unknown board: points at the reinstall option, not a probe",
+        said("reinstall everything") && !said("J-Link"),
+        statusLog.map((x) => x.text).join(" / "));
   check("unknown board: sent nothing", board.received.length === 0);
   check("unknown board: did not reset", board.resetCount === 0);
   check("unknown board: warns rather than errors", lastKind() === "warn", `kind=${lastKind()}`);
+}
+
+/* ---- scenario 2b: the same board, but no whole image was published ---------
+ *
+ * Now the J-Link really IS the only answer, and the message has to say so. The
+ * pair of these is the point: the advice has to track what was published, not
+ * what the code once assumed. */
+
+{
+  installDom();
+  installFetch();
+  const saved = INDEX.targets.dwm3001cdk.recovery;
+  delete INDEX.targets.dwm3001cdk.recovery;
+
+  const board = new FakeBoard(STRANGER);
+  board.windowOpen = true;
+  await loadPage(board);
+  dom["fota-target"].value = "dwm3001cdk";
+
+  await clickAndRun("scenario 2b");
+
+  check("no recovery: still says no update applies",
+        said("No over-the-air update applies"));
+  check("no recovery: points at the J-Link, because now it is the only way",
+        said("J-Link"), statusLog.map((x) => x.text).join(" / "));
+  check("no recovery: does not offer an option that is not there",
+        !said("reinstall everything"));
+  check("no recovery: sent nothing", board.received.length === 0);
+
+  INDEX.targets.dwm3001cdk.recovery = saved;
 }
 
 /* ---- scenario 3: a board already on the latest image ----------------------- */
@@ -663,7 +743,11 @@ async function clickAndRun(label) {
   check("serial: opened the port at 115200",
         openedPort && openedPort.opened && openedPort.opened.baudRate === 115200,
         JSON.stringify(openedPort && openedPort.opened));
-  check("serial: the port was closed when the page let go", openedPort.closed);
+  check("serial: the port was actually closed, not just cancelled",
+        openedPort.isOpen === false);
+  check("serial: no stream was left locked",
+        !openedPort.readLocked && !openedPort.writeLocked,
+        `read=${openedPort.readLocked} write=${openedPort.writeLocked}`);
 
   const overBle = Math.ceil(DELTA.length / smp.BLE_CHUNK);
   const overSerial = Math.ceil(DELTA.length / serialMod.APP_CHUNK);
@@ -773,6 +857,55 @@ async function clickAndRun(label) {
         dom["fota-how"].children.map((o) => o.value).join(","));
 
   INDEX.targets.dwm3001cdk.recovery = saved;
+}
+
+/* ---- scenario 8: the flow fails, and the port still has to be given back ----
+ *
+ * THE FAILURE THAT COSTS A PAGE RELOAD. Every error path in the CDK flow used
+ * to leak the link, because releasing it was done at the three places somebody
+ * thought of rather than once at the exit. Over Bluetooth that is invisible --
+ * the browser tidies up. Over a cable it is not: an open SerialPort cannot be
+ * reopened, because requestPort() hands back the same object and open() rejects
+ * with InvalidStateError. The retry then fails for a reason that has nothing to
+ * do with the board, and only closing the tab clears it.
+ *
+ * So the assertion is not "an error was reported" -- it is "the port is usable
+ * again afterwards", which is the thing the user actually needs.
+ */
+
+{
+  installDom();
+  installFetch();
+  const board = new FakeBoard(OLD);
+  board.applyTo = NEW;
+  let openedPort = null;
+  await loadPage(board, "serial", (port) => { openedPort = port; return port; });
+  dom["fota-target"].value = "dwm3001cdk";
+
+  /* The update window never opens. This is a real, reachable end state: the
+   * page waits three minutes and gives up. */
+  board.windowOpen = false;
+
+  await clickAndRun("scenario 8");
+
+  check("failed flow: reported a failure", lastKind() === "err" || lastKind() === "warn",
+        `kind=${lastKind()}`);
+  check("failed flow: the port was closed anyway",
+        openedPort && openedPort.isOpen === false,
+        `isOpen=${openedPort && openedPort.isOpen}`);
+  check("failed flow: no stream left locked",
+        openedPort && !openedPort.readLocked && !openedPort.writeLocked,
+        `read=${openedPort && openedPort.readLocked} write=${openedPort && openedPort.writeLocked}`);
+
+  /* The proof that matters: it can be opened again. */
+  let reopened = true;
+  try {
+    await openedPort.open({ baudRate: 115200 });
+  } catch {
+    reopened = false;
+  }
+  check("failed flow: the port can be opened again", reopened);
+  check("failed flow: nothing was written to the board", board.received.length === 0);
 }
 
 /* ---- verdict --------------------------------------------------------------- */

@@ -694,6 +694,17 @@ ota-push: $(CDK_OTA_PY)
 	@printf '  recorded as deployed  ·  %s\n' '$(CDK_DEPLOYED)'
 
 ## ota-smp: push the patch over mcumgr instead, exactly as a phone would
+##   OTA_SERIAL=auto   go down the cable instead of the radio (or give a port)
+#
+# THE CABLE IS A VARIABLE, NOT A SECOND PAIR OF TARGETS, and that is the point
+# rather than a shortcut. uart0 carries the same mcumgr conversation the radio
+# carries -- same handler, same signature check, same update window -- so a
+# target that behaved differently would be claiming a difference that does not
+# exist. What changes is one argument to one script.
+#
+# `auto` picks the first /dev/cu.usbmodem*, which on a machine with one board
+# attached is the J-Link OB's VCOM. Give an explicit port when more than one
+# probe is plugged in; `ls /dev/cu.usbmodem*` lists them.
 #
 # SETS ITS OWN CONFIGURATION, like `fota` and for the same reason: this target
 # is definitionally the mcumgr path, and a board without SMP does not speak it
@@ -704,17 +715,41 @@ ota-smp:
 	@$(MAKE) --no-print-directory ota-smp-push \
 	  SMP=1 RELEASE=1 CDK_BUILD='$(CDK_FOTA_BUILD)'
 
+# Resolves OTA_SERIAL into $$port, or exits saying so. `auto` and `1` both mean
+# "find it", so `make ota-smp OTA_SERIAL=1` does the obvious thing.
+CDK_PORT_RESOLVE = port='$(OTA_SERIAL)'; \
+	if [ "$$port" = auto ] || [ "$$port" = 1 ]; then \
+	  port=$$(ls /dev/cu.usbmodem* 2>/dev/null | head -n1); \
+	fi; \
+	if [ -z "$$port" ]; then \
+	  printf '  no serial port found  ·  plug the J-Link (J9) in, or pass\n' >&2; \
+	  printf '  OTA_SERIAL=/dev/cu.usbmodemXXXX  ·  `ls /dev/cu.usbmodem*` lists them\n' >&2; \
+	  exit 1; \
+	fi
+
 ota-smp-push: $(CDK_OTA_PY)
 	@test -f '$(CDK_PATCH)' || { printf '  no patch at %s  ·  run `make fota`\n' '$(CDK_PATCH)' >&2; exit 1; }
-	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py '$(CDK_PATCH)' \
-	  $(if $(OTA_NAME),--name '$(OTA_NAME)')
+	@if [ -n '$(OTA_SERIAL)' ]; then \
+	  $(CDK_PORT_RESOLVE); \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py '$(CDK_PATCH)' \
+	    --serial "$$port" || exit 1; \
+	else \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py '$(CDK_PATCH)' \
+	    $(if $(OTA_NAME),--name '$(OTA_NAME)') || exit 1; \
+	fi
 	@mkdir -p '$(dir $(CDK_DEPLOYED))' && cp '$(CDK_SIGNED_HEX)' '$(CDK_DEPLOYED)'
 	@cp '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.elf' '$(CDK_DEPLOYED_ELF)' 2>/dev/null || true
 	@printf '  recorded as deployed  ·  %s\n' '$(CDK_DEPLOYED)'
 
+## ota-smp-list: print what the board is running  ·  OTA_SERIAL=auto for the cable
 ota-smp-list: $(CDK_OTA_PY)
-	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list \
-	  $(if $(OTA_NAME),--name '$(OTA_NAME)')
+	@if [ -n '$(OTA_SERIAL)' ]; then \
+	  $(CDK_PORT_RESOLVE); \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list --serial "$$port"; \
+	else \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list \
+	    $(if $(OTA_NAME),--name '$(OTA_NAME)'); \
+	fi
 
 ## ota-window: open the update window over SWD instead of pressing SW2
 ota-window:
@@ -847,10 +882,12 @@ $(CDK_OTA_PY):
 	@printf '  creating the update tooling virtualenv  ·  %s\n' '$(CDK_OTA_VENV)'
 	@python3 -m venv '$(CDK_OTA_VENV)'
 	@'$(CDK_OTA_VENV)/bin/pip' install --quiet --disable-pip-version-check \
-	  detools cryptography bleak
-	@printf '  ready  ·  detools, cryptography, bleak\n'
+	  detools cryptography bleak pyserial
+	@printf '  ready  ·  detools, cryptography, bleak, pyserial\n'
 
-## dfu-serial: the old serial-recovery upload  ·  kept, but it does not work
+## dfu-serial: MCUboot serial recovery via the Go mcumgr  ·  see CDK-16, unreliable
+##   For the APPLICATION over the same cable, use `make ota-smp OTA_SERIAL=auto`
+##   instead -- that path is new, is not CDK-16, and does not involve mcumgr.
 dfu-serial:
 	@port='$(DFU_PORT)'; \
 	if [ -z "$$port" ]; then port=$$(ls /dev/cu.usbmodem* 2>/dev/null | head -n1); fi; \

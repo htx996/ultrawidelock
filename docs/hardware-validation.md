@@ -138,11 +138,29 @@ first thing most people saw.
 
 CDK-32 through CDK-36 are the cable. CDK-32 and CDK-33 are low risk and cost one
 build: the transport changed, nothing above it did, and a host suite already
-compares the framing byte for byte against the standard library's CRC-16/XMODEM
-and base64.
+compares the framing byte for byte across three implementations -- the standard
+library's CRC-16/XMODEM and base64, the CLI client, and the browser's copy.
+
+**None of these rows needs a browser.** `ultrawidelock_smp.py --serial` speaks
+the same protocol from the command line, which is the cheaper way to run them
+and the one that isolates the firmware:
+
+```sh
+make flash SMP=1 RELEASE=1               # the image with the UART transport in it
+make ota-smp-list OTA_SERIAL=auto        # CDK-32, the identify half
+make ota-smp      OTA_SERIAL=auto        # CDK-32, the upload half
+```
+
+Running the CLI first is worth the extra step rather than a detour. If it works
+and the page does not, the fault is in JavaScript; if neither works, the fault
+is in the firmware or the wire, and no amount of reading the page will find it.
+That split is otherwise expensive to make.
 
 CDK-35 and CDK-36 are the ones that matter, and CDK-35 should be run before
-anything else on this list is attempted, because of what it can settle. CDK-16
+anything else on this list is attempted, because of what it can settle. It has a
+command-line form too -- `ultrawidelock_smp.py --serial PORT --chunk 128` against
+a board held in recovery -- which is the same second opinion without the browser
+in the way. CDK-16
 has been open since 2026-08-02 with a symptom nobody has explained: MCUboot sits
 in its recovery window on a UART that is measurably working, and does not
 answer. Everything ruled out so far was ruled out from the board's side. The

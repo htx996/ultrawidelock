@@ -137,18 +137,34 @@ function loadIndex() {
  * are probed separately and the panel offers whichever exist, rather than
  * treating "no Bluetooth" as "no updates".
  */
+const CHOOSER_EMPTY_BLE =
+  "If you cancelled, nothing was sent and nothing changed. If the list was empty: " +
+  "a board with no firmware on it yet is not advertising anything, so it cannot show " +
+  "up here — install over a cable first (ESP32) or over the J-Link (DWM3001CDK), then " +
+  "come back. An already-flashed board that is missing may be mid-commissioning; " +
+  "power-cycle it and retry.";
+
+const CHOOSER_EMPTY_SERIAL =
+  "If you cancelled, nothing was sent and nothing changed. If no likely port was " +
+  "listed: the DWM3001CDK's port is the J-Link one, and it is there whenever the " +
+  "board is plugged in — it belongs to the probe, so it appears even when the " +
+  "board's own software is not running at all. The second USB socket is not it, and " +
+  "shows nothing outside provisioning mode.";
+
 const HOW = {
   ble: {
     label: "Bluetooth — no cable",
     available: () => !!navigator.bluetooth,
     run: (target) => runCdk(target, linkBle),
     button: "Find my board over Bluetooth",
+    empty: CHOOSER_EMPTY_BLE,
   },
   serial: {
     label: "USB cable — faster",
     available: () => !!navigator.serial,
     run: (target) => runCdk(target, linkSerial),
     button: "Find my board over USB",
+    empty: CHOOSER_EMPTY_SERIAL,
   },
   /*
    * THE ONLY WHOLE-IMAGE PATH THIS BOARD HAS, and the only one that works when
@@ -174,6 +190,7 @@ const HOW = {
     needs: (target) => !!target.recovery,
     run: (target) => runCdkRecovery(target),
     button: "Reinstall over USB",
+    empty: CHOOSER_EMPTY_SERIAL,
   },
 };
 
@@ -204,6 +221,7 @@ async function linkBle() {
   return {
     session,
     what: device.name || "the board",
+    gone: "or it may have gone out of range",
     /*
      * A RECONNECT, because the board drops the link when it reboots and the
      * device handle survives it. No new user gesture is needed for this, which
@@ -238,6 +256,7 @@ async function linkSerial() {
   return {
     session,
     what: "the board over the cable",
+    gone: "or the cable may have been unplugged",
     /*
      * THE SAME SESSION, and that is a property of the hardware rather than a
      * shortcut. The USB device here belongs to the J-Link OB, not to the
@@ -261,6 +280,25 @@ async function linkSerial() {
 
 async function runCdk(target, openLink) {
   const link = await openLink();
+  try {
+    await cdkFlow(target, link);
+  } catch (err) {
+    /*
+     * RELEASE ON EVERY EXIT. This used to be three `link.release()` calls on
+     * the three paths somebody thought of; the ones nobody thought of -- the
+     * board falling silent, a size mismatch, the update window never opening,
+     * a write past the MTU -- left a WebSerial port open. An open port cannot
+     * be reopened: requestPort() hands back the same object and open() rejects
+     * with InvalidStateError, so the retry fails for a reason that has nothing
+     * to do with the board and only closing the tab clears it. A radio link
+     * forgives being dropped on the floor. A cable does not.
+     */
+    link.release();
+    throw err;
+  }
+}
+
+async function cdkFlow(target, link) {
   const session = link.session;
   say("busy", `Connected to ${link.what}.`, "Asking what it is running…");
 
@@ -282,16 +320,25 @@ async function runCdk(target, openLink) {
     return;
   }
 
-  const update = target.updates[running];
+  /* `|| {}` because a hand-edited or pre-recovery index can omit the key, and
+   * "Cannot read properties of undefined" is not a sentence anyone can act on.
+   * ota-index.py always emits it, even as {}. */
+  const update = (target.updates || {})[running];
 
   if (!update) {
     /* A single MCUboot slot means a delta or nothing. This is the honest end
      * of the road, not a retryable error, so it must not read like one. */
+    /* WHAT TO DO INSTEAD DEPENDS ON WHAT WAS PUBLISHED. Sending someone to find
+     * a J-Link while "Reinstall over USB" sits in the dropdown beside them is
+     * the worst version of this message, and it is what it used to say. */
+    const fallback = target.recovery
+      ? `Pick “${HOW.recover.label}” above instead — it writes the whole image ` +
+        `through the bootloader, so it needs no starting image to work from.`
+      : `Use the J-Link and the release bundle.`;
     say("warn", "No over-the-air update applies to this board.",
         `It is running ${running.slice(0, 16)}…, which is not an image we publish an ` +
-        `update from. The DWM3001CDK has one MCUboot slot, so what travels over the ` +
-        `air is a delta against exactly the bytes already on the part — there is no ` +
-        `whole-image path to fall back on. Use the J-Link and the release bundle.`);
+        `update from. The DWM3001CDK has one MCUboot slot, so an update is a delta ` +
+        `against exactly the bytes already on the part. ` + fallback);
     link.release();
     return;
   }
@@ -528,8 +575,9 @@ async function verifyCdk(link, update) {
     } catch (err) {
       if (Date.now() > deadline) {
         say("warn", "The board did not come back in time.",
-            `It may still be applying, or it may have gone out of range. Reconnecting ` +
-            `will say what it is running. (${err.message})`);
+            `It may still be applying, ${link.gone}. Reconnecting will say what it is ` +
+            `running. (${err.message})`);
+        link.release();
         return;
       }
       await new Promise((r) => setTimeout(r, APPLY_RETRY_MS));
@@ -592,6 +640,12 @@ async function go() {
   const select = el("fota-target");
   const key = select ? select.value : "";
 
+  /* Remembered because the chooser throws BEFORE any link exists, and the
+   * message for "nothing picked" is different for a device chooser and a port
+   * chooser. Defaults to the Bluetooth wording, which is what the ESP32 path
+   * uses -- it has no chooser of its own to pick from. */
+  let how = null;
+
   busy(true);
   hideProgress();
 
@@ -607,7 +661,7 @@ async function go() {
     }
 
     if (target.transport === "smp") {
-      const how = chosenHow(target);
+      how = chosenHow(target);
       if (!how) throw new Error("this browser has neither Web Bluetooth nor WebSerial");
       await HOW[how].run(target);
     }
@@ -623,12 +677,15 @@ async function go() {
      * decision and must not be dressed up as a failure either, so the message
      * has to carry both readings without alarming the first one. */
     if (err && err.name === "NotFoundError") {
-      say("idle", "No board picked.",
-          "If you cancelled, nothing was sent and nothing changed. If the list was " +
-          "empty: a board with no firmware on it yet is not advertising anything, so " +
-          "it cannot show up here — install over a cable first (ESP32) or over the " +
-          "J-Link (DWM3001CDK), then come back. An already-flashed board that is " +
-          "missing may be mid-commissioning; power-cycle it and retry.");
+      /* Both choosers throw this, and they mean different things by it. A
+       * device chooser was empty because nothing was advertising; a port
+       * chooser lists the J-Link whether or not the board is running anything,
+       * so "install firmware first" would be actively wrong there -- and on the
+       * recovery path it would send someone to fetch the probe that path exists
+       * to make unnecessary. */
+      const spec = (how && HOW[how]) || HOW.ble;
+      say("idle", how === "ble" || !how ? "No board picked." : "No port picked.",
+          spec.empty);
     } else {
       say("err", "That did not work.", err && err.message ? err.message : String(err));
     }
@@ -684,10 +741,16 @@ export function init() {
   const how = el("fota-how");
   const howRow = el("fota-how-row");
 
+  /* Falls back to a NEUTRAL label, not to the browser's first transport. The
+   * old fallback was HOW[usable[0]], which is browser-wide -- so on a Chromium
+   * build with WebSerial and no Bluetooth adapter, selecting an ESP32 target
+   * (which has no mcumgr transports at all, so `how.value` is "") labelled the
+   * button "Find my board over USB" for a path that is Bluetooth-only. */
   const relabel = () => {
-    const spec = HOW[how && how.value] || HOW[usable[0]];
-    go_.dataset.idle = spec.button;
-    if (!go_.disabled) go_.textContent = spec.button;
+    const spec = HOW[how && how.value];
+    const label = spec ? spec.button : "Find my board";
+    go_.dataset.idle = label;
+    if (!go_.disabled) go_.textContent = label;
   };
 
   function rebuildHow(target) {

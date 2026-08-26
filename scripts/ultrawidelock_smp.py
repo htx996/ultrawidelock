@@ -19,6 +19,8 @@ venv to encode that would be more moving parts than the encoder itself.
 """
 
 import argparse
+import base64
+import binascii
 import asyncio
 import struct
 import sys
@@ -226,12 +228,225 @@ def cbor_decode(buf, i=0):
 # ---- SMP over GATT -----------------------------------------------------------
 
 
+# ---- mcumgr's serial framing ------------------------------------------------
+#
+# THE CABLE IS THE SAME PROTOCOL, and only this much stands between them. A GATT
+# characteristic is a datagram: one write is one packet, and the controller
+# fragments. A serial port is a byte stream with no packet boundaries at all, so
+# mcumgr defines its own framing on top, and this is that framing.
+#
+# Transcribed from zephyr/subsys/mgmt/mcumgr/transport/src/serial_util.c and
+# zephyr/include/zephyr/mgmt/mcumgr/transport/serial.h:
+#
+#   packet   be16(len(body) + 2) || body || be16(crc16(body))
+#   frame    be16(marker) || base64(slice of packet) || b"\n"
+#   marker   0x0609 on a packet's first frame, 0x0414 on every continuation
+#   limit    127 bytes per frame INCLUDING the markers and the newline
+#
+# The length word counts the CRC but not itself. A receiver checks a packet by
+# running the same CRC over the body AND its trailing CRC and requiring zero.
+#
+# binascii.crc_hqx(data, 0) IS CRC-16/XMODEM -- poly 0x1021, init 0x0000, not
+# reflected -- which is exactly what serial_util.c:30 calls crc16_itu_t(0, ...).
+# Using the standard library rather than hand-rolling it is the point: this file
+# is the reference the browser's copy is diffed against, so the fewer things in
+# it that are mine, the more that diff is worth.
+SERIAL_HDR_PKT = 0x0609
+SERIAL_HDR_FRAG = 0x0414
+SERIAL_MAX_FRAME = 127
+SERIAL_FIRST_INPUT = ((SERIAL_MAX_FRAME - 3) >> 2) * 3   # 93
+SERIAL_NEXT_INPUT = SERIAL_FIRST_INPUT - 3               # 90
+
+
+def serial_encode(body):
+    """Wrap one SMP frame into the line-oriented frames mcumgr expects."""
+    crc = binascii.crc_hqx(body, 0)
+    pkt = struct.pack(">H", len(body) + 2) + body + struct.pack(">H", crc)
+
+    out = bytearray()
+    off, first = 0, True
+    while off < len(pkt):
+        take = min(SERIAL_FIRST_INPUT if first else SERIAL_NEXT_INPUT, len(pkt) - off)
+        out += struct.pack(">H", SERIAL_HDR_PKT if first else SERIAL_HDR_FRAG)
+        out += base64.b64encode(pkt[off : off + take])
+        out += b"\n"
+        off += take
+        first = False
+    return bytes(out)
+
+
+class SerialFramer:
+    """Reassembles SMP frames out of a byte stream.
+
+    TOLERATES NOISE, and has to: uart0 carries MCUboot's banner, whatever a
+    previous session left half-written, and anything the board printed before
+    this process opened the port. So an unrecognised line is dropped rather than
+    raised, and a packet that fails its CRC is dropped rather than left
+    half-built to poison the next one.
+    """
+
+    def __init__(self):
+        self.line = bytearray()
+        self.pkt = bytearray()
+        self.want = 0
+        self.overrun = False
+        self.last = -1
+
+    def feed(self, chunk):
+        done = []
+        for byte in chunk:
+            # RESYNC ON A PACKET MARKER, wherever it turns up. Everything after
+            # a frame's two marker bytes is base64, and the base64 alphabet is
+            # A-Za-z0-9+/= -- so 0x06 0x09 CANNOT occur inside a well-formed
+            # frame. Seeing it means a new packet started here, whatever was
+            # being accumulated before. Without this, a long run of output with
+            # no newline in it swallows the next real frame too, because the two
+            # are one line as far as a newline-delimited reader can tell.
+            if self.last == 0x06 and byte == 0x09:
+                self.overrun = False
+                self.line = bytearray(b"\x06\x09")
+                self.last = byte
+                continue
+            self.last = byte
+
+            if byte == 0x0A:                       # end of a frame
+                if self.overrun:
+                    self.overrun = False
+                    self.line = bytearray()
+                    continue
+                pkt = self._line(bytes(self.line))
+                self.line = bytearray()
+                if pkt is not None:
+                    done.append(pkt)
+            elif byte != 0x0D:                     # ignore the CR in CRLF
+                if self.overrun:
+                    continue
+                # A frame is 127 bytes at most. Anything longer is not one, and
+                # letting it grow turns a chatty port into a memory leak.
+                if len(self.line) < SERIAL_MAX_FRAME:
+                    self.line.append(byte)
+                else:
+                    self.overrun = True
+                    self.line = bytearray()
+        return done
+
+    def _line(self, line):
+        if len(line) < 2:
+            return None
+        marker = struct.unpack_from(">H", line, 0)[0]
+
+        if marker == SERIAL_HDR_PKT:
+            self.pkt = bytearray()
+            self.want = 0
+        elif marker != SERIAL_HDR_FRAG:
+            return None                            # console noise, not a frame
+        elif not self.pkt and self.want == 0:
+            return None                            # continuation with no start
+
+        try:
+            self.pkt += base64.b64decode(line[2:], validate=True)
+        except (ValueError, binascii.Error):
+            self._reset()
+            return None
+
+        if marker == SERIAL_HDR_PKT:
+            if len(self.pkt) < 2:
+                return None
+            self.want = struct.unpack_from(">H", self.pkt, 0)[0]
+            del self.pkt[:2]
+
+        if self.want == 0 or len(self.pkt) < self.want:
+            return None
+        if len(self.pkt) > self.want:
+            self._reset()
+            return None
+
+        full = bytes(self.pkt)
+        self._reset()
+
+        # CRC over the body AND its trailing CRC comes out zero when it checks.
+        if binascii.crc_hqx(full, 0) != 0:
+            return None
+        return full[:-2]
+
+    def _reset(self):
+        self.pkt = bytearray()
+        self.want = 0
+
+
+# ---- transports -------------------------------------------------------------
+#
+# `Smp` below talks to one of these rather than to a BLE client directly. The
+# interface is one method and one number: `send(frame)` and `chunk`. Everything
+# above it -- header, CBOR, image group, upload loop -- is identical either way,
+# which is the whole claim the cable path rests on.
+
+
+class BleTransport:
+    """A notifying SMP characteristic."""
+
+    def __init__(self, client):
+        self.client = client
+        # Leave room for the SMP header and the CBOR keys around the data. The
+        # board's netbuf is 512 B, so this is bounded by the ATT MTU, not by it.
+        mtu = getattr(client, "mtu_size", 0) or 185
+        self.chunk = max(64, mtu - 80)
+
+    async def send(self, frame):
+        await self.client.write_gatt_char(SMP_CHR_UUID, frame, response=False)
+
+
+class SerialTransport:
+    """uart0, which on the DWM3001CDK is the J-Link OB's VCOM.
+
+    TWO DIFFERENT THINGS LISTEN HERE, at different times, and this does not care
+    which answered: the application, through CONFIG_MCUMGR_TRANSPORT_UART, and
+    MCUboot, through CONFIG_MCUBOOT_SERIAL. Same framing for both.
+    """
+
+    def __init__(self, port, baud, chunk):
+        try:
+            import serial                                      # noqa: PLC0415
+        except ImportError:
+            die("pyserial is not installed. Fix: make ota-deps")
+        try:
+            self.ser = serial.Serial(port, baud, timeout=0.05)
+        except Exception as exc:                                # noqa: BLE001
+            die(f"cannot open {port}: {exc}")
+        self.chunk = chunk
+        self.framer = SerialFramer()
+        self.stop = False
+
+    async def send(self, frame):
+        self.ser.write(serial_encode(frame))
+        self.ser.flush()
+
+    async def pump(self, smp):
+        """Feed the conversation, until cancelled."""
+        while not self.stop:
+            data = await asyncio.to_thread(self.ser.read, 4096)
+            if not data:
+                continue
+            for pkt in self.framer.feed(data):
+                # Whole packets, where BLE delivers pieces. on_notify
+                # reassembles by the header's own length either way.
+                smp.on_notify(None, pkt)
+
+    def close(self):
+        self.stop = True
+        try:
+            self.ser.close()
+        except Exception:                                       # noqa: BLE001, S110
+            pass
+
+
 class Smp:
     """One mcumgr conversation. Reassembles responses, matches them by seq."""
 
-    def __init__(self, client):
-        """Initialize an SMP protocol instance bound to the given BLE client. Tracks the outgoing sequence number, buffers incoming notification chunks, and queues complete frames."""
-        self.client = client
+    def __init__(self, transport):
+        """Bind one conversation to a transport. Tracks the outgoing sequence
+        number, buffers incoming chunks, and queues complete frames."""
+        self.t = transport
         self.seq = 0
         self.rx = bytearray()
         self.frames = asyncio.Queue()
@@ -254,7 +469,7 @@ class Smp:
         self.seq = (self.seq + 1) & 0xFF
         hdr = struct.pack(">BBHHBB", op, 0, len(body), group, self.seq, cmd_id)
 
-        await self.client.write_gatt_char(SMP_CHR_UUID, hdr + body, response=False)
+        await self.t.send(hdr + body)
 
         while True:
             try:
@@ -271,7 +486,140 @@ class Smp:
         return rsp
 
 
+async def converse(smp, args):
+    """The whole exchange, once something is listening.
+
+    TRANSPORT-INDEPENDENT ON PURPOSE. The radio and the cable differ in how a
+    board is found and how bytes leave; they do not differ in the image list,
+    the signature check, the update window, the upload loop or the reset. If
+    this function ever needs to know which one it is on, something above it has
+    been built wrong.
+    """
+    state = await smp.call(OP_READ_REQ, GRP_IMG, IMG_ID_STATE, {})
+    for img in state.get("images", []):
+        print(
+            f"  slot {img.get('slot')}: v{img.get('version')} "
+            f"sha={img.get('hash', b'')[:8].hex()} "
+            f"active={img.get('active')} confirmed={img.get('confirmed')}"
+        )
+    if args.expect:
+        want = image_sha(args.expect)
+        got = next((i.get("hash", b"") for i in state.get("images", [])), b"")
+        if got != want:
+            die(
+                f"the board is NOT running that image.\n"
+                f"  board  {got.hex()}\n"
+                f"  wanted {want.hex()}\n"
+                f"  The update did not land, so the deployed record must not move:\n"
+                f"  a delta built from the wrong base is refused by the board."
+            )
+        print(f"  confirmed: the board is running {want[:8].hex()}...")
+        return
+
+    if args.list:
+        return
+
+    blob = Path(args.patch).read_bytes()
+    whole_image = False
+    if blob[:4] == b"WDFU":
+        print("  raw .wdfu")
+    elif struct.unpack_from("<I", blob, 0)[0] == 0x96F3B83D:
+        hdr_sz, img_sz = struct.unpack_from("<H", blob, 8)[0], struct.unpack_from("<I", blob, 12)[0]
+        if blob[hdr_sz : hdr_sz + 4] == b"WDFU":
+            # The phone-facing file. Sending it here is the point: it exercises
+            # the board's wrapper-skipping on exactly the bytes the app sends.
+            print(f"  mcuboot-wrapped: {hdr_sz} B header + {img_sz} B patch "
+                  f"+ {len(blob)-hdr_sz-img_sz} B TLV")
+        else:
+            # A WHOLE APPLICATION IMAGE, which is a different thing entirely and
+            # used to be rejected here as a malformed wrapper. It is what
+            # MCUboot's serial recovery takes: no starting image, no delta, the
+            # entire slot. Refusing it meant this script could not drive the one
+            # path that reaches a board whose application does not boot.
+            whole_image = True
+            print(f"  whole MCUboot image: {hdr_sz} B header + {img_sz} B application "
+                  f"+ {len(blob)-hdr_sz-img_sz} B TLV")
+            if not args.serial:
+                die(
+                    "a whole image goes to MCUboot's serial recovery, which is only\n"
+                    "  reachable over the cable. Add --serial PORT, and hold SW2 for\n"
+                    "  five seconds first so the board reboots into the bootloader.\n"
+                    "  (Over the radio the application takes a delta, not an image.)"
+                )
+    else:
+        die(f"{args.patch} is neither a .wdfu nor an MCUboot image. Fix: make fota")
+
+    # MCUboot's receive buffer is smaller than the application's, and a request
+    # it cannot hold is dropped in silence rather than refused -- which reads as
+    # a board that stopped talking. Say so rather than letting it look like the
+    # board's fault.
+    if whole_image and smp.t.chunk > 128:
+        print(f"  note: --chunk {smp.t.chunk} is sized for the application. If the\n"
+              f"        bootloader stops answering mid-upload, retry with --chunk 128.")
+
+    chunk = smp.t.chunk
+    print(f"pushing {len(blob)} B in {chunk} B chunks")
+    off = 0
+    while off < len(blob):
+        body = {"image": 0, "off": off}
+        if off == 0:
+            body["len"] = len(blob)
+        body["data"] = blob[off : off + chunk]
+
+        rsp = await smp.call(OP_WRITE_REQ, GRP_IMG, IMG_ID_UPLOAD, body)
+        nxt = rsp.get("off")
+        if nxt is None:
+            die("no off in the upload response")
+        if nxt == off:
+            die("the board is not advancing; it refused the chunk silently")
+        off = nxt
+        print(f"\r  {off}/{len(blob)} B", end="", flush=True)
+    print("\n staged.")
+
+    if args.no_reset:
+        print(" not resetting (--no-reset). The patch applies at the next boot.")
+        return
+
+    if whole_image:
+        print(" resetting; the board boots straight into the image just written")
+    else:
+        print(" resetting; MCUboot will take 17-31 s to apply the patch")
+    try:
+        await smp.call(OP_WRITE_REQ, GRP_OS, OS_ID_RESET, {}, timeout=5.0)
+    except SystemExit:
+        # A board that reboots before answering is the expected case, not a
+        # failure: the reset response races the reset itself.
+        pass
+
+
+async def run_serial(args):
+    """Talk to whatever is listening on uart0.
+
+    NO SCAN AND NO CHOOSER, which is most of why this path is worth having: a
+    cable is already an unambiguous answer to "which board". It also reaches a
+    board the radio cannot -- MCUboot's serial recovery listens on this same
+    port when the application is not running at all.
+    """
+    print(f"opening {args.serial} at {args.baud}")
+    transport = SerialTransport(args.serial, args.baud, args.chunk)
+    smp = Smp(transport)
+    pump = asyncio.create_task(transport.pump(smp))
+    try:
+        await converse(smp, args)
+    finally:
+        pump.cancel()
+        try:
+            await pump
+        except asyncio.CancelledError:
+            pass
+        transport.close()
+
+
 async def run(args):
+    if args.serial:
+        await run_serial(args)
+        return
+
     try:
         from bleak import BleakClient, BleakScanner
     except ImportError:
@@ -308,80 +656,9 @@ async def run(args):
     # enumerating one of the reader's own characteristics if it is allowed to
     # discover everything. Same trap as ultrawidelock_push.py.
     async with BleakClient(device, services=[SMP_SVC_UUID]) as client:
-        smp = Smp(client)
+        smp = Smp(BleTransport(client))
         await client.start_notify(SMP_CHR_UUID, smp.on_notify)
-
-        state = await smp.call(OP_READ_REQ, GRP_IMG, IMG_ID_STATE, {})
-        for img in state.get("images", []):
-            print(
-                f"  slot {img.get('slot')}: v{img.get('version')} "
-                f"sha={img.get('hash', b'')[:8].hex()} "
-                f"active={img.get('active')} confirmed={img.get('confirmed')}"
-            )
-        if args.expect:
-            want = image_sha(args.expect)
-            got = next((i.get("hash", b"") for i in state.get("images", [])), b"")
-            if got != want:
-                die(
-                    f"the board is NOT running that image.\n"
-                    f"  board  {got.hex()}\n"
-                    f"  wanted {want.hex()}\n"
-                    f"  The update did not land, so the deployed record must not move:\n"
-                    f"  a delta built from the wrong base is refused by the board."
-                )
-            print(f"  confirmed: the board is running {want[:8].hex()}...")
-            return
-
-        if args.list:
-            return
-
-        blob = Path(args.patch).read_bytes()
-        if blob[:4] == b"WDFU":
-            print("  raw .wdfu")
-        elif struct.unpack_from("<I", blob, 0)[0] == 0x96F3B83D:
-            # The phone-facing file. Sending it here is the point: it exercises
-            # the board's wrapper-skipping on exactly the bytes the app sends.
-            hdr_sz, img_sz = struct.unpack_from("<H", blob, 8)[0], struct.unpack_from("<I", blob, 12)[0]
-            print(f"  mcuboot-wrapped: {hdr_sz} B header + {img_sz} B patch + {len(blob)-hdr_sz-img_sz} B TLV")
-            if blob[hdr_sz : hdr_sz + 4] != b"WDFU":
-                die("wrapped file has no WDFU magic at its payload offset")
-        else:
-            die(f"{args.patch} is neither a .wdfu nor an MCUboot image. Fix: make fota")
-
-        # Leave room for the SMP header and the CBOR keys around the data. The
-        # board's netbuf is 512 B, so this is bounded by the ATT MTU, not by it.
-        mtu = getattr(client, "mtu_size", 0) or 185
-        chunk = max(64, mtu - 80)
-
-        print(f"pushing {len(blob)} B in {chunk} B chunks")
-        off = 0
-        while off < len(blob):
-            body = {"image": 0, "off": off}
-            if off == 0:
-                body["len"] = len(blob)
-            body["data"] = blob[off : off + chunk]
-
-            rsp = await smp.call(OP_WRITE_REQ, GRP_IMG, IMG_ID_UPLOAD, body)
-            nxt = rsp.get("off")
-            if nxt is None:
-                die("no off in the upload response")
-            if nxt == off:
-                die("the board is not advancing; it refused the chunk silently")
-            off = nxt
-            print(f"\r  {off}/{len(blob)} B", end="", flush=True)
-        print("\n staged.")
-
-        if args.no_reset:
-            print(" not resetting (--no-reset). The patch applies at the next boot.")
-            return
-
-        print(" resetting; MCUboot will take 17-31 s to apply the patch")
-        try:
-            await smp.call(OP_WRITE_REQ, GRP_OS, OS_ID_RESET, {}, timeout=5.0)
-        except SystemExit:
-            # A board that reboots before answering is the expected case, not a
-            # failure: the reset response races the reset itself.
-            pass
+        await converse(smp, args)
 
 
 def main():
@@ -402,6 +679,21 @@ def main():
     # conclusion entirely.
     ap.add_argument("--scan", type=float, default=12.0, help="scan seconds")
     ap.add_argument("--no-reset", action="store_true", help="stage without rebooting")
+    # THE CABLE. uart0 is the J-Link OB's VCOM, so this is the port the probe
+    # already presents -- no second cable, and no scan.
+    ap.add_argument(
+        "--serial",
+        metavar="PORT",
+        default="",
+        help="talk over uart0 instead of Bluetooth, e.g. /dev/cu.usbmodem0007602216941",
+    )
+    ap.add_argument("--baud", type=int, default=115200,
+                    help="serial rate; MCUboot and the application both use 115200")
+    # 384 leaves room under CONFIG_MCUMGR_TRANSPORT_UART_MTU=512 for the 8-byte
+    # header and the CBOR map. MCUboot's own receive buffer is smaller than the
+    # application's, so a recovery upload wants --chunk 128.
+    ap.add_argument("--chunk", type=int, default=384,
+                    help="serial upload payload per request (default 384; use 128 for MCUboot)")
     args = ap.parse_args()
 
     if not args.list and not args.expect and not args.patch:

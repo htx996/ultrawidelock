@@ -48,12 +48,12 @@ python3 "$ROOT/tests/tooling/fota_wire_vectors.py" "$WORK/vectors.json" "$ROOT"
 printf '\n── fota wire · compare\n'
 node "$ROOT/tests/tooling/fota_wire_check.mjs" "$WORK/vectors.json" "$ROOT"
 
-# The serial transport has no Python counterpart to diff against -- it is new
-# with the browser. What it does have is two pieces the standard library
-# implements independently: binascii.crc_hqx IS CRC-16/XMODEM, and b64encode is
-# base64. So the vectors are built from those rather than from a second copy of
-# serial.js, and a CRC of the wrong variant or a byte order the wrong way round
-# cannot agree with them.
+# The serial transport, three ways. The vectors are built from the STANDARD
+# LIBRARY -- binascii.crc_hqx IS CRC-16/XMODEM, b64encode is base64 -- and the
+# generator checks ultrawidelock_smp.py against them in-process before writing
+# them out for the browser. So the CLI client and the page are compared to each
+# other through something neither of them wrote, and a CRC of the wrong variant
+# or a byte order the wrong way round cannot agree with any of it.
 printf '\n── fota serial · framing\n'
 python3 "$ROOT/tests/tooling/serial_frame_vectors.py" "$WORK/serial.json"
 node "$ROOT/tests/tooling/serial_frame_check.mjs" "$WORK/serial.json" "$ROOT"
