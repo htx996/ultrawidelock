@@ -253,6 +253,32 @@ def build(args):
     from_data = load_image(args.from_image)
     to_data = load_image(args.to_image)
 
+    # A patch from an image to ITSELF, which detools will happily produce: the
+    # in-place format carries segment and step structure regardless, so the
+    # result is several KB of overhead that changes nothing. Signed and named
+    # like any other update, it then travels all the way to a board -- which
+    # spends a flash erase, a write and a reboot arriving exactly where it
+    # started, and reports success.
+    #
+    # The usual cause is an unchanged build: `make fota` after editing
+    # something outside the firmware sources rebuilds nothing, and ninja
+    # re-emits a byte-identical image. MEASURED 2026-08-27: 0 bytes differing
+    # between the deployed record and a fresh build, and a 7,391 B patch built
+    # from it anyway.
+    #
+    # The SHA-256 TLV is the right comparison rather than the raw bytes,
+    # because it is what the board reports and what the filename carries -- two
+    # builds of identical code can differ in their randomised signature while
+    # remaining the same image, and that is still nothing to ship.
+    if image_sha(args.from_image) == image_sha(args.to_image):
+        die(
+            f"--from and --to are the same image ({image_sha(args.from_image)[:8].hex()}).\n"
+            f"  A patch from an image to itself is several KB that changes nothing, and\n"
+            f"  a board would erase, write and reboot to arrive where it started.\n"
+            f"  Nothing in the firmware changed -- an edit outside the firmware sources\n"
+            f"  rebuilds nothing. Change something under apps/ or modules/ and rebuild."
+        )
+
     if args.memory_size:
         memory_size = args.memory_size
         staging_size = args.staging_size

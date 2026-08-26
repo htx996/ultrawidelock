@@ -82,6 +82,19 @@ def collect_cdk(cdk_dir):
         if not bin_path.is_file():
             die(f"{zip_path} names {entry['file']}, which is not beside it")
 
+        # An update from an image to ITSELF. ultrawidelock_patch.py refuses to
+        # build one now, but this is the file that decides what gets PUBLISHED,
+        # and an older delta could still be sitting in the directory. Left in,
+        # the page would offer a board an update to the image it is already
+        # running -- and then "verify" it by checking the hash still matches,
+        # which it trivially does. Success, reported for nothing.
+        if from_sha == to_sha:
+            die(
+                f"{entry['file']} applies to the image it produces ({from_sha[:16]}...).\n"
+                f"  That is an update to the image the board already runs. It usually\n"
+                f"  means the build did not change between the two releases."
+            )
+
         # Two deltas claiming the same starting image cannot both be right, and
         # picking one silently would mean the page installs a different build
         # than the directory listing suggests. Refuse instead.

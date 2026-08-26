@@ -452,6 +452,55 @@ async function clickAndRun(label) {
   check("up-to-date board: reports ok", lastKind() === "ok", `kind=${lastKind()}`);
 }
 
+/* ---- scenario 3b: latest, AND an entry claiming to update it ---------------- */
+
+/*
+ * Regression. A build that does not change between two releases produces a
+ * delta whose starting image is also its destination, and a published set can
+ * contain one. Looking the running hash up in `updates` before checking whether
+ * it is already the latest finds that entry and offers the board an update to
+ * what it is already running -- and the verify afterwards PASSES, because the
+ * hash it waits for is the hash that never moved. Success, reported for
+ * nothing, with a flash erase and a reboot spent on it.
+ *
+ * Seen for real on 2026-08-27: a `make fota` after an edit outside the firmware
+ * sources rebuilt a byte-identical image and produced a 7,391 B self-patch.
+ */
+{
+  installDom();
+  const selfPatch = {
+    schema: 1,
+    targets: {
+      dwm3001cdk: {
+        transport: "smp",
+        name: "DWM3001CDK",
+        dir: "dwm3001cdk",
+        latest: { version: "0.3.1", sha256: NEW },
+        updates: {
+          [NEW]: { file: "self.bin", size: DELTA.length, to: NEW, version: "0.3.1" },
+        },
+      },
+    },
+  };
+  globalThis.fetch = async (url) => {
+    if (url.includes("ota-index.json")) {
+      return { ok: true, status: 200, json: async () => selfPatch };
+    }
+    return { ok: true, status: 200, arrayBuffer: async () => DELTA.buffer.slice(0) };
+  };
+
+  const board = new FakeBoard(NEW);
+  board.windowOpen = true;
+  await loadPage(board);
+  dom["fota-target"].value = "dwm3001cdk";
+
+  await clickAndRun("scenario 3b");
+
+  check("self-patch: reports up to date, not an update", said("Already up to date"));
+  check("self-patch: sent nothing", board.received.length === 0);
+  check("self-patch: did not reset", board.resetCount === 0);
+}
+
 /* ---- scenario 4: the update does not take ---------------------------------- */
 
 {

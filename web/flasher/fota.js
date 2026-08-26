@@ -112,22 +112,33 @@ async function runCdk(target) {
   say("busy", `Connected to ${device.name || "the board"}.`, "Asking what it is running…");
 
   const running = await session.runningHash();
+
+  /* ALREADY-LATEST IS CHECKED FIRST, ahead of the index lookup, and the order
+   * is not cosmetic. A published set can contain an update whose starting image
+   * IS the latest -- a build that did not change between two releases produces
+   * exactly that -- and looking the hash up first would find it and cheerfully
+   * offer the board an update to what it is already running. The verify step
+   * afterwards would even pass, because the hash it checks for is the hash that
+   * was already there. ota-index.py now refuses to publish such an entry, and
+   * this is the second line of defence for a set that predates that check. */
+  if (running === target.latest.sha256) {
+    say("ok", "Already up to date.",
+        `This board is running ${target.latest.version} ` +
+        `(${running.slice(0, 16)}…), which is the current release.`);
+    device.gatt.disconnect();
+    return;
+  }
+
   const update = target.updates[running];
 
   if (!update) {
-    if (running === target.latest.sha256) {
-      say("ok", "Already up to date.",
-          `This board is running ${target.latest.version} ` +
-          `(${running.slice(0, 16)}…), which is the current release.`);
-    } else {
-      /* A single MCUboot slot means a delta or nothing. This is the honest end
-       * of the road, not a retryable error, so it must not read like one. */
-      say("warn", "No over-the-air update applies to this board.",
-          `It is running ${running.slice(0, 16)}…, which is not an image we publish an ` +
-          `update from. The DWM3001CDK has one MCUboot slot, so what travels over the ` +
-          `air is a delta against exactly the bytes already on the part — there is no ` +
-          `whole-image path to fall back on. Use the J-Link and the release bundle.`);
-    }
+    /* A single MCUboot slot means a delta or nothing. This is the honest end
+     * of the road, not a retryable error, so it must not read like one. */
+    say("warn", "No over-the-air update applies to this board.",
+        `It is running ${running.slice(0, 16)}…, which is not an image we publish an ` +
+        `update from. The DWM3001CDK has one MCUboot slot, so what travels over the ` +
+        `air is a delta against exactly the bytes already on the part — there is no ` +
+        `whole-image path to fall back on. Use the J-Link and the release bundle.`);
     device.gatt.disconnect();
     return;
   }
