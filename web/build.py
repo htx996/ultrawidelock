@@ -370,7 +370,7 @@ def emit_meta(pages: list[str]) -> list[Path]:
     <li><a href="index.html"><span class="row-name">home</span><span class="row-desc">what this firmware is, and how a door opens</span></a></li>
     <li><a href="docs/index.html"><span class="row-name">guides</span><span class="row-desc">bring-up, porting and bench notes</span></a></li>
     <li><a href="twin/index.html"><span class="row-name">twin</span><span class="row-desc">the ranging stack, running in the page</span></a></li>
-    <li><a href="flash/index.html"><span class="row-name">flash</span><span class="row-desc">write an ESP32 image over WebSerial</span></a></li>
+    <li><a href="flash/index.html"><span class="row-name">flash</span><span class="row-desc">write an ESP32 image over a cable, or update a board over the air</span></a></li>
     <li><a href="{GITHUB}" data-ext><span class="row-name">source</span><span class="row-desc">github.com/ultrawidelock</span></a></li>
   </ul>
 </main>
@@ -736,6 +736,37 @@ def stage_firmware() -> list[Path]:
     return staged
 
 
+def stage_ota() -> list[Path]:
+    """Copy the over-the-air updates and the index the FOTA panel reads.
+
+    `make ota-fan` leaves both in build/release/ota. Absent is the NORMAL
+    state, not a failure: a clone that has never cut a release has nothing to
+    publish, and CI's docs-check runs in exactly that state. So this stays
+    quiet about missing artifacts and lets the page degrade at runtime -- it
+    fetches the index, does not find one, and says no updates are published.
+
+    Deliberately unlike stage_firmware(), which marks the page when its images
+    are missing. That one has a button that would 404; this one already asks
+    the network for the index before it offers anything, so there is no dead
+    control to warn about.
+    """
+    src_root = ROOT / "build" / "release" / "ota"
+    index = src_root / "ota-index.json"
+    if not index.is_file():
+        return []
+
+    out_root = DIST / "flash" / "ota"
+    if out_root.exists():
+        shutil.rmtree(out_root)
+    shutil.copytree(src_root, out_root)
+
+    staged = [p for p in out_root.rglob("*") if p.is_file()]
+    total = sum(p.stat().st_size for p in staged)
+    print(f"build: {len(staged) - 1} over-the-air update(s) -> flash/ota/  "
+          f"({total // 1024} KB)")
+    return staged
+
+
 def _chip_of(binary_name: str) -> str:
     for chip in ESP_CHIPS:
         if binary_name.endswith(f"-{chip}.bin"):
@@ -962,6 +993,7 @@ def main() -> int:
     written.append(build_landing())
     written += build_docs()
     written += stage_firmware()
+    written += stage_ota()
     graph_page = build_graph()
     if graph_page:
         written.append(graph_page)

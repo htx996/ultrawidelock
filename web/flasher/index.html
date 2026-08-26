@@ -28,8 +28,8 @@
                base-uri 'self';
                form-action 'none';
                frame-ancestors 'none'">
-<title>Flash UltraWideLock to an ESP32 from the browser</title>
-<meta name="description" content="Install the UltraWideLock ESP32 Matter lock over WebSerial. No ESP-IDF, no command line: the page detects your chip and writes the right merged image.">
+<title>Flash and update UltraWideLock from the browser</title>
+<meta name="description" content="Install the UltraWideLock ESP32 Matter lock over WebSerial, or update a board you already have over Bluetooth. No ESP-IDF, no probe, no command line.">
 <script>(function(){try{var t=localStorage.getItem('uwl-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <script>document.documentElement.className+=' js';</script>
 <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
@@ -239,6 +239,43 @@ ewt-install-dialog{
   margin-bottom:var(--sp-2)}
 .chipcard p{margin:var(--sp-2) 0 0;font-size:var(--fs-300);color:var(--muted);
   line-height:var(--lh-normal)}
+
+/* Over-the-air panel. Deliberately looks like the wired install row rather
+   than like a second, competing product: same buttons, same callout colours,
+   same rhythm. It is one more way to write the same firmware. */
+.fota{padding:var(--sp-5);border:var(--border);border-radius:var(--r-md);
+  background:var(--card);margin:0 0 var(--sp-5)}
+.fota .boardrow{margin-bottom:var(--sp-4)}
+
+/* The status line. data-kind carries the state so nothing has to add and
+   remove classes -- and so a state that was never styled still reads as
+   neutral text instead of disappearing. */
+#fota-out{margin-top:var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  border-left:3px solid var(--line);border-radius:var(--r-sm);
+  background:var(--ground);min-height:3rem}
+#fota-out strong{display:block;color:var(--strong);font-size:var(--fs-400)}
+#fota-out p{margin:var(--sp-2) 0 0;font-size:var(--fs-300);color:var(--muted);
+  line-height:var(--lh-normal)}
+#fota-out[data-kind="ok"]{border-left-color:var(--ok)}
+#fota-out[data-kind="warn"]{border-left-color:var(--warn)}
+#fota-out[data-kind="err"]{border-left-color:var(--danger)}
+#fota-out[data-kind="busy"]{border-left-color:var(--accent)}
+/* The one state that is an instruction rather than a report. It asks someone
+   to walk over and press a button, so it gets the accent fill, not a tint. */
+#fota-out[data-kind="prompt"]{border-left-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 12%,var(--ground))}
+#fota-out[data-kind="prompt"] strong{font-size:var(--fs-500)}
+
+.fota-bar{position:relative;height:1.6rem;margin-top:var(--sp-3);
+  border:var(--border);border-radius:var(--r-sm);overflow:hidden;
+  background:var(--ground)}
+.fota-bar>span{display:block;height:100%;width:0;background:var(--accent);
+  transition:width .2s linear}
+.fota-bar::after{content:attr(data-label);position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-mono);font-size:var(--fs-200);color:var(--strong);
+  font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){.fota-bar>span{transition:none}}
 </style>
 <!-- esp-web-tools, pinned. This script drives WebSerial and writes firmware to the board, so it
      is the highest-trust dependency on the page and it used to be the least pinned: the src was
@@ -273,11 +310,57 @@ ewt-install-dialog{
     <p class="lede">The complete credential Matter lock on a single ESP32-S3, C5 or C6.
     It commissions into Apple Home over Wi-Fi, your iPhone carries the key in Wallet,
     and the lock opens as you walk up. This page detects which chip you plugged in and
-    writes the right firmware over WebSerial. Nothing to install, no ESP-IDF.</p>
+    writes the right firmware over WebSerial. Nothing to install, no ESP-IDF. Already have a
+    board? Update it over the air, over Bluetooth, without unplugging it from the door.</p>
   </div>
 </header>
 
 <main id="main" class="page" style="max-width:56rem;padding-top:var(--sp-10);padding-bottom:var(--sp-20)">
+
+<!-- Over the air, first on the page and ahead of the cable.
+     Most visits to a flasher after the first one are updates, not installs, and
+     an update here needs no cable, no probe and no toolchain. Someone who has
+     never flashed a board reads two lines and scrolls past it; someone with a
+     board on a door does not have to. -->
+<div class="section-h"><h2>Update over the air</h2><span class="rule"></span></div>
+<p>Already have a board running UltraWideLock? Update it over Bluetooth, from this page.
+No cable, no probe, no command line. The board is identified first, so you find out
+what applies to it <em>before</em> you go and press anything on it.</p>
+
+<div class="fota">
+  <div class="boardrow">
+    <label for="fota-target">Board</label>
+    <select id="fota-target">
+      <option value="">loading…</option>
+    </select>
+  </div>
+  <div class="flashrow" style="margin:0">
+    <button id="fota-go" class="btn btn-primary">Find my board over Bluetooth</button>
+  </div>
+  <div id="fota-out" data-kind="idle" role="status" aria-live="polite">
+    <strong>Checking what is published…</strong>
+  </div>
+  <div id="fota-bar" class="fota-bar" role="progressbar" aria-valuemin="0"
+       aria-valuemax="100" data-label="" hidden><span></span></div>
+</div>
+
+<div class="callout callout-warn"><span class="ico">note</span><div>
+  <p><strong>Chrome or Edge on a computer, or Chrome on Android.</strong> This uses Web
+  Bluetooth, which Safari has never shipped &mdash; so no iPhone or iPad can update a
+  board from this page, even though an iPhone is what carries the key. Firefox has not
+  shipped it either. The cable install below has different requirements again.</p>
+</div></div>
+
+<p>Two limits worth knowing before you rely on this. The DWM3001CDK has a
+<strong>single MCUboot slot</strong>, so what travels over the air is a signed delta
+against the exact bytes already on the part &mdash; about 11&nbsp;KB. That means a board
+running a build we publish no delta from has no over-the-air path at all, and the page
+will say so rather than pretend. And <strong>nothing is written until you open the update
+window on the board itself</strong> &mdash; <strong>SW2</strong> on the CDK, a
+<strong>double-click</strong> on the ESP32's button. That gesture is the only thing
+standing between the lock and anyone else in radio range, so it cannot be done from
+here. The ESP32 has two full OTA slots and so takes a whole image rather than a delta:
+about 2&nbsp;MB over Bluetooth, which is several minutes with the tab open.</p>
 
 <div class="section-h"><h2>What you need</h2><span class="rule"></span></div>
 <div class="chips">
@@ -297,8 +380,8 @@ ewt-install-dialog{
 <ul>
   <li>A Qorvo DWM3000EVB (DW3110) — the UWB radio, hand-wired over SPI</li>
   <li>11 jumper wires and a USB <strong>data</strong> cable</li>
-  <li>Chrome, Edge, or Firefox on a computer. WebSerial does not exist in Safari
-  or on mobile browsers, so those cannot flash.</li>
+  <li>Chrome or Edge on a computer. WebSerial is a Chromium API: Firefox has never
+  shipped it, and neither Safari nor any mobile browser has, so those cannot flash.</li>
 </ul>
 <p>Apple side: an iPhone with a UWB chip (iOS&nbsp;26 is the validated floor), a Home
 hub (HomePod or Apple TV), and a 2.4&nbsp;GHz Wi-Fi network.</p>
@@ -733,5 +816,13 @@ is right.</p>
   }).observe(document.body, {childList: true});
 })();
 </script>
+
+<!-- The over-the-air half. A module, so it is deferred by default and the panel
+     it wires is already parsed by the time it runs; same-origin, so the CSP's
+     script-src 'self' covers it with no widening. It has no dependency outside
+     this directory -- smp.js and uwldfu.js are ports of scripts/ultrawidelock_smp.py
+     and scripts/ultrawidelock_push.py, and nothing is fetched from a CDN to
+     drive a radio. -->
+<script type="module" src="fota.js"></script>
 </body>
 </html>
