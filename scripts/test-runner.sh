@@ -16,10 +16,16 @@
 #   zopt       tests/tooling/zephyr_opt_suite.sh  the instrument + dashboard tools
 #   twin       tests/tooling/twin_suite.sh      the WASM firmware twin, when the
 #                                               emscripten SDK is present
+#   fotawire   tests/tooling/fota_wire_check.sh  the browser's copy of the update
+#                                               protocols still matches the Python,
+#                                               and the FOTA page's flow holds
+#                                               against a fake board; needs node
 #   ui         scripts/lib/ui.sh --self-test    the progress display keeps the
 #                                               output it wraps byte for byte
 #   relnotes   scripts/release-notes.sh --self-test  the release body renders,
 #                                               and picks the right changelog
+#   otaindex   scripts/ota-index.py --self-test  one update per board hash, and
+#                                               a fan that converges
 #
 # Opt-in, not in the default set:
 #
@@ -67,9 +73,11 @@ suite_cmd() {
 	sizegate) echo "bash tests/tooling/cdk_size_test.sh" ;;
 	zopt) echo "bash tests/tooling/zephyr_opt_suite.sh" ;;
 	twin) echo "bash tests/tooling/twin_suite.sh" ;;
+	fotawire) echo "bash tests/tooling/fota_wire_check.sh" ;;
 	ui) echo "bash scripts/lib/ui.sh --self-test" ;;
 	bindhelper) echo "python3 scripts/bind-helper.py --self-test" ;;
 	relnotes) echo "bash scripts/release-notes.sh --self-test" ;;
+	otaindex) echo "python3 scripts/ota-index.py --self-test" ;;
 	freertos) echo "bash tests/ports/freertos-nrf52833/run.sh" ;;
 	patchdrift) echo "bash tests/tooling/patch_drift_check.sh" ;;
 	esac
@@ -88,9 +96,11 @@ suite_label() {
 	sizegate) echo "cdk size gate" ;;
 	zopt) echo "zephyr-opt tooling" ;;
 	twin) echo "wasm twin" ;;
+	fotawire) echo "fota wire format" ;;
 	ui) echo "progress display" ;;
 	bindhelper) echo "binding helper" ;;
 	relnotes) echo "release notes" ;;
+	otaindex) echo "ota index" ;;
 	wsstore) echo "workspace store" ;;
 	ciscope) echo "ci scope predicate" ;;
 	freertos) echo "FreeRTOS port" ;;
@@ -270,7 +280,7 @@ run_suite() { # <suite> <outfile> <metafile>
 	fi
 }
 
-SEL="${SUITES:-firmware shared sdk drift seam scope purity wsstore ciscope lint sizegate zopt twin ui bindhelper relnotes}"
+SEL="${SUITES:-firmware shared sdk drift seam scope purity wsstore ciscope lint sizegate zopt twin fotawire ui bindhelper relnotes otaindex}"
 declare -a NAMES OUTS METAS PIDS
 n=0
 for s in $SEL; do
