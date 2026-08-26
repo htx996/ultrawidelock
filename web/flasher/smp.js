@@ -26,8 +26,19 @@
 export const SMP_SVC_UUID = "8d53dc1d-1db7-4cd3-868b-8a527460aa84";
 export const SMP_CHR_UUID = "da2e7828-fbce-4e01-ae9e-261174997c48";
 
-/* The advertised name. Matches SCAN_NAME in scripts/ultrawidelock_smp.py. */
-export const SCAN_NAME = "ultrawidelock";
+/*
+ * The advertised name, as a prefix SHORT ENOUGH TO SURVIVE TRUNCATION.
+ *
+ * Not "ultrawidelock". A 31-byte advertisement carrying 24 bytes of credential
+ * service data has no room for the full name, so the controller shortens it --
+ * measured as 'ultrawidelo' on a provisioned board. Web Bluetooth's namePrefix
+ * requires the ADVERTISED name to start with this string, so anything longer
+ * than what the board actually emits matches nothing, and it does so silently:
+ * the chooser is just empty.
+ *
+ * Mirrors SCAN_NAME_MIN in scripts/ultrawidelock_smp.py.
+ */
+export const SCAN_NAME = "ultrawide";
 
 const OP_READ_REQ = 0, OP_WRITE_REQ = 2;
 const GRP_OS = 0, GRP_IMG = 1;
@@ -371,14 +382,41 @@ export async function connect(name = SCAN_NAME) {
     throw new SmpError("this browser has no Web Bluetooth");
   }
   const device = await navigator.bluetooth.requestDevice({
-    /* Name first: ultrawidelock_smp.py MEASURED a commissioned CDK advertising
-     * its local name and no service UUIDs at all, so the name is the reliable
-     * match here. The two service filters are the fallback for a board
-     * configured to advertise them -- 0xFFF2 is the credential service, 0xFFF6
-     * is Matter while commissionable. Filters are OR'd. */
-    filters: [{ namePrefix: name }, { services: [0xfff2] }, { services: [0xfff6] }],
-    /* The SMP service is never advertised, so it cannot be a filter -- but it
-     * must be declared here or the browser blocks getPrimaryService() for it. */
+    /*
+     * THE SMP SERVICE LEADS, and this is measured, not reasoned.
+     *
+     * MEASURED 2026-08-27, a provisioned SMP=1 board at -53 dBm:
+     *
+     *   name           'ultrawidelo'                            <- TRUNCATED
+     *   service_uuids  ['8d53dc1d-1db7-4cd3-868b-8a527460aa84'] <- SMP
+     *   service_data   {'0000fff2-...': 24 bytes}
+     *
+     * An SMP=1 build DOES advertise the SMP service, so the one UUID that means
+     * "this board speaks exactly the protocol I am about to use" is available
+     * as a filter. Nothing else here is as precise.
+     *
+     * The name cannot lead. An advertisement is 31 bytes and 24 of them are the
+     * credential service data, so the controller emits a SHORTENED local name
+     * -- and `namePrefix: "ultrawidelock"` can never match "ultrawidelo",
+     * because a prefix filter requires the advertised name to start with the
+     * whole string. That failure is silent: the chooser is simply empty, which
+     * reads as "no board" rather than "wrong filter". Hence the short prefix.
+     *
+     * 0xFFF2 and 0xFFF6 stay as further fallbacks. Note that on this board
+     * 0xFFF2 arrives as service DATA rather than in the UUID list, and whether
+     * a given browser surfaces that to a `services` filter is not something to
+     * rely on -- which is another reason the SMP UUID leads.
+     *
+     * Filters are OR'd.
+     */
+    filters: [
+      { services: [SMP_SVC_UUID] },
+      { namePrefix: name },
+      { services: [0xfff2] },
+      { services: [0xfff6] },
+    ],
+    /* Declared as well as filtered: a device matched by NAME rather than by the
+     * service filter still has to be allowed to reach this service afterwards. */
     optionalServices: [SMP_SVC_UUID],
   });
   const smp = await attach(device);

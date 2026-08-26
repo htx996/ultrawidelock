@@ -28,13 +28,40 @@ from pathlib import Path
 SMP_SVC_UUID = "8d53dc1d-1db7-4cd3-868b-8a527460aa84"
 SMP_CHR_UUID = "da2e7828-fbce-4e01-ae9e-261174997c48"
 
-# The SMP service is never advertised, so the scan has to match on what the
-# reader does put in its advertisement. MEASURED on a commissioned board: the
-# local name, and no service UUIDs at all -- the 0xFFF2/0xFFF6 entries the credential
-# and Matter services register are not in the advertising data that CoreBluetooth
-# reports. So the name is the primary match and the UUIDs are a fallback for a
-# board configured to advertise them.
+# HOW A BOARD IS RECOGNISED, and every line of this is measured rather than
+# assumed, because two earlier assumptions here were both wrong.
+#
+# MEASURED 2026-08-27 on a provisioned SMP=1 board at -53 dBm:
+#
+#   name           'ultrawidelo'                             <- TRUNCATED
+#   service_uuids  ['8d53dc1d-1db7-4cd3-868b-8a527460aa84']  <- SMP, advertised
+#   service_data   {'0000fff2-...': 24 bytes}
+#
+# Two corrections to what this file used to say.
+#
+# The SMP service IS advertised on an SMP=1 build -- the comment here claimed it
+# never was, and the scan therefore ignored the one UUID that identifies exactly
+# the service this tool needs. It is now the primary match.
+#
+# And the local name is SHORTENED. An advertisement is 31 bytes; 24 of them are
+# the credential service data, so the name does not fit and the controller emits
+# a shortened-local-name AD instead. `"ultrawidelock" in "ultrawidelo"` is
+# false, which is why a board sitting at -53 dBm was reported as "not
+# advertising -- is it powered?". The name test is now a prefix match in the
+# direction that survives truncation, and it is a fallback rather than the
+# primary.
+#
+# Service DATA is checked as well as the UUID list, for the reason
+# ultrawidelock_push.py documents at length: a commissionable Matter
+# advertisement carries 0xFFF6 as service data and puts something else in the
+# UUID list, so matching only the list misses a board that is advertising
+# perfectly well.
+SMP_SVC_SHORT = "8d53dc1d"
 SCAN_NAME = "ultrawidelock"
+# The shortest prefix that still cannot collide with anything else nearby. The
+# controller decides how much of the name fits, so nothing may depend on the
+# exact truncation point.
+SCAN_NAME_MIN = "ultrawide"
 SCAN_UUIDS = ("0000fff2-0000-1000-8000-00805f9b34fb", "0000fff6-0000-1000-8000-00805f9b34fb")
 
 OP_READ_REQ, OP_READ_RSP, OP_WRITE_REQ, OP_WRITE_RSP = 0, 1, 2, 3
@@ -255,10 +282,22 @@ async def run(args):
     found = await BleakScanner.discover(timeout=args.scan, return_adv=True)
     want = (args.name or SCAN_NAME).lower()
     for dev, adv in found.values():
-        if want in (dev.name or "").lower():
+        name = (dev.name or "").lower()
+        uuids = {u.lower() for u in (adv.service_uuids or [])}
+        uuids |= {u.lower() for u in (adv.service_data or {})}
+
+        # The SMP service itself, when the board advertises it. Unambiguous:
+        # it is the exact service this tool is about to talk to.
+        if any(SMP_SVC_SHORT in u for u in uuids):
             device = dev
             break
-        if not args.name and any(u.lower() in SCAN_UUIDS for u in adv.service_uuids):
+        # The name, matched in the direction that survives truncation. `want`
+        # may be longer than what the controller actually emitted.
+        if name and (name.startswith(want) or want.startswith(name)) and \
+                name.startswith(SCAN_NAME_MIN[:len(name)]):
+            device = dev
+            break
+        if not args.name and any(u in SCAN_UUIDS for u in uuids):
             device = dev
             break
     if device is None:

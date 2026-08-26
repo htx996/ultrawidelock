@@ -353,7 +353,10 @@ const MATTER_SVC_UUID = 0xfff6;
  * never be a filter. It is declared optional instead, which is what permits
  * getPrimaryService() to reach it once connected.
  */
-export async function connect(name = "ultrawidelock") {
+/* "ultrawide", not "ultrawidelock": the advertised local name is shortened when
+ * service data fills the 31-byte advertisement, and namePrefix matches only
+ * from the start of what was actually emitted. See SCAN_NAME in smp.js. */
+export async function connect(name = "ultrawide") {
   if (!navigator.bluetooth) throw new DfuError("this browser has no Web Bluetooth");
   const device = await navigator.bluetooth.requestDevice({
     filters: [
