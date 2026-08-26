@@ -74,6 +74,26 @@ CDK_PROBE_GUARD = @if [ -z '$(CDK_PROBE)' ] && \
 	  exit 1; \
 	fi
 
+# ./workspace is a LINK into the machine's workspace store, made once per
+# checkout by `make ws-link`. Every recipe below cds into it so west can find
+# its manifest, so a checkout that was never linked fails at that cd -- and a
+# bare `cd` failing says only
+#
+#   /bin/sh: line 0: cd: .../workspace: No such file or directory
+#
+# which names neither the cause nor the one-second fix. Every new worktree meets
+# this exactly once, which is precisely when someone knows least about the
+# store. The store itself already works; what was missing was saying so.
+CDK_WS_GUARD = @if [ ! -d '$(REPO_ROOT)/workspace' ]; then \
+	  printf '  this checkout has no ./workspace yet.\n' >&2; \
+	  printf '  It is a link into the machine store, not a copy, and making it is instant\n' >&2; \
+	  printf '  when the store already holds a tree for this branch:\n\n' >&2; \
+	  printf '    make ws-link\n\n' >&2; \
+	  printf '  `make ws-store` lists what this machine holds and who links to it.\n' >&2; \
+	  printf '  Nothing there yet?  `make bootstrap` fetches it once, several GB.\n' >&2; \
+	  exit 1; \
+	fi
+
 CDK_BUILD          ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-matter
 CDK_READER_BUILD   ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-reader
 CDK_SELFTEST_BUILD ?= $(ULTRAWIDELOCK_BUILD_ROOT)/cdk-selftest
@@ -452,6 +472,7 @@ cdk_scrub = if [ -f '$($(1))/CMakeCache.txt' ] && \
 CDK_BUILD_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF)" -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
                  $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 build:
+	$(CDK_WS_GUARD)
 	@$(call cdk_scrub,CDK_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_BUILD) $(CDK_APP) \
@@ -558,6 +579,7 @@ anchorlink:
 
 ## flash: flash the DWM3001CDK over its on-board J-Link OB
 flash:
+	$(CDK_WS_GUARD)
 	$(CDK_PROBE_GUARD)
 	@# `flash` does not rebuild, and a stale hex flashes without a word. On
 	@# 2026-08-07 that wrote a 00:35-era image at 21:05 as "the fix committed
@@ -586,6 +608,7 @@ flash:
 
 ## flash-erase: full chip erase + flash the DWM3001CDK
 flash-erase:
+	$(CDK_WS_GUARD)
 	$(CDK_PROBE_GUARD)
 	@$(CDK_RUN) flash --erase $(CDK_DEV_ID_ARG) -d $(CDK_BUILD)
 
