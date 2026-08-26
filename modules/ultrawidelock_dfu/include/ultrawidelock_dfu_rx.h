@@ -129,6 +129,40 @@ void ultrawidelock_dfu_set_window_cb(ultrawidelock_dfu_window_cb cb);
 int ultrawidelock_dfu_rx_frame(enum ultrawidelock_dfu_owner owner, const uint8_t *frame, size_t len,
 			      uint8_t *rsp, size_t *rsp_len);
 
+struct ultrawidelock_dfu_hdr; /* ultrawidelock_dfu.h */
+
+/**
+ * Called at COMMIT, once the staged bytes have proven themselves.
+ *
+ * WHY THIS EXISTS. On the DWM3001CDK, COMMIT's job is finished when the header
+ * lands: MCUboot reads it on the next boot and applies the patch, so the
+ * receiver's whole contract with the bootloader is those 32 bytes on flash.
+ *
+ * The ESP32 has no such bootloader. Its two OTA slots are selected by an
+ * otadata partition that only the application can write, so a staged image
+ * that nobody points the bootloader at is simply ignored -- the board reboots
+ * into what it was already running and the update silently does not happen.
+ * Something has to run between "the bytes are good" and "reboot", and this is
+ * it.
+ *
+ * Called AFTER the magic, ABI, header CRC, length and patch CRC have all
+ * passed and after the header write, and BEFORE the reboot is armed. Returning
+ * non-zero fails the COMMIT with @ref ULTRAWIDELOCK_DFU_ERR_FLASH and leaves
+ * nothing staged, so a port that cannot arm its bootloader refuses the update
+ * rather than rebooting into the old image and reporting success.
+ *
+ * @param hdr the verified header, including @ref ultrawidelock_dfu_hdr.flags --
+ *            which is how a port tells a whole-image payload from a delta.
+ * @return 0 to accept.
+ */
+typedef int (*ultrawidelock_dfu_commit_cb)(const struct ultrawidelock_dfu_hdr *hdr);
+
+/**
+ * Install the commit hook. NULL (the default) means "nothing to do", which is
+ * every port with a bootloader that reads staging by itself.
+ */
+void ultrawidelock_dfu_set_commit_cb(ultrawidelock_dfu_commit_cb cb);
+
 /** Drop the transfer only when @p owner currently owns it. */
 void ultrawidelock_dfu_rx_reset(enum ultrawidelock_dfu_owner owner);
 

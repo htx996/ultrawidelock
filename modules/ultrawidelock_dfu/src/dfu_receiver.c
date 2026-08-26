@@ -92,6 +92,9 @@ static struct ultrawidelock_dwork s_window;
 static bool s_open;
 static int64_t s_window_deadline_ms;
 static ultrawidelock_dfu_window_cb s_window_cb;
+/* NULL on every port whose bootloader reads the staging partition by itself,
+ * which is all of them except ESP-IDF. See ultrawidelock_dfu_rx.h. */
+static ultrawidelock_dfu_commit_cb s_commit_cb;
 
 /* Both delayable items are bound on the first window call, which every route
  * into the receiver goes through -- frames and SMP uploads are refused while
@@ -116,6 +119,18 @@ void ultrawidelock_dfu_set_window_cb(ultrawidelock_dfu_window_cb cb)
 	works_bind();
 	ultrawidelock_mutex_lock(&s_rx_lock);
 	s_window_cb = cb;
+	ultrawidelock_mutex_unlock(&s_rx_lock);
+}
+
+/**
+ * Register the port's commit hook. See ultrawidelock_dfu_rx.h for what it is
+ * for and when it runs.
+ */
+void ultrawidelock_dfu_set_commit_cb(ultrawidelock_dfu_commit_cb cb)
+{
+	works_bind();
+	ultrawidelock_mutex_lock(&s_rx_lock);
+	s_commit_cb = cb;
 	ultrawidelock_mutex_unlock(&s_rx_lock);
 }
 
@@ -561,6 +576,18 @@ static enum ultrawidelock_dfu_err commit_now(bool reboot)
 	if (ultrawidelock_flash_write(s_fa, ULTRAWIDELOCK_DFU_HDR_OFFSET, s_rx.head,
 			    ULTRAWIDELOCK_DFU_HDR_LEN) != 0) {
 		return ULTRAWIDELOCK_DFU_ERR_FLASH;
+	}
+
+	/* The port's last chance to refuse, and on a port with no bootloader of
+	 * its own its only chance to ARM one. Failing here must not leave
+	 * s_rx.staged set: a board that says "committed" and then boots the old
+	 * image is worse than one that says it failed, because the host records
+	 * the update as delivered and builds the next one from the wrong base. */
+	if (s_commit_cb != NULL) {
+		if (s_commit_cb(&hdr) != 0) {
+			LOG_WRN("commit refused by the port");
+			return ULTRAWIDELOCK_DFU_ERR_FLASH;
+		}
 	}
 
 	s_rx.active = false;
