@@ -102,6 +102,9 @@ pass. The Wallet animation is, because that is what proves the reader told the p
 it granted access rather than just actuating locally.
 | CDK-27 | With a second administrator on and a Matter DoorLock peer bound, walk up once and read the RTT log | The peer's bolt moves, and the log reaches `the bound lock UNLOCKED` | **PASSED 2026-08-22**, against `apps/nrf5340dk-lock` on a Home Assistant fabric. Took five runs and five interoperability fixes; `docs/matter-binding-bench.md` records each fault and its signature. Never run against a commercial peer |
 | CDK-28 | After CDK-27, walk away and let the departure gate relock | Both bolts close, and the log reaches `the bound lock LOCKED` | **PASSED 2026-08-22.** Home Assistant showed both locks unlocked and then both locked within the same second |
+| CDK-29 | Open https://ultrawidelock.com/flash/index.html in Chrome, pick the DWM3001CDK, and connect | The chooser lists the board, and the page names the image it is running before asking for anything | **open, never run** |
+| CDK-30 | Continue CDK-29 on a board whose image the release publishes a delta from, pressing SW2 when the page asks | The delta goes over Web Bluetooth, the board reboots, and the page reconnects and reports the target SHA-256 | **open, never run.** This is CDK-13 driven from a browser instead of a phone, and the firmware is the same `SMP=1` image, so what is untested is the JavaScript and nothing else |
+| CDK-31 | Repeat CDK-30 on a board running a build the release ships no delta from | The page says no over-the-air update applies, names the single-slot reason, points at the J-Link, and sends nothing | **open, never run.** Proven against a fake board in the `fotawire` suite; never against a real one |
 
 CDK-14 through CDK-26 are the open rows, and none has ever been run to
 completion. CDK-16, CDK-17 and CDK-18 cover recovery, STS quality and NLOS
@@ -119,6 +122,14 @@ still never answered. CDK-14 is
 the only rate on this list: everything above it has been demonstrated at least once,
 and none of it at a rate. CDK-15 is the resumable apply, whose step counter is
 exercised by design and by host test but has never met a real power cut.
+
+CDK-29 through CDK-31 are the browser update path, and they are the cheapest
+open rows on this list to close: the firmware is the same `SMP=1` release image
+CDK-13 already passed by hand, so the only thing that has never met a board is
+the JavaScript. CDK-31 is the one worth running even though it sounds like a
+non-event -- a board with no applicable delta is the normal state of anything
+more than a few releases old, and a page that handled it badly would be the
+first thing most people saw.
 
 ## nRF5340 DK
 
@@ -180,6 +191,11 @@ No NFC tap path exists on this target, so there is no equivalent of HV-5.
 | EV-16 | Re-approach after EV-15 | No `relock.sent` between `ph.apc` and the grant, i.e. the Wallet does not flash locked then unlocked |
 | EV-17 | Score any capture that reached UWB-active. The bench scoring script this used is not in this repository | The `order` check passes. `ph.m1` before `ph.m2` and `ph.m3` before `ph.m4rx`: setup stamps follow message identity, not arrival order |
 | EV-18 | Read the `ranging setup:` line of that report | Reads `rrx SUPPL id=0, rrx IRS, rtx M1, rrx M2, rtx M3, rrx M4`. A bare `rrx id=` with no protocol means pre-fix firmware |
+| EV-19 | Double-click the board's button while the application runs | The update window opens, and the long press still opens a commissioning window rather than this | **open, never run** |
+| EV-20 | With the window open, install from https://ultrawidelock.com/flash/index.html in Chrome | The whole ~2 MB image goes over Bluetooth, the board reboots into it, and it commissions and unlocks as before | **open, never run.** The entire ESP32 update path is new firmware that has compiled and never executed |
+| EV-21 | Cut power partway through EV-20, then restore it | The board boots the image it was already running; otadata was never pointed at a half-written slot | **open, never run** |
+| EV-22 | Install an image signed with a different key | The board refuses it with the signature error and writes nothing | **open, never run** |
+| EV-23 | Install an image that links but panics before the end of `app_main` | The bootloader rolls back to the previous slot at the next boot, and the lock still answers | **open, never run.** This is the row that decides whether a bad update is recoverable without a cable |
 
 EV-7 is the row that matters most and the one most easily faked: the bolt moving is not
 a pass. The Wallet animation is the pass criterion, because that is what proves the
@@ -198,6 +214,15 @@ on it, but every setup timing read from those captures was wrong. Measured on th
 fixed firmware, the setup exchange is IRS +2.0 ms M1, +27.8 ms M2, +2.4 ms M3,
 +27.7 ms M4; the old labelling reported that as a 29.7 ms IRS-to-M4 span, which was
 really IRS to M2.
+
+EV-19 through EV-23 are the over-the-air update path, and none of it has ever
+executed: unlike the DWM3001CDK, which already spoke mcumgr, this is entirely
+new firmware. EV-23 is the row that decides whether the feature is safe to have
+at all. An update that links and then panics is not hypothetical, and without a
+working rollback the recovery for it is a cable -- which is the one thing the
+whole path exists to avoid. EV-21 and EV-22 are the other two ways it can go
+wrong quietly: a half-written slot that the bootloader is nonetheless pointed
+at, and an image that was never signed by the release key.
 
 ## Recording results
 
