@@ -4,10 +4,16 @@ This application is the nRF5340 DK implementation of UltraWideLock. It combines
 UWB approach unlock, NFC tap, and Matter over Thread using the Nordic door-lock
 and access-control application as its product shell.
 
-The upstream application is fetched into the ignored `workspace/` directory.
-This tracked directory owns the UltraWideLock build launcher and product overlays;
-the patches applied to upstream live in
+The application itself lives in
+[`integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/`](../../integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/):
+Nordic's, at a pinned revision, carried here as source we change directly.
+Everything it builds against -- the add-on's Aliro subsystem, NCS, Zephyr,
+Matter -- is still fetched into the ignored `workspace/` link, and the four
+patches that still go into that tree are alongside it in
 [`integrations/nrfconnect-door-lock/`](../../integrations/nrfconnect-door-lock/).
+
+This tracked directory owns the UltraWideLock build launcher and product
+overlays, and no sources of its own.
 
 ## Build
 

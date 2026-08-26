@@ -21,18 +21,17 @@ PIN="$(sed -n 's/^PIN="\([0-9a-f]\{40\}\)".*/\1/p' "$ROOT/scripts/bootstrap.sh")
 grep -q "revision: $PIN" "$ROOT/west.yml" \
   || { echo "ERROR: west.yml revision != bootstrap.sh PIN ($PIN)" >&2; exit 1; }
 
-# Per-repo patch lists, in bootstrap.sh's apply order. The HA patches are checked
-# even though the default build skips them (HA=1 opts in): drift is about whether
-# a patch still applies upstream, not about whether this build uses it. Order
-# matters — ha-occupancy-endpoint is cut against a tree with the others applied.
+# Per-repo patch lists, in bootstrap.sh's apply order — which scripts/lib/ws.sh
+# now owns, and which this file has to keep matching.
+#
+# Eleven patches used to be here that are not any more. They changed the
+# door-lock application, and the application is this repository's own source
+# now, under integrations/nrfconnect-door-lock/. What replaces this check for it
+# is scripts/app-upstream-diff.sh: a patch either applies or it does not, but
+# owned source can only be compared, so that one reports how far ours has moved
+# from the pinned upstream rather than passing or failing on it.
 ADDON_PATCHES=(
-  "$P/custom_impl-uwb.patch" "$P/crypto-timesync-tap.patch"
-  "$P/pretty-shell.patch" "$P/cred-shell-factoryreset.patch"
-  "$P/console-quiet-flood.patch"
-  "$P/kpersistent-orphan-selfheal.patch" "$P/cred-doc-time-ratchet.patch"
-  "$P/cred-time-persist.patch" "$P/extnvs-rollback-mirror-id.patch"
-  "$P/approach-direction-cluster.patch" "$P/nfc-transport-seam.patch"
-  "$P/ha-lockoperation-event.patch" "$P/ha-occupancy-endpoint.patch"
+  "$P/custom_impl-uwb.patch" "$P/extnvs-rollback-mirror-id.patch"
 )
 NRF_PATCHES=("$P/nrf-flashfit-dfu-guards.patch")
 MATTER_PATCHES=("$P/matter-ble-multi-identity.patch")
@@ -46,6 +45,32 @@ ondisk="$(cd "$P" && printf '%s\n' *.patch | sort)"
   echo "ERROR: integrations/nrfconnect-door-lock/patches/ and this script's lists disagree" >&2
   echo "       (< = listed but absent, > = present but unchecked)" >&2
   diff <(printf '%s\n' "$covered") <(printf '%s\n' "$ondisk") >&2 || true
+  exit 1
+}
+
+# No patch may ADD a file, and the reason is in .github/workflows/ci.yml rather
+# than here. That job restores the west workspace by the fetch half of its name
+# alone, so the tree it gets can be carrying a different patch set, and what
+# makes that safe is bootstrap.sh resetting every patched repo to its pinned HEAD
+# first. `git checkout -- .` restores tracked files and does not remove untracked
+# ones, so a patch that adds a file would leave its addition behind and the next
+# build would compile a file no patch in this set asked for. All four are
+# modify-only today; this is what keeps the prefix restore honest tomorrow.
+#
+# The lists are used rather than the directory because the block above has just
+# proved the two agree, and a patch this script does not know about is already
+# that block's failure to report.
+adders=""
+for f in "${ADDON_PATCHES[@]}" "${NRF_PATCHES[@]}" "${MATTER_PATCHES[@]}"; do
+  grep -q '^new file mode' "$f" && adders="$adders $(basename "$f")"
+done
+[ -z "$adders" ] || {
+  echo "ERROR: these patches add files:$adders" >&2
+  echo "       ci.yml restores the workspace by fetch-key prefix and re-patches" >&2
+  echo "       it, which only reverts TRACKED files. Either fold the new file" >&2
+  echo "       into the owned application under" >&2
+  echo "       integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/," >&2
+  echo "       or drop the restore-keys from that job's workspace cache." >&2
   exit 1
 }
 

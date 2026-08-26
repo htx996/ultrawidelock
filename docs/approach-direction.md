@@ -169,7 +169,7 @@ behind it is not implemented, and on this hardware cannot be.
 | Port | Status |
 |---|---|
 | `apps/esp32-matter-lock` | **implemented**: runtime `cluster::create()` in `app_main.cpp` |
-| nRF5340 door lock app | **implemented**: static tables, `integrations/nrfconnect-door-lock/patches/approach-direction-cluster.patch` |
+| nRF5340 door lock app | **implemented**: static tables in `integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/src/matter/zap_uwb/` |
 
 The two ports build their data models differently. The ESP32 port constructs endpoints at
 runtime, so the cluster is a few lines of C++. The nRF app's is a set of static tables
@@ -215,13 +215,19 @@ One thing this path does get for free: `FeatureMap` and `ClusterRevision` are wr
 per cluster like any other attribute, so §3 — the trap that cost the most time on the
 other port — cannot occur here as an omission by a helper.
 
-### 9.3 It collides with the opt-in nRF5340 Home Assistant data-model patches
+### 9.3 It used to collide with the opt-in Home Assistant data model
 
-`ha-occupancy-endpoint.patch` adds a third endpoint and so bumps the **same** counter
-lines. Two patches cannot both change `GENERATED_ATTRIBUTE_COUNT 205`, in either order.
-The stack is therefore cumulative: Approach Direction applies first, and the HA patches
-are cut against a tree that already has it. `tests/tooling/patch_drift_check.sh` applies
-all of them in that order, so a future edit that breaks the composition fails there.
+The Home Assistant variant adds a third endpoint and so bumps the **same** counter
+lines. While both were patches into the fetched application, two of them could not
+both change `GENERATED_ATTRIBUTE_COUNT 205` in either order, and the stack had to be
+cumulative: Approach Direction applied first, the HA patches cut against a tree that
+already had it, and `tests/tooling/patch_drift_check.sh` held the ordering.
+
+Neither is a patch now. Both data models are complete files in
+`integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/src/matter/` -- `zap_uwb` and `zap_uwb_ha` --
+and `CONFIG_ULTRAWIDELOCK_HA` picks one. Each carries its own counters, so there is
+no composition left to break; what remains is the ordinary duty to regenerate both
+when the data model changes.
 
 That `HA=1` patch stack is unrelated to Matter multi-admin sharing on the
 DWM3001CDK. The DWM image needs no Home Assistant build variant.

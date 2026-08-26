@@ -44,9 +44,12 @@ TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$TREE/apps/nrf5340dk-lock"
 WS="${ULTRAWIDELOCK_WS:-$TREE/workspace}"
 
-# A linked git worktree usually has no NCS workspace of its own (the ~6.5 GB
-# tree lives in the primary checkout); fall back to the primary's workspace so
-# builds still work. An explicit ULTRAWIDELOCK_WS wins.
+# A checkout links ./workspace into the machine's store (`make ws-link`), and
+# one that has not yet falls back to the primary's link so builds still work.
+# Safe despite pointing at whatever patch set the primary is on, because the
+# patch-state check in preflight refuses a tree that is not this branch's --
+# which is the check `make ws-link` exists to stop anyone needing.
+# An explicit ULTRAWIDELOCK_WS wins.
 if [ -z "${ULTRAWIDELOCK_WS:-}" ] && [ ! -d "$WS/.west" ]; then
   _common="$(git -C "$TREE" rev-parse --git-common-dir 2>/dev/null || true)"
   if [ -n "$_common" ]; then
@@ -59,7 +62,18 @@ fi
 NCS_VER="${NCS_VER:-v3.3.0}"
 OV="$APP_DIR/overlays"
 ADDON="$WS/ncs-door-lock-and-access-control"
-APP="$ADDON/applications/matter-aliro-door-lock-app"
+# The application is ours, in this repository, and west build takes any path.
+# It began as Nordic's applications/matter-aliro-door-lock-app at the pinned
+# revision and carries our changes as source rather than as eleven patches into
+# the fetched tree; its UPSTREAM.md records where it came from, and
+# scripts/app-upstream-diff.sh says how it now differs. The add-on above is
+# still fetched and still patched: it supplies the Aliro subsystem this
+# application is built against.
+#
+# It keeps Nordic's directory name because sysbuild takes the image name from
+# it, and mk/nrf5340dk.mk, the factory-data path and the map lookups below all
+# spell that name out. Renaming the directory renames the image.
+APP="$TREE/integrations/nrfconnect-door-lock/matter-aliro-door-lock-app"
 PATCH_DIR="$TREE/integrations/nrfconnect-door-lock/patches"
 PATCH_STATE="$WS/.ultrawidelock-patches.sha256"
 # One build root for the whole repo (Makefile exports ULTRAWIDELOCK_BUILD_ROOT); every
@@ -150,7 +164,9 @@ preflight() {
   fi
 
   { [ -d "$WS/.west" ] && [ -d "$APP" ]; } \
-    || die "workspace not bootstrapped ($WS)" "run: make bootstrap"
+    || die "workspace not bootstrapped ($WS)" \
+           "if the machine already has one: make ws-link" \
+           "otherwise, once per machine:   make bootstrap"
   ok "workspace initialized"
 
   # bootstrap patches these three fetched repos; a pristine repo means it did not run.
@@ -161,15 +177,17 @@ preflight() {
       || unpatched="$unpatched $(basename "$repo")"
   done
   [ -z "$unpatched" ] \
-    || die "integration patches missing on:$unpatched" "run: make bootstrap"
+    || die "integration patches missing on:$unpatched" "run: make ws-link"
 
+  # HA is no longer part of this: it selects a data model inside the application
+  # (CONFIG_ULTRAWIDELOCK_HA), not a different set of patches into the fetched
+  # tree, so both modes build from one workspace.
   local expected_patch_state actual_patch_state=""
-  expected_patch_state="$("$TREE/scripts/integration-patch-id.py" \
-    "$PATCH_DIR" "${HA:-0}")"
+  expected_patch_state="$("$TREE/scripts/integration-patch-id.py" "$PATCH_DIR")"
   [ ! -f "$PATCH_STATE" ] || actual_patch_state="$(sed -n '1p' "$PATCH_STATE")"
   [ "$actual_patch_state" = "$expected_patch_state" ] \
-    || die "integration patch set changed or HA mode differs" \
-           "run: make bootstrap$( [ "${HA:-0}" = 1 ] && printf ' HA=1' )"
+    || die "the workspace carries a different integration patch set" \
+           "run: make ws-link"
   ok "integration patches applied"
 
   local f missing=""
@@ -266,8 +284,10 @@ do_build() {
   [ "${CIR:-0}" = 1 ] && cir_conf=";$OV/diag-cirdiag.conf"
 
   # HA=1: layer ultrawidelock-ha.conf (Home Assistant / multi-admin). Off by default so the
-  # Apple Home demo image is untouched; see that file for why. Needs the matching
-  # `make bootstrap HA=1`, which applies the data-model patches this pairs with.
+  # Apple Home demo image is untouched; see that file for why. It carries
+  # CONFIG_ULTRAWIDELOCK_HA, which selects the Home Assistant data model inside
+  # the application -- so HA=1 no longer needs a differently patched workspace,
+  # and no longer forces one.
   # Rides EXTRA_CONF_FILE (in the signature), so toggling it forces a reconfigure.
   local ha_conf=""
   [ "${HA:-0}" = 1 ] && ha_conf=";$OV/ultrawidelock-ha.conf"
@@ -358,7 +378,13 @@ do_build() {
     -DEXTRA_DTC_OVERLAY_FILE="$OV/dw3000-nfc.overlay${nfc_overlay}"
     -DPM_STATIC_YML_FILE="$pm_yml"
     -DSB_EXTRA_CONF_FILE="$sb_conf"
-    -DZEPHYR_EXTRA_MODULES="$TREE/modules/ultrawidelock_uwb;$TREE/modules/ultrawidelock_nfc;$TREE/modules/ultrawidelock_cred_stack;$TREE/modules/ultrawidelock_dw3000;$TREE/ports/zephyr"
+    # ultrawidelock_cred is first for the same reason apps/dwm3001cdk-lock lists
+    # it: it declares CONFIG_ULTRAWIDELOCK_PRIM and builds the library behind it,
+    # and ultrawidelock_uwb links `ultrawidelock_prim` unconditionally. Without
+    # it in this list the symbol is never declared, the library is never built,
+    # and the image fails at the final link with `cannot find
+    # -lultrawidelock_prim` -- several hundred objects after the mistake.
+    -DZEPHYR_EXTRA_MODULES="$TREE/modules/ultrawidelock_cred;$TREE/modules/ultrawidelock_uwb;$TREE/modules/ultrawidelock_nfc;$TREE/modules/ultrawidelock_cred_stack;$TREE/modules/ultrawidelock_dw3000;$TREE/ports/zephyr"
     -DCONFIG_DOOR_LOCK_BLE_UWB=y -DCONFIG_ULTRAWIDELOCK_UWB=y -DCONFIG_ULTRAWIDELOCK_UWB_RESPONDER=y
     -DCONFIG_ULTRAWIDELOCK_CRED=y -DCONFIG_DW3000=y "$CHIP_FLAG" -DCONFIG_SPI_ASYNC=y
     -DCONFIG_SHELL=n -DCONFIG_CHIP_LIB_SHELL=n -DCONFIG_NCS_SAMPLE_MATTER_TEST_SHELL=n
@@ -400,7 +426,7 @@ do_build() {
   fi
 
   hdr "build"
-  kv "app"   "$(basename "$APP")"
+  kv "app"   "${APP#"$TREE"/}"
   [ "$WS" != "$TREE/workspace" ] && kv "workspace" "${DIM}shared${RST} $WS"
   kv "board" "$BOARD"
   kv "chip"  "$CHIP_NAME${selftest:+   (self-test ON)}${pretty_conf:+   (pretty ON)}${strict:+   (gate STRICT)}${ultrawidelock_trace:+   (credential trace ON)}${lto_conf:+   (LTO ON)}"

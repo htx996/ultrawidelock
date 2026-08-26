@@ -1,13 +1,32 @@
 # Pull request gates: the checks worth having a machine repeat.
 #
-# Two jobs on stock ubuntu-latest runners, no toolchain: python3, cmake and a C
-# compiler are all this needs, which is what makes it cheap enough to run on
-# every pull request. Nothing here builds firmware -- the Zephyr and ESP32
-# images need NCS, ESP-IDF and esp-matter and take hours. `make regress` covers
-# every DWM3001CDK configuration and the size gate on a bench where the hardware
-# also is, and `make regress-hil` goes on to prove it on air; `make esp-release`
-# covers the ESP32. A green run here does not mean the firmware builds; it means
-# nothing broke that a host can see.
+# Two of the four jobs run on stock ubuntu-latest runners with no toolchain:
+# python3, cmake and a C compiler are all `gates` and `secrets` need, which is
+# what makes them cheap enough to run on every pull request.
+#
+# `cdk-images` is the exception, and it is the answer to a hole those two left:
+# NOTHING HERE USED TO COMPILE FIRMWARE. The host suites build the portable C
+# under modules/ and exactly one of the thirteen C files under
+# apps/dwm3001cdk-lock/src -- matter_client.c, against the fakes in tests/host.
+# The other twelve, every Kconfig fragment, the devicetree overlay, the
+# partition map and the flash fit were compiled by no check at all, so a syntax
+# or type error in main.c merged with every tick green. That job builds four real
+# images in the NCS toolchain container -- the client, the shipping image,
+# anchorlink and the satellite -- and takes the count to nine of thirteen. It is
+# scoped by path and it is slow; both are explained on the job itself.
+#
+# Still not covered, and still a bench's job: the ESP32 images (ESP-IDF and
+# esp-matter, hours), the nRF5340 DK lock, the remaining DWM3001CDK
+# configurations, the size gate and the hardware. `make regress` covers those
+# where the boards are, and `make regress-hil` goes on to prove them on air;
+# `make esp-release` covers the ESP32. A green run here means four images compile
+# and link, and that nothing else broke that a host can see.
+#
+# release.yml is the other half of the story and deliberately shares nothing with
+# this file: it is manual, tag-only, cache-free, and it is the only place the
+# real MCUboot signing key is used or anything is published. The job below signs
+# with a per-run throwaway and uploads nothing, precisely so no image it builds
+# can be mistaken for an installable one.
 #
 # `gates` is a serial list of steps rather than parallel jobs: each job pays a
 # checkout to save less time than it spends, and one list reads better in a pull
@@ -34,6 +53,12 @@
 #            removes it; the diff is clean and the object is still there
 #            forever. This repository's history was swept clean by hand before
 #            it was ever pushed, so a full scan is affordable and stays green.
+#   cdk      four real images compile, link and fit in flash -- three
+#            DWM3001CDK configurations and the nRF5340 satellite. The only check
+#            anywhere that runs a compiler over the applications, the Kconfig
+#            tree, the devicetree overlays and the partition maps. Costs a
+#            toolchain container and a cached 6.5 GB west workspace, so unlike
+#            the three above it runs only when the change can reach an image.
 name: ci
 
 on:
@@ -172,3 +197,528 @@ jobs:
       # a published one. Exit code is 1 on any finding, which fails the job.
       - name: scan history
         run: gitleaks git --redact --no-banner .
+
+  # Does this event touch anything that can change a firmware image?
+  #
+  # A SEPARATE JOB, and cheap on purpose: `cdk-images` below runs in a
+  # container, and Actions pulls a job's image before its first step runs. Doing
+  # the decision inside that job would mean paying the image pull to discover
+  # that the answer was no. This one is a checkout and a `git diff`.
+  #
+  # JOB-LEVEL `if:`, NOT A WORKFLOW-LEVEL `paths:` FILTER, and the difference
+  # matters the moment `cdk-images` is made a required check. A workflow filtered
+  # by `paths:` does not run at all on a change it excludes, so its check never
+  # appears and branch protection waits for it forever. A job skipped by `if:`
+  # reports the `skipped` conclusion, which GitHub counts as success. Same
+  # saving, without the trap.
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      firmware: ${{ steps.paths.outputs.firmware }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge base has to be reachable for the diff below. Cheap here
+          # for the same reason it is cheap in `secrets`.
+          fetch-depth: 0
+
+      - name: what changed
+        id: paths
+        env:
+          # Through env rather than spliced into the script. Both are commit
+          # shas and safe, but a `run:` block that interpolates `${{ }}` inline
+          # is the shape to never get in the habit of writing.
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Anything that is not a pull request -- a push to main, a manual
+          # dispatch -- builds. main gets its own verdict on every commit, for
+          # the same reason the push trigger above exists at all, and a dispatch
+          # is somebody asking for this on purpose.
+          if [ "$EVENT" != pull_request ]; then
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT is not a pull request -- building"
+            exit 0
+          fi
+
+          # AN IGNORE LIST, NOT AN INCLUDE LIST, so the default is to build.
+          # An include list has to name every path that reaches the image --
+          # apps/, modules/, ports/zephyr/, integrations/, west.yml, mk/cdk.mk,
+          # several scripts -- and the failure mode when it falls behind is
+          # silent: a new source directory appears, nobody updates the list, and
+          # this gate stops running against the code it exists to gate while
+          # still reporting green. Inverted, the same omission costs one build
+          # nobody needed and says so in the log.
+          #
+          # So only paths that provably cannot change a compiled image are
+          # listed here, and everything else builds. The `.md$` arm is not
+          # anchored on purpose: a guide is a guide wherever it lives, and
+          # apps/dwm3001cdk-lock/README.md reaches no compiler either.
+          git diff --name-only "$BASE...$HEAD" > /tmp/changed
+          echo "changed files:"; sed 's/^/  /' /tmp/changed
+
+          # EVERY ENTRY IS A CLAIM, and the claim is always the same one: no
+          # file under this path can change a compiled image. The claim is what
+          # was checked before adding it, not the fact that a build there felt
+          # unnecessary. Getting one wrong does not fail here or anywhere; it
+          # makes this job report green over code it never compiled, which is
+          # the whole failure this workflow exists to end. When unsure, leave it
+          # out and pay for a build.
+          #
+          #   docs/ web/ *.md pages.yml   no compiler reaches any of them
+          #   tests/host|shared|sdk|ports host suites; grepped mk/, every app
+          #                               CMakeLists and sysbuild.cmake -- no
+          #                               firmware target reads them
+          #   release/                    FLASH.md, flash.sh, README.txt and
+          #                               NOTES.md.in: bundle contents, copied
+          #                               beside an image, never compiled in
+          #   release-notes.sh            renders the release body
+          #   mk/host.mk                  host targets only
+          #   release.yml                 builds firmware itself, on a tag, and
+          #                               shares no cache with this job
+          #
+          # NOT HERE, DELIBERATELY. tests/tooling/ looks as inert as its
+          # siblings and is not: zephyr-opt-overlays/*.conf reaches a real
+          # build through INSTRUMENT_CONF in mk/cdk.mk. Nor scripts/ at large --
+          # bootstrap.sh and lib/ws.sh decide what the workspace holds, which is
+          # most of what gets compiled. Nor mk/cdk.mk, mk/satellite.mk,
+          # integrations/ (the door-lock application lives there now), apps/,
+          # modules/, ports/ or west.yml.
+          IGNORE='^(docs/|web/|release/|tests/(host|shared|sdk|ports)/'
+          IGNORE="$IGNORE"'|scripts/release-notes\.sh$|mk/host\.mk$'
+          IGNORE="$IGNORE"'|\.github/workflows/(pages|release)\.yml$)|\.md$'
+          if grep -qvE "$IGNORE" /tmp/changed; then
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+            echo "-> touches something that can reach a firmware image"
+          else
+            echo "firmware=false" >> "$GITHUB_OUTPUT"
+            echo "-> documentation and site only, skipping the firmware build"
+          fi
+
+  # Build one real DWM3001CDK image. The only check in this repository that runs
+  # a compiler over apps/dwm3001cdk-lock/src, the Kconfig tree, the devicetree
+  # overlay or the partition map.
+  #
+  # WHY THE CLIENT IMAGE AND NOT THE PLAIN ONE. `make build CLIENT=1` is the
+  # tightest configuration in the tree, tight enough that the linker is the gate.
+  # MEASURED at d3cae228, the linker's own report for decawave_dwm3001cdk:
+  # FLASH 428,120 B of 433,664 B (98.72%), RAM 125,752 B of 128 KB (95.94%).
+  # overlay-client-debug.conf says it in its own header -- "the build failing to
+  # sign IS the gate here" -- because that profile is deliberately not held to a
+  # recorded size baseline. One build therefore answers two questions: does the
+  # application still compile, and does the image with the least room left still
+  # fit. CLIENT=1 also compiles a strict superset of the plain image's
+  # application sources, so nothing is given up by choosing it.
+  #
+  # PRISTINE=1 rather than an incremental build, even though it is the expensive
+  # half. `west build -p auto` does not re-run CMake for a changed `-D` flag (see
+  # CDK_PRISTINE in mk/cdk.mk), and a restored build directory carrying an older
+  # CMakeCache.txt is exactly how a Kconfig or devicetree break survives a gate:
+  # the tree changes, the cache does not, and the run stays green against a
+  # configuration nobody is shipping. ccache buys the compile time back without
+  # buying that risk -- it keys on preprocessed input, so a stale entry is not
+  # reachable the way a stale CMake cache is.
+  #
+  # WHAT IT COSTS. MEASURED on an 8-core Apple M1 against this workspace, every
+  # figure PRISTINE=1, each one after the ones above it have warmed the ccache:
+  #
+  #   client (CLIENT=1)          95 s warm, 232 s from an empty ccache
+  #   shipping (SMP+RELEASE)    252.6 s   -- most of the warm entries do not apply
+  #   anchorlink                152.7 s
+  #   satellite (nrf5340dk)      59.9 s
+  #                             -------
+  #                             ~9.3 min on this bench
+  #
+  # The client image's objects alone occupy 50 MB of ccache.
+  #
+  # A 4-vCPU Actions runner is the slower machine, and on top of the builds it
+  # pays the toolchain container pull and the workspace cache restore, neither of
+  # which the bench figures include. Budget roughly twenty-five to thirty-five
+  # minutes warm against the two minutes `gates` takes, and a cold workspace --
+  # an evicted cache entry, or a patch edit that changes the key -- is the
+  # ~6.5 GB upstream bootstrap, which is what the timeout below is sized for.
+  # That ratio is the entire reason for the `scope` job above: this runs when a
+  # change can reach an image, not on every push.
+  #
+  # IF THIS EVER HAS TO GET CHEAPER, drop images from the bottom of that list
+  # upward by what each one is the ONLY cover for: the satellite is the only
+  # build of apps/satellite, the shipping image is the only build of what users
+  # install, and anchorlink is the only build of three application sources. The
+  # client image is last to go -- it is the tightest fit in the tree.
+  #
+  # WHY A SECOND IMAGE, and why THAT one. The client image compiles six of the
+  # thirteen C files under apps/dwm3001cdk-lock/src -- main.c, ml_feed.c,
+  # status_led.c, matter_commission.c, uwb_matter_presence.c and matter_client.c.
+  # The other seven sit behind target_sources_ifdef guards it does not set, and
+  # the only way to compile them is to build a configuration that does.
+  #
+  # MEASURED, same bench, each `PRISTINE=1` on top of a ccache already warm from
+  # the client build, counting only the app sources each one ADDS:
+  #
+  #   anchorlink  152.7 s  witness_link.c, side_feed.c, door_alarm.c   51 s/file
+  #   cirdiag     165.5 s  cirdiag_capture.c                          166 s/file
+  #   reader      193.4 s  prov_shell.c                               193 s/file
+  #
+  # So `anchorlink` is taken and the other two are not. The ratio is most of the
+  # argument, but not all of it: anchorlink is also the one covering code that
+  # SHIPS -- the deployed witness transport, the side gate and the two
+  # DoorLockAlarms -- while prov_shell.c and cirdiag_capture.c are bench tools
+  # that a broken build inconveniences rather than a lock. Its own build
+  # directory, because `-p auto` does not reconfigure for changed -D flags.
+  #
+  # That puts CI at nine of thirteen. It was ONE before this job, and that one
+  # only against the host fakes in tests/host.
+  #
+  # THE LAST TWO ARE NOT REACHABLE AT ALL and this is not an oversight to fix
+  # later without deciding something. thread_gate.c and case_bench.c are guarded
+  # by CONFIG_ULTRAWIDELOCK_THREAD_GATE and CONFIG_ULTRAWIDELOCK_CASE_BENCH,
+  # both `default n`, and NOTHING in apps/ or mk/ sets either to y -- no overlay,
+  # no target, no flag combination. Both files say in their own headers that they
+  # are measurement-only and compile out of every image. Gating them would mean
+  # inventing a CI-only overlay whose sole purpose is to compile dormant code,
+  # which is a different decision from this one and should be made on its own.
+  cdk-images:
+    name: cdk images (NCS v3.3.0)
+    needs: scope
+    if: needs.scope.outputs.firmware == 'true'
+    runs-on: ubuntu-latest
+    # Generous because the cold path is the multi-gigabyte upstream fetch, not
+    # the build. A warm run is a small fraction of this.
+    timeout-minutes: 120
+    container:
+      # The NCS toolchain container for the version mk/cdk.mk pins (NCS_VER
+      # v3.3.0). Pinned by digest, the way `secrets` pins gitleaks and for the
+      # same reason: this decides whether code merges, so the tag must not be
+      # able to move underneath it. Bump the digest and its trailing comment
+      # together when NCS_VER moves.
+      #
+      # Digest carried over from the dwm3001cdk job of the pre-trim
+      # .github/workflows/firmware-builds.yml, removed in b0f8856e --
+      # `git show b0f8856e^:.github/workflows/firmware-builds.yml` still has it.
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain@sha256:f24d8932ff081ebcd8da9c248f4449bdabe461c0620a7a4ac9e95eb577ba2276 # v3.3.0
+    defaults:
+      run:
+        # BASH, NOT THE DEFAULT sh, and this is what makes `make` resolvable.
+        # The container puts west and the Zephyr SDK on PATH through a BASH_ENV
+        # hook, which bash sources for every non-interactive shell and sh never
+        # does. Actions runs container steps with `sh -e {0}` by default, so a
+        # step calling `make` dies with "make: not found" and exit 127.
+        shell: bash
+    env:
+      # Skip the nrfutil launcher and run west straight off PATH. Inside this
+      # container the toolchain is already there and nrfutil's toolchain index is
+      # not reachable, so the wrapper cannot resolve what is in front of it.
+      # mk/cdk.mk and scripts/bootstrap.sh both carry this escape hatch.
+      ULTRAWIDELOCK_TOOLCHAIN: env
+      # History-free fetch of exactly the pinned revisions: the same tree state
+      # at a fraction of the size, so both the bootstrap and the cache entry it
+      # produces are much smaller. A bench keeps full clones by default.
+      ULTRAWIDELOCK_SHALLOW: "1"
+      # Keep the workspace a real directory inside the runner, which is what the
+      # cache steps below save and restore. This is bootstrap.sh's default today
+      # and so changes nothing; it is here for the branch that makes it stop
+      # being the default. worktree-ws-share names each bootstrapped tree after
+      # its contents, puts it in a machine-wide store under $HOME and leaves
+      # ./workspace a symlink into it -- which is the right answer for a bench
+      # holding several checkouts, and the wrong one for a job whose workspace
+      # crosses runs through actions/cache: it would save the link rather than
+      # the tree, and restore a dangling one into a fresh container that reports
+      # a cache hit and skips the bootstrap. bootstrap.sh reads this variable
+      # first and takes no store and no link when it is set.
+      ULTRAWIDELOCK_WS: ${{ github.workspace }}/workspace
+      # 300M against the 50 MB one image measured, so there is room for the
+      # objects to turn over without the cap evicting live entries mid-run. It is
+      # not larger because the constraint is the repository cache budget rather
+      # than this job: GitHub gives a repository 10 GB of Actions cache and
+      # evicts by LRU, and the workspace entry below is the one that is expensive
+      # to lose. A smaller ccache costs a few minutes of compile; an evicted
+      # workspace costs a ~6.5 GB upstream fetch.
+      CCACHE_MAXSIZE: 300M
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # WHAT NAMES THE WORKSPACE. scripts/lib/ws.sh decides which tree a checkout
+      # belongs to, and the name it computes is two halves:
+      #
+      #     f49ffb4d8c93-582523c43cfd
+      #     └ fetch ──────┘└ patches ┘
+      #
+      # The fetch half is the add-on pin and the NCS version -- what `west update`
+      # pulls, before anything of ours touches it. The patch half is the
+      # integration patch set (scripts/integration-patch-id.py). Both are pure
+      # functions of files a bare checkout already has, so this answers in
+      # milliseconds with no workspace, no toolchain and no network, which is
+      # exactly what a cache key has to do. scripts/README.md says the same.
+      - name: name this checkout's workspace
+        id: ws
+        run: |
+          entry="$(./scripts/ws-link.sh --print | awk '/^entry/{print $2}')"
+          case "$entry" in
+            ????????????-????????????) ;;
+            *) echo "::error::ws-link.sh --print gave no usable entry name: '$entry'"; exit 1 ;;
+          esac
+          echo "entry=$entry"       >>"$GITHUB_OUTPUT"
+          echo "fetch=${entry%%-*}" >>"$GITHUB_OUTPUT"
+          echo "workspace entry $entry"
+
+      # ~6.5 GB of NCS, Zephyr and modules. Restoring it from GitHub's own
+      # storage is far cheaper than fetching it from upstream, which is the whole
+      # reason it is cached.
+      #
+      # THE PREFIX IS THE POINT, and it replaces a "DELIBERATELY NO restore-keys"
+      # that used to stand here. The old key fused the fetch and the patches into
+      # one hash, so editing one patch hunk threw away the whole ~6.5 GB and
+      # refetched from upstream -- and restore-keys were refused because a
+      # near-miss restore leaves a tree carrying somebody else's patch state.
+      #
+      # Both halves of that have changed. The name now separates the two, so the
+      # prefix below matches any entry that agrees on the upstream and differs
+      # only in what we applied on top -- which is the tree bootstrap.sh wants,
+      # since it resets every patched repo to its pinned HEAD before applying
+      # (ws_apply_patches -> _ws_apply_to in scripts/lib/ws.sh) and asserts the
+      # repo is pristine before it starts. The reason that reset is now enough is
+      # that none of the four remaining patches adds a file: `checkout -- .`
+      # restores tracked files and leaves untracked ones behind, which is exactly
+      # the poisoning the old comment was written about.
+      # tests/tooling/patch_drift_check.sh fails if a patch ever starts adding
+      # one, because this prefix stops being safe the moment that changes.
+      - name: restore the west workspace
+        id: wscache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: workspace
+          key: nrf-ws-${{ steps.ws.outputs.entry }}
+          restore-keys: |
+            nrf-ws-${{ steps.ws.outputs.fetch }}-
+
+      # RUNS ON A MISS AND ON A PREFIX HIT, AND IS THE SAME COMMAND FOR BOTH.
+      # An exact hit is skipped because that tree was saved by a finished
+      # bootstrap and already carries this patch set and its stamp; re-running
+      # over it would reset four repos and re-apply the same patches to reach the
+      # state it is already in.
+      #
+      # The other two cases differ enormously in cost and not at all in code,
+      # because bootstrap.sh asks only for what is missing. On a prefix hit the
+      # add-on is already at the pin so it is left alone, .west exists so
+      # `west init` is skipped, and .ultrawidelock-fetch-done is present so the
+      # multi-GB `west update` is skipped -- leaving exactly the work that run
+      # needs, swapping the patch set, in seconds. On a miss the same line does
+      # the full fetch.
+      #
+      # It also writes .ultrawidelock-patches.sha256, which the build scripts
+      # refuse to build without (scripts/nrf5340dk-build.sh:187). Re-patching by
+      # hand here would be a third implementation of "put a tree in a known
+      # state", next to bootstrap.sh and ws-link.sh, and ws.sh's own header says
+      # why two of those would already be one too many.
+      #
+      # One retry: bootstrap is resumable (the fetch sentinel means a rerun picks
+      # up where an interrupted west update stopped), so a transient fetch
+      # failure costs one resume rather than the whole fetch.
+      - name: bootstrap it
+        if: steps.wscache.outputs.cache-hit != 'true'
+        run: |
+          ./scripts/bootstrap.sh || {
+            echo "::warning::bootstrap failed once -- retrying (resumes the fetch)"
+            ./scripts/bootstrap.sh
+          }
+
+      # Saved on anything but an exact hit, on every branch -- unlike the ccache
+      # below, which only main writes. The two have opposite churn profiles. A
+      # ccache key carries the run id, so every run would write a new ~300 MB
+      # entry; this key is the workspace's content, so a run only writes when the
+      # pin or the patch set genuinely changed, and a pull request that changed
+      # neither reuses main's entry without ever saving one. Refusing the write
+      # here would instead make a pin bump refetch for an hour on every push to
+      # that branch, since a new fetch half has no prefix to fall back to.
+      - name: save it
+        if: steps.wscache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: workspace
+          key: nrf-ws-${{ steps.ws.outputs.entry }}
+
+      # Restored by prefix from the newest entry main left behind. The primary
+      # key carries the run id and so essentially never hits -- that is the
+      # intent, and it is the standard idiom: a guaranteed miss that falls
+      # through to restore-keys, which pick the most recent prefix match.
+      # PRISTINE=1 throws the build directory away each time, so this is the
+      # only thing that carries work forward between runs.
+      #
+      # EVERY RUN RESTORES, ONLY main SAVES -- see the save step at the end of
+      # this job for why the write side is not symmetric.
+      - name: restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-cdk-images-${{ github.run_id }}
+          restore-keys: |
+            ccache-cdk-images-
+
+      - name: make sure make exists
+        # THE NCS CONTAINER HAS NO make. Its toolchain bundle ships cmake, ninja
+        # and ccache -- an NCS build is CMake and Ninja end to end -- so nothing
+        # in it ever needed one, and the base image does not carry one either.
+        # The CDK recipes live in mk/cdk.mk and make IS the interface, here and on
+        # a contributor's bench; reimplementing the recipe inline would be a
+        # second copy that drifts from the one people actually run.
+        run: |
+          if command -v make >/dev/null 2>&1; then
+            echo "make $(make --version | head -1)"
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends make
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache make
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q make
+          else
+            echo "::error::no make and no package manager to install one"
+            exit 1
+          fi
+          command -v make
+
+      # ==========================================================
+      # A THROWAWAY KEY. THIS IS NOT THE RELEASE KEY AND NEVER IS.
+      # ==========================================================
+      #
+      # MCUboot boots slot 0 only if the image verifies against a public key
+      # compiled into the bootloader, so the private half is the whole answer to
+      # "what firmware will this lock run". The real one is gitignored and lives
+      # on the machine that cuts releases. It is deliberately NOT in the
+      # repository secret store: putting it there would mean every workflow run,
+      # and anything able to influence one, sits next to a key that signs images
+      # a deployed lock will accept. That trade buys this job nothing -- it asks
+      # whether the tree compiles and links, and any key answers that.
+      #
+      # So a fresh EC P-256 key is generated per run, used by exactly one build,
+      # and discarded with the runner. Nothing signed by it is uploaded as an
+      # artifact, precisely so no image produced here can be mistaken for one
+      # that is installable.
+      #
+      # A key has to exist before the image will even configure:
+      # apps/dwm3001cdk-lock/sysbuild.cmake calls scripts/check-signing-key.sh and
+      # fails the build rather than let MCUboot fall back to its own PUBLISHED
+      # demo key, which every stock MCUboot in the world accepts.
+      - name: generate a throwaway MCUboot signing key (CI only, not the release key)
+        run: |
+          set -euo pipefail
+          key="$(make print-sign-key)"
+
+          # The gitignore is a promise; this is the gate that keeps it. A fresh
+          # checkout must not contain a signing key, so one being present means a
+          # private key was committed -- and this job would then quietly build and
+          # sign with it instead of with a throwaway of its own.
+          if [ -e "$key" ]; then
+            echo "::error file=${key}::a signing key is present in a fresh checkout -- it is gitignored and must never be committed"
+            exit 1
+          fi
+
+          make dfu-key
+          printf 'generated for this run only, discarded with the runner\n'
+
+      - name: build the Matter client image (decawave_dwm3001cdk)
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make build CLIENT=1 PRISTINE=1
+
+      - name: build the SHIPPING image (decawave_dwm3001cdk, SMP + RELEASE + LTO)
+        # THE CONFIGURATION THAT ACTUALLY GOES ON A BOARD, and the one with the
+        # least CI history: `make release` wraps exactly this, and that target
+        # cannot run here because it refuses any key but the offline release one
+        # (mk/cdk.mk). So without this step the image every user installs would
+        # be the least-built configuration in the tree, and a Kconfig or
+        # flash-fit break in it would surface while cutting a release -- the
+        # worst possible moment to find one.
+        #
+        # THE CLIENT STEP DOES NOT COVER IT. RELEASE and SMP move the Kconfig
+        # tree, the RAM budget and the partition fit, in opposite directions on
+        # each region: 92.95% FLASH and 90.26% RAM here against 98.72% and
+        # 95.94% there. Neither image's fit implies the other's.
+        #
+        # It adds no application source the client image has not already
+        # compiled -- its value is the configuration, not new files. MEASURED at
+        # 252.6 s, which is MORE than the client image costs from a cold ccache,
+        # because RELEASE and SMP change enough of the Kconfig tree that most of
+        # the warm entries do not apply.
+        #
+        # Its own build directory: `-p auto` does not re-run CMake when a -D flag
+        # changes, so one directory holding both configurations in turn would
+        # silently keep the first.
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make build PRISTINE=1 SMP=1 RELEASE=1 CDK_BUILD=build/cdk-shipping
+
+      - name: build the anchorlink image (decawave_dwm3001cdk)
+        # The three application sources the client image cannot reach:
+        # witness_link.c, side_feed.c and door_alarm.c compile only here. See the
+        # measurements on the job above for why this configuration and not
+        # `reader` or `cirdiag`. Its own build directory, which mk/cdk.mk already
+        # gives it.
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make anchorlink PRISTINE=1
+
+      - name: build the satellite (nrf5340dk)
+        # THE OTHER HALF OF THE SEALED LINK. anchorlink above is the LOCK side --
+        # it receives a sealed distance report; apps/satellite is the board that
+        # SENDS one, and nothing else in this workflow compiles a line of it.
+        # Its own app, its own board, and until this step no check anywhere built
+        # it.
+        #
+        # LAST, and cheapest: MEASURED at 59.9 s, against 60 KB of headroom to
+        # spare (FLASH 13.19%, RAM 15.77% of an nRF5340). It is a different board
+        # from the three above so it shares little of their ccache, which is why
+        # its position in the list does not buy anything -- it is here because it
+        # is the smallest thing that can fail.
+        run: |
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          make sat-build PRISTINE=1
+
+      - name: all four images exist
+        # Each build fails on a flash overflow by itself, and on a link error
+        # before that; this asserts the artifacts are actually on disk, so a
+        # recipe that silently stopped producing one cannot pass as green.
+        #
+        # The satellite path carries SAT_BOARD_TAG, so it tracks SAT_BOARD in
+        # mk/satellite.mk (nrf5340dk/nrf5340/cpuapp, slashes to underscores).
+        # Change that default and this line changes with it.
+        run: |
+          test -f build/cdk-matter/merged.hex
+          test -f build/cdk-shipping/merged.hex
+          test -f build/cdk-anchorlink/merged.hex
+          test -f build/satellite-nrf5340dk_nrf5340_cpuapp/merged.hex
+          ls -l build/cdk-matter/merged.hex build/cdk-shipping/merged.hex \
+                build/cdk-anchorlink/merged.hex \
+                build/satellite-nrf5340dk_nrf5340_cpuapp/merged.hex
+          { command -v ccache >/dev/null && ccache -s | head -n 6; } || echo "no ccache on PATH"
+
+      - name: save the compiler cache
+        # ONLY ON main, and this asymmetry is the point.
+        #
+        # A repository gets 10 GB of Actions cache, LRU-evicted. The bootstrapped
+        # west workspace is ~6.5 GB of that on its own, and it is the entry that
+        # actually hurts to lose: losing the ccache costs minutes, losing the
+        # workspace costs a multi-GB upstream fetch and a full bootstrap. If
+        # every pull request run wrote its own ~300 MB ccache entry, a busy week
+        # would spend the whole remaining budget on near-identical copies, all of
+        # them competing with the one entry worth protecting.
+        #
+        # Pull requests therefore read the cache and do not write it. They still
+        # get a warm build -- restore-keys hands them whatever main last saved,
+        # which is the same objects they would have written -- so this costs a
+        # pull request nothing measurable and stops the churn entirely.
+        #
+        # `always()`, so a build that failed still leaves its objects behind and
+        # the rerun after the fix is a warm one.
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-cdk-images-${{ github.run_id }}

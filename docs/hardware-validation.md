@@ -1,9 +1,18 @@
 # Hardware validation
 
 CI gates the host-side logic (`make ci`: the KAT suite, sanitizers, CBMC, the
-tooling gates). It builds no firmware, so `make regress` compile-gates every
-DWM3001CDK configuration and the size baseline on a bench instead. What none of
-that can exercise is the product itself, which runs against a live iPhone.
+tooling gates) and compile-gates four images in the NCS toolchain container: the
+`CLIENT=1` build (the tightest configuration in the tree), the shipping image
+(`SMP=1 RELEASE=1`, what `make release` wraps), `anchorlink` (the witness
+transport, the side gate and the door alarms), and the nRF5340 satellite.
+Between them that is nine of the thirteen DWM3001CDK application sources, plus
+the satellite app. It does not build the nRF5340 DK lock, the remaining CDK
+configurations, the size baseline or anything ESP32, so `make regress` still
+compile-gates those on a bench. The `release` workflow does build the DK and all
+three ESP32 chips, but only when a release is cut, so those two legs are first
+compiled at the moment they ship -- which is the argument for a throwaway tag
+ahead of a real one. What none of that can
+exercise is the product itself, which runs against a live iPhone.
 
 This checklist is the manual gate: run every applicable item before cutting a
 release, and record the results table in the release notes. Part of it is no longer

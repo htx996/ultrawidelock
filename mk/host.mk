@@ -1,7 +1,7 @@
 # mk/host.mk — everything that runs on this machine: the host suites. No NCS
 # toolchain, no ESP-IDF, no hardware. Output lands under build/host.
 
-.PHONY: test sdk-check sdk-export test-san coverage cbmc check drift seam scope purity lint sca ci regress
+.PHONY: test sdk-check sdk-export test-san coverage cbmc check drift app-diff seam scope purity lint sca ci regress
 
 ##@ Test
 ## test: run the host test suite for our logic  (no NCS toolchain / hardware)
@@ -40,6 +40,14 @@ check:
 ## drift: constants and integration patch-state identity stay exact
 drift:
 	@$(REPO_ROOT)/tests/tooling/drift_suite.sh
+
+## app-diff: how our copy of the door-lock app differs from pinned upstream
+##   Reports, never fails: that application is ours to change. Read it before
+##   raising PIN in scripts/bootstrap.sh, which is the one time the answer
+##   decides something. Fetches the pinned path from GitHub. `make app-diff
+##   ARGS=--stat` for the summary.
+app-diff:
+	@$(REPO_ROOT)/scripts/app-upstream-diff.sh $(ARGS)
 
 ## ci: every pull-request gate, in the order CI runs them  ·  run before opening one
 ##   .github/workflows/ci.yml runs this target rather than listing the gates

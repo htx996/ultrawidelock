@@ -53,15 +53,15 @@ Failure chain after any reboot, without the fixes below:
    (`Current time is outside the Access Document validity period`).
 4. Step-up fails closed, permanently, until the lock is re-commissioned.
 
-### Fixes carried by this repo (`integrations/nrfconnect-door-lock/patches/`)
+### Fixes carried by this repo (in our copy of the door-lock application)
 
-- **`cred-doc-time-ratchet.patch`** (`CONFIG_DOOR_LOCK_TIME_CONCEPT_RATCHET`,
+- **Document time ratchet** (`CONFIG_DOOR_LOCK_TIME_CONCEPT_RATCHET`,
   default y): when a signature-verified document's `validFrom` lies ahead of
   the reader clock, ratchet the system clock forward to `validFrom` (never
   backward) instead of failing. Heals from issuer-signed material with no
   infrastructure. Trade-off: an issuer that signs a future-dated document can
   advance the clock early, weakening not-before enforcement.
-- **`cred-time-persist.patch`** (`CONFIG_DOOR_LOCK_TIME_CONCEPT_PERSIST`,
+- **Wall-clock persistence** (`CONFIG_DOOR_LOCK_TIME_CONCEPT_PERSIST`,
   default y): a 60 s poll persists the wall clock through the app's
   `KeyValueStorage` (settings key `dl/UT`) once per hour, immediately when the
   clock first becomes valid, and after any backward correction; at `AliroInit`

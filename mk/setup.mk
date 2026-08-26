@@ -1,7 +1,7 @@
 # mk/setup.mk — getting a machine ready: host gate tools, then the NCS toolchain
 # and the fetched west workspace both Zephyr ports build against.
 
-.PHONY: tools tools-install bootstrap ws-seed dfu-key print-sign-key
+.PHONY: tools tools-install bootstrap ws-link ws-store dfu-key print-sign-key
 
 ##@ Setup
 ## tools: what the host suites need, what this machine has
@@ -21,24 +21,27 @@ tools-install:
 ## bootstrap: set this machine up for the repo  ·  the only command before build
 ##   Checks the host first, then installs the NCS toolchain and fetches the
 ##   workspace. Interrupt it whenever: every phase resumes on the next run.
-##   In a linked worktree with no ./workspace yet, this delegates to ws-seed: a COW
-##   clone of the primary's tree costs ~0 disk, where refetching costs 6.5 GB.
-##   Options: NO_SEED=1 in a worktree, fetch a full independent workspace anyway
+##   The workspace lands in the machine's store, named for the pin and the patch
+##   set it holds, and ./workspace becomes a link to it. A second checkout that
+##   agrees on both links to the same tree: `make ws-link`, no fetch.
+##   Options: ULTRAWIDELOCK_WS_STORE=<path>  put the store on another volume
+##            ULTRAWIDELOCK_WS=<path>  one workspace at one path, no store at all
 ##            SETUP_AUTO=1 install missing nrfutil without asking (0 = never ask)
 bootstrap:
-	@if [ -z "$(NO_SEED)" ] && [ ! -d workspace/.west ] && \
-	    [ "$$(git rev-parse --git-common-dir)" != "$$(git rev-parse --git-dir)" ]; then \
-	  printf '  linked worktree with no workspace: cloning the primary (NO_SEED=1 to refetch)\n'; \
-	  $(REPO_ROOT)/scripts/ws-seed.sh && exit 0; \
-	fi; \
-	$(NRF_ENV) ./scripts/bootstrap.sh
+	@$(NRF_ENV) ./scripts/bootstrap.sh
 
-## ws-seed: give THIS worktree its own workspace (APFS COW clone, ~0 disk)
-##   Idempotent. Isolates worktrees so branch-bouncing can't build stale patches.
-##   To seed a worktree whose branch predates this script, run it from a checkout
-##   that has it: scripts/ws-seed.sh <path-to-worktree>
-ws-seed:
-	@$(REPO_ROOT)/scripts/ws-seed.sh
+## ws-link: point THIS checkout at the workspace its branch needs
+##   Idempotent, and a symlink in the common case: the store already holds a tree
+##   for this pin and patch set. A patch set of this branch's own is a
+##   copy-on-write clone of the nearest entry plus a re-patch, not a re-fetch.
+##   To link a worktree whose branch predates this script, run it from one that
+##   has it: scripts/ws-link.sh <path-to-worktree>
+ws-link:
+	@$(REPO_ROOT)/scripts/ws-link.sh
+
+## ws-store: every workspace on this machine, and which checkouts link to them
+ws-store:
+	@$(REPO_ROOT)/scripts/ws-store.sh
 
 ## dfu-key: generate this checkout's MCUboot signing key  ·  once per clone
 #   Refuses to overwrite: replacing the key strands every board carrying the old

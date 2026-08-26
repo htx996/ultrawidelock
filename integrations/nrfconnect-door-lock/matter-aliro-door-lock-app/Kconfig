@@ -1,0 +1,67 @@
+#
+# Copyright (c) 2025 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+#
+
+mainmenu "nRF Door Lock and Access Control Add-on"
+
+module = DOOR_LOCK_APP
+module-str = NCS_DOOR_LOCK_APP
+module-dep = LOG
+module-help = Enables nRF Connect SDK Door Lock Application log messages.
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+config DOOR_LOCK_CLI
+	bool "CLI support"
+	default y if !DOOR_LOCK_RELEASE
+	select SHELL
+	select REBOOT
+	select DOOR_LOCK_ALIRO_READER_STORAGE_SHELL
+	help
+	  Enable support for Door Lock CLI.
+
+config DOOR_LOCK_RELEASE
+    bool "Release configuration"
+    help
+      In this configuration:
+      Aliro stack logs are disabled.
+      RFAL NFC driver logs are disabled.
+      Shell commands are disabled.
+      Device reset automatically on fatal error.
+
+config ULTRAWIDELOCK_HA
+	bool "Home Assistant data model"
+	depends on DOOR_LOCK_BLE_UWB
+	help
+	  Build the Matter data model that a Home Assistant install can use
+	  directly: the Door Lock LockOperation event, and an Occupancy Sensing
+	  endpoint driven by UWB proximity.
+
+	  This selects src/matter/zap_uwb_ha in place of src/matter/zap_uwb and
+	  compiles the proximity callback in bolt_lock_manager.cpp, which writes
+	  the occupancy attribute on the endpoint only that data model declares.
+
+	  Off by default because it changes the data model of an already
+	  commissioned lock, and that has not been validated on hardware. It was
+	  a pair of patches against the fetched application before this
+	  application was ours; the ordering hazard they carried is gone with
+	  them.
+
+rsource "src/Kconfig"
+
+rsource "Kconfig.defconfig"
+
+# Source BLE defconfig when any BLE feature is enabled
+if DOOR_LOCK_BLE_UWB || DOOR_LOCK_DFU_SMP_SERVICE || DOOR_LOCK_NUS_SERVICE
+rsource "Kconfig.ble.defconfig"
+endif # DOOR_LOCK_BLE_UWB || DOOR_LOCK_DFU_SMP_SERVICE || DOOR_LOCK_NUS_SERVICE
+
+rsource "Kconfig.crypto.defconfig"
+
+rsource "src/matter/Kconfig"
+source "$(ZEPHYR_CONNECTEDHOMEIP_MODULE_DIR)/config/nrfconnect/chip-module/Kconfig.features"
+source "$(ZEPHYR_CONNECTEDHOMEIP_MODULE_DIR)/config/nrfconnect/chip-module/Kconfig.defaults"
+source "$(ZEPHYR_NRF_MODULE_DIR)/samples/matter/common/src/Kconfig"
+
+source "Kconfig.zephyr"

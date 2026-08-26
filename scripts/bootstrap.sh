@@ -18,13 +18,13 @@
 set -euo pipefail
 
 TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WS="${ULTRAWIDELOCK_WS:-$TREE/workspace}"
 NCS_VER="${NCS_VER:-v3.3.0}"
 PIN="a5ad7fde1041d81690710a949c98eda1985fee0b"     # ncs-door-lock-and-access-control (public)
 ADDON_URL="https://github.com/nrfconnect/ncs-door-lock-and-access-control"
-ADDON="$WS/ncs-door-lock-and-access-control"
 P="$TREE/integrations/nrfconnect-door-lock/patches"
-PATCH_STATE="$WS/.ultrawidelock-patches.sha256"
+# WS, ADDON, PATCH_STATE and FETCHED are resolved in preflight, once the store
+# entry this checkout belongs in is known. ULTRAWIDELOCK_WS still names a
+# workspace directly and skips the store entirely.
 
 # Where Nordic publishes the nrfutil binary, one directory per host triple.
 NRFUTIL_URL="https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables"
@@ -36,6 +36,10 @@ NRFUTIL_PAGE="https://www.nordicsemi.com/Products/Development-tools/nrf-util"
 # that stops in one of them stops the same way in the other.
 # shellcheck source=scripts/lib/setup.sh
 . "$TREE/scripts/lib/setup.sh"
+# The store: what names a workspace, where the machine keeps them, and the patch
+# application shared with ws-link.sh.
+# shellcheck source=scripts/lib/ws.sh
+. "$TREE/scripts/lib/ws.sh"
 setup_init "bootstrap" "make bootstrap"
 
 # Launch the nRF Util SDK manager toolchain with the configured NCS version, passing through all remaining arguments.
@@ -75,13 +79,46 @@ step "preflight"
 # should not be stopped over a tool this run will never call.
 require_tools git python3
 
+# ---- which workspace this checkout belongs to --------------------------------
+# Named for its contents, so every checkout that agrees on the pin, the NCS
+# version and the patch set shares one 5.5 GB tree and the rest is a symlink.
+# scripts/lib/ws.sh carries the reasoning.
+PATCH_ID="$("$TREE/scripts/integration-patch-id.py" "$P")"
+FETCH_KEY="$(ws_fetch_key "$PIN" "$NCS_VER")"
+ENTRY="$(ws_entry_name "$FETCH_KEY" "$PATCH_ID")"
+STORE="$(ws_store_root)"
+
+if [ -n "${ULTRAWIDELOCK_WS:-}" ]; then
+  # An explicit path is still a path: no store, no link, no sharing. This is the
+  # way to put the workspace on another volume, and CI's way to keep it inside a
+  # runner's own directory.
+  WS="$ULTRAWIDELOCK_WS"
+  info "workspace: $WS   (ULTRAWIDELOCK_WS — outside the store)"
+else
+  WS="$STORE/$ENTRY"
+  # A checkout from before the store keeps its fetch: adopted rather than
+  # repeated. ./workspace becomes a link to it at the end of this run.
+  ws_adopt "$TREE" "$WS" "$PIN" "$STORE" || true
+  info "workspace: $STORE/$ENTRY"
+fi
+
+ADDON="$WS/ncs-door-lock-and-access-control"
+PATCH_STATE="$WS/.ultrawidelock-patches.sha256"
+
+# The store is shared by every checkout on the machine, so two bootstraps racing
+# into one entry would fetch and patch over each other. Per entry, not per store:
+# two checkouts on two different patch sets have no reason to wait for one
+# another. An explicit ULTRAWIDELOCK_WS is one caller's own directory, and takes
+# the lock too -- two runs into the same explicit path race just as badly.
+setup_lock "$WS"
+
 # Only for what this run will actually pull: a re-run over a populated workspace
 # needs almost nothing.
 if [ ! -f "$WS/.ultrawidelock-fetch-done" ]; then
   need_disk "$WS" 8 \
       "free some space, or put the workspace on another disk:" \
       "  ULTRAWIDELOCK_WS=/big/disk/ultrawidelock-ws make bootstrap" \
-      "in a linked worktree, 'make ws-seed' clones the primary's workspace for ~0 disk"
+      "  ULTRAWIDELOCK_WS_STORE=/big/disk/ws make bootstrap   (moves the whole store)"
   warn_offline
 fi
 
@@ -254,6 +291,32 @@ fi
 FETCHED="$WS/.ultrawidelock-fetch-done"
 PHASE="fetching the west workspace into $WS"
 step "workspace: $WS   (add-on pin ${PIN:0:10}…, NCS $NCS_VER)"
+
+# An entry that already exists differs from this one only in what was applied on
+# top: same pin, same NCS, same upstream revisions, because that is what its
+# name says. So clone it and re-patch -- a copy-on-write clone and four `git
+# apply`s -- rather than an hour of GitHub. This is what ws-seed.sh used to do
+# per worktree, moved to where every checkout benefits from it.
+if [ ! -d "$ADDON/.git" ] && [ -z "${ULTRAWIDELOCK_WS:-}" ] && [ "${NO_CLONE:-0}" != 1 ]; then
+  if src="$(ws_clone_source "$STORE" "$FETCH_KEY" "$WS")"; then
+    if ws_same_volume "$src" "$STORE"; then
+      info "cloning $(basename "$src") — same upstream, a different patch set"
+      # Into a .partial and renamed, rather than under an exit trap: the trap
+      # setup.sh owns is what turns an interrupt into a resumable message, and a
+      # second one here would replace it. A .partial left by a stop is visible,
+      # is never mistaken for an entry, and this line is what clears it.
+      mkdir -p "$STORE"
+      rm -rf "$WS.partial"
+      ws_cow_copy "$src" "$WS.partial"   # block clone where the filesystem has one
+      rm -f "$WS.partial/.ultrawidelock-ws.id"   # not this entry's stamp; earned below
+      mv "$WS.partial" "$WS"
+      info "cloned — the fetch below has nothing left to pull"
+    else
+      info "$(basename "$src") is on another volume — fetching rather than copying 5.5 GB"
+    fi
+  fi
+fi
+
 if [ ! -d "$ADDON/.git" ]; then
   # Clone the manifest repo, checkout the pinned SHA, then `west init -l`.
   # (`west init -m … --mr <SHA>` is wrong: it runs `git clone --branch <SHA>`, and
@@ -308,73 +371,30 @@ fi
 
 # 3. Apply our patches on top. Each target repo is reset to its pinned HEAD and
 #    verified clean first, so a patch can never land on unexpected local state.
+#    The lists and the reset live in scripts/lib/ws.sh, because ws-link.sh
+#    re-patches a cloned entry with the same code -- two implementations would
+#    put two different trees into the store under one name.
 PHASE="applying the integration patches"
 step "applying integration patches"
-# Apply patch files to a repository, resetting it to its pinned HEAD first.
-#
-# That reset is what makes bootstrap idempotent -- the previous run's patches have
-# to come off before this run's go on -- but hand-editing $WS is the normal way
-# upstream gets debugged here, and those edits look identical to it. So say what is
-# about to go, and keep a copy: a run that silently eats an afternoon of debugging
-# is the worst thing this script can do. ULTRAWIDELOCK_KEEP_WS_EDITS=1 stops instead, for
-# when the edits are the point and re-patching is not.
-apply_to() {   # $1 = repo, remaining args = patch files
-  local repo="$1"; shift
-  local dirty saved
-  dirty="$(git -C "$repo" status --porcelain --untracked-files=no)"
-  if [ -n "$dirty" ]; then
-    if [ "${ULTRAWIDELOCK_KEEP_WS_EDITS:-0}" = 1 ]; then
-      echo "ERROR: $repo has local changes and ULTRAWIDELOCK_KEEP_WS_EDITS=1 — stopping" >&2
-      printf '%s\n' "$dirty" | sed 's/^/      /' >&2
-      exit 1
-    fi
-    mkdir -p "$WS/.ultrawidelock-discarded"
-    saved="$WS/.ultrawidelock-discarded/$(basename "$repo")-$(date -u +%Y%m%dT%H%M%SZ).patch"
-    # diff HEAD, not diff: staged work is just as easy to lose and `checkout -- .`
-    # does not touch the index, so it would otherwise survive here and trip the
-    # pristine assertion below with no record of what it was.
-    git -C "$repo" diff HEAD >"$saved"
-    echo "    discarding local changes in $repo:"
-    printf '%s\n' "$dirty" | sed 's/^/      /'
-    echo "    saved to $saved"
-    echo "      restore with: git -C $repo apply '$saved'"
-  fi
-  git -C "$repo" checkout -q -- .
-  # Reachable, despite the reset above: `checkout -- .` rewrites the working tree
-  # from the index and leaves the index itself alone, so anything staged survives
-  # to here. Staged work is deliberate work, so stop rather than clear it -- the
-  # copy saved above is the way back if the stop is unwelcome.
-  [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] || {
-    echo "ERROR: $repo still not pristine — staged changes survive 'checkout -- .'" >&2
-    echo "       Unstage them and re-run:  git -C $repo reset" >&2
-    exit 1
-  }
-  git -C "$repo" apply --whitespace=nowarn "$@"
-}
-# HA=1 also applies the Home Assistant data-model patches: the DoorLock
-# LockOperation event and the UWB-proximity occupancy endpoint. Off by default
-# because they change the Matter data model of an already-commissioned lock, and
-# that has not been validated on hardware. They are a pair, not independent: the
-# occupancy patch is cut against a tree with the LockOperation one applied, so
-# applying it alone will not apply cleanly. Pair with `make build HA=1`.
-ha_patches=()
-if [ "${HA:-0}" = 1 ]; then
-  ha_patches=("$P/ha-lockoperation-event.patch" "$P/ha-occupancy-endpoint.patch")
-fi
-
-apply_to "$ADDON"                 "$P/custom_impl-uwb.patch" "$P/crypto-timesync-tap.patch" "$P/pretty-shell.patch" "$P/cred-shell-factoryreset.patch" "$P/console-quiet-flood.patch" "$P/kpersistent-orphan-selfheal.patch" "$P/cred-doc-time-ratchet.patch" "$P/cred-time-persist.patch" "$P/extnvs-rollback-mirror-id.patch" "$P/approach-direction-cluster.patch" "$P/nfc-transport-seam.patch" ${ha_patches[@]+"${ha_patches[@]}"}
-apply_to "$WS/nrf"                "$P/nrf-flashfit-dfu-guards.patch"
-apply_to "$WS/modules/lib/matter" "$P/matter-ble-multi-identity.patch"
+ws_apply_patches "$WS" "$P"
 
 # A dirty repository proves that some patch exists, not that it is today's
 # patch set. Record the exact patch contents and optional HA mode so build.sh
 # rejects a workspace left behind by an older checkout.
-"$TREE/scripts/integration-patch-id.py" "$P" "${HA:-0}" >"$PATCH_STATE"
+printf '%s\n' "$PATCH_ID" >"$PATCH_STATE"
 
-# Calculate number of patches applied to $ADDON (always 11 base patches plus the HA patches if HA=1)
-addon_patch_count=$((11 + ${#ha_patches[@]}))
-total_patch_count=$((13 + ${#ha_patches[@]}))
+echo "    ✓ pristine upstream + $WS_PATCH_COUNT patches (add-on ×$WS_ADDON_PATCH_COUNT, nrf, matter)"
 
-echo "    ✓ pristine upstream + $total_patch_count patches (add-on ×$addon_patch_count, nrf, matter)"
+# 4. Name the finished tree, and point this checkout at it. The stamp goes last:
+#    it is what ws_entry_ready and ws-link.sh read to decide an entry is somebody
+#    else's to use, and a tree that stopped halfway through step 3 must never
+#    look like one.
+if [ -z "${ULTRAWIDELOCK_WS:-}" ]; then
+  PHASE="linking ./workspace"
+  ws_stamp "$WS" "$PIN" "$NCS_VER" "$PATCH_ID"
+  ws_link "$TREE" "$WS"
+  step "./workspace -> $WS"
+  info "every checkout on this patch set links here: scripts/ws-link.sh, or make ws-link"
+fi
 
 setup_done "ready. Build with:  make build"

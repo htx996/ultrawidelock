@@ -117,7 +117,7 @@ Set on the command line, e.g. `make nrf-build PRETTY=1 CHIP=dw3720`:
 | `PRETTY=1` | curated, quiet serial console |
 | `SELFTEST=1` | radio TX/RX self-test at boot, no iPhone needed |
 | `STRICT=1` | drop suspect UWB range blocks |
-| `HA=1` | nRF5340-only Home Assistant generated-data-model variant; needs `make bootstrap HA=1` too. It is not needed to share a DWM3001CDK with Home Assistant |
+| `HA=1` | nRF5340-only Home Assistant data-model variant. One flag: it sets `CONFIG_ULTRAWIDELOCK_HA`, which selects the `zap_uwb_ha` data model inside the application, and no longer needs a separately bootstrapped workspace. It is not needed to share a DWM3001CDK with Home Assistant |
 | `ULTRAWIDELOCK_SOURCE=0` | use the legacy Nordic Aliro binary instead of the default in-tree stack; diagnostic comparison only |
 | `ULTRAWIDELOCK_TRACE=1` | declared temporary BLE/session boundary trace; currently unavailable because the required vendor integration patch is absent; see [Capture safety](#capture-safety) |
 | `NFC=st25r` | use the default X-NUCLEO-NFC12A1/ST25R300 RFAL path; hardware-validated |
