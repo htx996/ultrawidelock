@@ -5,8 +5,8 @@ operations, and release workflows.
 
 | Group | Scripts |
 |---|---|
-| Setup and environment | `bootstrap.sh`, `esp-bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh`, `ws-seed.sh` |
-| nRF5340 DK builds | `nrf5340dk-build.sh` |
+| Setup and environment | `bootstrap.sh`, `esp-bootstrap.sh`, `toolchain.sh`, `check-signing-key.sh`, `ws-link.sh`, `ws-store.sh` |
+| nRF5340 DK builds | `nrf5340dk-build.sh`, `app-upstream-diff.sh` |
 | DWM3001CDK operations | `cdk-dfu.sh`, `cdk-find-probe.sh`, `cdk-rtt-elf-check.sh` |
 | Firmware size | `cdk-size.py`, `cdk-size-compare.py`, `cdk-size-baseline.py` |
 | Delta update and SMP | `ultrawidelock_patch.py`, `ultrawidelock_push.py`, `ultrawidelock_smp.py` |
@@ -30,13 +30,23 @@ keep an interrupt legible and a `set -e` abort nonzero, `ask`/`SETUP_AUTO`, the
 per-host package hints and the disk and network checks. Neither script knows
 anything about the other's SDK.
 
-`ws-seed.sh` gives a worktree its own west workspace as an APFS copy-on-write
-clone, so branch-bouncing cannot build stale patches. `make ws-seed` seeds the
-worktree it runs in. Pass a path to seed a different one -- the way to reach a
-worktree whose branch predates the script, since it needs no files copied into
-the target and no commit on its branch. The target must have an executable
-`scripts/bootstrap.sh`, which is re-run inside it to normalize patches to its
-own branch, and is refused up front when it does not.
+`app-upstream-diff.sh` says how our copy of the door-lock application differs
+from the Nordic application it was taken from, by fetching just that path at the
+pin and diffing. It reports rather than gates: the changes are supposed to be
+there. It is the thing to read before raising `PIN`, which is the one moment the
+answer decides anything, and it is what replaced eleven patch files as the
+record of what this repository changed in that application.
+
+`ws-link.sh` points a checkout at the workspace its branch needs. The machine
+keeps one store of them (`lib/ws.sh`), a tree per pin and patch set, so a
+checkout that agrees with one already there is a symlink and nothing else; a
+branch carrying its own patch set gets a copy-on-write clone of the nearest
+entry and a re-patch, not a re-fetch. `make ws-link` links the checkout it runs
+in. Pass a path to link a different one -- the way to reach a worktree whose
+branch predates the script, since it needs no files copied into the target and
+no commit on its branch. `make ws-store` lists what the machine is holding and
+which checkouts still link to it, because a shared tree outlives the worktree
+that fetched it.
 
 Prefer a documented Make target when one exists. Run `make help` to see the
 supported interface and required variables. Use `make hitl` for `hitl-run.sh`;

@@ -214,10 +214,10 @@ need_disk() {
 }
 
 # ---- one run at a time -------------------------------------------------------
-# Only needed where an install is SHARED. The NCS workspace is per-worktree by
-# construction (that is what ws-seed.sh is for), but $HOME/esp is one tree that
-# every worktree on the machine installs into, so two `make esp-bootstrap` runs
-# started in two of them would fetch submodules over each other.
+# Only needed where an install is SHARED, which both of these now are: the NCS
+# workspace store holds one tree per patch set for the whole machine (see
+# scripts/lib/ws.sh) and $HOME/esp is one tree every worktree installs into, so
+# two runs started in two checkouts would fetch over each other either way.
 #
 # mkdir is the lock: it is atomic on every filesystem this runs on, unlike a
 # test-then-create on a file. The holder's PID goes inside, so a lock left by a

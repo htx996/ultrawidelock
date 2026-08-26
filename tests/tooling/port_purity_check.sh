@@ -1588,10 +1588,17 @@ self_test() {
 	# stopped matching any patch at all would look identical. Its own selector,
 	# asked for the word upstream really does use, has to come back with the
 	# whole corpus.
+	#
+	# The floor is 5 and used to be 20, because the corpus is four patches and
+	# used to be fifteen: eleven of them became owned source under
+	# integrations/nrfconnect-door-lock/. Lowering it is the honest move --
+	# what this guards against is a pathspec that matches nothing, which arrives
+	# as 0 whatever the corpus size, and a floor set above the real count fails
+	# every run while claiming the gate is broken.
 	local upstream_lines
 	upstream_lines="$(git grep -invE '^\+' -- integrations/nrfconnect-door-lock/patches |
 		grep -icE 'aliro' | tr -d ' ')"
-	if [ "$upstream_lines" -lt 20 ]; then
+	if [ "$upstream_lines" -lt 5 ]; then
 		printf '%s  self-test FAILED: patch upstream scan reached only %s line(s)%s\n' \
 			"$R" "$upstream_lines" "$Z" >&2
 		fails=$((fails + 1))

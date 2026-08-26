@@ -1,6 +1,6 @@
-# Fetched west workspace (~6.5 GB: NCS + add-on) — reproduced by bootstrap.sh.
-# In a git worktree this may be a symlink to the main checkout's workspace, so
-# ignore both the directory and the symlink form.
+# Fetched west workspace (~5.5 GB: NCS + add-on) — reproduced by bootstrap.sh.
+# Normally a symlink into the machine's workspace store (scripts/lib/ws.sh), and
+# a real directory when ULTRAWIDELOCK_WS names one, so ignore both forms.
 workspace/
 /workspace
 

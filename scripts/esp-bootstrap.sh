@@ -87,9 +87,9 @@ step "preflight"
 
 require_tools git python3
 
-# $HOME/esp is one tree shared by every worktree on this machine, unlike the NCS
-# workspace which ws-seed.sh gives each worktree its own copy of. So take a lock:
-# two of these running at once would fetch submodules over each other.
+# $HOME/esp is one tree shared by every worktree on this machine, the same way
+# the NCS workspace store is (scripts/lib/ws.sh). So take a lock: two of these
+# running at once would fetch submodules over each other.
 setup_lock "$IDF_DIR"
 
 # ESP-IDF's own installer brings its cmake and ninja along, so these are a note
@@ -253,7 +253,7 @@ if [ "$ESP_MATTER" = 1 ]; then
       # A path that exists with something in it and no .git is not a blank
       # slate. `git init` over it would adopt those files and the checkout
       # below would start overwriting them, so refuse and let whoever put them
-      # there decide -- the same rule ws-seed.sh applies to a part-finished
+      # there decide -- the same rule ws-link.sh applies to a part-finished
       # workspace, for the same reason.
       if [ -d "$ESP_MATTER_PATH" ] && [ -n "$(ls -A "$ESP_MATTER_PATH" 2>/dev/null)" ]; then
         die "$ESP_MATTER_PATH exists, has files in it, and is not a git checkout" \

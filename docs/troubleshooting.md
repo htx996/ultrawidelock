@@ -165,9 +165,9 @@ lists `nrfutil`, `sdk-manager` and `toolchain` as three separate rows for this r
 
 **`make bootstrap` stops in preflight over disk, or a missing `git`/`curl`/`python3`.** It
 reports every gap in one pass with the install command for this host, because the phases
-after it cost several GB and many minutes. For disk, `ULTRAWIDELOCK_WS=/big/disk/ws make
-bootstrap` puts the workspace on another volume, and in a linked worktree `make ws-seed`
-clones the primary's workspace for ~0 disk.
+after it cost several GB and many minutes. For disk, `ULTRAWIDELOCK_WS_STORE=/big/disk/ws
+make bootstrap` moves the whole workspace store to another volume, and in any second
+checkout `make ws-link` links the tree the machine already has for ~0 disk.
 
 **`make bootstrap` was interrupted.** Re-run it. Every phase resumes: the toolchain install
 is skipped once installed, a half-finished clone is repaired and re-pinned, the fetch
