@@ -415,43 +415,105 @@ jobs:
         with:
           persist-credentials: false
 
-      # ~6.5 GB of NCS, Zephyr and modules, fetched by scripts/bootstrap.sh and
-      # then patched. Restoring it from GitHub's own storage is far cheaper than
-      # fetching it from upstream, which is the whole reason it is cached.
+      # WHAT NAMES THE WORKSPACE. scripts/lib/ws.sh decides which tree a checkout
+      # belongs to, and the name it computes is two halves:
       #
-      # THE KEY is everything that shapes the workspace's content: the pin record
-      # (west.yml), the applier (scripts/bootstrap.sh, where the add-on pin, the
-      # NCS version and the patch list live) and the patch files themselves, so
-      # patch drift forces a cold bootstrap.
+      #     f49ffb4d8c93-582523c43cfd
+      #     └ fetch ──────┘└ patches ┘
       #
-      # DELIBERATELY NO restore-keys. bootstrap.sh cannot re-patch a workspace
-      # that already carries a different patch state -- patches that add files
-      # leave untracked files behind -- so a near-miss restore would poison the
-      # build rather than speed it up. A miss has to be a full bootstrap.
-      - name: restore the bootstrapped west workspace
+      # The fetch half is the add-on pin and the NCS version -- what `west update`
+      # pulls, before anything of ours touches it. The patch half is the
+      # integration patch set (scripts/integration-patch-id.py). Both are pure
+      # functions of files a bare checkout already has, so this answers in
+      # milliseconds with no workspace, no toolchain and no network, which is
+      # exactly what a cache key has to do. scripts/README.md says the same.
+      - name: name this checkout's workspace
         id: ws
+        run: |
+          entry="$(./scripts/ws-link.sh --print | awk '/^entry/{print $2}')"
+          case "$entry" in
+            ????????????-????????????) ;;
+            *) echo "::error::ws-link.sh --print gave no usable entry name: '$entry'"; exit 1 ;;
+          esac
+          echo "entry=$entry"       >>"$GITHUB_OUTPUT"
+          echo "fetch=${entry%%-*}" >>"$GITHUB_OUTPUT"
+          echo "workspace entry $entry"
+
+      # ~6.5 GB of NCS, Zephyr and modules. Restoring it from GitHub's own
+      # storage is far cheaper than fetching it from upstream, which is the whole
+      # reason it is cached.
+      #
+      # THE PREFIX IS THE POINT, and it replaces a "DELIBERATELY NO restore-keys"
+      # that used to stand here. The old key fused the fetch and the patches into
+      # one hash, so editing one patch hunk threw away the whole ~6.5 GB and
+      # refetched from upstream -- and restore-keys were refused because a
+      # near-miss restore leaves a tree carrying somebody else's patch state.
+      #
+      # Both halves of that have changed. The name now separates the two, so the
+      # prefix below matches any entry that agrees on the upstream and differs
+      # only in what we applied on top -- which is the tree bootstrap.sh wants,
+      # since it resets every patched repo to its pinned HEAD before applying
+      # (ws_apply_patches -> _ws_apply_to in scripts/lib/ws.sh) and asserts the
+      # repo is pristine before it starts. The reason that reset is now enough is
+      # that none of the four remaining patches adds a file: `checkout -- .`
+      # restores tracked files and leaves untracked ones behind, which is exactly
+      # the poisoning the old comment was written about.
+      # tests/tooling/patch_drift_check.sh fails if a patch ever starts adding
+      # one, because this prefix stops being safe the moment that changes.
+      - name: restore the west workspace
+        id: wscache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: workspace
-          key: nrf-workspace-${{ hashFiles('west.yml', 'scripts/bootstrap.sh', 'integrations/nrfconnect-door-lock/patches/**') }}
+          key: nrf-ws-${{ steps.ws.outputs.entry }}
+          restore-keys: |
+            nrf-ws-${{ steps.ws.outputs.fetch }}-
 
-      - name: bootstrap it (cold cache)
-        if: steps.ws.outputs.cache-hit != 'true'
-        # One retry: bootstrap is resumable (the fetch sentinel means a rerun
-        # picks up where an interrupted west update stopped), so a transient
-        # fetch failure costs one resume rather than the whole fetch.
+      # RUNS ON A MISS AND ON A PREFIX HIT, AND IS THE SAME COMMAND FOR BOTH.
+      # An exact hit is skipped because that tree was saved by a finished
+      # bootstrap and already carries this patch set and its stamp; re-running
+      # over it would reset four repos and re-apply the same patches to reach the
+      # state it is already in.
+      #
+      # The other two cases differ enormously in cost and not at all in code,
+      # because bootstrap.sh asks only for what is missing. On a prefix hit the
+      # add-on is already at the pin so it is left alone, .west exists so
+      # `west init` is skipped, and .ultrawidelock-fetch-done is present so the
+      # multi-GB `west update` is skipped -- leaving exactly the work that run
+      # needs, swapping the patch set, in seconds. On a miss the same line does
+      # the full fetch.
+      #
+      # It also writes .ultrawidelock-patches.sha256, which the build scripts
+      # refuse to build without (scripts/nrf5340dk-build.sh:187). Re-patching by
+      # hand here would be a third implementation of "put a tree in a known
+      # state", next to bootstrap.sh and ws-link.sh, and ws.sh's own header says
+      # why two of those would already be one too many.
+      #
+      # One retry: bootstrap is resumable (the fetch sentinel means a rerun picks
+      # up where an interrupted west update stopped), so a transient fetch
+      # failure costs one resume rather than the whole fetch.
+      - name: bootstrap it
+        if: steps.wscache.outputs.cache-hit != 'true'
         run: |
           ./scripts/bootstrap.sh || {
             echo "::warning::bootstrap failed once -- retrying (resumes the fetch)"
             ./scripts/bootstrap.sh
           }
 
-      - name: save it (cold cache)
-        if: steps.ws.outputs.cache-hit != 'true'
+      # Saved on anything but an exact hit, on every branch -- unlike the ccache
+      # below, which only main writes. The two have opposite churn profiles. A
+      # ccache key carries the run id, so every run would write a new ~300 MB
+      # entry; this key is the workspace's content, so a run only writes when the
+      # pin or the patch set genuinely changed, and a pull request that changed
+      # neither reuses main's entry without ever saving one. Refusing the write
+      # here would instead make a pin bump refetch for an hour on every push to
+      # that branch, since a new fetch half has no prefix to fall back to.
+      - name: save it
+        if: steps.wscache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: workspace
-          key: ${{ steps.ws.outputs.cache-primary-key }}
+          key: nrf-ws-${{ steps.ws.outputs.entry }}
 
       # Restored by prefix from the newest entry main left behind. The primary
       # key carries the run id and so essentially never hits -- that is the

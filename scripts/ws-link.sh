@@ -62,23 +62,38 @@ ENTRY_NAME="$(ws_entry_name "$FETCH_KEY" "$PATCH_ID")"
 STORE="$(ws_store_root)"
 ENTRY="$STORE/$ENTRY_NAME"
 
-if [ -n "${ULTRAWIDELOCK_WS:-}" ]; then
-  die "ULTRAWIDELOCK_WS is set, so this checkout does not use the store" \
-      "it already names a workspace directly: $ULTRAWIDELOCK_WS" \
-      "unset it to link into the store instead."
-fi
-
+# Ahead of the ULTRAWIDELOCK_WS check below, because --print changes nothing and
+# the name it reports does not depend on the store existing or being used: it is
+# a function of the pin, the NCS version and the patch files, all of which a bare
+# checkout has. .github/workflows/ci.yml wants exactly that -- the entry name as
+# a cache key -- while also setting ULTRAWIDELOCK_WS, because a job that saves
+# `path: workspace` through actions/cache cannot have a symlink there. Refusing
+# to answer a question because of a variable that only affects where a build
+# would put its files made those two mutually exclusive for no reason.
 if [ "$MODE" = print ]; then
   printf 'checkout   %s\n' "$TREE"
   printf 'entry      %s\n' "$ENTRY_NAME"
   printf 'store      %s\n' "$STORE"
   printf 'state      %s\n' "$(ws_entry_ready "$ENTRY" && echo present || echo 'not fetched')"
-  printf 'workspace  %s\n' "$(ws_resolved "$TREE" || echo 'not linked')"
+  if [ -n "${ULTRAWIDELOCK_WS:-}" ]; then
+    printf 'workspace  %s   (ULTRAWIDELOCK_WS -- this checkout does not use the store)\n' \
+        "$ULTRAWIDELOCK_WS"
+  else
+    printf 'workspace  %s\n' "$(ws_resolved "$TREE" || echo 'not linked')"
+  fi
   # setup.sh's exit trap turns any unexplained exit into a nonzero one with a
   # "failed while starting up" on it, which is right for every path that can
   # stop halfway and wrong for a report that finished.
   HANDLED=1
   exit 0
+fi
+
+# link and adopt both write, and neither has anything to write to when the
+# workspace is named directly.
+if [ -n "${ULTRAWIDELOCK_WS:-}" ]; then
+  die "ULTRAWIDELOCK_WS is set, so this checkout does not use the store" \
+      "it already names a workspace directly: $ULTRAWIDELOCK_WS" \
+      "unset it to link into the store instead."
 fi
 
 if [ "$MODE" = adopt ]; then

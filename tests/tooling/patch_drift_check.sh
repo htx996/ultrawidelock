@@ -48,6 +48,32 @@ ondisk="$(cd "$P" && printf '%s\n' *.patch | sort)"
   exit 1
 }
 
+# No patch may ADD a file, and the reason is in .github/workflows/ci.yml rather
+# than here. That job restores the west workspace by the fetch half of its name
+# alone, so the tree it gets can be carrying a different patch set, and what
+# makes that safe is bootstrap.sh resetting every patched repo to its pinned HEAD
+# first. `git checkout -- .` restores tracked files and does not remove untracked
+# ones, so a patch that adds a file would leave its addition behind and the next
+# build would compile a file no patch in this set asked for. All four are
+# modify-only today; this is what keeps the prefix restore honest tomorrow.
+#
+# The lists are used rather than the directory because the block above has just
+# proved the two agree, and a patch this script does not know about is already
+# that block's failure to report.
+adders=""
+for f in "${ADDON_PATCHES[@]}" "${NRF_PATCHES[@]}" "${MATTER_PATCHES[@]}"; do
+  grep -q '^new file mode' "$f" && adders="$adders $(basename "$f")"
+done
+[ -z "$adders" ] || {
+  echo "ERROR: these patches add files:$adders" >&2
+  echo "       ci.yml restores the workspace by fetch-key prefix and re-patches" >&2
+  echo "       it, which only reverts TRACKED files. Either fold the new file" >&2
+  echo "       into the owned application under" >&2
+  echo "       integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/," >&2
+  echo "       or drop the restore-keys from that job's workspace cache." >&2
+  exit 1
+}
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 

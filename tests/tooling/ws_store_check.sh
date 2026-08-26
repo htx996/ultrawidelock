@@ -222,6 +222,58 @@ unset -f ws_cow_flag
 no  "no bare cp -c is left in the callers" \
     grep -qE 'cp -c ' "$ROOT/scripts/bootstrap.sh" "$ROOT/scripts/ws-link.sh"
 
+printf '\n== the way out of the store ==\n'
+
+# ULTRAWIDELOCK_WS is how a caller keeps its workspace in its own directory:
+# no store, no sharing, and above all no symlink. Everything above this line is
+# about the store working; this is about it being possible not to use it, which
+# until now nothing checked.
+#
+# .github/workflows/ci.yml sets it on all three jobs that bootstrap, and cannot
+# work without it. Those jobs carry the workspace between runs with
+# actions/cache and `path: workspace`. Against a symlink that saves the link
+# instead of the tree and restores a dangling one into a fresh container -- and
+# the restore still reports a hit, so the build proceeds against a workspace
+# that is not there. Losing the guard below would not fail here or there; it
+# would fail one run later, in a job with a two-hour timeout.
+yes "bootstrap.sh reads ULTRAWIDELOCK_WS" \
+    grep -q 'ULTRAWIDELOCK_WS:-' "$ROOT/scripts/bootstrap.sh"
+
+# The link has to be unreachable when it is set, not merely skipped in the usual
+# case: pull the guarded block out and require that every ws_link call in the
+# file is inside it.
+guarded="$(awk '
+  /^if \[ -z "\$\{ULTRAWIDELOCK_WS:-\}" \]/ { inblock = 1 }
+  inblock && /ws_link "/                    { n++ }
+  inblock && /^fi$/                         { inblock = 0 }
+  END { print n + 0 }' "$ROOT/scripts/bootstrap.sh")"
+is "every ws_link is behind that guard" \
+   "$guarded" "$(grep -c 'ws_link "' "$ROOT/scripts/bootstrap.sh")"
+isnt "and there is one to guard"        "$guarded" 0
+
+# ws-link.sh --print is that workflow's cache key, computed on a bare checkout
+# before any workspace exists. ci.yml matches the result against a 12-12 glob,
+# so a change to how ws_entry_name truncates breaks a job no test here runs.
+printed="$(ULTRAWIDELOCK_WS_STORE="$STORE" "$ROOT/scripts/ws-link.sh" --print "$FAKE" | sed -n 's/^entry *//p')"
+case "$printed" in
+  ????????????-????????????) ok   "--print still matches ci.yml's 12-12 glob" ;;
+  *) bad "--print still matches ci.yml's 12-12 glob"; printf '       got  %s\n' "$printed" ;;
+esac
+
+# And it answers WITH the variable set, which is the combination ci.yml actually
+# runs: it sets ULTRAWIDELOCK_WS for the whole job and then asks for the key. The
+# refusal below it is for link and adopt, which write; --print does not, so it
+# reports the same name either way. These two ran in the wrong order once, and
+# the job's first step failed on the variable the job itself had set.
+over="$(ULTRAWIDELOCK_WS="$WORK/elsewhere" ULTRAWIDELOCK_WS_STORE="$STORE" \
+        "$ROOT/scripts/ws-link.sh" --print "$FAKE" | sed -n 's/^entry *//p')"
+is   "--print answers with ULTRAWIDELOCK_WS set"  "$over" "$printed"
+link_override_quiet() {
+  ULTRAWIDELOCK_WS="$WORK/elsewhere" ULTRAWIDELOCK_WS_STORE="$STORE" \
+      "$ROOT/scripts/ws-link.sh" "$FAKE" >/dev/null 2>&1
+}
+no   "but linking still refuses"                  link_override_quiet
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'workspace store: PASS\n'
