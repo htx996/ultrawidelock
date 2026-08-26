@@ -179,6 +179,49 @@ done
 is "the patch lists exist once" \
    "$(grep -c 'custom_impl-uwb.patch' "$ROOT/scripts/lib/ws.sh" "$ROOT/scripts/bootstrap.sh" "$ROOT/scripts/ws-link.sh" | awk -F: '{n += $2} END {print n}')" 1
 
+printf '\n== copying a workspace off macOS ==\n'
+
+# `cp -c` is APFS clonefile and exists on no GNU cp, so hardcoding it made the
+# clone path macOS-only: a Linux runner with anything already in its store hit
+# an invalid option rather than a slower copy. The probe is what keeps the flag
+# a property of the filesystem instead of an assumption about the OS.
+COW="$WORK/cow"
+mkdir -p "$COW"
+flag="$(ws_cow_flag "$COW")"
+case "$flag" in
+  ''|'-c'|'--reflink=auto') ok "cow flag is one this cp understands" ;;
+  *) bad "cow flag is one this cp understands"; printf '       got %s\n' "$flag" ;;
+esac
+is  "the probe leaves nothing behind" "$(find "$COW" -name '.ws-cow-probe.*' | wc -l | tr -d ' ')" 0
+# Wrapped, because `yes "..." ws_cow_flag ...` would print the flag into the
+# middle of the report -- the same trap that once swallowed two ok rows here.
+cow_quiet() { ws_cow_flag "$1" >/dev/null 2>&1; }
+yes "a missing directory is not fatal" cow_quiet "$WORK/cow/nope/nope"
+
+# The copy has to work whatever the probe said, so this is the check that would
+# have caught the bug: it runs the real helper, on this machine, either way.
+mkdir -p "$COW/src/sub"
+printf 'content\n' >"$COW/src/sub/file"
+yes "ws_cow_copy copies a tree"   ws_cow_copy "$COW/src" "$COW/dst"
+is  "the copy has the content"    "$(cat "$COW/dst/sub/file" 2>/dev/null)" content
+
+# The copy this machine cannot reach: on a filesystem with no block cloning the
+# flag is empty, and an empty "$flag" is not nothing -- it is an argument, and
+# `cp "" -R src dst` fails on a missing file. Every developer here runs APFS, so
+# that path exists only on the CI runner unless the stub below stands in for it.
+# Shadowing ws_cow_flag is enough: ws_cow_copy calls it by name.
+ws_cow_flag() { printf '\n'; }
+yes "ws_cow_copy works with no cloning"  ws_cow_copy "$COW/src" "$COW/plain"
+is  "the plain copy has the content"     "$(cat "$COW/plain/sub/file" 2>/dev/null)" content
+unset -f ws_cow_flag
+# shellcheck source=scripts/lib/ws.sh
+. "$ROOT/scripts/lib/ws.sh"
+
+# An empty flag must vanish rather than become an argument, which is what the
+# stub above proves at runtime and this proves at rest.
+no  "no bare cp -c is left in the callers" \
+    grep -qE 'cp -c ' "$ROOT/scripts/bootstrap.sh" "$ROOT/scripts/ws-link.sh"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'workspace store: PASS\n'

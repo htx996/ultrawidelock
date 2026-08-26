@@ -48,7 +48,7 @@ ws_sha() {
 # the first under disk pressure and cleaners empty both, and an hour of fetching
 # is not something to hand to a cleaner. ULTRAWIDELOCK_WS_STORE moves it, which
 # is also the way out when $HOME is on a different volume from the checkout --
-# the clone below needs both on one APFS volume to cost nothing.
+# the clone below needs both on one volume to cost nothing.
 ws_store_root() { printf '%s\n' "${ULTRAWIDELOCK_WS_STORE:-$HOME/.ultrawidelock/ws}"; }
 
 # $1 = add-on pin, $2 = NCS version. What a fetch produces, and therefore what
@@ -93,9 +93,9 @@ ws_clone_source() {   # $1 = store root, $2 = fetch key, $3 = entry to exclude
   return 1
 }
 
-# Same filesystem? `cp -c` clones blocks within one APFS volume and copies for
-# real across volumes, so a mismatch turns a free operation into 5.5 GB of I/O
-# with nothing on screen to say so. Walks up to an existing parent, since the
+# Same filesystem? A block clone works within one volume and copies for real
+# across volumes, so a mismatch turns a free operation into 5.5 GB of I/O with
+# nothing on screen to say so. Walks up to an existing parent, since the
 # destination is usually the thing that does not exist yet.
 ws_same_volume() {
   local a="$1" b="$2" da db
@@ -106,11 +106,44 @@ ws_same_volume() {
   [ "$da" = "$db" ]
 }
 
+# Which cp flag clones blocks instead of copying them? macOS spells it -c (APFS
+# clonefile), GNU cp on btrfs or XFS spells it --reflink, and on ext4 -- which
+# is what a Linux CI runner has -- there is no such thing. So this is a property
+# of the filesystem the store sits on, not of the OS, and the only honest way to
+# learn it is to try. Prints the flag, or nothing when the copy will be real.
+#
+# The probe asks for --reflink=always so ext4 says no; the copy asks for =auto so
+# a subtree that cannot be cloned is copied rather than aborting halfway.
+ws_cow_flag() {   # $1 = a directory on the target filesystem
+  local dir="$1" a b flag=""
+  a="$dir/.ws-cow-probe.$$"
+  b="$a.copy"
+  mkdir -p "$dir" 2>/dev/null || { printf '\n'; return 0; }
+  : >"$a" 2>/dev/null || { printf '\n'; return 0; }
+  if cp -c "$a" "$b" 2>/dev/null; then
+    flag="-c"
+  elif cp --reflink=always "$a" "$b" 2>/dev/null; then
+    flag="--reflink=auto"
+  fi
+  rm -f "$a" "$b"
+  printf '%s\n' "$flag"
+}
+
+# Copy a workspace the cheapest way this filesystem allows. Unquoted on purpose:
+# $flag is one word or none, and an empty "" would be a filename to cp.
+ws_cow_copy() {   # $1 = source, $2 = destination
+  local flag
+  flag="$(ws_cow_flag "$(dirname "$2")")"
+  # shellcheck disable=SC2086
+  cp $flag -R "$1" "$2"
+}
+
 # ---- attaching a checkout ----------------------------------------------------
 # $1 = checkout, $2 = entry. Points $1/workspace at $2 and nothing else: a real
 # directory there is somebody's 5.5 GB and is never removed to make room for a
-# link. `ln -h -f -s` replaces an existing link in one step, so an interrupted
-# run cannot leave a checkout with no workspace at all.
+# link. `ln -n -f -s` replaces an existing link in one step, so an interrupted
+# run cannot leave a checkout with no workspace at all. -n and not -h: BSD ln
+# takes either, GNU ln documents only -n, and this runs on both.
 ws_link() {
   local tree="$1" entry="$2" link="$1/workspace"
   if [ -e "$link" ] && [ ! -L "$link" ]; then
@@ -120,7 +153,7 @@ ws_link() {
     echo "       or move it aside and re-run." >&2
     return 1
   fi
-  ln -h -f -s "$entry" "$link"
+  ln -n -f -s "$entry" "$link"
 }
 
 # A checkout from before the store has a real ./workspace holding a fetch that

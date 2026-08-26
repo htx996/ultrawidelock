@@ -307,7 +307,7 @@ if [ ! -d "$ADDON/.git" ] && [ -z "${ULTRAWIDELOCK_WS:-}" ] && [ "${NO_CLONE:-0}
       # is never mistaken for an entry, and this line is what clears it.
       mkdir -p "$STORE"
       rm -rf "$WS.partial"
-      cp -c -R "$src" "$WS.partial"   # cp -c = APFS clonefile; fails loudly off APFS
+      ws_cow_copy "$src" "$WS.partial"   # block clone where the filesystem has one
       rm -f "$WS.partial/.ultrawidelock-ws.id"   # not this entry's stamp; earned below
       mv "$WS.partial" "$WS"
       info "cloned — the fetch below has nothing left to pull"

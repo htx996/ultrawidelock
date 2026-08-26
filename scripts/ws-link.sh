@@ -6,8 +6,9 @@
 # milliseconds, because some other checkout on the machine has already fetched
 # and patched exactly this tree and the store knows it under a name computed
 # from the pin, the NCS version and the patch set. When the patch set is this
-# branch's own, it clones the nearest entry (copy-on-write, ~0 disk)
-# and re-applies the patches, which is seconds rather than the hour a fetch
+# branch's own, it clones the nearest entry -- copy-on-write and ~0 disk where
+# the filesystem has block cloning, a real copy where it does not -- and
+# re-applies the patches, which is minutes at worst rather than the hour a fetch
 # costs. Only a machine with nothing in the store at all is sent to bootstrap.
 #
 # It replaces ws-seed.sh, which gave every worktree a private clone. The clone
@@ -123,13 +124,18 @@ ws_same_volume "$src" "$STORE" || die \
     "or put the store on that volume:  ULTRAWIDELOCK_WS_STORE=<path>"
 
 step "cloning $(basename "$src") -> $ENTRY_NAME"
-info "same upstream, a different patch set — copy-on-write, then re-patch"
+if [ -n "$(ws_cow_flag "$STORE")" ]; then
+  info "same upstream, a different patch set — copy-on-write, then re-patch"
+else
+  info "same upstream, a different patch set — re-patched after the copy"
+  info "no block cloning on this filesystem: 5.5 GB copied for real, minutes"
+fi
 mkdir -p "$STORE"
 # Into a .partial and renamed, so an interrupt leaves something visibly
 # unfinished rather than a directory the next run would read as an entry. The
 # stamp is dropped with it: it names the tree we copied FROM.
 rm -rf "$ENTRY.partial"
-cp -c -R "$src" "$ENTRY.partial"   # cp -c = APFS clonefile; fails loudly off APFS
+ws_cow_copy "$src" "$ENTRY.partial"   # block clone where the filesystem has one
 rm -f "$ENTRY.partial/.ultrawidelock-ws.id"
 mv "$ENTRY.partial" "$ENTRY"
 

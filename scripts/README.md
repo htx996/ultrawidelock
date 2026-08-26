@@ -48,6 +48,17 @@ no commit on its branch. `make ws-store` lists what the machine is holding and
 which checkouts still link to it, because a shared tree outlives the worktree
 that fetched it.
 
+`ws-link.sh --print` names the entry a checkout resolves to and changes nothing.
+It needs no workspace, no toolchain and no network -- the name is a function of
+the pin, the NCS version and the patch files, all of which a bare checkout has
+-- so it answers in milliseconds on a cold machine. That makes it the cache key
+for a build runner: restore the store entry under that name, `make ws-link`, and
+a build that would have refetched for an hour starts immediately. Restoring by
+the fetch-key prefix alone is also safe, but only because the restored tree
+keeps its own name and `ws-link` clones and re-patches it into the right one.
+The clone is free where the filesystem has block cloning and a real 5.5 GB copy
+where it does not; both beat a fetch.
+
 Prefer a documented Make target when one exists. Run `make help` to see the
 supported interface and required variables. Use `make hitl` for `hitl-run.sh`;
 pass its optional flags through `HITL_ARGS`.
