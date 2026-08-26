@@ -26,6 +26,9 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 | `CDK_DEPLOYED=<hex>` | the record of what the board is running, which every delta is computed against |
 | `OTA_NAME=<name>` | the advertised name `make dfu` and `make ota-smp` connect to |
 | `FOTA_VERSION=<x.y.z>` | the version stamped into the file `make fota` leaves for a phone |
+| `PREV_HEXES='a.hex …'` | `make ota-fan` builds one delta from each of these to the release build. They are the `zephyr.signed.hex` shipped in each earlier release bundle — a board running something not in that list has no over-the-air path at all |
+| `CDK_OTA_DIR=<dir>` | where `make ota-fan` leaves the fan and `ota-index.json`. Defaults under `build/release/ota`, which is where `web/build.py` looks |
+| `ESP_OTA_DIR=<dir>` | the same, for `make esp-ota`'s signed per-chip images |
 
 `LTO=0` no longer fits the flash map: the image measures 446,380 B without it
 against a 433,664 B `app` partition, and the build fails rather than ships. See
@@ -167,6 +170,24 @@ QR URL and pairing code.
 ESP32-S3 is hardware-validated. ESP32-C5 has source and release-build support.
 ESP32-C6 is hardware-validated for direct-SPI BU04 bring-up with `ST_NRST`
 held low. No C5 hardware validation is recorded.
+
+### Over-the-air updates
+
+| Symbol | What it does |
+| --- | --- |
+| `CONFIG_ULTRAWIDELOCK_DFU_ESP32` | on by default. Adds the GATT service the browser writes a signed image to, and the commit hook that points the bootloader at the slot it landed in. Without the hook an update is received, verified, written — and then ignored at the next boot, because nothing wrote `otadata` |
+| `CONFIG_ULTRAWIDELOCK_DFU_WINDOW_MS` | how long a **double-click** on the board's button leaves the update window open. 300000 (5 min) |
+| `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` | on by default. An update that does not reach the end of `app_main` is rolled back to the previous slot at the next boot. Without it, a bad image is simply what the lock now runs, and the only way back is a cable |
+
+This is **not** `CONFIG_ENABLE_OTA_REQUESTOR`, which is also on. That one is
+Matter OTA: BDX from a commissioned provider node over Wi-Fi. It is the right
+path for a fleet and no use to someone with a board and a browser, because a web
+page cannot join a Matter fabric. The two share the `ota_0`/`ota_1` slots and
+nothing else.
+
+The long press is the commissioning window and stays that way. Overloading it
+would mean everyone opening a commissioning window also spent five minutes
+accepting firmware from whoever was in radio range.
 
 ## Runtime consoles
 

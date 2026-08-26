@@ -227,13 +227,38 @@ which is the version esp-matter itself asks for at that revision. `IDF_VER` and
 
 ## Update over the air
 
-No cable, no probe. Two MCUboot slots do not fit on a 512 KB part, so what
-travels is a signed delta.
+No cable, no probe. Either chip, from a browser:
+
+**[ultrawidelock.com/flash](https://ultrawidelock.com/flash/index.html)** finds the
+board over Web Bluetooth, reads what it is running, and sends the one update that
+applies. Chrome or Edge on a computer, or Chrome on Android — Web Bluetooth does
+not exist in Safari, so not from an iPhone. Nothing is written until you open the
+update window on the board itself: **SW2** on the CDK, a **double-click** on the
+ESP32's button. That press is the whole availability gate; authenticity is a
+P-256 signature checked before a byte is written and again by the bootloader.
+
+The two chips travel differently, and the page hides the difference:
+
+| | DWM3001CDK | ESP32-S3 / C5 / C6 |
+|---|---|---|
+| Transport | mcumgr over BLE | native GATT frames |
+| Payload | signed delta, ~11 KB | signed whole image, ~2 MB |
+| Why | one MCUboot slot in 512 KB | two full OTA slots |
+| Time | seconds | several minutes over BLE |
+
+One MCUboot slot means a CDK delta is cut against the *exact* bytes on the part,
+so a release ships one file per earlier release still in the field, and a board
+running something older than that fan has no over-the-air path at all — the page
+says so and points at the J-Link.
+
+From the command line instead:
 
 ```sh
-make dfu                    # build, diff, sign, push
-make fota                   # instead: one file a phone can install
+make dfu                    # CDK: build, diff, sign, push
+make fota                   # CDK: one file a phone can install
 make fota-done              # after every phone push
+make ota-fan  PREV_HEXES=…  # the delta fan + the index the web page reads
+make esp-ota                # ESP32: sign each chip's app image
 ```
 
 `make fota-done` is not optional. The delta is cut against the exact bytes on
