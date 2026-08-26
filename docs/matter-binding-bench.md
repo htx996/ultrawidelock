@@ -57,15 +57,14 @@ the vendor PIN attribute alone. Its devicetree always layers
 the half that matters here, and `make nrf-term` printing a pairing code is the
 check that it came up.
 
-One trap on the way: `make nrf-build` refuses with `integration patch set
-changed or HA mode differs` when the west workspace carries a different patch
-set than this tree expects. A worktree whose `workspace` is a symlink to the
-main checkout shares that state, so bootstrapping for one retargets it for all
-of them. `ULTRAWIDELOCK_WS=<path>` is read by both `scripts/bootstrap.sh` and
-`scripts/nrf5340dk-build.sh` and gives a worktree its own workspace instead.
-`make ws-seed` does the same by copy-on-write clone; to seed a worktree whose
-branch predates that script, run `scripts/ws-seed.sh <worktree>` from a checkout
-that has it.
+One trap on the way, and mostly a historical one now: `make nrf-build` refuses
+with `integration patch set changed or HA mode differs` when the west workspace
+carries a different patch set than this tree expects. Checkouts no longer share
+one workspace by accident -- `make ws-link` names the tree after the patch set
+in it, so a branch with its own patches links its own tree (`make ws-store`
+lists them). The refusal is left in place for the workspace that
+`ULTRAWIDELOCK_WS=<path>` names directly, which is outside the store and still
+one tree with one patch state.
 
 Prefer any in-repo peer to a commercial lock on the first run: a Nuki gives you
 a silent drop and no way to tell a rejection from a lost packet, while a board

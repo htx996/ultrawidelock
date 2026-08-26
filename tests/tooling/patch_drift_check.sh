@@ -21,18 +21,17 @@ PIN="$(sed -n 's/^PIN="\([0-9a-f]\{40\}\)".*/\1/p' "$ROOT/scripts/bootstrap.sh")
 grep -q "revision: $PIN" "$ROOT/west.yml" \
   || { echo "ERROR: west.yml revision != bootstrap.sh PIN ($PIN)" >&2; exit 1; }
 
-# Per-repo patch lists, in bootstrap.sh's apply order. The HA patches are checked
-# even though the default build skips them (HA=1 opts in): drift is about whether
-# a patch still applies upstream, not about whether this build uses it. Order
-# matters — ha-occupancy-endpoint is cut against a tree with the others applied.
+# Per-repo patch lists, in bootstrap.sh's apply order — which scripts/lib/ws.sh
+# now owns, and which this file has to keep matching.
+#
+# Eleven patches used to be here that are not any more. They changed the
+# door-lock application, and the application is this repository's own source
+# now, under integrations/nrfconnect-door-lock/. What replaces this check for it
+# is scripts/app-upstream-diff.sh: a patch either applies or it does not, but
+# owned source can only be compared, so that one reports how far ours has moved
+# from the pinned upstream rather than passing or failing on it.
 ADDON_PATCHES=(
-  "$P/custom_impl-uwb.patch" "$P/crypto-timesync-tap.patch"
-  "$P/pretty-shell.patch" "$P/cred-shell-factoryreset.patch"
-  "$P/console-quiet-flood.patch"
-  "$P/kpersistent-orphan-selfheal.patch" "$P/cred-doc-time-ratchet.patch"
-  "$P/cred-time-persist.patch" "$P/extnvs-rollback-mirror-id.patch"
-  "$P/approach-direction-cluster.patch" "$P/nfc-transport-seam.patch"
-  "$P/ha-lockoperation-event.patch" "$P/ha-occupancy-endpoint.patch"
+  "$P/custom_impl-uwb.patch" "$P/extnvs-rollback-mirror-id.patch"
 )
 NRF_PATCHES=("$P/nrf-flashfit-dfu-guards.patch")
 MATTER_PATCHES=("$P/matter-ble-multi-identity.patch")

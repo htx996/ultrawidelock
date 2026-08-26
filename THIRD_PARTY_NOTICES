@@ -67,13 +67,24 @@ Nordic Semiconductor code
 Scope:
 
   modules/ultrawidelock_nfc/src/nfc_prop_ecp.cpp
+  integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/**
   integrations/nrfconnect-door-lock/patches/custom_impl-uwb.patch
 
 License: LicenseRef-Nordic-5-Clause
 
-Other files in integrations/nrfconnect-door-lock/patches/ modify Nordic or Zephyr upstream code.
-The resulting patched files retain the upstream license identified in their
-source headers.
+integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/ is a redistribution, with modification,
+of Nordic's applications/matter-aliro-door-lock-app from
+nrfconnect/ncs-door-lock-and-access-control at the revision recorded in that
+directory's UPSTREAM.md. Every file keeps the Nordic copyright notice and SPDX
+identifier it arrived with, which is what condition 1 of the license below
+requires of a source redistribution; scripts/app-upstream-diff.sh reports how
+the copy differs from that revision. It was eleven patches into the fetched
+workspace until this repository took ownership of the application.
+
+Other files in integrations/nrfconnect-door-lock/patches/ and
+integrations/nrfconnect-door-lock/tooling-patches/ modify Nordic or Zephyr
+upstream code. The resulting patched files retain the upstream license
+identified in their source headers.
 
 The same license covers the Nordic sources and libraries the FreeRTOS port
 compiles and links but does not vendor. They are listed under "FreeRTOS port

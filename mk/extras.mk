@@ -94,10 +94,14 @@ clean:
 	        "$(REPO_ROOT)"/tests/on_target/esp32/ultrawidelock-device-ec/build "$(REPO_ROOT)"/tests/on_target/zephyr/nrf5340dk-ultrawidelock-device-ec/build
 	@printf '  removed %s and the app-local build directories\n' '$(ULTRAWIDELOCK_BUILD_ROOT)'
 
-## ws-clean: remove THIS worktree's local build + workspace
+## ws-clean: remove THIS checkout's local build, and its link into the store
+##   The link goes; the tree it pointed at does not. It is shared with every
+##   other checkout on the same patch set, and `make ws-store` is what says
+##   whether anyone is still using it and how to remove it if not.
 ws-clean: clean
-	@if [ -d workspace ] && [ ! -L workspace ]; then rm -rf workspace && printf '  removed ./workspace\n'; \
-	else printf '  (no local workspace to remove)\n'; fi
+	@if [ -L workspace ]; then rm -f workspace && printf '  unlinked ./workspace (the store keeps the tree — make ws-store)\n'; \
+	elif [ -d workspace ]; then rm -rf workspace && printf '  removed ./workspace\n'; \
+	else printf '  (no workspace here)\n'; fi
 
 ## help: this grouped, colourised target list
 help:

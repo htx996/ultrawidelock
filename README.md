@@ -41,6 +41,12 @@ make monitor                # console, over RTT
 how to get it, and offers to install nRF Util if it is not here. It is resumable: interrupt
 it and run it again. `SETUP_AUTO=1` answers yes to that offer without a prompt.
 
+Once per machine, not once per checkout: the workspace lands in a store, named for the
+upstream pin and the integration patch set it holds, and `./workspace` is a link to it. A
+second clone or worktree runs `make ws-link` and is building in about a second. A branch
+that changes a patch gets its own tree, cloned from the nearest one rather than fetched.
+`make ws-store` says what the machine is holding and who still links to it.
+
 `make help` lists every target. `make tools` says what this machine is missing.
 
 <div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>

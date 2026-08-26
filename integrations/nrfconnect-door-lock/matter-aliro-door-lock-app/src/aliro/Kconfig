@@ -1,0 +1,109 @@
+#
+# Copyright (c) 2025 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+#
+
+menu "Aliro features"
+
+config DOOR_LOCK_BLE_UWB
+	bool "Integration with Aliro BLE and UWB"
+	select NCS_ALIRO_BLE_UWB
+	select DOOR_LOCK_ALIRO_UWB
+	select DOOR_LOCK_ALIRO_BLE_SERVICE
+	select DOOR_LOCK_ALIRO_READER_STORAGE_GROUP_RESOLVING_KEY_SUPPORT
+	help
+	  Enable the door lock application integration with Aliro Bluetooth LE (BLE) and ultra wideband (UWB).
+
+if DOOR_LOCK_BLE_UWB
+
+config DOOR_LOCK_BLE_UWB_MAX_SESSIONS
+	int "Maximum number of BLE and UWB sessions"
+	range 1 BT_MAX_CONN
+	help
+	  The maximum number of BLE and UWB sessions that can be established.
+
+endif # DOOR_LOCK_BLE_UWB
+
+config DOOR_LOCK_EXPEDITED_FAST_PHASE
+    bool "Support for Aliro Expedited-fast Phase"
+    default y
+    help
+        If enabled, the Expedited-fast phase is supported.
+        The user authentication is based on the Kpersistent keys.
+
+config DOOR_LOCK_STEP_UP_PHASE
+    bool "Support for Aliro Step-up Phase"
+    default y
+    select DOOR_LOCK_ALIRO_ACCESS_DOCUMENT_PARSER
+    select DOOR_LOCK_EXTERNAL_NVS if !SOC_SERIES_NRF52
+    help
+        If enabled, the Step-up phase is supported.
+        The user authentication is based on the Access Document.
+
+config DOOR_LOCK_CREDENTIAL_ISSUER_CA
+    bool "Support for Credential Issuer CA public key"
+    depends on DOOR_LOCK_STEP_UP_PHASE
+    help
+        If enabled, the Credential Issuer CA public key is supported.
+        The Credential Issuer CA public key is used to verify the signature of the Credential Issuer certificate.
+
+config DOOR_LOCK_READER_CERTIFICATE
+	bool "Support for Reader certificates"
+	select DOOR_LOCK_ALIRO_READER_STORAGE_CERTIFICATE_SUPPORT
+	select DOOR_LOCK_ALIRO_READER_STORAGE_SHELL_CERT
+	help
+	  Use the reader certificate for the reader authentication.
+
+config DOOR_LOCK_TIME_CONCEPT
+	bool "Support for Time concept"
+	default y
+	select DOOR_LOCK_ALIRO_TIME_UTILS
+	help
+	  If enabled, the Time concept is supported.
+
+config DOOR_LOCK_TIME_CONCEPT_RATCHET
+	bool "Ratchet system time forward from a verified Access Document"
+	default y
+	depends on DOOR_LOCK_TIME_CONCEPT
+	help
+	  Access Documents are minted on demand with validFrom set to the user
+	  device's current time (validUntil is effectively unbounded), so the
+	  validity check degenerates into "reader clock must not be behind the
+	  phone". The reader wall clock lives in RAM and the commissioner sets
+	  it exactly once, so after any reboot the reader falls back to stale
+	  Last Known Good Time and every step-up fails as not-yet-valid.
+	  If enabled, a document whose signature has already been verified and
+	  whose validFrom lies ahead of the reader clock ratchets the system
+	  time forward to validFrom (never backward) instead of failing.
+	  Trade-off: a credential issuer that signs a future-dated document can
+	  advance the reader clock early, weakening not-before enforcement and
+	  shifting schedule evaluation for time-bounded credentials. With
+	  DOOR_LOCK_TIME_CONCEPT_PERSIST enabled the ratcheted clock is
+	  persisted within the hour, so such an advance also survives reboot.
+
+config DOOR_LOCK_TIME_CONCEPT_PERSIST
+	bool "Persist the wall clock and restore it after reboot"
+	default y
+	depends on DOOR_LOCK_TIME_CONCEPT && SETTINGS
+	help
+	  The reader wall clock lives in RAM and the commissioner sets it
+	  exactly once at commissioning, so any reboot leaves the reader
+	  without valid time. If enabled, the wall clock is written to the
+	  settings storage once per hour (and shortly after it first becomes
+	  valid or is corrected), and the system clock is seeded from the
+	  stored value at boot. After a reboot time then resumes at worst
+	  one hour plus the power-off duration behind real time instead of
+	  being absent. The restored clock understates real time by that
+	  amount, which weakens validUntil/expiry and schedule enforcement
+	  correspondingly but never moves the clock backward or forward
+	  beyond what was actually observed.
+
+endmenu # Aliro features
+
+rsource "platform/Kconfig"
+rsource "interface_impl/Kconfig"
+rsource "access_manager/Kconfig"
+rsource "cli/Kconfig"
+rsource "kpersistent_manager/Kconfig"
+rsource "storage/Kconfig"
