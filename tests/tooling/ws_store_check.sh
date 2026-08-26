@@ -103,6 +103,38 @@ yes "and leaves it where it was"           test -d "$TREE/workspace/.west"
 
 printf '\n== adopting a pre-store workspace ==\n'
 
+# Ahead of ws_adopt, because ws_adopt calls this and a false negative here shows
+# up there as a confusing "different volumes" on a machine with one. `stat -f`
+# is a format string to BSD and --file-system to GNU, and `%d` is valid under
+# both -- the device number to one, free inodes to the other -- so getting the
+# order wrong does not fail on Linux, it returns a number that changes as the
+# filesystem is written to. Two paths under one temp directory are on one
+# volume by construction, and the same path is on its own volume by tautology;
+# both were false on a Linux runner and true here, which is what let it ship.
+yes "one volume: two paths under one tmpdir"  ws_same_volume "$WORK" "$STORE"
+yes "one volume: a path against itself"       ws_same_volume "$STORE" "$STORE"
+yes "and it survives being asked twice"       ws_same_volume "$WORK" "$STORE"
+
+# The three above pass on macOS whichever order ws_same_volume asks in, so they
+# cannot catch the bug on the machine everyone develops on. Stub stat with GNU's
+# semantics and they can. The counter is a FILE because ws_same_volume calls
+# stat inside $(...): a shell variable resets in the subshell, the drift never
+# happens, and a broken order looks fine -- which is how the first version of
+# this check passed against code that was still wrong.
+GNU_INODES="$WORK/gnu-free-inodes"; echo 900000 >"$GNU_INODES"
+stat() {
+  case "$1" in
+    -c) [ "$2" = '%d' ] && { echo 2049; return 0; } ;;      # device: one volume
+    -f) [ "$2" = '%d' ] && {                                # --file-system: free inodes
+          local n; n=$(( $(cat "$GNU_INODES") - 7 ))
+          echo "$n" >"$GNU_INODES"; echo "$n"; return 0; } ;;
+  esac
+  return 1
+}
+yes "one volume under GNU stat semantics"     ws_same_volume "$WORK" "$STORE"
+unset -f stat
+yes "and the real stat still agrees"          ws_same_volume "$WORK" "$STORE"
+
 # ws_adopt reads the add-on's HEAD, so the fixture needs a real repository. Its
 # commit doubles as the pin: adoption is exactly the question "is this tree at
 # the revision the name would claim it is at?"

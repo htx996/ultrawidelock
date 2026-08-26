@@ -101,8 +101,15 @@ ws_same_volume() {
   local a="$1" b="$2" da db
   while [ ! -e "$a" ] && [ "$a" != "/" ]; do a="$(dirname "$a")"; done
   while [ ! -e "$b" ] && [ "$b" != "/" ]; do b="$(dirname "$b")"; done
-  da="$(stat -f '%d' "$a" 2>/dev/null || stat -c '%d' "$a" 2>/dev/null || echo x)"
-  db="$(stat -f '%d' "$b" 2>/dev/null || stat -c '%d' "$b" 2>/dev/null || echo y)"
+  # GNU FIRST, AND THE ORDER IS THE WHOLE BUG. `-f` means a format string to BSD
+  # stat and --file-system to GNU stat, and `%d` is valid under both: the device
+  # number to BSD, the count of FREE INODES to GNU. So `stat -f '%d'` does not
+  # fail on Linux, it succeeds with the wrong number, the `||` never fires, and
+  # two calls a moment apart on a busy filesystem disagree -- reporting one
+  # volume as two. GNU's `-c` is rejected outright by BSD stat ("illegal option
+  # -- c"), so asking for it first is unambiguous on both.
+  da="$(stat -c '%d' "$a" 2>/dev/null || stat -f '%d' "$a" 2>/dev/null || echo x)"
+  db="$(stat -c '%d' "$b" 2>/dev/null || stat -f '%d' "$b" 2>/dev/null || echo y)"
   [ "$da" = "$db" ]
 }
 
