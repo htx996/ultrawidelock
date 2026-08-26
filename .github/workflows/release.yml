@@ -104,6 +104,15 @@ jobs:
     env:
       ULTRAWIDELOCK_TOOLCHAIN: env
       ULTRAWIDELOCK_SHALLOW: "1"
+      # Fetch into this job's own directory, never a shared store. bootstrap.sh
+      # defaults here today, so this changes nothing now; worktree-ws-share makes
+      # the default a machine-wide store under $HOME that ./workspace links into,
+      # and an entry there is adopted by name rather than refetched. On an
+      # ephemeral runner the store starts empty and the two are the same thing --
+      # but "the workspace a release was built from is one this job fetched" is
+      # the invariant at the top of this file, and it should not be resting on
+      # which kind of runner picked the job up.
+      ULTRAWIDELOCK_WS: ${{ github.workspace }}/workspace
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -197,6 +206,8 @@ jobs:
     env:
       ULTRAWIDELOCK_TOOLCHAIN: env
       ULTRAWIDELOCK_SHALLOW: "1"
+      # See the dwm3001cdk job.
+      ULTRAWIDELOCK_WS: ${{ github.workspace }}/workspace
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

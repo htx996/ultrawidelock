@@ -390,6 +390,18 @@ jobs:
       # at a fraction of the size, so both the bootstrap and the cache entry it
       # produces are much smaller. A bench keeps full clones by default.
       ULTRAWIDELOCK_SHALLOW: "1"
+      # Keep the workspace a real directory inside the runner, which is what the
+      # cache steps below save and restore. This is bootstrap.sh's default today
+      # and so changes nothing; it is here for the branch that makes it stop
+      # being the default. worktree-ws-share names each bootstrapped tree after
+      # its contents, puts it in a machine-wide store under $HOME and leaves
+      # ./workspace a symlink into it -- which is the right answer for a bench
+      # holding several checkouts, and the wrong one for a job whose workspace
+      # crosses runs through actions/cache: it would save the link rather than
+      # the tree, and restore a dangling one into a fresh container that reports
+      # a cache hit and skips the bootstrap. bootstrap.sh reads this variable
+      # first and takes no store and no link when it is set.
+      ULTRAWIDELOCK_WS: ${{ github.workspace }}/workspace
       # 300M against the 50 MB one image measured, so there is room for the
       # objects to turn over without the cap evicting live entries mid-run. It is
       # not larger because the constraint is the repository cache budget rather
