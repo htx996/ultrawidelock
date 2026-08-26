@@ -246,6 +246,9 @@ ewt-install-dialog{
 .fota{padding:var(--sp-5);border:var(--border);border-radius:var(--r-md);
   background:var(--card);margin:0 0 var(--sp-5)}
 .fota .boardrow{margin-bottom:var(--sp-4)}
+/* The second paragraph of the section intro: true, but not what most visitors
+   are here for, so it is set back rather than given equal weight. */
+.fota-note{color:var(--muted);font-size:var(--fs-300)}
 
 /* The status line. data-kind carries the state so nothing has to add and
    remove classes -- and so a state that was never styled still reads as
@@ -323,9 +326,15 @@ ewt-install-dialog{
      never flashed a board reads two lines and scrolls past it; someone with a
      board on a door does not have to. -->
 <div class="section-h"><h2>Update over the air</h2><span class="rule"></span></div>
-<p>Already have a board running UltraWideLock? Update it over Bluetooth, from this page.
-No cable, no probe, no command line. The board is identified first, so you find out
-what applies to it <em>before</em> you go and press anything on it.</p>
+<p>Already have a board running UltraWideLock? Update it from this page &mdash; over
+Bluetooth with no cable at all, or down a USB cable, which is about three times faster.
+Either way the board is identified first, so you find out what applies to it
+<em>before</em> you go and press anything on it.</p>
+
+<p class="fota-note">A DWM3001CDK also offers <strong>reinstall everything</strong> over
+USB. That one writes a whole image through the bootloader instead of a patch through the
+application, so it is the option to reach for when a board no longer starts &mdash; it
+does not need the software on the board to be working, or even present.</p>
 
 <div class="fota">
   <div class="boardrow">
@@ -360,11 +369,14 @@ what applies to it <em>before</em> you go and press anything on it.</p>
     <li><strong>ESP32-S3, C5 or C6</strong> &mdash; use the cable installer further down
     this page, once. Every image it writes carries the update service, so after that
     first install you never need the cable again.</li>
-    <li><strong>DWM3001CDK</strong> &mdash; needs its on-board J-Link once, and there is
-    no browser path for a blank one: WebSerial cannot drive a SEGGER probe. Take the
+    <li><strong>DWM3001CDK</strong> &mdash; needs its on-board J-Link <em>once</em>, and
+    only once. A factory-blank part has no bootloader, and WebSerial cannot drive a
+    SEGGER probe to put one there, so take the
     <a href="https://github.com/ultrawidelock/ultrawidelock/releases" data-ext>release
-    bundle</a> and run its <code>flash.sh</code>, then come back here for every update
-    after that.</li>
+    bundle</a> and run its <code>flash.sh</code>. After that the probe is optional:
+    updates come over Bluetooth or the cable, and even a board whose software no longer
+    boots can be reinstalled from here over USB, because the bootloader that first flash
+    installed stays put and keeps listening.</li>
   </ul>
 </div></div>
 

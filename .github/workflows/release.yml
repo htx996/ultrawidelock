@@ -228,9 +228,14 @@ jobs:
             bases="$bases $hex"
           done
 
+          # NO EARLY EXIT when there is nothing to build a delta FROM. The
+          # first release has no prior image by definition, and it used to stop
+          # here -- which meant the release shipped no over-the-air artifact at
+          # all. It still has a whole image, MCUboot's serial recovery still
+          # installs it, and ota-index.py publishes a recovery-only index for
+          # exactly this case. `make ota-fan` handles an empty PREV_HEXES.
           if [ -z "$bases" ]; then
-            echo "::notice::no prior release to build an update from; this release ships none"
-            exit 0
+            echo "::notice::no prior release to build a delta from; publishing the whole image only"
           fi
 
           make ota-fan \

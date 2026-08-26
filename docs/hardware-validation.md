@@ -105,6 +105,11 @@ it granted access rather than just actuating locally.
 | CDK-29 | Open https://ultrawidelock.com/flash/index.html in Chrome, pick the DWM3001CDK, and connect | The chooser lists the board, and the page names the image it is running before asking for anything | **open, never run** |
 | CDK-30 | Continue CDK-29 on a board whose image the release publishes a delta from, pressing SW2 when the page asks | The delta goes over Web Bluetooth, the board reboots, and the page reconnects and reports the target SHA-256 | **open, never run.** This is CDK-13 driven from a browser instead of a phone, and the firmware is the same `SMP=1` image, so what is untested is the JavaScript and nothing else |
 | CDK-31 | Repeat CDK-30 on a board running a build the release ships no delta from | The page says no over-the-air update applies, names the single-slot reason, points at the J-Link, and sends nothing | **open, never run.** Proven against a fake board in the `fotawire` suite; never against a real one |
+| CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **open, never run.** The firmware side is `CONFIG_MCUMGR_TRANSPORT_UART` and nothing else -- same receiver, same signature check, same window gate as the radio |
+| CDK-33 | Time CDK-30 and CDK-32 on the same delta | The cable is materially faster; 384-byte chunks against 105 | **open, never run.** The ratio is arithmetic, the wall-clock is not: per-request latency over a UART is unmeasured |
+| CDK-34 | With the application running normally, pick **reinstall everything** and try to write | The page says the application answered rather than the bootloader, writes nothing, resets nothing, and does not tell anyone to press SW2 | **open, never run.** Covered against a fake board; the point is that rc=11 means something different on this path and must not be read as "open the window" |
+| CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **open, and gated on CDK-16.** This is CDK-16's upload driven from a browser instead of the Go `mcumgr` binary. Worth running FOR that reason: a different host implementation on the same board is the one experiment that separates "the board does not answer" from "that client does not get an answer" |
+| CDK-36 | Erase the application only (leave MCUboot), then run CDK-35 with no button press at all | `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` leaves the board already waiting in recovery, and the page installs onto a board with no working software | **open, never run.** This is the row that decides whether the probe is genuinely optional after the first flash |
 
 CDK-14 through CDK-26 are the open rows, and none has ever been run to
 completion. CDK-16, CDK-17 and CDK-18 cover recovery, STS quality and NLOS
@@ -130,6 +135,26 @@ the JavaScript. CDK-31 is the one worth running even though it sounds like a
 non-event -- a board with no applicable delta is the normal state of anything
 more than a few releases old, and a page that handled it badly would be the
 first thing most people saw.
+
+CDK-32 through CDK-36 are the cable. CDK-32 and CDK-33 are low risk and cost one
+build: the transport changed, nothing above it did, and a host suite already
+compares the framing byte for byte against the standard library's CRC-16/XMODEM
+and base64.
+
+CDK-35 and CDK-36 are the ones that matter, and CDK-35 should be run before
+anything else on this list is attempted, because of what it can settle. CDK-16
+has been open since 2026-08-02 with a symptom nobody has explained: MCUboot sits
+in its recovery window on a UART that is measurably working, and does not
+answer. Everything ruled out so far was ruled out from the board's side. The
+browser is a SECOND, INDEPENDENT HOST IMPLEMENTATION of the same protocol on the
+same wire -- so if it gets an answer, the fault was never the board, and if it
+does not, the fault is not the Go client. That is a real bisection of a stuck
+bug, available for the cost of one page load, and it is the reason CDK-35 is
+worth running even though CDK-16 is expected to fail.
+
+CDK-36 is the claim the page now makes to first-time owners in as many words:
+that the J-Link is needed once and then never again. Until it has been run, that
+sentence is a design intention rather than a measured fact.
 
 ## nRF5340 DK
 

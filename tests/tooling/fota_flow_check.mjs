@@ -366,6 +366,9 @@ const OLD = "aa".repeat(32);
 const NEW = "cc".repeat(32);
 const STRANGER = "77".repeat(32);
 const DELTA = new Uint8Array(11264).fill(7);
+/* A whole signed image, at roughly the size the real one is (406,524 B). Big
+ * enough that the chunking is exercised rather than short-circuited. */
+const WHOLE = new Uint8Array(406524).fill(9);
 
 const INDEX = {
   schema: 1,
@@ -383,6 +386,12 @@ const INDEX = {
           version: "0.3.1",
         },
       },
+      recovery: {
+        file: "ultrawidelock-cdk-cccccccc.bin",
+        size: WHOLE.length,
+        sha256: NEW,
+        version: "0.3.1",
+      },
     },
   },
 };
@@ -391,6 +400,9 @@ function installFetch() {
   globalThis.fetch = async (url) => {
     if (url.includes("ota-index.json")) {
       return { ok: true, status: 200, json: async () => INDEX };
+    }
+    if (url.includes("ultrawidelock-cdk-")) {
+      return { ok: true, status: 200, arrayBuffer: async () => WHOLE.buffer.slice(0) };
     }
     if (url.includes(".bin")) {
       return { ok: true, status: 200, arrayBuffer: async () => DELTA.buffer.slice(0) };
@@ -410,7 +422,7 @@ async function loadPage(board, how = "ble", capture = (p) => p) {
     configurable: true,
     writable: true,
     value: {
-    serial: how === "serial" ? {
+    serial: how !== "ble" ? {
       requestPort: async () => capture(fakeSerialPort(board, serialMod)),
     } : undefined,
     bluetooth: {
@@ -429,7 +441,7 @@ async function loadPage(board, how = "ble", capture = (p) => p) {
   const url = pathToFileURL(path.join(flasher, "fota.js")).href + `?v=${++seq}`;
   await import(url);
   await flush();
-  if (how === "serial") dom["fota-how"].value = "serial";
+  if (how !== "ble") dom["fota-how"].value = how;
 }
 
 /** Click the page's button and run the whole flow to completion. */
@@ -606,8 +618,8 @@ async function clickAndRun(label) {
   const capture = (port) => { openedPort = port; return port; };
   await loadPage(board, "serial", capture);
 
-  check("serial: the transport picker is offered when both APIs exist",
-        dom["fota-how"].children.length === 2,
+  check("serial: the transport picker offers every usable way in",
+        dom["fota-how"].children.length === 3,
         `${dom["fota-how"].children.length} options`);
   check("serial: the picker is shown rather than hidden",
         dom["fota-how-row"].hidden === false);
@@ -657,6 +669,110 @@ async function clickAndRun(label) {
   const overSerial = Math.ceil(DELTA.length / serialMod.APP_CHUNK);
   check("serial: sent the delta in fewer requests than Bluetooth would",
         overSerial < overBle, `${overSerial} vs ${overBle}`);
+}
+
+/* ---- scenario 6: reinstalling the whole image through MCUboot ---------------
+ *
+ * The path that exists for a board nothing else can reach. It does NOT identify
+ * the board first -- there may be no application to ask, which is the entire
+ * reason it exists -- and it does not consult `updates`, because a whole image
+ * applies to any board. Both of those are asserted here as absences, since an
+ * absence is exactly what a refactor would quietly fill back in.
+ */
+
+{
+  installDom();
+  installFetch();
+  /* Running something nothing updates: no delta applies, so the delta paths
+   * would correctly refuse. Recovery must not care. */
+  const board = new FakeBoard(STRANGER);
+  board.applyTo = NEW;
+  /* MCUboot has no update window, so the fake accepts without one. What is
+   * asserted below is that the page never ASKS for one on this path. */
+  board.windowOpen = true;
+  await loadPage(board, "recover");
+  dom["fota-target"].value = "dwm3001cdk";
+
+  await clickAndRun("scenario 6");
+
+  check("recovery: told the operator how to enter recovery",
+        said("Hold SW2 for five seconds"), statusLog.map((x) => x.text).join(" / "));
+  check("recovery: did not ask what the board was running first",
+        !said("Update available"));
+  check("recovery: never claimed no update applies",
+        !said("No over-the-air update applies"));
+  check("recovery: never asked for the update window",
+        !said("Press SW2 on the board now"));
+  check("recovery: the whole image arrived", board.received.length === WHOLE.length,
+        `${board.received.length} of ${WHOLE.length}`);
+  check("recovery: the bytes are the ones that were served",
+        Buffer.from(board.received).equals(Buffer.from(WHOLE)));
+  check("recovery: wrote it in one pass", board.restarts === 1);
+  check("recovery: the board was reset", board.resetCount === 1);
+  check("recovery: verified against the published hash", board.running === NEW);
+  check("recovery: reported success", said("Reinstalled 0.3.1"));
+  check("recovery: final state is ok", lastKind() === "ok",
+        `kind=${lastKind()} :: ${statusLog.map((x) => x.text).join(" / ")}`);
+}
+
+/* ---- scenario 6b: "reinstall" aimed at a board that is running fine ---------
+ *
+ * The board never entered recovery, so the APPLICATION answers -- and it
+ * refuses with rc=11, the update-window error. Read literally that says "press
+ * SW2", which on this path is advice that can never work: the window is the
+ * application's gate and the application is not what should be listening.
+ *
+ * So the page must not wait it out, and must not repeat the button prompt. It
+ * has to say the true thing instead, which is that the board is running
+ * normally.
+ */
+
+{
+  installDom();
+  installFetch();
+  const board = new FakeBoard(OLD);
+  board.windowOpen = false;      /* the application, with its gate shut */
+  await loadPage(board, "recover");
+  dom["fota-target"].value = "dwm3001cdk";
+
+  await clickAndRun("scenario 6b");
+
+  check("wrong mode: nothing was written", board.received.length === 0,
+        `${board.received.length} bytes`);
+  check("wrong mode: the board was not reset", board.resetCount === 0);
+  check("wrong mode: said the application answered, not the bootloader",
+        said("the application answered, not the bootloader"),
+        statusLog.map((x) => x.text).join(" / "));
+  check("wrong mode: did not tell anyone to press SW2 for a window",
+        !said("Press SW2 on the board now"));
+  check("wrong mode: pointed at the options that would have worked",
+        said("the other two options"));
+}
+
+/* ---- scenario 7: a released index with no whole image in it -----------------
+ *
+ * The option must not be offered at all. An option that can only fail is worse
+ * than a missing one, because it sends someone looking for a fault in the board.
+ */
+
+{
+  installDom();
+  installFetch();
+  const saved = INDEX.targets.dwm3001cdk.recovery;
+  delete INDEX.targets.dwm3001cdk.recovery;
+
+  const board = new FakeBoard(OLD);
+  board.applyTo = NEW;
+  await loadPage(board, "serial");
+
+  check("no recovery published: the reinstall option is not offered",
+        dom["fota-how"].children.length === 2,
+        `${dom["fota-how"].children.length} options`);
+  check("no recovery published: the remaining options are the two transports",
+        dom["fota-how"].children.map((o) => o.value).join(",") === "ble,serial",
+        dom["fota-how"].children.map((o) => o.value).join(","));
+
+  INDEX.targets.dwm3001cdk.recovery = saved;
 }
 
 /* ---- verdict --------------------------------------------------------------- */

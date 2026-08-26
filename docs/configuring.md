@@ -17,7 +17,7 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 | `PRISTINE=1` | force a from-scratch build. Supported option changes reconfigure in place; use this only when the cache itself must be replaced |
 | `LTO=0` | opt out of link-time optimisation, which is on by default and worth 41,084 B. Use it when a stack trace has to name every frame |
 | `RELEASE=1` | trade the 8 KB RTT ring for 7,168 B of RAM, and set errors-only logging to save 20,568 B of flash. Codegen is identical either way |
-| `SMP=1` | add mcumgr over Bluetooth, which is what nRF Device Manager speaks. `make build SMP=1` is a valid debug configuration and leaves 12,764 B free. `RELEASE=1` remains the shipping configuration |
+| `SMP=1` | add mcumgr over Bluetooth **and** over `uart0`, which is what nRF Device Manager and the browser both speak. `make build SMP=1` is a valid debug configuration and leaves 12,764 B free. `RELEASE=1` remains the shipping configuration |
 | `DFU_LOG=1` | make the bootloader narrate what it does with a staged patch. Read it with MCUboot's own ELF, not the application's |
 | `ANCHOR=1` | layer `overlay-anchor.conf`: the second-anchor geometry, the door-swing angle and the LIS2DH12 impact latch, plus the two DoorLockAlarm events those feed. Default off, and the default image is byte-identical without it. Every threshold it turns on is a placeholder; see below |
 | `CDK_BUILD=<dir>` | which build directory `flash`, `flash-erase` and `monitor` mean. Default `build/cdk-matter` |
@@ -35,6 +35,16 @@ against a 433,664 B `app` partition, and the build fails rather than ships. See
 [`../apps/dwm3001cdk-lock/pm_static.yml`](../apps/dwm3001cdk-lock/pm_static.yml), which carries the
 derivation of every number in that map.
 
+Serial recovery is a separate thing on the same wire, and it belongs to MCUboot
+rather than to the application: see
+[`../apps/dwm3001cdk-lock/sysbuild/mcuboot.conf`](../apps/dwm3001cdk-lock/sysbuild/mcuboot.conf).
+It accepts a **whole** image where everything else on this board takes a delta,
+because it is not running the application and the slot is therefore free. That
+is what makes it the only path that can install onto a board whose software does
+not boot — and `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` means such a board is
+already sitting in recovery, with nothing to press. `make ota-fan` publishes the
+whole image beside the deltas for it.
+
 `make fota` and `make ota-smp` set `SMP=1 RELEASE=1` themselves and build in
 their own directory. That is deliberate rather than a convenience: a board
 without SMP does not speak mcumgr at all, so inheriting a bare `make`'s defaults
@@ -50,6 +60,16 @@ selected by the options above:
   difference between the two images.
 - `overlay-release.conf`, `overlay-smp.conf`, `overlay-lto.conf`: `RELEASE=1`,
   `SMP=1` and the default `LTO=1`. Ordered so that later files win.
+
+  `overlay-smp.conf` turns on two transports, not one. The Bluetooth one is
+  what nRF Device Manager and the flasher page's radio path use. The UART one
+  (`CONFIG_MCUMGR_TRANSPORT_UART`) binds `zephyr,uart-mcumgr`, which the board
+  DTS already points at `uart0` — the J-Link OB's VCOM, which enumerates as USB
+  CDC-ACM and which the application otherwise leaves alone, since its console
+  is RTT. Both reach the same handler in
+  [`ports/zephyr/dfu/dfu_smp_img.c`](../ports/zephyr/dfu/dfu_smp_img.c), so a
+  cable and a radio get the same signature check and the same update window.
+  Measured cost of adding the UART transport: **+2,408 B flash, +464 B RAM**.
 - `overlays/uwb-selftest.conf`: the `make selftest` image, which reads the
   DW3110's `DEV_ID` at boot and stops.
 - `overlay-anchor.conf`: `ANCHOR=1`. Turns on `ULTRAWIDELOCK_ANCHOR` and the

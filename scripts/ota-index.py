@@ -172,6 +172,22 @@ def self_test():
             fails += 1
             print(f"  FAIL {name}  {detail}")
 
+    def recovery_files(directory, sha, size=4096, version="0.3.1", claim=None):
+        """A recovery .bin and its sidecar, as `ultrawidelock_patch.py recovery`
+        would have written them. `claim` lets a test lie about the size."""
+        name = f"ultrawidelock-cdk-{sha[:16]}.bin"
+        (Path(directory) / name).write_bytes(b"\x00" * size)
+        (Path(directory) / f"ultrawidelock-cdk-{sha[:16]}.recovery.json").write_text(
+            json.dumps({
+                "file": name,
+                "size": claim if claim is not None else size,
+                "sha256": sha,
+                "version": version,
+                "board": "decawave_dwm3001cdk",
+                "kind": "recovery",
+            })
+        )
+
     a, b, c = "aa" * 32, "bb" * 32, "cc" * 32
 
     # 1. The happy path: two starting images, one destination.
@@ -270,6 +286,90 @@ def self_test():
         rc = run_esp(d, str(Path(d) / "index.json"))
         check("missing esp image refused", rc.returncode != 0)
 
+    # 9. A recovery image beside the deltas: the whole-image path, for a board
+    #    whose application does not run and therefore cannot be asked what it is.
+    with tempfile.TemporaryDirectory() as d:
+        wrap_zip(d, a, c)
+        recovery_files(d, c, size=406524)
+        out = str(Path(d) / "index.json")
+        rc = run(d, out)
+        check("a recovery image indexes cleanly", rc.returncode == 0, rc.stderr.strip())
+        if rc.returncode == 0:
+            t = json.loads(Path(out).read_text())["targets"]["dwm3001cdk"]
+            check("recovery is published", "recovery" in t)
+            check("recovery carries the size", t["recovery"]["size"] == 406524)
+            check("recovery is the image the deltas produce",
+                  t["recovery"]["sha256"] == c)
+            check("the deltas are still there beside it", set(t["updates"]) == {a})
+
+    # 10. A build with no recovery image is still a valid index. The page just
+    #     does not offer the option, which is the whole of the degradation.
+    with tempfile.TemporaryDirectory() as d:
+        wrap_zip(d, a, c)
+        out = str(Path(d) / "index.json")
+        rc = run(d, out)
+        check("no recovery image is not an error", rc.returncode == 0)
+        if rc.returncode == 0:
+            t = json.loads(Path(out).read_text())["targets"]["dwm3001cdk"]
+            check("and no recovery key is emitted", "recovery" not in t)
+
+    # 11. THE ONE THAT MATTERS. A recovery image that is not what the deltas
+    #     produce would leave a rescued board on a build nothing updates.
+    with tempfile.TemporaryDirectory() as d:
+        wrap_zip(d, a, c)
+        recovery_files(d, b)
+        rc = run(d, str(Path(d) / "index.json"))
+        check("a recovery image that is not the latest is refused",
+              rc.returncode != 0)
+        check("and says what it would have left behind",
+              "no update applies to" in rc.stderr, rc.stderr.strip())
+
+    # 12. Two recovery images: one of them is stale, and nothing here can tell
+    #     which, so neither gets published.
+    with tempfile.TemporaryDirectory() as d:
+        wrap_zip(d, a, c)
+        recovery_files(d, c)
+        recovery_files(d, b)
+        rc = run(d, str(Path(d) / "index.json"))
+        check("two recovery images are refused", rc.returncode != 0)
+        check("and both are named", "more than one recovery image" in rc.stderr)
+
+    # 13. A sidecar whose size does not match the file beside it. Same class of
+    #     bug as the delta size check, and the same reason to refuse.
+    with tempfile.TemporaryDirectory() as d:
+        wrap_zip(d, a, c)
+        recovery_files(d, c, size=4096, claim=9999)
+        rc = run(d, str(Path(d) / "index.json"))
+        check("a recovery size mismatch is refused", rc.returncode != 0)
+        check("and says both numbers",
+              "4,096" in rc.stderr and "9,999" in rc.stderr, rc.stderr.strip())
+
+    # 14. THE FIRST RELEASE. No board is running an older image, so there is
+    #     nothing to compute a delta against -- but the whole image is still
+    #     installable through serial recovery, and it is the only over-the-air
+    #     artifact this release can have. Refusing it would mean a brand new
+    #     release ships no update path at all.
+    with tempfile.TemporaryDirectory() as d:
+        recovery_files(d, c, size=406524)
+        out = str(Path(d) / "index.json")
+        rc = run(d, out)
+        check("a recovery image with no deltas is a valid index",
+              rc.returncode == 0, rc.stderr.strip())
+        if rc.returncode == 0:
+            t = json.loads(Path(out).read_text())["targets"]["dwm3001cdk"]
+            check("first release: the whole image defines the latest",
+                  t["latest"]["sha256"] == c)
+            check("first release: the fan is empty rather than absent",
+                  t["updates"] == {})
+            check("first release: recovery is published", t["recovery"]["sha256"] == c)
+
+    # 15. Neither deltas nor a whole image is still nothing to publish.
+    with tempfile.TemporaryDirectory() as d:
+        rc = run(d, str(Path(d) / "index.json"))
+        check("an empty directory is still refused", rc.returncode != 0)
+        check("and says both things are missing",
+              "no recovery image" in rc.stderr, rc.stderr.strip())
+
     # The per-check rows above are what test-runner.sh counts; this line is for
     # a person reading the output directly. Counted rather than hardcoded, so
     # it cannot drift away from the number of checks actually run -- the first
@@ -330,6 +430,71 @@ def collect_esp(esp_dir):
     return targets
 
 
+def collect_cdk_recovery(cdk_dir, latest):
+    """The whole-image entry, if one was published beside the deltas.
+
+    WHY THIS IS SEPARATE FROM THE DELTAS. Every entry in `updates` answers "the
+    board is running X, what applies to it"; this one answers "the board is
+    running nothing I recognise, or nothing at all". It is reached through
+    MCUboot's serial recovery rather than through the application, so it has no
+    starting hash, no window gate and no delta -- and it is the only path on
+    this board that can rescue an image that does not boot.
+
+    Optional on purpose. A build that did not publish one still produces a valid
+    index; the page simply does not offer the recovery option.
+    """
+    sidecars = sorted(Path(cdk_dir).glob("*.recovery.json"))
+    if not sidecars:
+        return None
+
+    if len(sidecars) > 1:
+        die(
+            "more than one recovery image in "
+            f"{cdk_dir}:\n  " + "\n  ".join(x.name for x in sidecars)
+            + "\n  A stale file from an earlier build is the usual cause."
+        )
+
+    meta = json.loads(sidecars[0].read_text())
+    for key in ("file", "size", "sha256", "version"):
+        if key not in meta:
+            die(f"{sidecars[0].name} has no {key}. Built by an older recovery step?")
+
+    blob = Path(cdk_dir) / meta["file"]
+    if not blob.is_file():
+        die(f"{sidecars[0].name} names {meta['file']}, which is not beside it")
+
+    actual = blob.stat().st_size
+    if actual != meta["size"]:
+        die(f"{meta['file']} is {actual:,} B, but its sidecar says {meta['size']:,} B")
+
+    # THE RECOVERY IMAGE MUST BE THE IMAGE THE DELTAS CONVERGE ON, and this is
+    # the guard in this file that matters most.
+    #
+    # A recovery image is what someone reaches for when a board is already in
+    # trouble. If it installs a DIFFERENT build than the over-the-air path
+    # produces, the board comes back running something no published delta
+    # applies to -- so the next update finds no path, the page correctly says
+    # so, and the owner is left with a board that cannot be updated at all by
+    # the route that was supposed to rescue it. Refusing here costs a release;
+    # not refusing costs a field visit.
+    # With no deltas there is nothing to be consistent WITH, and the whole image
+    # is then the definition of the current release rather than a claim about it.
+    if latest is not None and meta["sha256"].lower() != latest.lower():
+        die(
+            f"the recovery image is not the image the deltas produce:\n"
+            f"  recovery  {meta['sha256'][:16]}...  ({meta['file']})\n"
+            f"  deltas    {latest[:16]}...\n"
+            f"  Recovering a board would leave it on a build no update applies to."
+        )
+
+    return {
+        "file": meta["file"],
+        "size": meta["size"],
+        "sha256": meta["sha256"].lower(),
+        "version": meta["version"],
+    }
+
+
 def main():
     if "--self-test" in sys.argv:
         sys.exit(self_test())
@@ -350,15 +515,32 @@ def main():
 
     if args.cdk_dir:
         updates, latest = collect_cdk(args.cdk_dir)
-        if not updates:
-            die(f"no *.zip deltas in {args.cdk_dir}")
+        rec = collect_cdk_recovery(args.cdk_dir, latest)
+
+        # A FAN OF NO DELTAS IS VALID WHEN A WHOLE IMAGE IS PUBLISHED, and the
+        # first release is exactly that case: no board in the world is running
+        # an older image, so there is nothing to compute a delta against -- but
+        # the whole image is still installable, over MCUboot serial recovery,
+        # and it is the only over-the-air artifact that release can have. The
+        # page then offers the reinstall option and no others, which is honest
+        # rather than degraded.
+        if not updates and not rec:
+            die(f"no *.zip deltas and no recovery image in {args.cdk_dir}")
+
         targets["dwm3001cdk"] = {
             "transport": "smp",
             "name": "DWM3001CDK",
             "dir": "dwm3001cdk",
-            "latest": {"version": args.version or "unknown", "sha256": latest},
+            "latest": {
+                "version": args.version or "unknown",
+                # With no deltas there is no shared destination to read it from,
+                # so the whole image says what the current release is.
+                "sha256": latest or rec["sha256"],
+            },
             "updates": updates,
         }
+        if rec:
+            targets["dwm3001cdk"]["recovery"] = rec
 
     if args.esp_dir:
         esp = collect_esp(args.esp_dir)
@@ -388,6 +570,9 @@ def main():
             n = len(target["updates"])
             print(f"  {name:<14} {n} update{'' if n == 1 else 's'} "
                   f"-> {target['latest']['sha256'][:16]}...")
+            if "recovery" in target:
+                print(f"  {'':<14} + whole image, {target['recovery']['size']:,} B "
+                      f"for serial recovery")
     print(f"  wrote     {out}")
 
 

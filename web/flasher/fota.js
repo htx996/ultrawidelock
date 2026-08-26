@@ -88,12 +88,27 @@ function busy(on) {
   }
 }
 
-/** Which transport the panel is set to, falling back to whatever exists. */
-function chosenHow() {
+/**
+ * The transports that could be used on this board, in this browser.
+ *
+ * TARGET-DEPENDENT, not just browser-dependent: `recover` needs a whole image
+ * in the index, and offering it when none was published would be an option
+ * that can only ever fail.
+ */
+function usableFor(target) {
+  return Object.keys(HOW).filter((k) => {
+    if (!HOW[k].available()) return false;
+    return !HOW[k].needs || (target && HOW[k].needs(target));
+  });
+}
+
+/** Which transport the panel is set to, falling back to whatever is usable. */
+function chosenHow(target) {
+  const usable = usableFor(target);
   const sel = el("fota-how");
   const key = sel && sel.value;
-  if (key && HOW[key] && HOW[key].available()) return key;
-  return Object.keys(HOW).find((k) => HOW[k].available()) || null;
+  if (key && usable.includes(key)) return key;
+  return usable[0] || null;
 }
 
 /* ---- the index ------------------------------------------------------------ */
@@ -126,14 +141,39 @@ const HOW = {
   ble: {
     label: "Bluetooth — no cable",
     available: () => !!navigator.bluetooth,
-    open: linkBle,
+    run: (target) => runCdk(target, linkBle),
     button: "Find my board over Bluetooth",
   },
   serial: {
     label: "USB cable — faster",
     available: () => !!navigator.serial,
-    open: linkSerial,
+    run: (target) => runCdk(target, linkSerial),
     button: "Find my board over USB",
+  },
+  /*
+   * THE ONLY WHOLE-IMAGE PATH THIS BOARD HAS, and the only one that works when
+   * the application does not.
+   *
+   * Everything else here is a delta, because one MCUboot slot means an update
+   * has to be computed against exactly the bytes already on the part. That
+   * requires a running application to ask what those bytes are -- so a board
+   * whose image does not boot is beyond every other option on this page.
+   *
+   * MCUboot's serial recovery is the exception: it is not running the
+   * application, so the whole slot is free, and it listens on the same uart0.
+   * CONFIG_BOOT_SERIAL_NO_APPLICATION=y means a board with no valid image stays
+   * there rather than jumping into erased flash, which is what makes a torn
+   * update recoverable instead of fatal.
+   *
+   * Offered only when the index actually carries a recovery image; see
+   * `usableFor` below.
+   */
+  recover: {
+    label: "USB cable — reinstall everything",
+    available: () => !!navigator.serial,
+    needs: (target) => !!target.recovery,
+    run: (target) => runCdkRecovery(target),
+    button: "Reinstall over USB",
   },
 };
 
@@ -279,6 +319,167 @@ async function runCdk(target, openLink) {
   await verifyCdk(link, update);
 }
 
+/* ---- the DWM3001CDK, whole image, through MCUboot -------------------------- */
+
+/** How long to keep asking the bootloader whether it is there yet. */
+const RECOVERY_PROBE_MS = 120000;
+const RECOVERY_PROBE_EVERY_MS = 1000;
+
+/**
+ * Reinstall the whole image over MCUboot's serial recovery.
+ *
+ * DIFFERENT IN EVERY WAY THAT MATTERS from the delta flow above, which is why
+ * it is a separate function rather than a branch:
+ *
+ *   nothing is identified first   There may be no application to ask. That is
+ *                                 the case this exists for.
+ *   no index lookup               A whole image applies to any board, because
+ *                                 it does not subtract from anything.
+ *   no update window              The window is the application's gate, and the
+ *                                 application is not running. What stands in
+ *                                 for it is physical: this needs a cable.
+ *   it overwrites in place        One slot. A torn transfer leaves no
+ *                                 application -- recoverable, because MCUboot
+ *                                 stays in recovery, but not nothing.
+ */
+async function runCdkRecovery(target) {
+  const rec = target.recovery;
+  if (!rec) {
+    say("warn", "No reinstall image is published for this board.",
+        "The release that produced this index did not include a whole-image build, so " +
+        "only the delta updates above are available.");
+    return;
+  }
+
+  say("prompt", "Put the board into recovery mode first.",
+      "Hold SW2 for five seconds while the board is running: it restarts into the " +
+      "bootloader and waits there. If the board's software is already broken it is " +
+      "waiting there anyway, and there is nothing to press. Then pick the J-Link port.");
+
+  const { smp: session } = await smp.connectSerial(serial.MCUBOOT_CHUNK);
+
+  try {
+    say("busy", "Waiting for the bootloader…",
+        "The board answers here only while it is in recovery. If nothing happens, hold " +
+        "SW2 for five seconds again — the request is one-shot and is cleared on the " +
+        "boot that consumes it.");
+
+    await waitForBootloader(session);
+
+    const url = `ota/${target.dir}/${rec.file}`;
+    const r = await fetch(url, { cache: "no-cache" });
+    if (!r.ok) throw new Error(`the index names ${rec.file}, which is not published`);
+    const blob = new Uint8Array(await r.arrayBuffer());
+
+    if (blob.length !== rec.size) {
+      throw new Error(
+        `${rec.file} is ${blob.length.toLocaleString()} B but the index says ` +
+        `${rec.size.toLocaleString()} B; refusing to write it`);
+    }
+
+    say("busy", `Writing ${rec.version} — ${(blob.length / 1024).toFixed(0)} KB.`,
+        "This overwrites the running image in place, because the board has one slot. " +
+        "Do not unplug it. If the transfer is cut, the board stays in recovery and you " +
+        "can start again — it does not become unrecoverable.");
+
+    /*
+     * WAITING OUT THE UPDATE WINDOW IS WRONG HERE, which is why the timeout is
+     * negative rather than long.
+     *
+     * MCUboot has no window: it is not the application, and the application's
+     * gate is the application's. So an rc=11 on this path does not mean "press
+     * the button" -- it means the APPLICATION answered, and therefore that the
+     * board never entered recovery. Waiting would leave someone pressing SW2
+     * over and over at the one thing that was never going to accept it. A
+     * negative deadline makes the first refusal final, and the catch below
+     * turns it into the sentence that is actually true.
+     */
+    try {
+      await session.upload(blob, { onProgress: progress, windowTimeoutMs: -1 });
+    } catch (err) {
+      if (err && err.rc === 11) {
+        throw new Error(
+          "the application answered, not the bootloader — so the board is running " +
+          "normally and did not enter recovery. Hold SW2 for five seconds until it " +
+          "restarts, then try again. (If you only wanted an update, the other two " +
+          "options are the ones you want.)");
+      }
+      throw err;
+    }
+    hideProgress();
+
+    say("busy", "Written. Restarting the board…",
+        "MCUboot verifies the image before it hands over.");
+    await session.reset();
+
+    await verifyRecovery(session, rec);
+  } finally {
+    session.detach();
+  }
+}
+
+/**
+ * Poll until something answers an image-list read.
+ *
+ * The read is the probe because it is the one command that is never gated: the
+ * application serves it ungated (ports/zephyr/dfu/dfu_smp_img.c) and MCUboot in
+ * recovery has no gate at all. So an answer means "somebody is listening", and
+ * that is all this needs to know before it starts writing.
+ */
+async function waitForBootloader(session) {
+  const deadline = Date.now() + RECOVERY_PROBE_MS;
+  for (;;) {
+    try {
+      await session.imageState();
+      return;
+    } catch (err) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          "the bootloader did not answer. Hold SW2 for five seconds and try again; " +
+          "if it never answers, the board needs its J-Link and the release bundle. " +
+          `(${err.message})`);
+      }
+      await new Promise((r) => setTimeout(r, RECOVERY_PROBE_EVERY_MS));
+    }
+  }
+}
+
+/**
+ * Confirm the board came back on the image that was just written.
+ *
+ * The port survives this, unlike the Bluetooth link: it belongs to the J-Link
+ * OB rather than to the nRF52833, so the same session can simply ask again.
+ */
+async function verifyRecovery(session, rec) {
+  const deadline = Date.now() + APPLY_GIVE_UP_MS;
+  await new Promise((r) => setTimeout(r, APPLY_FIRST_TRY_MS));
+
+  for (;;) {
+    try {
+      const running = await session.runningHash();
+      if (running === rec.sha256) {
+        say("ok", `Reinstalled ${rec.version}.`,
+            `The board came back reporting ${running.slice(0, 16)}…, which is the image ` +
+            `that was written. It is on the current release, so ordinary updates apply ` +
+            `to it again.`);
+      } else {
+        say("warn", "The board came back running something else.",
+            `Expected ${rec.sha256.slice(0, 16)}…, got ${running.slice(0, 16)}…. Hold ` +
+            `SW2 for five seconds and reinstall; if it repeats, use the J-Link.`);
+      }
+      return;
+    } catch (err) {
+      if (Date.now() > deadline) {
+        say("warn", "The board did not come back in time.",
+            `It may still be verifying. Reconnecting will say what it is running. ` +
+            `(${err.message})`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, APPLY_RETRY_MS));
+    }
+  }
+}
+
 async function fetchUpdate(target, update) {
   const url = `ota/${target.dir}/${update.file}`;
   const r = await fetch(url, { cache: "no-cache" });
@@ -406,9 +607,9 @@ async function go() {
     }
 
     if (target.transport === "smp") {
-      const how = chosenHow();
+      const how = chosenHow(target);
       if (!how) throw new Error("this browser has neither Web Bluetooth nor WebSerial");
-      await runCdk(target, HOW[how].open);
+      await HOW[how].run(target);
     }
     else if (target.transport === "uwldfu") await runEsp(target);
     else throw new Error(`the index asks for a transport this page does not have (${target.transport})`);
@@ -470,14 +671,35 @@ export function init() {
     return;
   }
 
-  /* The transport picker only appears when there is a choice to make. One
+  /*
+   * The transport picker only appears when there is a choice to make. One
    * option in a dropdown is a decision the reader cannot get wrong and should
-   * not be asked to make. */
+   * not be asked to make.
+   *
+   * REBUILT WHEN THE BOARD CHANGES, because what is on offer depends on the
+   * board and not only on the browser: an ESP32 has no mcumgr transports at
+   * all, and "reinstall everything" exists only where the index carries a whole
+   * image to reinstall.
+   */
   const how = el("fota-how");
   const howRow = el("fota-how-row");
-  if (how) {
+
+  const relabel = () => {
+    const spec = HOW[how && how.value] || HOW[usable[0]];
+    go_.dataset.idle = spec.button;
+    if (!go_.disabled) go_.textContent = spec.button;
+  };
+
+  function rebuildHow(target) {
+    /* Only the mcumgr board has a choice. For anything else the picker is put
+     * away rather than shown with one entry. */
+    const forTarget = target && target.transport === "smp" ? usableFor(target) : [];
+    if (!how) {
+      go_.dataset.idle = HOW[usable[0]].button;
+      return;
+    }
     how.innerHTML = "";
-    for (const key of usable) {
+    for (const key of forTarget) {
       const opt = document.createElement("option");
       opt.value = key;
       opt.textContent = HOW[key].label;
@@ -485,17 +707,12 @@ export function init() {
     }
     /* Set explicitly rather than relying on a select defaulting to its first
      * option, so that reading `how.value` back is defined from here on. */
-    how.value = usable[0];
-    if (howRow) howRow.hidden = usable.length < 2;
-    const relabel = () => {
-      go_.dataset.idle = (HOW[how.value] || HOW[usable[0]]).button;
-      if (!go_.disabled) go_.textContent = go_.dataset.idle;
-    };
-    how.addEventListener("change", relabel);
+    how.value = forTarget[0] || "";
+    if (howRow) howRow.hidden = forTarget.length < 2;
     relabel();
-  } else {
-    go_.dataset.idle = HOW[usable[0]].button;
   }
+
+  if (how) how.addEventListener("change", relabel);
 
   loadIndex().then((index) => {
     /* The dropdown is built from the index, so it can never offer a board the
@@ -514,6 +731,10 @@ export function init() {
       opt.textContent = `${target.name} — ${target.latest.version}`;
       select.append(opt);
     }
+    select.value = targets[0][0];
+    select.addEventListener("change",
+                            () => rebuildHow(index.targets[select.value]));
+    rebuildHow(index.targets[select.value]);
     say("idle", "Ready.",
         "Your board needs to be powered and in range. Nothing is written until you " +
         "open the update window on the board itself.");

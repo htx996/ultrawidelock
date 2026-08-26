@@ -787,22 +787,31 @@ release:
 # release can ever build an update for the boards running it: they are stranded
 # on a J-Link forever. It costs ~250 KB in the bundle.
 
-## ota-fan: build one delta per released image, and the index the web page reads
+## ota-fan: build one delta per released image, the whole image, and the index
 ##   PREV_HEXES='a.hex b.hex ...'  zephyr.signed.hex of every release in the field
 ##
 ##   Run AFTER `make release`, with the same RELEASE_KEY: the deltas are signed
 ##   with it and every board checks that signature before it writes anything.
+##
+##   The whole signed image goes out beside the deltas. It is what MCUboot's
+##   serial recovery accepts, and it is the only artifact on this board that
+##   needs no starting image -- so it is the only one that can rescue a board
+##   whose application does not boot, and it needs no probe to do it.
+##   ota-index.py refuses to publish it unless it is the image the deltas
+##   converge on, because recovering a board onto a build nothing updates would
+##   strand it.
 CDK_OTA_DIR ?= $(ULTRAWIDELOCK_BUILD_ROOT)/release/ota
 CDK_OTA_DIR := $(abspath $(CDK_OTA_DIR))
 
 ota-fan: $(CDK_OTA_PY)
 	@if [ -z '$(PREV_HEXES)' ]; then \
-	  printf '  PREV_HEXES is empty, so there is nothing to build an update FROM.\n' >&2; \
-	  printf '  Pass the zephyr.signed.hex of each release still in the field:\n\n' >&2; \
-	  printf "    make ota-fan RELEASE_KEY=<key> PREV_HEXES='v0.3.0/zephyr.signed.hex ...'\n\n" >&2; \
-	  printf '  On the very first release there are none, and that is correct --\n' >&2; \
-	  printf '  no board in the world is running an older image yet.\n' >&2; \
-	  exit 1; \
+	  printf '  PREV_HEXES is empty, so there is nothing to build a DELTA from.\n'; \
+	  printf '  On the very first release there is nothing, and that is correct --\n'; \
+	  printf '  no board in the world is running an older image yet. The whole\n'; \
+	  printf '  image is still published, and serial recovery still installs it,\n'; \
+	  printf '  so the release does have an over-the-air path. To add deltas,\n'; \
+	  printf '  pass the zephyr.signed.hex of each release still in the field:\n\n'; \
+	  printf "    make ota-fan RELEASE_KEY=<key> PREV_HEXES='v0.3.0/zephyr.signed.hex ...'\n\n"; \
 	fi
 	@test -f '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' || { \
 	  printf '  no release build at %s  ·  run `make release RELEASE_KEY=...` first\n' \
@@ -823,6 +832,10 @@ ota-fan: $(CDK_OTA_PY)
 	     --from-image "$$prev" --to-image "$$to" >/dev/null || exit 1; \
 	 done; \
 	 rm -f '$(CDK_OTA_DIR)/fan.wdfu'
+	@printf '  whole image for serial recovery\n'
+	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py recovery \
+	  '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' \
+	  --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' --version '$(FOTA_VERSION)' >/dev/null
 	@python3 $(REPO_ROOT)/scripts/ota-index.py \
 	  --out '$(CDK_OTA_DIR)/ota-index.json' \
 	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' \

@@ -762,7 +762,22 @@ def stage_ota() -> list[Path]:
 
     staged = [p for p in out_root.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in staged)
-    print(f"build: {len(staged) - 1} over-the-air update(s) -> flash/ota/  "
+
+    # Counted from the INDEX rather than from the file list. Every delta is two
+    # files (a .bin and the .zip phone tooling expects) and a recovery image is
+    # two more (the image and its sidecar), so counting files reported twice
+    # what was actually published and would now report four times.
+    try:
+        idx = json.loads(index.read_text())
+        targets = idx.get("targets", {})
+        updates = sum(len(t.get("updates", {})) or (1 if "image" in t else 0)
+                      for t in targets.values())
+        wholes = sum(1 for t in targets.values() if "recovery" in t)
+    except (ValueError, OSError):
+        updates, wholes = len(staged) - 1, 0
+
+    extra = f" + {wholes} whole image" if wholes else ""
+    print(f"build: {updates} over-the-air update(s){extra} -> flash/ota/  "
           f"({total // 1024} KB)")
     return staged
 

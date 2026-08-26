@@ -405,6 +405,63 @@ def image(args):
         die(f"  but it is larger than the {args.slot_size:,} B OTA slot it has to fit")
 
 
+def recovery(args):
+    """Emit the whole signed image, plus a sidecar, for MCUboot serial recovery.
+
+    WHAT THIS IS FOR. Everything else this script produces is a delta, because
+    the CDK has one MCUboot slot and a delta is the only thing that fits beside
+    a running image. Serial recovery is the exception: MCUboot is not running
+    the application, so the whole slot is free and a whole image can go into it.
+    That is the only path on this board that does not need a starting image to
+    subtract from -- which makes it the only one that can rescue a board whose
+    application no longer boots, and the only one that needs no probe to do it.
+
+    THE INPUT IS THE .hex, AND IT HAS TO BE. The build signs the image twice, in
+    separate imgtool runs, and ECDSA signatures are randomised -- so
+    zephyr.signed.bin and zephyr.signed.hex hold the same code under different
+    signatures and differ in their last 64 bytes. Only the .hex reaches
+    merged.hex, so only the .hex is what an SWD-flashed board is running. Both
+    would verify and both would boot, but publishing the other one would mean
+    the bytes on a recovered board differ from the bytes on a flashed board for
+    no reason anybody could later explain. load_image() refuses the .bin outright
+    when the .hex is beside it, which is what makes this hard to get wrong.
+
+    The SHA-256 in the sidecar is the TLV, not the hash of the file: it is the
+    value the board reports in its image list, and therefore the one the page
+    compares against after the reset to decide whether recovery worked.
+    """
+    blob = load_image(args.image)
+    sha = image_sha(args.image)
+
+    major, minor, rev = (int(x) for x in args.version.split("."))
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Named for the image it IS, where a delta is named for the two it sits
+    # between. Same reasoning either way: a stale file under a stable name is
+    # the failure that costs a flash dump to diagnose.
+    bin_name = f"ultrawidelock-cdk-{sha[:8].hex()}.bin"
+    bin_path = out_dir / bin_name
+    bin_path.write_bytes(blob)
+
+    sidecar = {
+        "file": bin_name,
+        "size": len(blob),
+        "sha256": sha.hex(),
+        "version": f"{major}.{minor}.{rev}",
+        "board": "decawave_dwm3001cdk",
+        "kind": "recovery",
+    }
+    side_path = out_dir / f"{bin_path.stem}.recovery.json"
+    side_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n")
+
+    print(f"  image     {len(blob):>9,} B  v{major}.{minor}.{rev}")
+    print(f"  sha256    {sha.hex()}")
+    print(f"  wrote     {bin_path}")
+    print(f"  wrote     {side_path}")
+
+
 def wrap(args):
     """Dress a .wdfu as an MCUboot image so a phone's file picker accepts it.
 
@@ -608,6 +665,13 @@ def main():
     s.add_argument("patch")
     s.add_argument("--out", required=True)
     s.set_defaults(func=stage)
+
+    r = sub.add_parser("recovery",
+                       help="publish the whole signed image, for MCUboot serial recovery")
+    r.add_argument("image", help="the SIGNED .hex -- see the docstring, the .bin is not it")
+    r.add_argument("--out-dir", required=True, help="where to write the .bin and its sidecar")
+    r.add_argument("--version", default="1.0.0", help="major.minor.revision")
+    r.set_defaults(func=recovery)
 
     w = sub.add_parser("wrap", help="dress a .wdfu as an MCUboot image, for phone tooling")
     w.add_argument("patch")
