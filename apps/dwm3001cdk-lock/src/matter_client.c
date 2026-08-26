@@ -166,6 +166,8 @@ static bool s_handshake;
 static uint32_t s_hs_linger_until;
 /** The unsecured message counter, randomised once; see send_sigma2()'s note. */
 static uint32_t s_counter;
+/** The Sigma2 whose cached Sigma3 may be retransmitted. */
+static uint32_t s_sigma2_counter;
 
 /*
  * What the bound lock should be, and what it last agreed to be.
@@ -1124,11 +1126,23 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 	}
 
 	if (ph->opcode == MATTER_OP_CASE_SIGMA2) {
+		/* Reopening a repeated Sigma2 after the transcript advanced destroys
+		 * the valid session; resend its cached Sigma3 instead. */
+		if (s_handshake && s_session &&
+		    s_sm.state == (uint8_t)MATTER_CLIENT_SIGMA3) {
+			if (mh->message_counter == s_sigma2_counter && s_rtx_len <= cap) {
+				memcpy(reply, s_rtx, s_rtx_len);
+				out = s_rtx_len;
+			}
+			ultrawidelock_mutex_unlock(&s_lock);
+			return out;
+		}
 		matter_client_sm_sigma2(&s_sm, t);
 		out = handle_sigma2(payload, payload_len, mh, reply, cap);
 		if (out > 0u) {
 			/* The Sigma3 is handed back for the transport to send,
 			 * so this is the only place that can time it. */
+			s_sigma2_counter = mh->message_counter;
 			arm_retransmit(reply, out, s_counter, t);
 			matter_client_sm_sent(&s_sm, t);
 		} else {
