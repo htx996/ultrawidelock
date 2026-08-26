@@ -11,10 +11,16 @@
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 
 idf_component_register(
-    SRCS "osal_esp.c" "kv_nvs.c"
+    SRCS "osal_esp.c" "kv_nvs.c" "flash_esp.c"
     INCLUDE_DIRS "${REPO_ROOT}/modules/ultrawidelock_port/include"
     # nvs_flash for kv_nvs.c, which is the ultrawidelock_kv.h backend on this
     # port. Same reasoning as the OSAL above: no image calls it yet, and the
     # linker drops what nobody calls, but compiling it here is what stops it
     # rotting between now and the first caller.
-    REQUIRES freertos esp_timer nvs_flash)
+    #
+    # app_update and esp_partition are flash_esp.c's, the ultrawidelock_flash.h
+    # backend the DFU receiver runs on. It lives here rather than in the DFU
+    # component for the reason at the top of this file: every .c that names an
+    # OS belongs to that OS's port tree, and the flash contract is a port
+    # contract, not a DFU one.
+    REQUIRES freertos esp_timer nvs_flash app_update esp_partition)

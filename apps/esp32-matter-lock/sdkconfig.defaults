@@ -142,3 +142,26 @@ CONFIG_ULTRAWIDELOCK_RSSI_GATE_CLOSE_DBM=-65
 # restores the single-anchor round. This node answers in slot 0.
 CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=2
 CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=0
+
+# ---- over-the-air updates, over Bluetooth --------------------------------
+#
+# The ESP32 side of https://ultrawidelock.com/flash/index.html. Adds a GATT
+# service that takes a signed application image and writes it into the OTA slot
+# this image is not running from, then points the bootloader at it. Same wire
+# protocol as the DWM3001CDK, so one page drives both.
+#
+# NOT the same thing as CONFIG_ENABLE_OTA_REQUESTOR above. That is Matter OTA:
+# BDX from a commissioned provider node over Wi-Fi, which is the right path for
+# a fleet and useless to someone with a board and a browser, because a web page
+# cannot join a Matter fabric. The two coexist; they share the ota_0/ota_1 slots
+# and nothing else.
+#
+# The window is opened by DOUBLE-CLICKING the board's button. The long press is
+# already the commissioning window and stays that way.
+CONFIG_ULTRAWIDELOCK_DFU_ESP32=y
+
+# Roll back to the previous slot if an update does not reach the end of
+# app_main. Without this a bad image is simply what the lock now runs, and the
+# only way back is a cable -- which is the one thing the whole feature exists to
+# avoid. ultrawidelock_dfu_esp32_confirm() is what cancels the rollback.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

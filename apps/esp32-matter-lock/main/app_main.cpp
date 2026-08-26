@@ -28,6 +28,19 @@
 #include <common_macros.h>
 #include <app_priv.h>
 #include "app_shell.h"
+
+#ifdef CONFIG_ULTRAWIDELOCK_DFU_ESP32
+#include "ultrawidelock_dfu_esp32.h"
+#ifndef CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
+/* The reader's own include block further down pulls these in when it is
+ * enabled, and it usually is. The extra-service registration in app_main needs
+ * them whenever EITHER feature is on, so an image with updates but no credential
+ * reader still compiles. */
+#include <vector>
+#include "host/ble_gatt.h"                 // struct ble_gatt_svc_def (NimBLE)
+#include <platform/ESP32/BLEManagerImpl.h> // BLEMgrImpl().ConfigureExtraServices()
+#endif
+#endif
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
 #include <platform/ESP32/OpenthreadLauncher.h>
 #endif
@@ -732,6 +745,28 @@ static void on_button_long_press(void *button_handle, void *usr_data)
 	app_commissioning_window_open();
 }
 
+#ifdef CONFIG_ULTRAWIDELOCK_DFU_ESP32
+/* Double-click opens the update window.
+ *
+ * A SEPARATE GESTURE FROM THE LONG PRESS, on the same and only button. The long
+ * press already means "let a new fabric in" and is the one people are told
+ * about; overloading it would mean anyone opening a commissioning window also
+ * spent five minutes accepting firmware from whoever was in radio range.
+ *
+ * That window is the whole authorisation model for updates. The image is signed
+ * and the bootloader re-validates it, so no peer can install code regardless --
+ * what the window prevents is an unauthenticated peer erasing a 3 MB slot and
+ * forcing reboots, which on a door lock is a real availability attack.
+ */
+static void on_button_double_click(void *button_handle, void *usr_data)
+{
+	(void)button_handle;
+	(void)usr_data;
+	ultrawidelock_dfu_esp32_open_window(CONFIG_ULTRAWIDELOCK_DFU_WINDOW_MS);
+	ESP_LOGI(TAG, "update window open for %d ms", CONFIG_ULTRAWIDELOCK_DFU_WINDOW_MS);
+}
+#endif
+
 // Registers the credential reader's GATT service with the BLE host before esp_matter::start so it
 // coexists with CHIPoBLE. Starts Matter, prints onboarding codes, and if already commissioned (e.g.
 // after a reboot) starts the credential reader immediately; otherwise the reader starts on the
@@ -836,25 +871,54 @@ extern "C" void app_main()
 	set_openthread_platform_config(&config);
 #endif
 
-#ifdef CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
-	/* Register the credential reader's GATT service on Matter's NimBLE host BEFORE the
-	 * Matter server builds its GATT table, so the reader's 0xFFF2 service coexists
-	 * with CHIPoBLE. Must be called before esp_matter::start (which runs InitServer). */
+#if defined(CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB) || defined(CONFIG_ULTRAWIDELOCK_DFU_ESP32)
+	/* Register our GATT services on Matter's NimBLE host BEFORE the Matter server
+	 * builds its GATT table, so they coexist with CHIPoBLE. Must be called before
+	 * esp_matter::start (which runs InitServer).
+	 *
+	 * ONE VECTOR, ONE CALL, and that is not a style choice. NimBLE builds its
+	 * attribute table exactly once, at ble_gatts_start(), and
+	 * ConfigureExtraServices refuses a second call with CHIP_ERROR_INCORRECT_STATE
+	 * once mGattSvcs is non-empty. So every extra service this image publishes has
+	 * to arrive here together; a service registered later is not rejected, it is
+	 * simply absent, which is a far worse way to find out. */
 	{
+		// The BLE host's combined extra-service table. Each entry is copied by
+		// value, and CHIP appends CHIPoBLE and its own terminator.
+		std::vector<struct ble_gatt_svc_def> svcs;
+
+#ifdef CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
 		const struct ble_gatt_svc_def *ultrawidelock_svc =
 			static_cast<const struct ble_gatt_svc_def *>(ultrawidelock_reader_ble_prepare());
 		if (ultrawidelock_svc != nullptr) {
-			// Local vector wrapping the credential GATT service definition for
-			// registration with the BLE host's combined service table.
-			std::vector<struct ble_gatt_svc_def> svcs = {*ultrawidelock_svc};
-			CHIP_ERROR e =
-				chip::DeviceLayer::Internal::BLEMgrImpl().ConfigureExtraServices(
-					svcs, true);
-			ESP_LOGI(TAG, "credential GATT extra-service register: %" CHIP_ERROR_FORMAT,
-				 e.Format());
+			svcs.push_back(*ultrawidelock_svc);
 		} else {
 			ESP_LOGE(TAG,
 				 "ultrawidelock_reader_ble_prepare failed; reader GATT not registered");
+		}
+#endif
+
+#ifdef CONFIG_ULTRAWIDELOCK_DFU_ESP32
+		/* Before the service goes in, so no frame can ever reach a receiver
+		 * whose commit hook is not installed. Without the hook an update is
+		 * received, verified, written -- and then ignored at the next boot,
+		 * because nothing pointed the bootloader at the new slot. */
+		ultrawidelock_dfu_esp32_init();
+
+		const struct ble_gatt_svc_def *dfu_svc = ultrawidelock_dfu_esp32_service_def();
+		if (dfu_svc != nullptr) {
+			svcs.push_back(*dfu_svc);
+		} else {
+			ESP_LOGE(TAG, "DFU GATT not registered; no over-the-air updates");
+		}
+#endif
+
+		if (!svcs.empty()) {
+			CHIP_ERROR e =
+				chip::DeviceLayer::Internal::BLEMgrImpl().ConfigureExtraServices(
+					svcs, true);
+			ESP_LOGI(TAG, "%u extra GATT service(s) registered: %" CHIP_ERROR_FORMAT,
+				 static_cast<unsigned>(svcs.size()), e.Format());
 		}
 	}
 #endif
@@ -887,6 +951,16 @@ extern "C" void app_main()
 			if (berr != ESP_OK) {
 				ESP_LOGW(TAG, "button long-press hook failed: %d", (int)berr);
 			}
+
+#ifdef CONFIG_ULTRAWIDELOCK_DFU_ESP32
+			berr = iot_button_register_cb((button_handle_t)btn,
+						      BUTTON_DOUBLE_CLICK, NULL,
+						      on_button_double_click, NULL);
+
+			if (berr != ESP_OK) {
+				ESP_LOGW(TAG, "button double-click hook failed: %d", (int)berr);
+			}
+#endif
 		}
 	}
 
@@ -908,6 +982,21 @@ extern "C" void app_main()
 		err == ESP_OK,
 		ESP_LOGE(TAG, "Failed to initialized the encrypted OTA, err: %d", err));
 #endif // CONFIG_ENABLE_ENCRYPTED_OTA
+
+#ifdef CONFIG_ULTRAWIDELOCK_DFU_ESP32
+	/* Cancel the pending rollback, if this boot is the first after an update.
+	 *
+	 * HERE, AT THE END, and not one line earlier. With
+	 * CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE the bootloader reverts to the
+	 * previous slot unless the new image says it is healthy, and "healthy" has
+	 * to mean something: reaching the top of app_main proves only that the
+	 * image links. By this point Matter has started, the lock endpoint exists
+	 * and the credential reader is either running or waiting on commissioning,
+	 * which is as much as can be checked without someone walking up to the
+	 * door. An update that panics before this line gets one more reboot on the
+	 * old firmware rather than a lock that no longer answers. */
+	(void)ultrawidelock_dfu_esp32_confirm();
+#endif
 
 	/* Interactive console. This replaces esp_matter::console::init(), whose CHIP
 	 * shell has no line editing and loses your input whenever a log line lands.
