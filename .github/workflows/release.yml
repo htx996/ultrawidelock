@@ -179,6 +179,66 @@ jobs:
           make release \
             RELEASE_KEY="$RUNNER_TEMP/release.pem" \
             CDK_RELEASE_VER="$TAG"
+      # The over-the-air fan: one signed delta from every release still in the
+      # field to this one, plus the index the browser FOTA page reads.
+      #
+      # WHY IT NEEDS THE OLD RELEASES. The DWM3001CDK has a single MCUboot slot,
+      # so an update is a delta against the exact bytes already on the board --
+      # which means building one requires the image that board is running. The
+      # only copy of that is the zephyr.signed.hex published with its own
+      # release, which is why mk/cdk.mk ships that file in the bundle.
+      #
+      # FIVE RELEASES, not all of them. The fan is one file per prior release
+      # and each has to be built, signed and downloaded by every visitor's
+      # index; unbounded, a project with forty releases spends most of this job
+      # building deltas from images nobody runs. Someone further back than five
+      # releases uses the J-Link, and the page tells them so by name.
+      #
+      # Never fatal. A first release has no prior releases, and an old bundle
+      # that predates zephyr.signed.hex simply has no usable base -- both are
+      # correct states that must not fail a release. Boards on those versions
+      # have no over-the-air path, which is the single-slot design, not a bug.
+      - name: over-the-air fan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bases=""
+          mkdir -p "$RUNNER_TEMP/prev"
+          for tag in $(gh release list --repo "$REPO" --limit 5 \
+                         --json tagName --jq '.[].tagName'); do
+            # `[ ... ] && continue` would be a false statement under `set -e`
+            # on every tag that is not this one, i.e. all of them.
+            if [ "$tag" = "$TAG" ]; then continue; fi
+            d="$RUNNER_TEMP/prev/$tag"
+            mkdir -p "$d"
+            if ! gh release download "$tag" --repo "$REPO" \
+                   --pattern 'ultrawidelock-dwm3001cdk.zip' --dir "$d" 2>/dev/null; then
+              echo "::notice::$tag has no DWM3001CDK bundle, skipping"
+              continue
+            fi
+            unzip -q -o "$d/ultrawidelock-dwm3001cdk.zip" -d "$d"
+            hex="$(find "$d" -name zephyr.signed.hex -print -quit)"
+            if [ -z "$hex" ]; then
+              echo "::notice::$tag predates the shipped zephyr.signed.hex -- no delta from it"
+              continue
+            fi
+            bases="$bases $hex"
+          done
+
+          if [ -z "$bases" ]; then
+            echo "::notice::no prior release to build an update from; this release ships none"
+            exit 0
+          fi
+
+          make ota-fan \
+            RELEASE_KEY="$RUNNER_TEMP/release.pem" \
+            CDK_RELEASE_VER="$TAG" \
+            FOTA_VERSION="${TAG#v}" \
+            PREV_HEXES="$bases"
+
       # The "no private key in the bundle" check is not a step here: it runs
       # inside scripts/release-bundle.sh, so all three bundles get it and a
       # local `make release` gets it too, rather than only a tag build.
@@ -187,6 +247,20 @@ jobs:
           name: ultrawidelock-dwm3001cdk
           path: build/release/ultrawidelock-dwm3001cdk
           if-no-files-found: error
+
+      # Separate from the bundle above: this is what the SITE consumes, not what
+      # a person downloads to flash a board. if-no-files-found is `ignore`
+      # because a first release legitimately produces nothing here.
+      #
+      # The deltas only. ota-index.json is NOT taken from here even though
+      # `make ota-fan` writes one, because the index has to name every target
+      # and the ESP32 images are built in a different job on a different runner.
+      # The publish job assembles both and generates the real index.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-ota-dwm3001cdk
+          path: build/release/ota/dwm3001cdk
+          if-no-files-found: ignore
 
   # nRF5340 DK: cold-bootstrap the pinned west workspace, build the sysbuild
   # image, and bundle both cores' hex files with the flash script + guide.
@@ -351,6 +425,32 @@ jobs:
           path: build/release/ultrawidelock-esp32-matter-lock
           if-no-files-found: error
 
+      # The signed app images the browser's over-the-air panel sends.
+      #
+      # No fan and no prior releases needed, unlike the CDK: two whole OTA slots
+      # mean the update IS the image and applies to a board in any state. What it
+      # signs is door_lock.bin -- the application alone -- and not the merged
+      # image `esp-release` just built, which starts with the bootloader at 0x0
+      # and is what a cable writes.
+      - name: sign the over-the-air images
+        env:
+          ESP_RELEASE_VER: ${{ github.ref_name }}
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/release.pem"
+          make esp-ota RELEASE_KEY="$RUNNER_TEMP/release.pem"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-ota-esp32
+          path: build/release/ota/esp32
+          if-no-files-found: ignore
+
   # Zip each bundle and publish the release. The tag check is redundant now that
   # `guard` gates every build job, and it stays anyway: this is the only job here
   # holding contents:write, so it should not depend on another job for the one
@@ -408,6 +508,41 @@ jobs:
           cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32s3.bin out/
           cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32c5.bin out/
           cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32c6.bin out/
+          # The over-the-air set, as one asset: the CDK's delta fan, the ESP32's
+          # signed images, and the index that names both. This is what the Pages
+          # workflow downloads to publish the FOTA panel; it is not something a
+          # person unzips and flashes, though the wrapped .bin inside each CDK
+          # delta is exactly what nRF Device Manager's Images tab takes.
+          #
+          # THE INDEX IS BUILT HERE, not in either build job, because it is the
+          # one file that has to name every target and the two chips are built on
+          # different runners. Assembling first and indexing second is also what
+          # makes the index's own guarantees -- one update per board hash, a fan
+          # that converges -- checks over the whole published set rather than
+          # over half of it.
+          #
+          # Either half may be absent. A first release has nothing to update
+          # FROM, so the CDK fan is empty; neither case may fail the publish.
+          # if/fi rather than `[ -d x ] && cmd`: this step runs under `set -e`,
+          # where a false test is a failed statement and would end the publish.
+          mkdir -p dist/ota
+          index_args=""
+          if [ -d dist/ultrawidelock-ota-dwm3001cdk ]; then
+            mv dist/ultrawidelock-ota-dwm3001cdk dist/ota/dwm3001cdk
+            index_args="$index_args --cdk-dir dist/ota/dwm3001cdk"
+          fi
+          if [ -d dist/ultrawidelock-ota-esp32 ]; then
+            mv dist/ultrawidelock-ota-esp32 dist/ota/esp32
+            index_args="$index_args --esp-dir dist/ota/esp32"
+          fi
+          if [ -n "$index_args" ]; then
+            # shellcheck disable=SC2086
+            python3 scripts/ota-index.py --out dist/ota/ota-index.json \
+              --version "${{ github.ref_name }}" $index_args
+            (cd dist && zip -qr ../out/ultrawidelock-ota.zip ota)
+          else
+            echo "::notice::no over-the-air updates in this release"
+          fi
           (cd out && sha256sum ./*.zip ./*.bin > SHA256SUMS.txt)
           ls -l out
       # Provenance, before the release exists. SHA256SUMS.txt on its own is a self-referential

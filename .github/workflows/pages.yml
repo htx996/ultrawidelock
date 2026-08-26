@@ -98,6 +98,40 @@ jobs:
               || echo "::notice::$name is not among the latest release's assets"
           done
 
+      # The over-the-air updates and the index the FOTA panel looks a board up
+      # in. Same shape as the step above and for the same reason: they are
+      # release artifacts, not build output, and nothing in the tree carries
+      # them.
+      #
+      # Staged into build/release/ota/, where web/build.py's stage_ota() looks.
+      # ota-index.json is the one file that must arrive: without it the panel
+      # fetches, gets a 404 and says no updates are published -- which is the
+      # honest state of a site whose release carried none, and is why nothing
+      # here is allowed to fail the build.
+      #
+      # The whole directory travels as one asset. The fan is one delta per
+      # release still in the field, so the file COUNT grows with every release
+      # while the bytes stay tiny (~11 KB each); downloading them one pattern at
+      # a time would mean this step needed editing every time a release shipped.
+      - name: over-the-air updates from the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view --repo "$REPO" >/dev/null 2>&1; then
+            echo "::notice::no release published yet -- the FOTA panel will say so"
+            exit 0
+          fi
+          mkdir -p build/release
+          if gh release download --repo "$REPO" --pattern 'ultrawidelock-ota.zip' \
+               --dir build/release --clobber 2>/dev/null; then
+            unzip -q -o build/release/ultrawidelock-ota.zip -d build/release
+            rm -f build/release/ultrawidelock-ota.zip
+            echo "staged $(find build/release/ota -type f | wc -l) over-the-air file(s)"
+          else
+            echo "::notice::this release carries no over-the-air updates"
+          fi
+
       # The 3D graph's data is committed (web/graph/files.json); its renderer is
       # not -- 1.3 MB of three.js is a third-party bundle and stays out of the
       # tree. Fetching it here is what makes the published graph the flyable one

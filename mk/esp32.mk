@@ -168,7 +168,7 @@ export ESP_RELEASE_VER
 
 .PHONY: esp-size-report esp-size-check esp-size-baseline
 .PHONY: esp-bootstrap esp-check-env esp-set-target esp-build esp-rebuild esp-reconfigure \
-        esp-merge-bin esp-release \
+        esp-merge-bin esp-release esp-ota \
         esp-menuconfig esp-size esp-flash esp-app-flash esp-flash-erase \
         esp-monitor esp-go esp-run esp-term esp-lab esp-ports esp-clean esp-env \
         esp-presence-on esp-presence-off esp-presence-flash esp-help
@@ -308,6 +308,61 @@ esp-release:
 	    --setup-code '3497-011-2332' \
 	    --commission-note 'Type this into Apple Home. The same code, and a QR to scan instead, print on the serial console at 115200 baud.' \
 	    $$bins
+
+## esp-ota: sign each chip's app image for the browser's over-the-air panel
+##   Run AFTER `make esp-release`, with the same RELEASE_KEY.
+##
+##   THE APP IMAGE, NOT THE MERGED ONE. `esp-merge-bin` fuses bootloader,
+##   partition table and app into one blob written at 0x0, which is what a cable
+##   flashes. An OTA slot takes only the application, at the slot's own offset 0
+##   -- so what gets signed here is door_lock.bin. `ultrawidelock_patch.py image`
+##   refuses anything that does not start with the ESP-IDF image magic, which is
+##   the mistake this comment exists to stop.
+ESP_OTA_DIR ?= $(ULTRAWIDELOCK_BUILD_ROOT)/release/ota/esp32
+ESP_OTA_DIR := $(abspath $(ESP_OTA_DIR))
+
+# Runs in the SAME virtualenv the CDK update tooling uses ($(CDK_OTA_PY), made
+# by `make ota-deps`), not in a bare python3. Signing needs `cryptography`, and
+# a machine's system python is not required to have it -- on a fresh clone the
+# bare-python3 version of this target failed at the signature, after building
+# three images. mk/cdk.mk is included ahead of this file, so the variable and
+# its rule are both already defined.
+esp-ota: $(CDK_OTA_PY)
+	@test -n '$(RELEASE_KEY)' || { \
+	  printf '  RELEASE_KEY is not set.\n' >&2; \
+	  printf '  Every board checks this signature before it writes a byte of flash,\n' >&2; \
+	  printf '  and the public half is compiled into the image it is updating -- so a\n' >&2; \
+	  printf '  file signed with the wrong key is one no released board will take.\n' >&2; \
+	  exit 1; }
+	@test -f '$(RELEASE_KEY)' || { printf '  no such key: %s\n' '$(RELEASE_KEY)' >&2; exit 1; }
+	@# Same guard as `make release` in mk/cdk.mk, for the same reason: the
+	@# checkout key is gitignored, per-clone and regenerated freely, so an image
+	@# signed with it can only ever be installed by boards flashed from this one
+	@# working tree. Publishing that would strand every board in the field.
+	@if [ "$$(cd $(dir $(RELEASE_KEY)) 2>/dev/null && pwd)/$(notdir $(RELEASE_KEY))" = '$(abspath $(SIGN_KEY))' ]; then \
+	  printf '  that is this checkout dev key (%s).\n' '$(SIGN_KEY)' >&2; \
+	  printf '  Use the offline release key, or every board that installs this is stranded.\n' >&2; \
+	  exit 1; \
+	fi
+	@rm -rf '$(ESP_OTA_DIR)'
+	@mkdir -p '$(ESP_OTA_DIR)'
+	@ver="$${ESP_RELEASE_VER#v}"; \
+	 for t in $(ESP_RELEASE_CHIPS); do \
+	   app='$(ULTRAWIDELOCK_BUILD_ROOT)'/esp32-matter-lock-$$t/door_lock.bin; \
+	   if [ ! -f "$$app" ]; then \
+	     printf '  no app image for %s at %s  ·  run `make esp-release` first\n' \
+	       "$$t" "$$app" >&2; exit 1; \
+	   fi; \
+	   out="ultrawidelock-$$t-$$ver.wdfu"; \
+	   printf '  signing %s\n' "$$out"; \
+	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py image "$$app" \
+	     --key '$(abspath $(RELEASE_KEY))' --out "$(ESP_OTA_DIR)/$$out" || exit 1; \
+	   $(CDK_OTA_PY) -c "import json,pathlib,sys; \
+p=pathlib.Path(sys.argv[1]); \
+pathlib.Path(sys.argv[2]).write_text(json.dumps({'chip':sys.argv[3],'file':p.name,'size':p.stat().st_size,'version':sys.argv[4]},indent=1))" \
+	     "$(ESP_OTA_DIR)/$$out" "$(ESP_OTA_DIR)/$$t.json" "$$t" "$$ver" || exit 1; \
+	 done
+	@printf '  wrote     %s\n' '$(ESP_OTA_DIR)'
 
 ## esp-env: sanity-check the toolchain — prints idf.py's version and the paths
 esp-env: esp-check-env

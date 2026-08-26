@@ -65,6 +65,11 @@ ULTRAWIDELOCK_DFU_PATCH_OFFSET = 2 * ULTRAWIDELOCK_DFU_PAGE_SIZE
 ULTRAWIDELOCK_DFU_HDR_LEN = 32
 ULTRAWIDELOCK_DFU_HDR_CRC_LEN = 28
 ULTRAWIDELOCK_DFU_SIG_LEN = 64
+# The payload is a whole application image, not a detools delta. Occupies the
+# `flags` word that was already reserved, already covered by the header CRC and
+# already inside the 32 signed bytes -- so it is not an ABI change and cannot be
+# flipped by anyone without the key.
+ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE = 0x0001
 
 # magic, abi_version, flags, patch_len, to_len, patch_crc32, from_crc32, from_len
 HDR_FMT = "<IHHIIIII"
@@ -315,6 +320,65 @@ def build(args):
     print(f"  wrote     {args.out}")
 
 
+def image(args):
+    """Sign a whole application image into the same .wdfu container.
+
+    THE ESP32 PATH. That part has two full OTA slots and no MCUboot, so it has
+    nowhere to run a delta and no reason to want one: what it needs is the image
+    itself, written into the slot it is not booted from. Rather than invent a
+    second container for it, this reuses the one the CDK already has -- same
+    magic, same ABI, same 32 signed header bytes, same P-256 signature, same
+    CRC-32 over the payload -- with ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE set in the
+    reserved `flags` word to say which kind of payload is inside.
+
+    One signer, one receiver, one wire protocol, two chips.
+
+    from_crc32 and from_len are zero and mean it: a whole image applies to any
+    starting state, which is exactly why the ESP32 needs no fan of updates and
+    no record of what each board is running.
+    """
+    data = Path(args.image).read_bytes()
+
+    # Checked before anything else, as `build` does and for the same reason:
+    # discovering that nothing can sign it after the work is wasted work.
+    sign(args.key, b"")
+
+    # The ESP-IDF application image magic. Not a deep validation -- the board
+    # runs esp_ota_set_boot_partition(), which walks the segment table and the
+    # checksum -- but it catches the mistake anyone actually makes, which is
+    # passing the merged 0x0 image (bootloader first) instead of the app.
+    if not data or data[0] != 0xE9:
+        die(
+            f"{args.image} does not start with the ESP-IDF image magic 0xE9.\n"
+            f"  The OTA slot takes the APP image, not the merged one that starts\n"
+            f"  with the bootloader at 0x0. Use build/esp32-matter-lock-<chip>/door_lock.bin."
+        )
+
+    body = struct.pack(
+        HDR_FMT,
+        ULTRAWIDELOCK_DFU_MAGIC,
+        ULTRAWIDELOCK_DFU_ABI_VERSION,
+        ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE,
+        len(data),
+        len(data),
+        zlib.crc32(data),
+        0,
+        0,
+    )
+    header = body + struct.pack("<I", zlib.crc32(body))
+    assert len(header) == ULTRAWIDELOCK_DFU_HDR_LEN
+    assert len(body) == ULTRAWIDELOCK_DFU_HDR_CRC_LEN
+
+    signature = sign(args.key, header)
+    Path(args.out).write_bytes(header + signature + data)
+
+    print(f"  image     {len(data):>9,} B  crc {zlib.crc32(data):#010x}")
+    print(f"  container {len(header) + len(signature):>9,} B  header + signature")
+    print(f"  wrote     {args.out}")
+    if args.slot_size and len(data) > args.slot_size:
+        die(f"  but it is larger than the {args.slot_size:,} B OTA slot it has to fit")
+
+
 def wrap(args):
     """Dress a .wdfu as an MCUboot image so a phone's file picker accepts it.
 
@@ -432,7 +496,11 @@ def info(args):
 
     print(f"  magic       {magic:#010x} {'ok' if magic == ULTRAWIDELOCK_DFU_MAGIC else 'BAD'}")
     print(f"  abi         {abi} {'ok' if abi == ULTRAWIDELOCK_DFU_ABI_VERSION else 'BAD'}")
-    print(f"  flags       {flags:#06x}")
+    # Named, not just printed. This word decides which port can install the
+    # file at all, and "0x0001" tells a reader nothing about that.
+    kind = ("whole image (ESP32)" if flags & ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE
+            else "delta (DWM3001CDK)")
+    print(f"  flags       {flags:#06x}  {kind}")
     print(f"  from        {from_len:,} B  crc {from_crc:#010x}")
     print(f"  to          {to_len:,} B")
     print(f"  patch       {patch_len:,} B  crc {patch_crc:#010x}")
@@ -496,6 +564,15 @@ def main():
                    help="forward-shift slack detools works in; must stay a "
                         "multiple of the segment size, and 2 segments is its floor")
     b.set_defaults(func=build)
+
+    m = sub.add_parser("image", help="sign a whole application image (the ESP32 path)")
+    m.add_argument("image", help="the ESP-IDF app image, e.g. door_lock.bin")
+    m.add_argument("--out", required=True)
+    m.add_argument("--key", default="apps/dwm3001cdk-lock/keys/mcuboot_ec_p256.pem",
+                   help="the signing key; the board carries its public half")
+    m.add_argument("--slot-size", type=lambda v: int(v, 0), default=0,
+                   help="the OTA slot this has to fit in; checked when given")
+    m.set_defaults(func=image)
 
     i = sub.add_parser("info", help="describe a .wdfu and check its own CRCs")
     i.add_argument("patch")

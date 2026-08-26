@@ -378,7 +378,7 @@ CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_S
 
 .PHONY: build rebuild instrument reader selftest cirdiag mlgate anchorlink flash flash-erase monitor monitor-rtt dfu release \
         cdk-size cdk-size-check cdk-size-baseline \
-        dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps \
+        dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps ota-fan \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
 
 # ---- the CMake argument tail ---------------------------------------------------
@@ -747,9 +747,63 @@ release:
 	    --board 'DWM3001CDK (decawave_dwm3001cdk, nRF52833)' \
 	    --setup-code "$$code" \
 	    --commission-note 'Type this into Apple Home. There is no QR label on this board.' \
-	    '$(CDK_RELEASE_BUILD)/merged.hex'
+	    '$(CDK_RELEASE_BUILD)/merged.hex' \
+	    '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex'
 	@printf '  Zip it and attach it to the release:\n'
 	@printf '    (cd %s && zip -qr ../ultrawidelock-dwm3001cdk.zip ultrawidelock-dwm3001cdk)\n\n' '$(dir $(CDK_RELEASE_OUT))'
+
+# zephyr.signed.hex ships BESIDE merged.hex, and it is not a duplicate of it.
+#
+# merged.hex is what a J-Link writes: bootloader at 0x0 and the signed app after
+# it. A delta cannot be built from that -- ultrawidelock_patch.py reads MCUboot
+# image headers, and the first thing in a merged hex is not an MCUboot image.
+#
+# So the fan below needs the bare signed app of EVERY release still in the
+# field, and the only moment that file provably exists is the release build that
+# produced it. Not shipping it means that once a version is published, no future
+# release can ever build an update for the boards running it: they are stranded
+# on a J-Link forever. It costs ~250 KB in the bundle.
+
+## ota-fan: build one delta per released image, and the index the web page reads
+##   PREV_HEXES='a.hex b.hex ...'  zephyr.signed.hex of every release in the field
+##
+##   Run AFTER `make release`, with the same RELEASE_KEY: the deltas are signed
+##   with it and every board checks that signature before it writes anything.
+CDK_OTA_DIR ?= $(ULTRAWIDELOCK_BUILD_ROOT)/release/ota
+CDK_OTA_DIR := $(abspath $(CDK_OTA_DIR))
+
+ota-fan: $(CDK_OTA_PY)
+	@if [ -z '$(PREV_HEXES)' ]; then \
+	  printf '  PREV_HEXES is empty, so there is nothing to build an update FROM.\n' >&2; \
+	  printf '  Pass the zephyr.signed.hex of each release still in the field:\n\n' >&2; \
+	  printf "    make ota-fan RELEASE_KEY=<key> PREV_HEXES='v0.3.0/zephyr.signed.hex ...'\n\n" >&2; \
+	  printf '  On the very first release there are none, and that is correct --\n' >&2; \
+	  printf '  no board in the world is running an older image yet.\n' >&2; \
+	  exit 1; \
+	fi
+	@test -f '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' || { \
+	  printf '  no release build at %s  ·  run `make release RELEASE_KEY=...` first\n' \
+	    '$(CDK_RELEASE_BUILD)' >&2; exit 1; }
+	@test -n '$(RELEASE_KEY)' || { printf '  RELEASE_KEY is not set.\n' >&2; exit 1; }
+	@rm -rf '$(CDK_OTA_DIR)/dwm3001cdk'
+	@mkdir -p '$(CDK_OTA_DIR)/dwm3001cdk'
+	@to='$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex'; \
+	 for prev in $(PREV_HEXES); do \
+	   test -f "$$prev" || { printf '  no such image: %s\n' "$$prev" >&2; exit 1; }; \
+	   printf '  delta from %s\n' "$$prev"; \
+	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py build \
+	     --from "$$prev" --to "$$to" --build-dir '$(CDK_RELEASE_BUILD)' \
+	     --key '$(abspath $(RELEASE_KEY))' --out '$(CDK_OTA_DIR)/fan.wdfu' || exit 1; \
+	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py wrap \
+	     '$(CDK_OTA_DIR)/fan.wdfu' --version '$(FOTA_VERSION)' \
+	     --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
+	     --from-image "$$prev" --to-image "$$to" >/dev/null || exit 1; \
+	 done; \
+	 rm -f '$(CDK_OTA_DIR)/fan.wdfu'
+	@python3 $(REPO_ROOT)/scripts/ota-index.py \
+	  --out '$(CDK_OTA_DIR)/ota-index.json' \
+	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
+	  --version "$$CDK_RELEASE_VER"
 
 ## ota-deps: create the host virtualenv the update tooling runs in
 ota-deps: $(CDK_OTA_PY)
