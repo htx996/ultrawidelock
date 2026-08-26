@@ -263,7 +263,37 @@ jobs:
           git diff --name-only "$BASE...$HEAD" > /tmp/changed
           echo "changed files:"; sed 's/^/  /' /tmp/changed
 
-          if grep -qvE '^(docs/|web/|\.github/workflows/pages\.yml$)|\.md$' /tmp/changed; then
+          # EVERY ENTRY IS A CLAIM, and the claim is always the same one: no
+          # file under this path can change a compiled image. The claim is what
+          # was checked before adding it, not the fact that a build there felt
+          # unnecessary. Getting one wrong does not fail here or anywhere; it
+          # makes this job report green over code it never compiled, which is
+          # the whole failure this workflow exists to end. When unsure, leave it
+          # out and pay for a build.
+          #
+          #   docs/ web/ *.md pages.yml   no compiler reaches any of them
+          #   tests/host|shared|sdk|ports host suites; grepped mk/, every app
+          #                               CMakeLists and sysbuild.cmake -- no
+          #                               firmware target reads them
+          #   release/                    FLASH.md, flash.sh, README.txt and
+          #                               NOTES.md.in: bundle contents, copied
+          #                               beside an image, never compiled in
+          #   release-notes.sh            renders the release body
+          #   mk/host.mk                  host targets only
+          #   release.yml                 builds firmware itself, on a tag, and
+          #                               shares no cache with this job
+          #
+          # NOT HERE, DELIBERATELY. tests/tooling/ looks as inert as its
+          # siblings and is not: zephyr-opt-overlays/*.conf reaches a real
+          # build through INSTRUMENT_CONF in mk/cdk.mk. Nor scripts/ at large --
+          # bootstrap.sh and lib/ws.sh decide what the workspace holds, which is
+          # most of what gets compiled. Nor mk/cdk.mk, mk/satellite.mk,
+          # integrations/ (the door-lock application lives there now), apps/,
+          # modules/, ports/ or west.yml.
+          IGNORE='^(docs/|web/|release/|tests/(host|shared|sdk|ports)/'
+          IGNORE="$IGNORE"'|scripts/release-notes\.sh$|mk/host\.mk$'
+          IGNORE="$IGNORE"'|\.github/workflows/(pages|release)\.yml$)|\.md$'
+          if grep -qvE "$IGNORE" /tmp/changed; then
             echo "firmware=true" >> "$GITHUB_OUTPUT"
             echo "-> touches something that can reach a firmware image"
           else

@@ -10,6 +10,7 @@
 #   scope      tests/tooling/uwb_engine_scope_check.sh  no vendor radio API outside the DW3000 engine
 #   purity     tests/tooling/port_purity_check.sh  one source, one OS per port
 #   wsstore    tests/tooling/ws_store_check.sh  one workspace per patch set, shared
+#   ciscope    tests/tooling/ci_scope_check.sh  which changes compile firmware
 #   lint       tests/tooling/cppcheck_gate.sh   cppcheck over the portable tree
 #   sizegate   tests/tooling/cdk_size_test.sh   the CDK size gate's own logic
 #   zopt       tests/tooling/zephyr_opt_suite.sh  the instrument + dashboard tools
@@ -61,6 +62,7 @@ suite_cmd() {
 	scope) echo "bash tests/tooling/uwb_engine_scope_check.sh" ;;
 	purity) echo "bash tests/tooling/port_purity_check.sh" ;;
 	wsstore) echo "bash tests/tooling/ws_store_check.sh" ;;
+	ciscope) echo "bash tests/tooling/ci_scope_check.sh" ;;
 	lint) echo "bash tests/tooling/cppcheck_gate.sh" ;;
 	sizegate) echo "bash tests/tooling/cdk_size_test.sh" ;;
 	zopt) echo "bash tests/tooling/zephyr_opt_suite.sh" ;;
@@ -90,6 +92,7 @@ suite_label() {
 	bindhelper) echo "binding helper" ;;
 	relnotes) echo "release notes" ;;
 	wsstore) echo "workspace store" ;;
+	ciscope) echo "ci scope predicate" ;;
 	freertos) echo "FreeRTOS port" ;;
 	patchdrift) echo "integration patches" ;;
 	esac
@@ -267,7 +270,7 @@ run_suite() { # <suite> <outfile> <metafile>
 	fi
 }
 
-SEL="${SUITES:-firmware shared sdk drift seam scope purity wsstore lint sizegate zopt twin ui bindhelper relnotes}"
+SEL="${SUITES:-firmware shared sdk drift seam scope purity wsstore ciscope lint sizegate zopt twin ui bindhelper relnotes}"
 declare -a NAMES OUTS METAS PIDS
 n=0
 for s in $SEL; do
