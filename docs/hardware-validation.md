@@ -85,7 +85,7 @@ this one.
 | CDK-13 | `make fota`, push the file from a phone with nRF Device Manager's **Images** tab, then `make fota-done` | The board comes back reporting the target image's SHA-256 | yes, on the commissioned lock (`53b2fe1`, `8447e91`) |
 | CDK-14 | 100 walk-ups, counting the ones that unlock | 95% or better | **open, never run**; the sample so far is single digits |
 | CDK-15 | Cut the power in the middle of a CDK-11 apply, then restore it | The board resumes at the right step and boots the target image | **open, never run** |
-| CDK-16 | Hold SW2 for 5 s while the application runs, then upload with `scripts/cdk-dfu.sh` | The board warm-reboots into MCUboot serial recovery and accepts the image | **open**; serial recovery has completed exactly one real upload and is not yet reproducible |
+| CDK-16 | Hold SW2 for 5 s while the application runs, then upload with `scripts/cdk-dfu.sh` | The board warm-reboots into MCUboot serial recovery and accepts the image | **open, but no longer unexplained-everywhere.** 2026-08-27 the APPLICATION was made to speak mcumgr on the same uart0 and answered immediately, including multi-frame requests. The wire, the pins, the probe's VCOM, the 115200 rate and the nRF's legacy UART are therefore all exonerated: whatever CDK-16 is, it is inside MCUboot's serial adapter, not underneath it |
 | CDK-17 | Record a walk-up with the flight recorder, histogram the STS quality index, pick a floor above the noise | `ULTRAWIDELOCK_STS_QUALITY_MIN` is set from data rather than left at 0 | **open, never run.** The DWM3001CDK now *enforces* this gate, so an untuned floor is a door that can refuse to open |
 | CDK-18 | Walk-up in NLOS: phone pocketed on the far side of the body, and through an interior door | The gate still publishes a range and the bolt opens | **open, never run.** One LOS walk-up passed at `sts_ok=1`, STS index 62, verdict 24, d=107 mm; that is not a calibration |
 | CDK-19 | In Home Assistant's Thread integration, send the iPhone's Apple Thread credentials, make that dataset preferred, and join the Home Assistant OTBR to it | Apple and Home Assistant border routers report one Extended PAN ID; no second preferred dataset is created | **open, never run** |
@@ -105,7 +105,7 @@ it granted access rather than just actuating locally.
 | CDK-29 | Open https://ultrawidelock.com/flash/index.html in Chrome, pick the DWM3001CDK, and connect | The chooser lists the board, and the page names the image it is running before asking for anything | **open, never run** |
 | CDK-30 | Continue CDK-29 on a board whose image the release publishes a delta from, pressing SW2 when the page asks | The delta goes over Web Bluetooth, the board reboots, and the page reconnects and reports the target SHA-256 | **open, never run.** This is CDK-13 driven from a browser instead of a phone, and the firmware is the same `SMP=1` image, so what is untested is the JavaScript and nothing else |
 | CDK-31 | Repeat CDK-30 on a board running a build the release ships no delta from | The page says no over-the-air update applies, names the single-slot reason, points at the J-Link, and sends nothing | **open, never run.** Proven against a fake board in the `fotawire` suite; never against a real one |
-| CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **open, never run.** The firmware side is `CONFIG_MCUMGR_TRANSPORT_UART` and nothing else -- same receiver, same signature check, same window gate as the radio |
+| CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **identify half PASSED 2026-08-27** over the CLI (`make ota-smp-list OTA_SERIAL=auto`); board reported `sha=000f654e8c031181`, byte-identical to what the radio reported for the same board in the same minute. Multi-frame writes PASSED separately: a 384 B payload (420 B frame, 583 B on the wire, 5 lines) arrived whole and was refused with rc=11, the window gate answering correctly. **Upload half still open** -- it needs a two-build delta, and the browser has not been run at all |
 | CDK-33 | Time CDK-30 and CDK-32 on the same delta | The cable is materially faster; 384-byte chunks against 105 | **open, never run.** The ratio is arithmetic, the wall-clock is not: per-request latency over a UART is unmeasured |
 | CDK-34 | With the application running normally, pick **reinstall everything** and try to write | The page says the application answered rather than the bootloader, writes nothing, resets nothing, and does not tell anyone to press SW2 | **open, never run.** Covered against a fake board; the point is that rc=11 means something different on this path and must not be read as "open the window" |
 | CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **open, and gated on CDK-16.** This is CDK-16's upload driven from a browser instead of the Go `mcumgr` binary. Worth running FOR that reason: a different host implementation on the same board is the one experiment that separates "the board does not answer" from "that client does not get an answer" |
@@ -155,6 +155,28 @@ Running the CLI first is worth the extra step rather than a detour. If it works
 and the page does not, the fault is in JavaScript; if neither works, the fault
 is in the firmware or the wire, and no amount of reading the page will find it.
 That split is otherwise expensive to make.
+
+**It has already paid for itself.** On 2026-08-27 the first CLI run answered on
+the first attempt, which settled three things at once that were going to be
+argued about separately: that the transport works, that the two paths really do
+reach one implementation (both reported `sha=000f654e8c031181` for the same
+board, minutes apart), and -- because the application receives 127-byte
+back-to-back mcumgr frames on this exact UART without losing any -- that CDK-16
+cannot be blamed on the wire.
+
+Two more measurements from the same session, both worth keeping:
+
+- A 600 B payload, which overflows `CONFIG_MCUMGR_TRANSPORT_UART_MTU=512`, is
+  answered with **complete silence**: no error, no reply, nothing. That is why
+  the chunk sizes in `web/flasher/serial.js` sit under their budget rather than
+  at it, and it is now a measured fact rather than an expectation. The board
+  recovers on its own; the next request is answered normally.
+- `EVENTS_RXDRDY=1 and ERRORSRC=0x1` is recorded in `scripts/cdk-dfu.sh` under
+  "verified WORKING". On nRF52 `ERRORSRC` bit 0 is **OVERRUN**, so that line is
+  evidence that bytes arrived AND were dropped -- not evidence that RX is
+  healthy. It is filed under the wrong heading. Whether it is CDK-16's cause is
+  now less likely given the result above, but it should not keep sitting in the
+  "ruled out" column.
 
 CDK-35 and CDK-36 are the ones that matter, and CDK-35 should be run before
 anything else on this list is attempted, because of what it can settle. It has a
