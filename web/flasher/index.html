@@ -344,6 +344,23 @@ what applies to it <em>before</em> you go and press anything on it.</p>
        aria-valuemax="100" data-label="" hidden><span></span></div>
 </div>
 
+<div class="callout callout-note"><span class="ico">first</span><div>
+  <p><strong>First time with this board? Start below, not here.</strong> An update needs
+  firmware already running to talk to, so a factory-fresh board is not advertising
+  anything and <em>will not appear in the chooser at all</em>. That is the expected
+  behaviour of a blank board, not a fault.</p>
+  <ul>
+    <li><strong>ESP32-S3, C5 or C6</strong> &mdash; use the cable installer further down
+    this page, once. Every image it writes carries the update service, so after that
+    first install you never need the cable again.</li>
+    <li><strong>DWM3001CDK</strong> &mdash; needs its on-board J-Link once, and there is
+    no browser path for a blank one: WebSerial cannot drive a SEGGER probe. Take the
+    <a href="https://github.com/ultrawidelock/ultrawidelock/releases" data-ext>release
+    bundle</a> and run its <code>flash.sh</code>, then come back here for every update
+    after that.</li>
+  </ul>
+</div></div>
+
 <div class="callout callout-warn"><span class="ico">note</span><div>
   <p><strong>Chrome or Edge on a computer, or Chrome on Android.</strong> This uses Web
   Bluetooth, which Safari has never shipped &mdash; so no iPhone or iPad can update a

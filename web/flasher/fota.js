@@ -291,10 +291,20 @@ async function go() {
     else throw new Error(`the index asks for a transport this page does not have (${target.transport})`);
   } catch (err) {
     hideProgress();
-    /* The chooser's cancel is a decision, not a failure, and must not be
-     * dressed up as one. */
+    /* NotFoundError covers two very different things, and the browser will not
+     * say which: the chooser was dismissed, or it listed nothing to dismiss.
+     * The second is what a first-time owner hits -- a board with no firmware on
+     * it is not advertising, so it cannot appear here -- and "no board picked"
+     * would send them looking for a fault that is not there. Cancelling is a
+     * decision and must not be dressed up as a failure either, so the message
+     * has to carry both readings without alarming the first one. */
     if (err && err.name === "NotFoundError") {
-      say("idle", "No board picked.", "Nothing was sent.");
+      say("idle", "No board picked.",
+          "If you cancelled, nothing was sent and nothing changed. If the list was " +
+          "empty: a board with no firmware on it yet is not advertising anything, so " +
+          "it cannot show up here — install over a cable first (ESP32) or over the " +
+          "J-Link (DWM3001CDK), then come back. An already-flashed board that is " +
+          "missing may be mid-commissioning; power-cycle it and retry.");
     } else {
       say("err", "That did not work.", err && err.message ? err.message : String(err));
     }
