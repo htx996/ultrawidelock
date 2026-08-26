@@ -334,8 +334,15 @@ what applies to it <em>before</em> you go and press anything on it.</p>
       <option value="">loading…</option>
     </select>
   </div>
+  <!-- Hidden until init() finds more than one usable transport. Web Bluetooth
+       and WebSerial are both Chromium-only but not identically: Chrome on
+       Android has the first and not the second. -->
+  <div class="boardrow" id="fota-how-row" hidden>
+    <label for="fota-how">How</label>
+    <select id="fota-how"></select>
+  </div>
   <div class="flashrow" style="margin:0">
-    <button id="fota-go" class="btn btn-primary">Find my board over Bluetooth</button>
+    <button id="fota-go" class="btn btn-primary">Find my board</button>
   </div>
   <div id="fota-out" data-kind="idle" role="status" aria-live="polite">
     <strong>Checking what is published…</strong>

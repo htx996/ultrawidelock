@@ -48,6 +48,16 @@ python3 "$ROOT/tests/tooling/fota_wire_vectors.py" "$WORK/vectors.json" "$ROOT"
 printf '\n── fota wire · compare\n'
 node "$ROOT/tests/tooling/fota_wire_check.mjs" "$WORK/vectors.json" "$ROOT"
 
+# The serial transport has no Python counterpart to diff against -- it is new
+# with the browser. What it does have is two pieces the standard library
+# implements independently: binascii.crc_hqx IS CRC-16/XMODEM, and b64encode is
+# base64. So the vectors are built from those rather than from a second copy of
+# serial.js, and a CRC of the wrong variant or a byte order the wrong way round
+# cannot agree with them.
+printf '\n── fota serial · framing\n'
+python3 "$ROOT/tests/tooling/serial_frame_vectors.py" "$WORK/serial.json"
+node "$ROOT/tests/tooling/serial_frame_check.mjs" "$WORK/serial.json" "$ROOT"
+
 # The bytes being right is not the same as the ORDER being right, and the order
 # is what decides whether a real update works: identify before prompting, wait
 # the update window out rather than failing on it, and re-read the board's hash

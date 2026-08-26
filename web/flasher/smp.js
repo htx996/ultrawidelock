@@ -14,13 +14,16 @@
  *   The MTU. bleak reports the negotiated ATT MTU and the script sizes its
  *   chunks from it. Web Bluetooth exposes no MTU at all, on purpose, so the
  *   chunk here is fixed at the value the script computes from the 185-byte
- *   MTU it defaults to -- see CHUNK below.
+ *   MTU it defaults to -- see BLE_CHUNK below.
  *
  *   Scanning. There is no discovery loop to filter; the browser runs the
- *   chooser. requestDevice() filters on the advertised name, because the SMP
- *   service is NOT advertised (the reader owns the advertising set and it is
- *   full) -- so it has to be an optionalService or the browser will refuse to
- *   let us reach it after connecting.
+ *   chooser. What requestDevice() filters on, and why the SMP service leads,
+ *   is measured rather than assumed -- see the comment on connect().
+ *
+ * THE TRANSPORT IS A SEAM, not a given. Everything above it -- header, CBOR,
+ * image group, upload loop, window handling -- is identical whether the bytes
+ * leave over a radio or a cable, so `Smp` takes a transport object and serial.js
+ * supplies the other one. That is what lets one page offer both.
  */
 
 export const SMP_SVC_UUID = "8d53dc1d-1db7-4cd3-868b-8a527460aa84";
@@ -46,7 +49,7 @@ const OS_ID_RESET = 5;
 const IMG_ID_STATE = 0, IMG_ID_UPLOAD = 1;
 
 /*
- * Bytes of patch per upload frame.
+ * Bytes of patch per upload frame, over Bluetooth.
  *
  * ultrawidelock_smp.py computes `max(64, mtu - 80)`, and its fallback MTU is
  * 185, so 105 is the number a board has actually accepted over and over on the
@@ -58,8 +61,11 @@ const IMG_ID_STATE = 0, IMG_ID_UPLOAD = 1;
  * NotSupportedError on a write past the MTU, mid-transfer, after the window has
  * already been opened. Guessing at the proven floor costs throughput on a
  * ~11 KB patch, which is to say it costs nothing.
+ *
+ * A serial transport has no MTU and carries several times this; that is why the
+ * number belongs to the transport rather than to `Smp`. See serial.js.
  */
-const CHUNK = 105;
+export const BLE_CHUNK = 105;
 
 /* mgmt_defines.h. Only the ones this page can actually provoke are named. */
 const MGMT_ERR = {
@@ -186,24 +192,65 @@ export function hex(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/* ---- SMP over GATT -------------------------------------------------------- */
+/* ---- transports -----------------------------------------------------------
+ *
+ * `Smp` below talks to one of these rather than to a GATT characteristic
+ * directly. The interface is three methods and a number:
+ *
+ *   chunk           image bytes to put in one upload request
+ *   send(frame)     write one complete SMP frame; async
+ *   onFrame(cb)     hand back bytes as they arrive, in any grouping
+ *   close()         stop listening and release whatever was held
+ *
+ * `onFrame` may deliver partial frames -- Bluetooth notifications do, when a
+ * reply is longer than one -- because `_feed` reassembles by the header's own
+ * length field. A transport that already yields whole packets, as the serial
+ * one does, simply hands each straight through.
+ *
+ * serial.js implements the same shape over WebSerial.
+ */
 
-/** One mcumgr conversation. Reassembles responses, matches them by seq. */
-export class Smp {
+/** The Bluetooth transport: one notifying SMP characteristic. */
+export class BleTransport {
   /** @param {BluetoothRemoteGATTCharacteristic} chr the SMP characteristic, notifying. */
   constructor(chr) {
     this.chr = chr;
+    this.chunk = BLE_CHUNK;
+    this.cb = null;
+    this._onValue = (ev) => {
+      if (this.cb) this.cb(new Uint8Array(ev.target.value.buffer));
+    };
+    chr.addEventListener("characteristicvaluechanged", this._onValue);
+  }
+
+  onFrame(cb) { this.cb = cb; }
+
+  send(frame) { return this.chr.writeValueWithoutResponse(frame); }
+
+  /** Safe to call on an already-disconnected characteristic. */
+  close() {
+    this.cb = null;
+    this.chr.removeEventListener("characteristicvaluechanged", this._onValue);
+  }
+}
+
+/* ---- SMP ------------------------------------------------------------------ */
+
+/** One mcumgr conversation. Reassembles responses, matches them by seq. */
+export class Smp {
+  /** @param {{chunk:number, send:Function, onFrame:Function, close:Function}} transport */
+  constructor(transport) {
+    this.t = transport;
     this.seq = 0;
     this.rx = new Uint8Array(0);
     this.frames = [];
     this.waiters = [];
-    this._onValue = (ev) => this._feed(new Uint8Array(ev.target.value.buffer));
-    chr.addEventListener("characteristicvaluechanged", this._onValue);
+    transport.onFrame((bytes) => this._feed(bytes));
   }
 
-  /** Stop listening. Safe to call on an already-disconnected characteristic. */
+  /** Stop listening and release the transport. */
   detach() {
-    this.chr.removeEventListener("characteristicvaluechanged", this._onValue);
+    return this.t.close();
   }
 
   _feed(data) {
@@ -262,7 +309,7 @@ export class Smp {
     dv.setUint8(7, cmdId);
     frame.set(body, 8);
 
-    await this.chr.writeValueWithoutResponse(frame);
+    await this.t.send(frame);
 
     /* Match on seq. A reply to a request we already gave up on can still be in
      * flight, and taking it as this one's answer would desynchronise every
@@ -329,7 +376,7 @@ export class Smp {
       /* `len` only on the first frame -- that is what tells the receiver how
        * much is coming, and repeating it would restart the transfer. */
       if (off === 0) body.len = blob.length;
-      body.data = blob.slice(off, off + CHUNK);
+      body.data = blob.slice(off, off + this.t.chunk);
 
       let rsp;
       try {
@@ -433,5 +480,22 @@ export async function attach(device) {
   const svc = await server.getPrimaryService(SMP_SVC_UUID);
   const chr = await svc.getCharacteristic(SMP_CHR_UUID);
   await chr.startNotifications();
-  return new Smp(chr);
+  return new Smp(new BleTransport(chr));
+}
+
+/**
+ * Open a serial port and speak SMP down it.
+ *
+ * THE SAME `Smp` AS BLUETOOTH, deliberately: every method above works unchanged
+ * because none of them ever touched a characteristic. What the caller must
+ * choose is the chunk size, because the two listeners on the CDK's uart0 do not
+ * have the same receive buffer -- serial.js documents both numbers.
+ *
+ * @param {number} chunk image bytes per upload request; see serial.js
+ * @returns {Promise<{port: SerialPort, smp: Smp}>}
+ */
+export async function connectSerial(chunk) {
+  const { requestPort, SerialTransport } = await import("./serial.js");
+  const port = await requestPort();
+  return { port, smp: new Smp(new SerialTransport(port, chunk)) };
 }

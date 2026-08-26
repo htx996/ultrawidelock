@@ -21,6 +21,7 @@
  */
 
 import * as smp from "./smp.js";
+import * as serial from "./serial.js";
 import * as uwldfu from "./uwldfu.js";
 
 const INDEX_URL = "ota/ota-index.json";
@@ -83,8 +84,16 @@ function busy(on) {
   const go = el("fota-go");
   if (go) {
     go.disabled = on;
-    go.textContent = on ? "Working…" : "Find my board over Bluetooth";
+    go.textContent = on ? "Working…" : (go.dataset.idle || "Find my board");
   }
+}
+
+/** Which transport the panel is set to, falling back to whatever exists. */
+function chosenHow() {
+  const sel = el("fota-how");
+  const key = sel && sel.value;
+  if (key && HOW[key] && HOW[key].available()) return key;
+  return Object.keys(HOW).find((k) => HOW[k].available()) || null;
 }
 
 /* ---- the index ------------------------------------------------------------ */
@@ -101,15 +110,119 @@ function loadIndex() {
   return indexPromise;
 }
 
-/* ---- the DWM3001CDK flow -------------------------------------------------- */
+/* ---- how to reach the board ------------------------------------------------
+ *
+ * Only the DWM3001CDK has a choice here. The ESP32's cable path is the whole
+ * -image installer further down this page -- a different protocol to a
+ * different thing (the ROM bootloader), already shipped -- so the only decision
+ * this panel offers is which way to reach an mcumgr board.
+ *
+ * BOTH APIS ARE CHROMIUM-ONLY, but not identically: desktop Chrome and Edge
+ * have both, Chrome on Android has Web Bluetooth and NOT WebSerial. So the two
+ * are probed separately and the panel offers whichever exist, rather than
+ * treating "no Bluetooth" as "no updates".
+ */
+const HOW = {
+  ble: {
+    label: "Bluetooth — no cable",
+    available: () => !!navigator.bluetooth,
+    open: linkBle,
+    button: "Find my board over Bluetooth",
+  },
+  serial: {
+    label: "USB cable — faster",
+    available: () => !!navigator.serial,
+    open: linkSerial,
+    button: "Find my board over USB",
+  },
+};
 
-async function runCdk(target) {
+/* ---- links ----------------------------------------------------------------
+ *
+ * The CDK flow below is written against a "link" rather than against a radio,
+ * because the two ways into that board differ in four small places and nowhere
+ * else: how the operator picks it, what to say when the update window is shut,
+ * how to get a session back after the reset, and how to let go at the end.
+ * Everything between -- identify, look up, fetch, upload, verify -- is one
+ * piece of code serving both.
+ */
+
+/** Web Bluetooth: the no-cable path. */
+async function linkBle() {
   say("busy", "Pick your board in the chooser…",
       "It advertises as “ultrawidelock”. If it is not listed, it may be in a Matter " +
       "session — power-cycle it and try again.");
 
   const { device, smp: session } = await smp.connect();
-  say("busy", `Connected to ${device.name || "the board"}.`, "Asking what it is running…");
+
+  /* The session is replaced on every reconnect, and the one being replaced has
+   * a listener on a characteristic that no longer exists. Verification retries
+   * in a loop, so dropping it is the difference between a bounded number of
+   * dead listeners and one per retry. */
+  let current = session;
+
+  return {
+    session,
+    what: device.name || "the board",
+    /*
+     * A RECONNECT, because the board drops the link when it reboots and the
+     * device handle survives it. No new user gesture is needed for this, which
+     * is the only reason verification after an apply is possible at all.
+     */
+    reattach: async () => {
+      current.detach();
+      current = await smp.attach(device);
+      return current;
+    },
+    /* The reset already tore the GATT link down; this drops the listener that
+     * was pointed at the characteristic it used to have. */
+    settle: () => current.detach(),
+    release: () => { try { device.gatt.disconnect(); } catch { /* already gone */ } },
+    windowHint:
+      "The board accepts nothing until an update window is open, and the window is " +
+      "the only thing standing between this lock and anyone else in radio range. " +
+      "D10 blinks twice a second while it is open. This page keeps asking for three " +
+      "minutes.",
+  };
+}
+
+/** WebSerial: uart0, which is the J-Link OB's VCOM. */
+async function linkSerial() {
+  say("busy", "Pick the board's serial port…",
+      "On the DWM3001CDK this is the J-Link port, not the second one — the probe owns " +
+      "uart0 and the application talks down it. It is usually named for SEGGER.");
+
+  /* The port is not kept: `release` goes through the session, whose transport
+   * owns closing it. Two handles onto one port is how it gets closed twice. */
+  const { smp: session } = await smp.connectSerial(serial.APP_CHUNK);
+  return {
+    session,
+    what: "the board over the cable",
+    /*
+     * THE SAME SESSION, and that is a property of the hardware rather than a
+     * shortcut. The USB device here belongs to the J-Link OB, not to the
+     * nRF52833 -- uart0 is wired between the two. So resetting the nRF does not
+     * re-enumerate anything and the port never closes underneath us, where a
+     * radio link has to be rebuilt. The Framer discards whatever the board
+     * printed while it was rebooting.
+     */
+    reattach: async () => session,
+    /* Nothing to settle: the port did not go anywhere. */
+    settle: () => {},
+    release: () => session.detach(),
+    windowHint:
+      "The board accepts nothing until an update window is open — the cable does not " +
+      "bypass that, and is not meant to. Press SW2; D10 blinks twice a second while " +
+      "the window is open. This page keeps asking for three minutes.",
+  };
+}
+
+/* ---- the DWM3001CDK flow -------------------------------------------------- */
+
+async function runCdk(target, openLink) {
+  const link = await openLink();
+  const session = link.session;
+  say("busy", `Connected to ${link.what}.`, "Asking what it is running…");
 
   const running = await session.runningHash();
 
@@ -125,7 +238,7 @@ async function runCdk(target) {
     say("ok", "Already up to date.",
         `This board is running ${target.latest.version} ` +
         `(${running.slice(0, 16)}…), which is the current release.`);
-    device.gatt.disconnect();
+    link.release();
     return;
   }
 
@@ -139,7 +252,7 @@ async function runCdk(target) {
         `update from. The DWM3001CDK has one MCUboot slot, so what travels over the ` +
         `air is a delta against exactly the bytes already on the part — there is no ` +
         `whole-image path to fall back on. Use the J-Link and the release bundle.`);
-    device.gatt.disconnect();
+    link.release();
     return;
   }
 
@@ -152,11 +265,7 @@ async function runCdk(target) {
   await session.upload(blob, {
     onProgress: progress,
     onWindowClosed: () => {
-      say("prompt", "Press SW2 on the board now.",
-          "The board accepts nothing until an update window is open, and the window is " +
-          "the only thing standing between this lock and anyone else in radio range. " +
-          "D10 blinks twice a second while it is open. This page keeps asking for three " +
-          "minutes.");
+      say("prompt", "Press SW2 on the board now.", link.windowHint);
     },
   });
 
@@ -165,9 +274,9 @@ async function runCdk(target) {
       "MCUboot applies the update during boot. It is off the air for 17-31 seconds.");
 
   await session.reset();
-  session.detach();
+  link.settle();
 
-  await verifyCdk(device, update);
+  await verifyCdk(link, update);
 }
 
 async function fetchUpdate(target, update) {
@@ -194,15 +303,14 @@ async function fetchUpdate(target, update) {
  * and a delta built against the wrong base is refused by the next update. A
  * page that said "done" without asking would be guessing.
  */
-async function verifyCdk(device, update) {
+async function verifyCdk(link, update) {
   const deadline = Date.now() + APPLY_GIVE_UP_MS;
   await new Promise((r) => setTimeout(r, APPLY_FIRST_TRY_MS));
 
   for (;;) {
     try {
-      const session = await smp.attach(device);
+      const session = await link.reattach();
       const running = await session.runningHash();
-      session.detach();
 
       if (running === update.to) {
         say("ok", `Updated to ${update.version}.`,
@@ -214,7 +322,7 @@ async function verifyCdk(device, update) {
             `update did not apply. The old image is still bootable, so the board is not ` +
             `bricked — try again, and if it repeats, reflash over the J-Link.`);
       }
-      device.gatt.disconnect();
+      link.release();
       return;
     } catch (err) {
       if (Date.now() > deadline) {
@@ -297,7 +405,11 @@ async function go() {
       return;
     }
 
-    if (target.transport === "smp") await runCdk(target);
+    if (target.transport === "smp") {
+      const how = chosenHow();
+      if (!how) throw new Error("this browser has neither Web Bluetooth nor WebSerial");
+      await runCdk(target, HOW[how].open);
+    }
     else if (target.transport === "uwldfu") await runEsp(target);
     else throw new Error(`the index asks for a transport this page does not have (${target.transport})`);
   } catch (err) {
@@ -331,25 +443,58 @@ export function init() {
   const select = el("fota-target");
   if (!go_ || !select) return;
 
-  if (!navigator.bluetooth) {
-    /* Say which browsers, not "unsupported". Web Bluetooth is Chromium-only:
-     * Safari has never shipped it, so no iPhone can do this, and Firefox has
-     * not either. That is a fact about the browser, not about the board, and
-     * someone reading this needs to know which one to go and get. */
+  /* Whichever of the two this browser has. Neither is a stopper on its own:
+   * Chrome on Android has Web Bluetooth and no WebSerial, and a machine with a
+   * cable in it wants the serial path anyway. */
+  const usable = Object.keys(HOW).filter((k) => HOW[k].available());
+
+  if (!usable.length) {
+    /* Say which browsers, not "unsupported". Both APIs are Chromium-only:
+     * Safari has never shipped either, so no iPhone can do this, and Firefox
+     * has not either. That is a fact about the browser, not about the board,
+     * and someone reading this needs to know which one to go and get. */
     go_.disabled = true;
-    say("warn", "This browser cannot do Bluetooth updates.",
-        "Web Bluetooth exists only in Chrome and Edge on a computer, and Chrome on " +
-        "Android. Safari has never shipped it, so no iPhone or iPad can update a board " +
-        "from this page; Firefox has not shipped it either. Everything else on this page " +
-        "still works.");
+    say("warn", "This browser cannot update a board.",
+        "Web Bluetooth and WebSerial both exist only in Chrome and Edge on a computer " +
+        "(and Web Bluetooth alone in Chrome on Android). Safari has never shipped " +
+        "either, so no iPhone or iPad can update a board from this page; Firefox has " +
+        "not shipped either. Everything else on this page still works.");
     return;
   }
 
   if (!window.isSecureContext) {
     go_.disabled = true;
-    say("warn", "Bluetooth needs a secure page.",
-        "Open this page over https (or localhost) and reload.");
+    say("warn", "This needs a secure page.",
+        "Both Web Bluetooth and WebSerial refuse to run otherwise. Open this page over " +
+        "https (or localhost) and reload.");
     return;
+  }
+
+  /* The transport picker only appears when there is a choice to make. One
+   * option in a dropdown is a decision the reader cannot get wrong and should
+   * not be asked to make. */
+  const how = el("fota-how");
+  const howRow = el("fota-how-row");
+  if (how) {
+    how.innerHTML = "";
+    for (const key of usable) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = HOW[key].label;
+      how.append(opt);
+    }
+    /* Set explicitly rather than relying on a select defaulting to its first
+     * option, so that reading `how.value` back is defined from here on. */
+    how.value = usable[0];
+    if (howRow) howRow.hidden = usable.length < 2;
+    const relabel = () => {
+      go_.dataset.idle = (HOW[how.value] || HOW[usable[0]]).button;
+      if (!go_.disabled) go_.textContent = go_.dataset.idle;
+    };
+    how.addEventListener("change", relabel);
+    relabel();
+  } else {
+    go_.dataset.idle = HOW[usable[0]].button;
   }
 
   loadIndex().then((index) => {

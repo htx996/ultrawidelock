@@ -110,6 +110,7 @@ async function runUntil(promise, label) {
 /* ---- a fake board that speaks SMP ----------------------------------------- */
 
 const smp = await import(pathToFileURL(path.join(flasher, "smp.js")).href);
+const serialMod = await import(pathToFileURL(path.join(flasher, "serial.js")).href);
 
 const hex = (u8) => Buffer.from(u8).toString("hex");
 const unhex = (s) => new Uint8Array(Buffer.from(s, "hex"));
@@ -237,6 +238,66 @@ class FakeBoard {
   }
 }
 
+/*
+ * The same board, reached down a wire instead of a radio.
+ *
+ * WHY IT WRAPS FakeBoard RATHER THAN REIMPLEMENTING IT. The point of the serial
+ * path is that everything above the transport is the same code -- same header,
+ * same CBOR, same window gate, same upload loop. A second fake board would let
+ * those drift apart silently, which is the exact failure this suite exists to
+ * catch. So the bytes are framed on the way in, unframed on the way out, and
+ * the board in the middle cannot tell which transport it is on. That is the
+ * claim under test.
+ */
+function fakeSerialPort(board, serial) {
+  const queue = [];
+  let wake = null;
+  const framer = new serial.Framer();
+
+  board.addEventListener("characteristicvaluechanged", (ev) => {
+    queue.push(serial.encodePacket(new Uint8Array(ev.target.value.buffer)));
+    if (wake) { const w = wake; wake = null; w(); }
+  });
+
+  const port = {
+    closed: false,
+    /* requestPort() opens the port before handing it over, exactly as a real
+     * one has to be opened before it has a readable or a writable. */
+    opened: null,
+    async open(options) { port.opened = options; },
+    readable: {
+      getReader: () => ({
+        async read() {
+          for (;;) {
+            if (queue.length) return { value: queue.shift(), done: false };
+            if (port.closed) return { value: undefined, done: true };
+            await new Promise((r) => { wake = r; });
+          }
+        },
+        releaseLock() {},
+        async cancel() {
+          port.closed = true;
+          if (wake) { const w = wake; wake = null; w(); }
+        },
+      }),
+    },
+    writable: {
+      getWriter: () => ({
+        async write(bytes) {
+          /* Unframe exactly as the firmware would, then hand the board the SMP
+           * frame it would have seen over GATT. */
+          for (const frame of framer.feed(bytes)) {
+            await board.writeValueWithoutResponse(frame);
+          }
+        },
+        releaseLock() {},
+      }),
+    },
+    async close() { port.closed = true; },
+  };
+  return port;
+}
+
 /* ---- a DOM the page can drive --------------------------------------------- */
 
 function fakeElement(id) {
@@ -274,6 +335,8 @@ function installDom() {
     "fota-bar": bar,
     "fota-go": fakeElement("fota-go"),
     "fota-target": fakeElement("fota-target"),
+    "fota-how": fakeElement("fota-how"),
+    "fota-how-row": fakeElement("fota-how-row"),
   };
   statusLog = [];
 
@@ -340,13 +403,16 @@ function installFetch() {
  * Load a fresh copy of fota.js. It calls init() at import, so the cache is
  * busted per scenario to get a clean run rather than a re-entered one.
  */
-async function loadPage(board) {
+async function loadPage(board, how = "ble", capture = (p) => p) {
   /* defineProperty, not assignment: node ships its own getter-only
    * globalThis.navigator, and a plain assignment throws. */
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
     writable: true,
     value: {
+    serial: how === "serial" ? {
+      requestPort: async () => capture(fakeSerialPort(board, serialMod)),
+    } : undefined,
     bluetooth: {
       requestDevice: async () => ({
         name: "ultrawidelock",
@@ -363,6 +429,7 @@ async function loadPage(board) {
   const url = pathToFileURL(path.join(flasher, "fota.js")).href + `?v=${++seq}`;
   await import(url);
   await flush();
+  if (how === "serial") dom["fota-how"].value = "serial";
 }
 
 /** Click the page's button and run the whole flow to completion. */
@@ -519,6 +586,77 @@ async function clickAndRun(label) {
         said("came back running something else"));
   check("failed apply: says it is not bricked", said("not bricked"));
   check("failed apply: warns", lastKind() === "warn", `kind=${lastKind()}`);
+}
+
+/* ---- scenario 5: the same update, down a cable ------------------------------
+ *
+ * The claim being tested is that the transport is the ONLY difference. Same
+ * index, same delta, same window gate, same verification -- so this scenario
+ * asserts the same facts as scenario 1 and additionally that the bytes really
+ * did go through the serial framing on the way, rather than the page quietly
+ * falling back to Bluetooth.
+ */
+
+{
+  installDom();
+  installFetch();
+  const board = new FakeBoard(OLD);
+  board.applyTo = NEW;
+  let openedPort = null;
+  const capture = (port) => { openedPort = port; return port; };
+  await loadPage(board, "serial", capture);
+
+  check("serial: the transport picker is offered when both APIs exist",
+        dom["fota-how"].children.length === 2,
+        `${dom["fota-how"].children.length} options`);
+  check("serial: the picker is shown rather than hidden",
+        dom["fota-how-row"].hidden === false);
+
+  dom["fota-target"].value = "dwm3001cdk";
+
+  let pressedAfter = -1;
+  const out = dom["fota-out"];
+  const before = out.append;
+  out.append = (...kids) => {
+    before(...kids);
+    if (out.dataset.kind === "prompt" && !board.windowOpen) {
+      board.windowOpen = true;
+      pressedAfter = board.uploadCalls;
+    }
+  };
+
+  await clickAndRun("scenario 5");
+
+  check("serial: asked for the port, not the radio", said("serial port"),
+        statusLog.map((s) => s.text).join(" / "));
+  check("serial: identified the board before prompting", said("Update available"));
+  check("serial: asked for SW2 only after the board refused", pressedAfter >= 1);
+  check("serial: waited the window out instead of failing", board.windowOpen);
+  check("serial: the whole delta arrived", board.received.length === DELTA.length);
+  check("serial: the bytes are the ones that were served",
+        Buffer.from(board.received).equals(Buffer.from(DELTA)));
+  check("serial: the transfer restarted cleanly at offset 0", board.restarts === 1);
+  check("serial: the board was reset", board.resetCount === 1);
+  check("serial: the board was re-read after the reset", board.running === NEW);
+  check("serial: reported success", said("Updated to 0.3.1"));
+  check("serial: final state is ok", lastKind() === "ok",
+        `kind=${lastKind()} :: ${statusLog.map((x) => x.text).join(" / ")}`);
+
+  /* The cable is worth having only if it is actually faster. Same delta, so
+   * fewer requests is the whole benefit, and it is a number rather than a
+   * hope: 11,264 bytes at 384 a time against 105 a time. */
+  /* MCUboot's serial recovery and the application both run uart0 at 115200,
+   * and a port opened at the wrong rate fails as silence rather than as an
+   * error -- the worst shape a bug can take on this path. */
+  check("serial: opened the port at 115200",
+        openedPort && openedPort.opened && openedPort.opened.baudRate === 115200,
+        JSON.stringify(openedPort && openedPort.opened));
+  check("serial: the port was closed when the page let go", openedPort.closed);
+
+  const overBle = Math.ceil(DELTA.length / smp.BLE_CHUNK);
+  const overSerial = Math.ceil(DELTA.length / serialMod.APP_CHUNK);
+  check("serial: sent the delta in fewer requests than Bluetooth would",
+        overSerial < overBle, `${overSerial} vs ${overBle}`);
 }
 
 /* ---- verdict --------------------------------------------------------------- */
