@@ -212,32 +212,39 @@ function chooserWhere(button) {
 }
 
 /*
- * macOS REFUSES BLUETOOTH DISCOVERY ON THIS BOARD, and no part of this page can
- * work around it.
+ * macOS CANNOT WALK A GATT TABLE THAT CONTAINS THE MATTER COMMISSIONING SERVICE,
+ * and a browser cannot skip a service the way our CLI can.
  *
- * The reader publishes Apple's credential service -- 0xFFF2 with the
- * D3B5A130-... and BD4B9502-... characteristics
- * (ports/zephyr/ble/ultrawidelock_ble_zephyr.c:57-64). macOS reserves those
- * UUIDs for the system, so CoreBluetooth answers a third-party descriptor
- * discovery on them with CBError 8, CBErrorUUIDNotAllowed. Web Bluetooth always
- * walks the WHOLE GATT table, so Chrome hits it every time and
- * getPrimaryService() never settles.
+ * CoreBluetooth reserves the Matter UUIDs for the system and answers a
+ * third-party descriptor discovery on 0xFFF6's C1 characteristic with CBError 8,
+ * CBErrorUUIDNotAllowed. Chromium's macOS backend logs that error and returns
+ * without marking the characteristic discovered, so GATT discovery never
+ * completes (bluetooth_low_energy_device_mac.mm; the TODO is crbug.com/609844)
+ * and getPrimaryService() never settles. Web Bluetooth has no timeout of its
+ * own and no way to limit discovery, so there is nothing the page can do.
  *
- * MEASURED 2026-08-27 on a DWM3001CDK that was advertising, had a free
- * connection slot, and accepted the connection:
+ * MEASURED 2026-08-27, one service at a time against this reader:
  *
- *   Failed to discover descriptors for characteristic 13:
- *   CBErrorDomain Code=8 "The specified UUID is not allowed for this operation."
+ *   SMP              ok     h23
+ *   native DFU       ok     h19
+ *   credential FFF2  ok     h27 h29
+ *   Matter FFF6      FAILS  CBError 8 at handle 13   <- C1
+ *   SMP again        FAILS  <- the host cache is now poisoned
  *
- * scripts/ultrawidelock_smp.py has dodged this for weeks by passing
- * services=[SMP] so CoreBluetooth only enumerates the one service. A browser
- * has no equivalent -- there is no API to limit discovery -- so the CLI works
- * where the page cannot, on the same machine, against the same board.
+ * That last line is why this read as intermittent: one refused discovery makes
+ * every later connection to the board fail until the host cache clears.
  *
- * NOT A UNIVERSAL LIMIT. The restriction is CoreBluetooth's. Chrome on Android,
- * Windows and Linux has no such rule, and that is where "no cable" is actually
- * used: a phone at the door. So this warns rather than disables -- somebody on
- * another platform must not be told their working path is broken.
+ * THE FIRMWARE NOW WITHDRAWS 0xFFF6 unless commissioning is actually possible
+ * (ports/zephyr/matter/matter_ble_zephyr.c, matter_ble_publish), so a
+ * commissioned lock hands macOS a table it will walk -- verified the same day
+ * by an unrestricted discovery that had failed minutes earlier. A lock that is
+ * UNCOMMISSIONED, or has a commissioning window open, still publishes the
+ * service because it genuinely needs it, and on a Mac Bluetooth updates will
+ * stall for exactly as long as that lasts. That is the only case left, and it
+ * is what the warning below is for.
+ *
+ * NOT A UNIVERSAL LIMIT even then: the restriction is CoreBluetooth's, and
+ * Chrome on Android, Windows and Linux has no such rule.
  */
 const IS_MAC = typeof navigator !== "undefined" &&
   /Mac/i.test((navigator.userAgentData && navigator.userAgentData.platform) ||
@@ -381,13 +388,13 @@ const CHOOSER_EMPTY_HINT_MS = 12000;
 
 async function linkBle() {
   if (IS_MAC) {
-    say("warn", "On a Mac, Bluetooth updates do not complete.",
-        "Your board will appear and connect, and then discovery stops: macOS reserves " +
-        "the Apple credential service this reader publishes, so it refuses to enumerate " +
-        "it for any third-party app, and a browser cannot skip that step. Measured, not " +
-        "guessed. Use “USB cable” here — or Bluetooth from an Android phone, where the " +
-        "restriction does not exist. Trying anyway is harmless; it will stall at " +
-        "“looking up the update service”.");
+    say("warn", "On a Mac, this needs a lock that is already set up.",
+        "While a lock is uncommissioned — or has a Matter pairing window open — it " +
+        "publishes the Matter commissioning service, and macOS refuses to enumerate " +
+        "that for any third-party app, which stops the browser before it reaches the " +
+        "update service. Nothing the page can do about it. If this stalls at " +
+        "“looking up the update service”, finish or close the pairing and try again, " +
+        "or use “USB cable”. Other platforms have no such restriction.");
   }
   say("prompt", "Pick your board in the chooser…",
       "It advertises as “ultrawidelock”. " + chooserWhere("Pair"));

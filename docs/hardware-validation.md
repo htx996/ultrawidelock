@@ -110,6 +110,9 @@ it granted access rather than just actuating locally.
 | CDK-34 | With the application running normally, pick **reinstall everything** and try to write | The page says the application answered rather than the bootloader, writes nothing, resets nothing, and does not tell anyone to press SW2 | **open, never run.** Covered against a fake board; the point is that rc=11 means something different on this path and must not be read as "open the window" |
 | CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **the transport half PASSED 2026-08-27** over the CLI: 406,524 B at 384 B/chunk into MCUboot, ~4 minutes, board back on `8259462cce91ba50` with `v0.3.1.0`. No longer gated on CDK-16. Still open only as a BROWSER test -- the page's recovery flow has never been run, and it asks for the SW2 hold rather than SWD, so it also depends on the button half of CDK-16 |
 | CDK-36 | Erase the application only (leave MCUboot), then run CDK-35 with no button press at all | `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` leaves the board already waiting in recovery, and the page installs onto a board with no working software | **open, never run.** This is the row that decides whether the probe is genuinely optional after the first flash |
+| CDK-37 | On a **commissioned** lock, enumerate the whole GATT table from a Mac (`BleakClient(dev)` with no `services=` restriction, which is the walk Chrome performs) | Three services enumerate -- native DFU, credential 0xFFF2, SMP -- with no `CBError 8` and no 0xFFF6 | **PASSED 2026-08-27.** The same probe against the previous image failed at ATT handle 13, the Matter C1 characteristic, and poisoned the host cache so that even restricted SMP discovery failed afterwards. `matter_ble_publish()` now withdraws 0xFFF6 whenever the advert carries the credential payload |
+| CDK-38 | Repeat CDK-37 with a Matter pairing window open, or on an uncommissioned board | 0xFFF6 is published and the unrestricted walk fails again with `CBError 8` at C1 | **open, never run.** This is the negative control: it proves the fix is the gating and not something else that changed. It is also the case the page still warns about on macOS |
+| CDK-39 | With a commissioned lock, run CDK-30 for real in Chrome on macOS | The delta goes over Web Bluetooth and the page reports the target SHA-256 | **open, never run.** CDK-37 removes the only known blocker, but it tests CoreBluetooth, not Chrome, and no browser has yet driven this board to a finished update |
 
 CDK-14 through CDK-26 are the open rows, and none has ever been run to
 completion. CDK-16, CDK-17 and CDK-18 cover recovery, STS quality and NLOS
@@ -208,6 +211,18 @@ same wire -- so if it gets an answer, the fault was never the board, and if it
 does not, the fault is not the Go client. That is a real bisection of a stuck
 bug, available for the cost of one page load, and it is the reason CDK-35 is
 worth running even though CDK-16 is expected to fail.
+
+CDK-37 through CDK-39 are the Bluetooth path on macOS, and CDK-37 is the only
+row here that was found by measurement rather than designed. The board published
+the Matter commissioning service unconditionally while advertising as a
+credential reader -- the GATT table did not follow the advert -- and macOS
+reserves those UUIDs, so CoreBluetooth refused descriptor discovery on C1 and
+Chromium's backend never completed discovery at all (crbug.com/609844). Every
+Web Bluetooth client on that host lost the board, firmware updates included, and
+because a refused discovery poisons the host cache it looked intermittent rather
+than absolute. CDK-38 is the negative control and CDK-39 is the only row that
+proves anything about the browser: CDK-37 was measured with bleak, which shares
+CoreBluetooth with Chrome but is not Chrome.
 
 CDK-36 is the claim the page now makes to first-time owners in as many words:
 that the J-Link is needed once and then never again. Until it has been run, that

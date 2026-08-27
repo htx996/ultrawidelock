@@ -545,6 +545,13 @@ static void advertising_payload_build(struct advertising_payload *payload)
 	 * payloads fits a legacy advert. */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 	commissioned = matter_commission_has_fabric() && !matter_commission_window_open();
+	/* THE GATT TABLE FOLLOWS THE ADVERT. A commissioned node advertises the
+	 * credential payload and is not offering to be commissioned, so it must not
+	 * publish a commissioning service either -- and on macOS publishing it
+	 * costs the board every Web Bluetooth client, firmware updates included.
+	 * Idempotent; -EBUSY just means a commissioning link is still up and the
+	 * next pass will try again. */
+	(void)matter_ble_publish(!commissioned);
 #else
 	commissioned = true;
 #endif

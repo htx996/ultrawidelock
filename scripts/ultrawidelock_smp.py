@@ -653,9 +653,14 @@ async def run(args):
         die(f"no board advertising {want!r} found. Is it powered and out of a Matter session?")
 
     print(f"connecting to {device.name or device.address}")
-    # services=[...] on purpose: CoreBluetooth aborts with CBError 8 while
-    # enumerating one of the reader's own characteristics if it is allowed to
-    # discover everything. Same trap as ultrawidelock_push.py.
+    # services=[...] on purpose. The characteristic was identified on
+    # 2026-08-27: it is the Matter commissioning service's C1, whose UUID macOS
+    # reserves for the system, and CoreBluetooth answers a third-party
+    # descriptor discovery on it with CBError 8. The firmware now withdraws
+    # 0xFFF6 unless commissioning is possible, so unrestricted discovery works
+    # against a commissioned lock -- but an uncommissioned one still publishes
+    # it, and this restriction is what makes the CLI work in both cases. Same
+    # trap as ultrawidelock_push.py.
     async with BleakClient(device, services=[SMP_SVC_UUID]) as client:
         smp = Smp(BleTransport(client))
         await client.start_notify(SMP_CHR_UUID, smp.on_notify)
