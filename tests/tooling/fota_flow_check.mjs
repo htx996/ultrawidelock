@@ -927,6 +927,81 @@ async function clickAndRun(label) {
   check("failed flow: nothing was written to the board", board.received.length === 0);
 }
 
+/* ---- scenario 9: the transport choice survives a reload ---------------------
+ *
+ * REPORTED FROM A REAL SESSION, and it wasted more of somebody's time than any
+ * protocol bug in this series. Rebuilding the picker resets it to the first
+ * usable option, which is Bluetooth -- so every refresh silently undid a
+ * deliberate switch to the cable, and the operator was returned to a radio that
+ * could not work at that moment without being told they had been moved.
+ *
+ * The storage is also allowed to be absent: a browser with site data blocked
+ * THROWS on access rather than returning null, and a page that cannot remember
+ * a dropdown must still work. Both halves are asserted.
+ */
+
+{
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+  };
+
+  installDom();
+  installFetch();
+  await loadPage(new FakeBoard(OLD), "serial");
+  dom["fota-target"].value = "dwm3001cdk";
+
+  /* The operator switches to the cable, as they would. */
+  dom["fota-how"].value = "serial";
+  dom["fota-how"].handlers.change();
+
+  check("remembered: the choice was written down", store.get("uwl-fota-how") === "serial",
+        JSON.stringify([...store]));
+
+  /* Now a reload: a fresh page against the same storage. */
+  installDom();
+  installFetch();
+  await loadPage(new FakeBoard(OLD), "serial");
+  dom["fota-target"].value = "dwm3001cdk";
+
+  check("remembered: the reload came up on the cable, not the radio",
+        dom["fota-how"].value === "serial",
+        `how=${dom["fota-how"].value}`);
+  check("remembered: the button matches the remembered choice",
+        dom["fota-go"].dataset.idle === "Find my board over USB",
+        dom["fota-go"].dataset.idle);
+
+  /* A remembered choice that is no longer on offer must not be honoured: a
+   * target with no recovery image cannot come up on "reinstall everything". */
+  store.set("uwl-fota-how", "recover");
+  const saved = INDEX.targets.dwm3001cdk.recovery;
+  delete INDEX.targets.dwm3001cdk.recovery;
+  installDom();
+  installFetch();
+  await loadPage(new FakeBoard(OLD), "serial");
+  dom["fota-target"].value = "dwm3001cdk";
+  check("remembered: a choice that is no longer offered is dropped",
+        dom["fota-how"].value !== "recover" && dom["fota-how"].value !== "",
+        `how=${dom["fota-how"].value}`);
+  INDEX.targets.dwm3001cdk.recovery = saved;
+
+  /* And a browser that refuses storage entirely. */
+  globalThis.localStorage = {
+    getItem() { throw new Error("site data blocked"); },
+    setItem() { throw new Error("site data blocked"); },
+  };
+  installDom();
+  installFetch();
+  await loadPage(new FakeBoard(OLD), "serial");
+  dom["fota-target"].value = "dwm3001cdk";
+  check("remembered: a browser that blocks storage still builds the picker",
+        dom["fota-how"].children.length === 3,
+        `${dom["fota-how"].children.length} options`);
+
+  delete globalThis.localStorage;
+}
+
 /* ---- verdict --------------------------------------------------------------- */
 
 globalThis.setTimeout = realSetTimeout;

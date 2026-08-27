@@ -289,14 +289,46 @@ const HOW = {
  */
 
 /** Web Bluetooth: the no-cable path. */
+/**
+ * How long to let an empty Bluetooth chooser sit before saying something useful.
+ *
+ * A CHOOSER THAT NEVER POPULATES IS THE ONE FAILURE THIS PAGE CANNOT SEE.
+ * requestDevice() returns a promise that stays pending for as long as the
+ * dialog is open, and the API deliberately reveals nothing about what is in it
+ * -- so a board that is not advertising and a person who has not looked at the
+ * dialog yet are indistinguishable from here. Both present as waiting forever.
+ *
+ * Observed on the first real run: the board had stopped advertising (a Matter
+ * node advertises for a window after boot and then stops), the chooser was
+ * empty, and the page had nothing to say about it. The page is still visible
+ * behind Chrome's panel, so writing the hint there does reach the reader.
+ *
+ * Twelve seconds: long enough not to nag somebody who is reading the dialog,
+ * short enough to arrive before they conclude the page is broken.
+ */
+const CHOOSER_EMPTY_HINT_MS = 12000;
+
 async function linkBle() {
   say("prompt", "Pick your board in the chooser…",
-      "It advertises as “ultrawidelock”. " + CHOOSER_WHERE + " If it is listed but " +
-      "greyed out, or not listed at all, it may be in a Matter session — power-cycle " +
-      "it and try again.");
+      "It advertises as “ultrawidelock”. " + CHOOSER_WHERE);
   busy(true, WAITING_FOR_YOU);
 
-  const { device, smp: session } = await smp.connect();
+  const hint = setTimeout(() => {
+    say("prompt", "Nothing in the list yet?",
+        "A board only appears here while it is advertising, and a Matter node stops " +
+        "advertising once its window closes — so a board that is powered, working and " +
+        "sitting right there can still be absent from this list. Press SW2, or " +
+        "power-cycle it, and it comes back. " +
+        "Or cancel and choose “USB cable” instead: a serial port is always listed, " +
+        "because it belongs to the probe rather than to the board's radio.");
+  }, CHOOSER_EMPTY_HINT_MS);
+
+  let device, session;
+  try {
+    ({ device, smp: session } = await smp.connect());
+  } finally {
+    clearTimeout(hint);
+  }
   busy(true);
 
   /* The session is replaced on every reconnect, and the one being replaced has
@@ -853,6 +885,31 @@ export function init() {
     if (!go_.disabled) go_.textContent = label;
   };
 
+  /*
+   * THE CHOICE SURVIVES A RELOAD, and it has to.
+   *
+   * Rebuilding the picker resets it to the first usable option, which is
+   * Bluetooth. That is a reasonable default and a terrible thing to re-impose
+   * on somebody who has already told you otherwise: during the first real
+   * session of this page every reload silently put the transport back, so a
+   * deliberate switch to the cable was undone by the next refresh and the
+   * operator was sent back to a radio that could not work at that moment.
+   *
+   * localStorage rather than a query parameter, because it is a preference and
+   * not a link. Wrapped, because a browser with site data blocked throws on
+   * access rather than returning null, and a page that cannot remember a
+   * dropdown must still work.
+   */
+  const REMEMBER = "uwl-fota-how";
+
+  function rememberedHow() {
+    try { return localStorage.getItem(REMEMBER); } catch { return null; }
+  }
+
+  function rememberHow(key) {
+    try { localStorage.setItem(REMEMBER, key); } catch { /* nothing to do */ }
+  }
+
   function rebuildHow(target) {
     /* Only the mcumgr board has a choice. For anything else the picker is put
      * away rather than shown with one entry. */
@@ -869,13 +926,18 @@ export function init() {
       how.append(opt);
     }
     /* Set explicitly rather than relying on a select defaulting to its first
-     * option, so that reading `how.value` back is defined from here on. */
-    how.value = forTarget[0] || "";
+     * option, so that reading `how.value` back is defined from here on. The
+     * remembered choice wins, but only while it is still on offer -- a target
+     * with no recovery image must not come up on "reinstall everything". */
+    const last = rememberedHow();
+    how.value = (last && forTarget.includes(last)) ? last : (forTarget[0] || "");
     if (howRow) howRow.hidden = forTarget.length < 2;
     relabel();
   }
 
-  if (how) how.addEventListener("change", relabel);
+  if (how) {
+    how.addEventListener("change", () => { rememberHow(how.value); relabel(); });
+  }
 
   loadIndex().then((index) => {
     /* The dropdown is built from the index, so it can never offer a board the
