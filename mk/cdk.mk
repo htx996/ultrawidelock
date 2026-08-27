@@ -282,6 +282,20 @@ CDK_SIGN := -DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE='"$(CDK_KEY)"'
 #
 # The `+0` is imgtool's build number. Kept at zero: the build number is meant to
 # distinguish rebuilds of one version, and nothing here would set it honestly.
+#
+# AND THE VERSION IS NOT THE ONLY THING THAT MOVES THE HASH. The image embeds a
+# build timestamp -- "; Zephyr; Aug 27 2026 23:05:11" sits in rodata -- so TWO
+# BUILDS OF IDENTICAL SOURCES AT THE SAME VERSION PRODUCE DIFFERENT IMAGES.
+# Measured 2026-08-27: two builds one hour apart differed in exactly 105 bytes,
+# all of them that string, and their image hashes were 8613358327a47e00 and
+# f9443287420eaedf.
+#
+# The consequence is operational and sharp: AN IMAGE THAT IS ON A BOARD CANNOT
+# BE REBUILT. Delete or overwrite the build directory that produced it and the
+# only remaining copy of those bytes is the deployed record itself, which is why
+# that record is a FILE and not a hash. Rebuilding before `make fota-done` makes
+# the confirm fail -- correctly, since the board really is not running the image
+# in the build tree -- and the recovery is to reflash, not to re-record.
 IMAGE_VERSION ?= $(shell cat $(REPO_ROOT)/VERSION 2>/dev/null || echo 0.0.0)
 CDK_SIGN += -DCONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION='"$(IMAGE_VERSION)+0"'
 
