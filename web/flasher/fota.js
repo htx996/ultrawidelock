@@ -314,13 +314,20 @@ async function linkBle() {
   busy(true, WAITING_FOR_YOU);
 
   const hint = setTimeout(() => {
+    /* WHAT BRINGS ADVERTISING BACK IS NOT SW2, and this said it was. The button
+     * opens the update WINDOW -- ports/zephyr/dfu/dfu_ble_zephyr.c:294-302 calls
+     * ultrawidelock_dfu_window_open() and nothing else. Re-advertising comes from
+     * ultrawidelock_ble_readvertise(), whose callers are Matter fabric events
+     * and the reader, never the button. So telling somebody to press SW2 at an
+     * empty chooser is advice that cannot work, which is worse than none. */
     say("prompt", "Nothing in the list yet?",
-        "A board only appears here while it is advertising, and a Matter node stops " +
-        "advertising once its window closes — so a board that is powered, working and " +
-        "sitting right there can still be absent from this list. Press SW2, or " +
-        "power-cycle it, and it comes back. " +
-        "Or cancel and choose “USB cable” instead: a serial port is always listed, " +
-        "because it belongs to the probe rather than to the board's radio.");
+        "A board only appears here while it is advertising, and this one stops once its " +
+        "commissioning window closes — so a board that is powered, working and sitting " +
+        "right there can still be absent from this list. Pressing SW2 will NOT bring it " +
+        "back: that opens the update window, which is a later step and a different " +
+        "thing. Reset or power-cycle the board, or open pairing mode from Apple Home. " +
+        "Or cancel and choose “USB cable” instead — a serial port is listed whether or " +
+        "not the radio is up, because it belongs to the probe and not to the board.");
   }, CHOOSER_EMPTY_HINT_MS);
 
   let device, session;

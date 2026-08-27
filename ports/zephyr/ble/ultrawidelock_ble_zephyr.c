@@ -83,7 +83,21 @@ static struct k_spinlock s_adv_params_lock;
 /* These flags cross the Bluetooth callback, application, and system-workqueue
  * contexts. Keep the credential material under the short spinlock above, and
  * use atomics for the state that only needs one-word snapshots. */
-static atomic_t s_conn_up;
+/*
+ * HOW MANY peers are connected, not WHETHER any is.
+ *
+ * This was a flag, and every advertising decision asked it "is anything
+ * connected" and then stopped. With one slot that was right. With two it is the
+ * bug: it would keep the board invisible while a whole slot sat free, which is
+ * precisely the case the second slot exists for.
+ */
+static atomic_t s_conn_count;
+
+/** True while another peer could still be accepted. */
+static inline bool conn_slot_free(void)
+{
+	return atomic_get(&s_conn_count) < CONFIG_BT_MAX_CONN;
+}
 static atomic_t s_adv_running;
 static atomic_t s_adv_dirty;
 
@@ -575,7 +589,7 @@ static int advertising_apply(struct advertising_result *result)
 	bool updated = false;
 	int rc;
 
-	if (atomic_get(&s_conn_up) != 0) {
+	if (!conn_slot_free()) {
 		return -EAGAIN;
 	}
 
@@ -699,7 +713,7 @@ static void advertising_work_fn(struct k_work *w)
 
 	ARG_UNUSED(w);
 
-	if (atomic_get(&s_conn_up) != 0) {
+	if (!conn_slot_free()) {
 		atomic_set(&s_adv_dirty, 1);
 		LOG_INF("advertising refresh deferred until disconnect");
 		return;
@@ -718,7 +732,7 @@ static void advertising_work_fn(struct k_work *w)
 	rc = advertising_apply(&result);
 	if (rc != 0) {
 		atomic_set(&s_adv_dirty, 1);
-		if (atomic_get(&s_conn_up) == 0) {
+		if (conn_slot_free()) {
 			advertising_retry_schedule(rc);
 		}
 		return;
@@ -781,12 +795,22 @@ static void on_connected(struct bt_conn *conn, uint8_t err)
 	 * the run here turned eight consecutive failures into eight runs of one.
 	 */
 	if (err == 0u) {
-		atomic_set(&s_conn_up, 1);
+		(void)atomic_inc(&s_conn_count);
 		/* Legacy connectable advertising stops when the slot is taken. A
 		 * potentially long connection also makes the current tag stale, so
 		 * force a fresh payload when the slot becomes free. */
 		atomic_set(&s_adv_running, 0);
 		atomic_set(&s_adv_dirty, 1);
+		/* AND START IT AGAIN IF THERE IS STILL ROOM. Without this the second
+		 * slot is unreachable: nothing would re-advertise until the FIRST
+		 * peer left, so a phone holding one slot would still hide the board
+		 * from every other central -- which is the whole failure this is
+		 * meant to remove. The controller ends the advertising set on
+		 * connection regardless of how many slots remain, so restarting it
+		 * is the port's job and not the stack's. */
+		if (conn_slot_free()) {
+			(void)k_work_reschedule(&s_advertising_work, K_NO_WAIT);
+		}
 		ultrawidelock_lat_begin();
 	}
 }
@@ -798,7 +822,14 @@ static void on_connected(struct bt_conn *conn, uint8_t err)
 static void on_disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	ARG_UNUSED(conn);
-	atomic_set(&s_conn_up, 0);
+	/* Clamped rather than trusted. on_connected only counts err == 0, and
+		 * the controller reports establishment failures through this path too,
+		 * so a decrement can arrive with no matching increment. A negative
+		 * count would read as "slots free" forever and silently break the
+		 * gate that keeps a full board from advertising. */
+	if (atomic_dec(&s_conn_count) <= 0) {
+		atomic_set(&s_conn_count, 0);
+	}
 	atomic_set(&s_adv_running, 0);
 	atomic_set(&s_adv_dirty, 1);
 	if (reason == BT_HCI_ERR_CONN_FAIL_TO_ESTAB) {
