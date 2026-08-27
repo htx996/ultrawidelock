@@ -514,7 +514,13 @@ async function clickAndRun(label) {
   const before = out.append;
   out.append = (...kids) => {
     before(...kids);
-    if (out.dataset.kind === "prompt" && !board.windowOpen) {
+    /* Models a person who READS the prompt, not one who reacts to its colour.
+     * "prompt" now covers two different asks -- pick a device in the browser's
+     * chooser, and press SW2 on the board -- and only the second one is a
+     * button press. Keying on the kind alone had the fake pressing SW2 when it
+     * was asked to pick a port. */
+    const text = kids.map((k) => k.textContent).join(" ");
+    if (out.dataset.kind === "prompt" && text.includes("Press SW2") && !board.windowOpen) {
       board.windowOpen = true;
       pressedAfter = board.uploadCalls;
     }
@@ -711,7 +717,13 @@ async function clickAndRun(label) {
   const before = out.append;
   out.append = (...kids) => {
     before(...kids);
-    if (out.dataset.kind === "prompt" && !board.windowOpen) {
+    /* Models a person who READS the prompt, not one who reacts to its colour.
+     * "prompt" now covers two different asks -- pick a device in the browser's
+     * chooser, and press SW2 on the board -- and only the second one is a
+     * button press. Keying on the kind alone had the fake pressing SW2 when it
+     * was asked to pick a port. */
+    const text = kids.map((k) => k.textContent).join(" ");
+    if (out.dataset.kind === "prompt" && text.includes("Press SW2") && !board.windowOpen) {
       board.windowOpen = true;
       pressedAfter = board.uploadCalls;
     }
@@ -721,6 +733,13 @@ async function clickAndRun(label) {
 
   check("serial: asked for the port, not the radio", said("serial port"),
         statusLog.map((s) => s.text).join(" / "));
+  /* OBSERVED ON THE FIRST REAL RUN: the page said "Working…" while the browser
+   * was blocked on its own native chooser, so the screen read as hung when it
+   * was really waiting for a person. Both choosers must say where that dialog
+   * is, because a modal nobody can find is indistinguishable from a hang. */
+  check("serial: said where the chooser actually is",
+        said("just under the address bar"),
+        statusLog.map((x) => x.text).join(" / "));
   check("serial: identified the board before prompting", said("Update available"));
   check("serial: asked for SW2 only after the board refused", pressedAfter >= 1);
   check("serial: waited the window out instead of failing", board.windowOpen);

@@ -65,6 +65,7 @@ function say(kind, headline, detail = "") {
 }
 
 function progress(sent, total) {
+  stopTimed();
   const bar = el("fota-bar");
   const fill = bar && bar.firstElementChild;
   if (!bar || !fill) return;
@@ -76,17 +77,100 @@ function progress(sent, total) {
 }
 
 function hideProgress() {
+  stopTimed();
   const bar = el("fota-bar");
   if (bar) bar.hidden = true;
 }
 
-function busy(on) {
+/* ---- the bar during the part with no bytes to count ------------------------
+ *
+ * WHY THIS EXISTS. Uploading has a numerator and a denominator, so the bar
+ * above is honest for free. Applying does not: the board is rebooting, MCUboot
+ * is rewriting flash, and nothing reports back until it finishes. That is
+ * 17-31 seconds on this board -- the LONGEST single stretch of the whole
+ * operation -- and the page used to show nothing at all through it, which is
+ * exactly where somebody starts wondering whether it has died. Reported on the
+ * first real run, and fair.
+ *
+ * IT NEVER REACHES 100%, and that is the design rather than a rounding
+ * artefact. This is an estimate against a known range, not a measurement, so it
+ * creeps toward a cap and waits there. A bar that sits at 100% while nothing
+ * happens has lied; a bar that sits at 94% saying "any moment now" has not.
+ * Only the board coming back and reporting the right hash finishes it.
+ */
+let timedTimer = null;
+
+function progressTimed(label, expectMs, capPct = 94) {
+  stopTimed();
+  const bar = el("fota-bar");
+  const fill = bar && bar.firstElementChild;
+  if (!bar || !fill) return;
+
+  bar.hidden = false;
+  const started = Date.now();
+
+  const tick = () => {
+    const elapsed = Date.now() - started;
+    /* Eases off as it approaches the cap, so overrunning the estimate looks
+     * like patience rather than like a stall at a hard stop. */
+    const pct = Math.min(capPct, capPct * (1 - Math.exp(-2.2 * (elapsed / expectMs))));
+    fill.style.width = `${pct.toFixed(1)}%`;
+    bar.setAttribute("aria-valuenow", String(Math.round(pct)));
+    const left = Math.max(0, Math.round((expectMs - elapsed) / 1000));
+    bar.dataset.label = left
+      ? `${label}  ·  about ${left}s left`
+      : `${label}  ·  any moment now`;
+  };
+
+  tick();
+  timedTimer = setInterval(tick, 250);
+}
+
+function stopTimed() {
+  if (timedTimer) { clearInterval(timedTimer); timedTimer = null; }
+}
+
+/** The one place the bar is allowed to reach the end. */
+function progressDone(label) {
+  stopTimed();
+  const bar = el("fota-bar");
+  const fill = bar && bar.firstElementChild;
+  if (!bar || !fill) return;
+  bar.hidden = false;
+  fill.style.width = "100%";
+  bar.setAttribute("aria-valuenow", "100");
+  bar.dataset.label = label;
+}
+
+/**
+ * @param {boolean} on
+ * @param {string} [label] what the disabled button should say instead of "Working…"
+ *
+ * THE LABEL EXISTS BECAUSE "Working…" WAS A LIE for the longest part of the
+ * flow. Both choosers -- Web Bluetooth's device picker and WebSerial's port
+ * picker -- are native browser dialogs that block until somebody clicks
+ * something, and Chrome draws them as a small panel under the address bar that
+ * is genuinely easy to miss. So the page sat there saying "Working…" while the
+ * browser sat there waiting for the operator, and the honest reading of the
+ * screen was "this has hung". Observed on the first real run of this page.
+ */
+function busy(on, label) {
   const go = el("fota-go");
   if (go) {
     go.disabled = on;
-    go.textContent = on ? "Working…" : (go.dataset.idle || "Find my board");
+    go.textContent = on ? (label || "Working…") : (go.dataset.idle || "Find my board");
   }
 }
+
+/** The button, while the thing being waited on is a person. */
+const WAITING_FOR_YOU = "Waiting for you…";
+
+/* Where the dialog actually is. Not decoration: a modal nobody can find is
+ * indistinguishable from a page that has stopped responding. */
+const CHOOSER_WHERE =
+  "Chrome shows this as a panel just under the address bar — it is easy to miss if " +
+  "the window is scrolled. Nothing has been sent yet and nothing is written until " +
+  "you pick a device.";
 
 /**
  * The transports that could be used on this board, in this browser.
@@ -206,11 +290,14 @@ const HOW = {
 
 /** Web Bluetooth: the no-cable path. */
 async function linkBle() {
-  say("busy", "Pick your board in the chooser…",
-      "It advertises as “ultrawidelock”. If it is not listed, it may be in a Matter " +
-      "session — power-cycle it and try again.");
+  say("prompt", "Pick your board in the chooser…",
+      "It advertises as “ultrawidelock”. " + CHOOSER_WHERE + " If it is listed but " +
+      "greyed out, or not listed at all, it may be in a Matter session — power-cycle " +
+      "it and try again.");
+  busy(true, WAITING_FOR_YOU);
 
   const { device, smp: session } = await smp.connect();
+  busy(true);
 
   /* The session is replaced on every reconnect, and the one being replaced has
    * a listener on a characteristic that no longer exists. Verification retries
@@ -246,13 +333,16 @@ async function linkBle() {
 
 /** WebSerial: uart0, which is the J-Link OB's VCOM. */
 async function linkSerial() {
-  say("busy", "Pick the board's serial port…",
+  say("prompt", "Pick the board's serial port…",
       "On the DWM3001CDK this is the J-Link port, not the second one — the probe owns " +
-      "uart0 and the application talks down it. It is usually named for SEGGER.");
+      "uart0 and the application talks down it. It is usually named for SEGGER. " +
+      CHOOSER_WHERE);
+  busy(true, WAITING_FOR_YOU);
 
   /* The port is not kept: `release` goes through the session, whose transport
    * owns closing it. Two handles onto one port is how it gets closed twice. */
   const { smp: session } = await smp.connectSerial(serial.APP_CHUNK);
+  busy(true);
   return {
     session,
     what: "the board over the cable",
@@ -356,9 +446,10 @@ async function cdkFlow(target, link) {
     },
   });
 
-  hideProgress();
   say("busy", "Staged. Restarting the board…",
-      "MCUboot applies the update during boot. It is off the air for 17-31 seconds.");
+      "MCUboot applies the update during boot. It is off the air for 17-31 seconds, " +
+      "and nothing can be asked of it until it comes back.");
+  progressTimed("applying on the board", 24000);
 
   await session.reset();
   link.settle();
@@ -401,9 +492,12 @@ async function runCdkRecovery(target) {
   say("prompt", "Put the board into recovery mode first.",
       "Hold SW2 for five seconds while the board is running: it restarts into the " +
       "bootloader and waits there. If the board's software is already broken it is " +
-      "waiting there anyway, and there is nothing to press. Then pick the J-Link port.");
+      "waiting there anyway, and there is nothing to press. Then pick the J-Link port. " +
+      CHOOSER_WHERE);
 
+  busy(true, WAITING_FOR_YOU);
   const { smp: session } = await smp.connectSerial(serial.MCUBOOT_CHUNK);
+  busy(true);
 
   try {
     say("busy", "Waiting for the bootloader…",
@@ -457,6 +551,7 @@ async function runCdkRecovery(target) {
 
     say("busy", "Written. Restarting the board…",
         "MCUboot verifies the image before it hands over.");
+    progressTimed("verifying and booting", 20000);
     await session.reset();
 
     await verifyRecovery(session, rec);
@@ -505,11 +600,13 @@ async function verifyRecovery(session, rec) {
     try {
       const running = await session.runningHash();
       if (running === rec.sha256) {
+        progressDone(`reinstalled ${rec.version}`);
         say("ok", `Reinstalled ${rec.version}.`,
             `The board came back reporting ${running.slice(0, 16)}…, which is the image ` +
             `that was written. It is on the current release, so ordinary updates apply ` +
             `to it again.`);
       } else {
+        hideProgress();
         say("warn", "The board came back running something else.",
             `Expected ${rec.sha256.slice(0, 16)}…, got ${running.slice(0, 16)}…. Hold ` +
             `SW2 for five seconds and reinstall; if it repeats, use the J-Link.`);
@@ -561,10 +658,12 @@ async function verifyCdk(link, update) {
       const running = await session.runningHash();
 
       if (running === update.to) {
+        progressDone(`installed ${update.version}`);
         say("ok", `Updated to ${update.version}.`,
             `The board came back reporting ${running.slice(0, 16)}…, which is the image ` +
             `this update produces. Nothing else to do.`);
       } else {
+        hideProgress();
         say("warn", "The board came back running something else.",
             `Expected ${update.to.slice(0, 16)}…, got ${running.slice(0, 16)}…. The ` +
             `update did not apply. The old image is still bootable, so the board is not ` +
@@ -574,6 +673,7 @@ async function verifyCdk(link, update) {
       return;
     } catch (err) {
       if (Date.now() > deadline) {
+        hideProgress();
         say("warn", "The board did not come back in time.",
             `It may still be applying, ${link.gone}. Reconnecting will say what it is ` +
             `running. (${err.message})`);
