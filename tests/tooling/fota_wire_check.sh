@@ -65,3 +65,15 @@ node "$ROOT/tests/tooling/serial_frame_check.mjs" "$WORK/serial.json" "$ROOT"
 # exists as a manual step on the command line.
 printf '\n── fota flow · fake board\n'
 node "$ROOT/tests/tooling/fota_flow_check.mjs" "$ROOT"
+
+# None of the above can see the failure that actually took the browser path down
+# for an evening: the page was correct, the protocol was correct, and the board
+# published a service macOS refuses to enumerate, which killed discovery before
+# any of this code ran. A browser walks the WHOLE GATT table and cannot skip a
+# service the way our Python client does, so one unreachable service takes every
+# other service on the device with it. That is a firmware property, checked here
+# because this is the suite that owns the browser path.
+printf '\n── gatt table · what a browser can reach\n'
+python3 "$ROOT/tests/tooling/gatt_table_check.py" --self-test
+python3 "$ROOT/tests/tooling/gatt_table_check.py" "$ROOT"
+python3 "$ROOT/tests/tooling/gatt_table_check.py" --prove "$ROOT"

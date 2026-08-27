@@ -433,7 +433,16 @@ int matter_ble_publish(bool on)
 		return 0;
 	}
 	/* Never pull the table out from under a live commissioning link. The
-	 * caller runs on every advertising pass and will ask again. */
+	 * caller runs on every advertising pass and will ask again.
+	 *
+	 * s_conn is written from the Bluetooth connection callback and read here
+	 * on the advertising work queue, deliberately without a lock. An aligned
+	 * pointer cannot tear, and both ways of losing the race are harmless: a
+	 * stale non-NULL defers the withdrawal to the next pass, and a stale NULL
+	 * withdraws a service a peer has only just connected to, which Zephyr
+	 * permits and which the disconnect that follows would have caused anyway.
+	 * A lock here would sit between the advertising path and the BLE stack for
+	 * no property worth having. */
 	if (!on && s_conn != NULL) {
 		return -EBUSY;
 	}
