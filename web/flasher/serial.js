@@ -321,18 +321,33 @@ export class Framer {
  *                (Kconfig.uart:55-59 requires MTU <= NETBUF_SIZE + 2). 384
  *                bytes of payload plus the 8-byte header and ~33 bytes of CBOR
  *                map comes to ~425, which leaves room rather than using it up.
- *   MCUboot      its own receive buffer, which is not the application's and is
- *                smaller. Recovery is the path that has to work when nothing
- *                else does, so it gets the conservative number.
+ *   MCUboot      NOT smaller, which is the opposite of what was assumed here
+ *                first. CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE is 1024 and
+ *                CONFIG_BOOT_MAX_LINE_INPUT_LEN is 128 with 8 buffers, so the
+ *                bootloader's ceiling is HIGHER than the application's. 128 was
+ *                a guess dressed as caution and it cost about nine minutes on a
+ *                400 KB reinstall.
  *
  * A request larger than the far side can hold is not answered slowly -- it is
- * dropped in silence, which presents as a board that stopped talking. Both
- * numbers are therefore under their budget rather than at it.
+ * dropped in silence, which presents as a board that stopped talking. MEASURED
+ * 2026-08-27: a 600 B payload to the application, which overflows its 512-byte
+ * MTU, gets exactly that -- 880 bytes out, zero back, no error. So both numbers
+ * stay under their budget rather than at it.
+ *
+ * MEASURED the same day, against MCUboot in serial recovery on a DWM3001CDK:
+ *
+ *   --chunk 128   ~500 B/s   a 406,524 B image would take about 13 minutes
+ *   --chunk 384   ~1.6 KB/s  the same image in about 4
+ *
+ * MCUboot's own ceiling would allow more than 384. It does not get more: a
+ * torn recovery is the worst failure on this board to be optimising into, the
+ * remaining headroom buys a minute, and one number that is known-good against
+ * both listeners is worth more than two that are each tuned to their limit.
  *
  * For scale: 384 against BLE_CHUNK's 105 is why the cable is the faster path.
  */
 export const APP_CHUNK = 384;
-export const MCUBOOT_CHUNK = 128;
+export const MCUBOOT_CHUNK = 384;
 
 /**
  * The seam smp.js writes through. Mirrors the Bluetooth transport's shape:

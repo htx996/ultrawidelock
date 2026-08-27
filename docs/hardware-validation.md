@@ -85,7 +85,7 @@ this one.
 | CDK-13 | `make fota`, push the file from a phone with nRF Device Manager's **Images** tab, then `make fota-done` | The board comes back reporting the target image's SHA-256 | yes, on the commissioned lock (`53b2fe1`, `8447e91`) |
 | CDK-14 | 100 walk-ups, counting the ones that unlock | 95% or better | **open, never run**; the sample so far is single digits |
 | CDK-15 | Cut the power in the middle of a CDK-11 apply, then restore it | The board resumes at the right step and boots the target image | **open, never run** |
-| CDK-16 | Hold SW2 for 5 s while the application runs, then upload with `scripts/cdk-dfu.sh` | The board warm-reboots into MCUboot serial recovery and accepts the image | **open, but no longer unexplained-everywhere.** 2026-08-27 the APPLICATION was made to speak mcumgr on the same uart0 and answered immediately, including multi-frame requests. The wire, the pins, the probe's VCOM, the 115200 rate and the nRF's legacy UART are therefore all exonerated: whatever CDK-16 is, it is inside MCUboot's serial adapter, not underneath it |
+| CDK-16 | Hold SW2 for 5 s while the application runs, then upload with `scripts/cdk-dfu.sh` | The board warm-reboots into MCUboot serial recovery and accepts the image | **SERIAL RECOVERY ITSELF WORKS -- proven 2026-08-27.** Entered over SWD with `make ota-recovery` (writes BOOT_MODE_TYPE_BOOTLOADER to GPREGRET2, resets), MCUboot answered `ultrawidelock_smp.py --serial` immediately and accepted a full 406,524 B image; the board booted it and reported the expected `8259462cce91ba50`. So the bootloader, the UART and the protocol are all fine. What remains untested is the BUTTON entry -- whether a 5 s SW2 hold actually sets the boot mode -- and the Go `mcumgr` client. This row is now about those two things and nothing else |
 | CDK-17 | Record a walk-up with the flight recorder, histogram the STS quality index, pick a floor above the noise | `ULTRAWIDELOCK_STS_QUALITY_MIN` is set from data rather than left at 0 | **open, never run.** The DWM3001CDK now *enforces* this gate, so an untuned floor is a door that can refuse to open |
 | CDK-18 | Walk-up in NLOS: phone pocketed on the far side of the body, and through an interior door | The gate still publishes a range and the bolt opens | **open, never run.** One LOS walk-up passed at `sts_ok=1`, STS index 62, verdict 24, d=107 mm; that is not a calibration |
 | CDK-19 | In Home Assistant's Thread integration, send the iPhone's Apple Thread credentials, make that dataset preferred, and join the Home Assistant OTBR to it | Apple and Home Assistant border routers report one Extended PAN ID; no second preferred dataset is created | **open, never run** |
@@ -108,7 +108,7 @@ it granted access rather than just actuating locally.
 | CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **identify half PASSED 2026-08-27** over the CLI (`make ota-smp-list OTA_SERIAL=auto`); board reported `sha=000f654e8c031181`, byte-identical to what the radio reported for the same board in the same minute. Multi-frame writes PASSED separately: a 384 B payload (420 B frame, 583 B on the wire, 5 lines) arrived whole and was refused with rc=11, the window gate answering correctly. **upload half PASSED 2026-08-27** as well: a 7,667 B delta `000f654e8c031181 -> 78224934aa586a84` went over uart0 in 384 B chunks, MCUboot applied it, and the board came back reporting the produced hash and `v0.3.0.0`. Confirmed over Bluetooth in the same minute. **The browser has still not been run against a board at all** -- every result here is the CLI |
 | CDK-33 | Time CDK-30 and CDK-32 on the same delta | The cable is materially faster; 384-byte chunks against 105 | **open, never run.** The ratio is arithmetic, the wall-clock is not: per-request latency over a UART is unmeasured |
 | CDK-34 | With the application running normally, pick **reinstall everything** and try to write | The page says the application answered rather than the bootloader, writes nothing, resets nothing, and does not tell anyone to press SW2 | **open, never run.** Covered against a fake board; the point is that rc=11 means something different on this path and must not be read as "open the window" |
-| CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **open, and gated on CDK-16.** This is CDK-16's upload driven from a browser instead of the Go `mcumgr` binary. Worth running FOR that reason: a different host implementation on the same board is the one experiment that separates "the board does not answer" from "that client does not get an answer" |
+| CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **the transport half PASSED 2026-08-27** over the CLI: 406,524 B at 384 B/chunk into MCUboot, ~4 minutes, board back on `8259462cce91ba50` with `v0.3.1.0`. No longer gated on CDK-16. Still open only as a BROWSER test -- the page's recovery flow has never been run, and it asks for the SW2 hold rather than SWD, so it also depends on the button half of CDK-16 |
 | CDK-36 | Erase the application only (leave MCUboot), then run CDK-35 with no button press at all | `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` leaves the board already waiting in recovery, and the page installs onto a board with no working software | **open, never run.** This is the row that decides whether the probe is genuinely optional after the first flash |
 
 CDK-14 through CDK-26 are the open rows, and none has ever been run to
@@ -212,6 +212,41 @@ worth running even though CDK-16 is expected to fail.
 CDK-36 is the claim the page now makes to first-time owners in as many words:
 that the J-Link is needed once and then never again. Until it has been run, that
 sentence is a design intention rather than a measured fact.
+
+## What 2026-08-27 settled about CDK-16
+
+It had been open since 2026-08-02 as "MCUboot sits in its window on a working
+UART and does not answer". That description was wrong in a way that kept the
+investigation pointed at the wrong half.
+
+`make ota-recovery` was added to separate the two halves, because every previous
+test exercised both at once. It writes `BOOT_MODE_TYPE_BOOTLOADER` (0x01) to
+GPREGRET2 at 0x40000520 over SWD and resets -- exactly what the application's
+button handler does -- so the ENTRY is performed by the probe and the SERIAL is
+then tested on its own.
+
+MCUboot answered on the first attempt, and took a whole 406,524 B image. The
+board booted it. So:
+
+| | verdict |
+|---|---|
+| the UART, pins, VCOM, 115200, legacy nRF driver | fine -- the application had already shown this |
+| MCUboot's serial adapter | **fine** -- it answers and accepts a full image |
+| the mcumgr protocol over this wire | fine, three implementations agree |
+| the 5 s SW2 hold setting the boot mode | **untested, and now the prime suspect** |
+| the Go `mcumgr` binary | **untested against a known-good bootloader, and the other suspect** |
+
+The next measurement is a one-liner and needs a person: hold SW2 for five
+seconds, then run `make ota-smp-list` (Bluetooth). If a board is found, the
+application is still running and the hold never entered recovery -- which would
+make CDK-16 a button-and-retention bug that has been mistaken for a serial one
+for three weeks. If no board is found, the hold worked and the Go client is what
+failed.
+
+Note also that MCUboot's ceiling is HIGHER than the application's, not lower:
+`CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE` is 1024. The 128-byte chunk this project
+used for recovery was a guess dressed as caution, and it cost about nine minutes
+on a 400 KB image -- measured at ~500 B/s against ~1.6 KB/s for 384.
 
 ## nRF5340 DK
 

@@ -47,7 +47,7 @@ CDK_PROBE ?= $(PROBE_RS_PROBE)
 # line before the first one runs, so a cache written by line 1 is invisible
 # to line 2 (measured on the macOS GNU make this repo is driven by).
 CDK_PROBE_CACHE ?= $(if $(wildcard $(LEGACY_CDK_KEY_DIR)/cdk-probe),$(LEGACY_CDK_KEY_DIR)/cdk-probe,$(CDK_KEY_DIR)/cdk-probe)
-CDK_PROBE_GOALS := flash flash-erase monitor monitor-rtt ota-window
+CDK_PROBE_GOALS := flash flash-erase monitor monitor-rtt ota-window ota-recovery
 ifeq ($(strip $(CDK_PROBE)),)
 ifneq ($(filter $(CDK_PROBE_GOALS),$(MAKECMDGOALS)),)
 CDK_PROBE := $(shell '$(REPO_ROOT)/scripts/cdk-find-probe.sh' '$(CDK_PROBE_CACHE)')
@@ -425,7 +425,7 @@ CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_S
 
 .PHONY: build rebuild instrument reader selftest cirdiag mlgate anchorlink flash flash-erase monitor monitor-rtt dfu release \
         cdk-size cdk-size-check cdk-size-baseline \
-        dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps ota-fan \
+        dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-recovery ota-deps ota-fan ota-local \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
 
 # ---- the CMake argument tail ---------------------------------------------------
@@ -691,9 +691,16 @@ fota-done:
 	  SMP=1 RELEASE=1 CDK_BUILD='$(CDK_FOTA_BUILD)'
 
 fota-confirm: $(CDK_OTA_PY)
-	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py \
-	  --expect '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.bin' \
-	  $(if $(OTA_NAME),--name '$(OTA_NAME)')
+	@if [ -n '$(OTA_SERIAL)' ]; then \
+	  $(CDK_PORT_RESOLVE); \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py \
+	    --expect '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.bin' \
+	    --serial "$$port" || exit 1; \
+	else \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py \
+	    --expect '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.bin' \
+	    $(if $(OTA_NAME),--name '$(OTA_NAME)') || exit 1; \
+	fi
 	@mkdir -p '$(dir $(CDK_DEPLOYED))'
 	@cp '$(CDK_SIGNED_HEX)' '$(CDK_DEPLOYED)'
 	@cp '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.elf' '$(CDK_DEPLOYED_ELF)'
@@ -777,6 +784,37 @@ ota-smp-list: $(CDK_OTA_PY)
 	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list \
 	    $(if $(OTA_NAME),--name '$(OTA_NAME)'); \
 	fi
+
+## ota-recovery: enter MCUboot serial recovery over SWD instead of holding SW2
+##   Then talk to it with:  make ota-smp-list OTA_SERIAL=auto
+#
+# WHY THIS EXISTS, and it is not convenience. CDK-16 -- serial recovery having
+# worked exactly once -- has two candidate halves that nobody has been able to
+# separate: the ENTRY (a 5 s button hold, which writes Zephyr's retained boot
+# mode and warm-resets) and the SERIAL (MCUboot answering once it is there).
+# Every test so far exercised both at once, so a failure never said which.
+#
+# This is the entry, done by the probe. It writes exactly what the application
+# writes -- BOOT_MODE_TYPE_BOOTLOADER, which is 0x01
+# (zephyr/include/zephyr/retention/bootmode.h:34-38), into GPREGRET2 at
+# 0x40000520 (zephyr/dts/arm/nordic/nrf52833.dtsi:93-98, reg = <0x40000520 1>)
+# -- and then resets. nRF52 clears GPREGRET only on power-on and brownout
+# reset, so a debugger reset retains it, which is what makes this work at all.
+#
+# MCUboot consumes and clears the byte on the boot that reads it, so this is
+# one-shot exactly like the button: reset again afterwards and the application
+# boots normally. Nothing is written to flash by this target.
+ota-recovery:
+	@printf '  writing BOOT_MODE_TYPE_BOOTLOADER to GPREGRET2 (0x40000520)\n'
+	@probe-rs write --chip $(CDK_CHIP) $(CDK_PROBE_ARG) b8 0x40000520 1
+	@probe-rs reset --chip $(CDK_CHIP) $(CDK_PROBE_ARG)
+	@printf '  reset. MCUboot should now be in serial recovery, and the\n'
+	@printf '  application should NOT be running -- which is the check:\n\n'
+	@printf '    make ota-smp-list                  # BLE. Finding a board here means\n'
+	@printf '                                       # the app booted, so recovery was\n'
+	@printf '                                       # never entered.\n'
+	@printf '    make ota-smp-list OTA_SERIAL=auto  # the cable. An answer here is\n'
+	@printf '                                       # MCUboot talking.\n\n'
 
 ## ota-window: open the update window over SWD instead of pressing SW2
 ota-window:
@@ -902,6 +940,47 @@ ota-fan: $(CDK_OTA_PY)
 	  --out '$(CDK_OTA_DIR)/ota-index.json' \
 	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
 	  --version "$$CDK_RELEASE_VER"
+
+## ota-local: stage the CURRENT build as an index the page can serve  ·  DEV ONLY
+##   Needs `make fota` first. Then `make docs-serve` and open /flash/index.html.
+#
+# WHY THIS IS NOT `ota-fan`. The page reads ota/ota-index.json, and until now the
+# only thing that produced one was the release flow -- which wants a release
+# build, an offline key and the signed .hex of every version still in the field.
+# That is correct for publishing and absurd as a prerequisite for opening the
+# page on localhost, and it is the reason the browser half of this feature has
+# never been run against a board: not because it was hard, but because there was
+# nothing for it to fetch.
+#
+# This assembles the same shape from whatever `make fota` just built. The
+# artifacts are signed with the DEV key, so a board flashed from a release will
+# refuse everything here -- which is the point of the dev key and not a fault.
+# Nothing here is publishable and nothing here goes near build/release from a
+# release build: it writes the same directory, so run `make ota-fan` again
+# before cutting one.
+ota-local: $(CDK_OTA_PY)
+	@delta=$$(ls -t '$(CDK_FOTA_BUILD)'/ultrawidelock-*-to-*.zip 2>/dev/null | head -1); \
+	if [ -z "$$delta" ]; then \
+	  printf '  no delta in %s  ·  run `make fota` first\n' '$(CDK_FOTA_BUILD)' >&2; \
+	  printf '  (a delta needs the board to be on a DIFFERENT build than the tree;\n' >&2; \
+	  printf '   `make fota` says so plainly if it is not.)\n' >&2; \
+	  exit 1; \
+	fi; \
+	rm -rf '$(CDK_OTA_DIR)/dwm3001cdk'; \
+	mkdir -p '$(CDK_OTA_DIR)/dwm3001cdk'; \
+	cp "$$delta" '$(CDK_OTA_DIR)/dwm3001cdk/'; \
+	cp "$${delta%.zip}.bin" '$(CDK_OTA_DIR)/dwm3001cdk/'; \
+	printf '  delta     %s\n' "$$(basename "$$delta")"
+	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py recovery \
+	  '$(CDK_FOTA_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' \
+	  --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' --version '$(IMAGE_VERSION)' >/dev/null
+	@python3 $(REPO_ROOT)/scripts/ota-index.py \
+	  --out '$(CDK_OTA_DIR)/ota-index.json' \
+	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' --version 'dev-$(IMAGE_VERSION)'
+	@printf '\n  now:  make docs-serve\n'
+	@printf '  then: http://localhost:8080/flash/index.html\n'
+	@printf '  localhost counts as a secure context, so WebSerial and Web\n'
+	@printf '  Bluetooth both work there without a certificate.\n\n'
 
 ## ota-deps: create the host virtualenv the update tooling runs in
 ota-deps: $(CDK_OTA_PY)
