@@ -117,6 +117,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # FAIL IN THIRTY SECONDS, NOT IN TWENTY MINUTES.
+      #
+      # The real check is at the step that writes the key, and it stays there
+      # because that is the step that depends on it. But it sits after the
+      # workspace bootstrap, so an unset secret burns a full toolchain fetch
+      # before saying so -- and it says so on a TAG BUILD, where the tag already
+      # exists and re-running means deleting a published tag or cutting a
+      # throwaway one. The cost of finding out late is disproportionate to the
+      # cost of asking now.
+      #
+      # Presence only. Nothing here reads, prints, or writes the key.
+      - name: the signing key secret is set
+        env:
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment (not a repository secret), then re-run this workflow from the same tag."
+            exit 1
+          fi
+          echo "signing key secret is present"
       - name: make sure make exists
         # Belt and braces with the bash default above, because the NCS container
         # has shipped without a make of its own before and this job is too
@@ -332,6 +352,19 @@ jobs:
   esp32-matter-lock:
     needs: guard
     runs-on: ubuntu-latest
+    # SIGNS WITH THE PRODUCTION KEY, so it has to ask for the environment that
+    # holds it. This job reads secrets.MCUBOOT_RELEASE_KEY in `sign the
+    # over-the-air images` and did not declare `environment: release`, and an
+    # environment secret is not visible to a job that has not joined the
+    # environment -- which the dwm3001cdk job's own error message insists is
+    # where this secret must live. The lookup would have resolved to the empty
+    # string, that step's own guard would have fired, and every release would
+    # have failed at ESP32 signing, taking the publish job with it.
+    #
+    # It is also the same argument that put the DWM3001CDK job here: the key
+    # decides what every board flashed from this release will ever accept, with
+    # no revocation path, so a human approves the run before it is used.
+    environment: release
     timeout-minutes: 240
     container:
       image: espressif/idf@sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5fa3363db892b # v5.5.4
@@ -341,6 +374,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # FAIL IN THIRTY SECONDS, NOT IN TWENTY MINUTES.
+      #
+      # The real check is at the step that writes the key, and it stays there
+      # because that is the step that depends on it. But it sits after the
+      # workspace bootstrap, so an unset secret burns a full toolchain fetch
+      # before saying so -- and it says so on a TAG BUILD, where the tag already
+      # exists and re-running means deleting a published tag or cutting a
+      # throwaway one. The cost of finding out late is disproportionate to the
+      # cost of asking now.
+      #
+      # Presence only. Nothing here reads, prints, or writes the key.
+      - name: the signing key secret is set
+        env:
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment (not a repository secret), then re-run this workflow from the same tag."
+            exit 1
+          fi
+          echo "signing key secret is present"
       - name: read the bench-validated toolchain pins
         # Read from scripts/esp-bootstrap.sh rather than restated here. The
         # revision used to be a literal in this file, which meant a bench

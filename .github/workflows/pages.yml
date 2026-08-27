@@ -10,12 +10,24 @@
 # firmware build alone took hours, and it verified nothing a local `make` had
 # not already verified.
 #
-# Manual only. `workflow_dispatch` and nothing else, deliberately:
+# No push trigger, deliberately:
 #
 #   - the repository's first push would otherwise publish the site in the same
 #     action that publishes the code, and those are two decisions, not one.
-#   - a site rebuild is worth starting when the prose changed or a release
-#     landed, which a human knows and a push trigger does not.
+#   - a site rebuild is worth starting when the prose changed, which a human
+#     knows and a push trigger does not.
+#
+# A PUBLISHED RELEASE IS THE EXCEPTION, and it is not the same decision as a
+# push. This site serves the firmware: the flasher page reads ota-index.json out
+# of the LATEST release's assets, so between publishing a release and rebuilding
+# the site by hand, the page keeps offering the previous release's updates and
+# says nothing is wrong. A board updated in that window installs a version that
+# is no longer current, and the only symptom is a version number nobody is
+# looking at. That is a stale-artifact failure with no error anywhere, which is
+# the kind worth removing rather than remembering.
+#
+# `release: published` fires once, on an explicit human act, and never on a
+# push, so neither reason above is weakened. Manual dispatch stays for prose.
 #
 # Add `on: push: branches: [main]` later if the manual step becomes tedious.
 # That is a deliberate change, not a default.
@@ -23,6 +35,8 @@ name: pages
 
 on:
   workflow_dispatch:
+  release:
+    types: [published]
 
 # Read-only by default; the publish job raises its own scope and nothing else
 # gets write access to anything.
@@ -128,6 +142,13 @@ jobs:
             unzip -q -o build/release/ultrawidelock-ota.zip -d build/release
             rm -f build/release/ultrawidelock-ota.zip
             echo "staged $(find build/release/ota -type f | wc -l) over-the-air file(s)"
+            # An asset that arrived but carries no index is NOT the same as a
+            # release that shipped no updates, and both look identical on the
+            # published page: it fetches, 404s, and says none are published. A
+            # warning rather than a failure, per the note above -- but silence
+            # here would hide a malformed asset behind an honest-looking page.
+            [ -f build/release/ota/ota-index.json ] || \
+              echo "::warning::ultrawidelock-ota.zip has no ota/ota-index.json -- the FOTA panel will say no updates are published, which is wrong rather than merely empty"
           else
             echo "::notice::this release carries no over-the-air updates"
           fi
