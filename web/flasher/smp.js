@@ -424,7 +424,7 @@ export class Smp {
  * @param {string} name advertised-name prefix to filter on
  * @returns {Promise<{device: BluetoothDevice, smp: Smp}>}
  */
-export async function connect(name = SCAN_NAME) {
+export async function connect(name = SCAN_NAME, onStep) {
   if (!navigator.bluetooth) {
     throw new SmpError("this browser has no Web Bluetooth");
   }
@@ -466,7 +466,7 @@ export async function connect(name = SCAN_NAME) {
      * service filter still has to be allowed to reach this service afterwards. */
     optionalServices: [SMP_SVC_UUID],
   });
-  const smp = await attach(device);
+  const smp = await attach(device, onStep);
   return { device, smp };
 }
 
@@ -475,11 +475,65 @@ export async function connect(name = SCAN_NAME) {
  * notifications. Reconnecting needs no new user gesture, which is what makes
  * the post-reset verification possible.
  */
-export async function attach(device) {
-  const server = await device.gatt.connect();
-  const svc = await server.getPrimaryService(SMP_SVC_UUID);
-  const chr = await svc.getCharacteristic(SMP_CHR_UUID);
-  await chr.startNotifications();
+/**
+ * How long any one GATT step may take before it is called a failure.
+ *
+ * WEB BLUETOOTH HAS NO TIMEOUTS. getPrimaryService() on a device that connected
+ * but will not discover simply never settles, and neither does
+ * startNotifications() against a characteristic whose CCCD write is lost. The
+ * page then waits forever with nothing to say, which is indistinguishable from
+ * a chooser nobody has touched -- and was mistaken for exactly that on the
+ * first hardware run.
+ *
+ * Twenty seconds is far longer than any of these takes when they work
+ * (discovery is well under a second on this board) and short enough that a
+ * person is still watching when it gives up.
+ */
+const GATT_STEP_MS = 20000;
+
+function withTimeout(promise, what) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new SmpError(
+          `${what} did not finish within ${GATT_STEP_MS / 1000}s. The board is ` +
+          `connected but is not answering this step.`)),
+        GATT_STEP_MS)),
+  ]);
+}
+
+/**
+ * Connect (or reconnect) to a device we already have a handle on, and start
+ * notifications. Reconnecting needs no new user gesture, which is what makes
+ * the post-reset verification possible.
+ *
+ * EACH STEP IS REPORTED, because they fail differently and look the same. A
+ * device that connects and then stalls in discovery is a stale GATT cache on
+ * the host; one that stalls on notifications is a CCCD write going missing;
+ * one that never connects is out of range or out of slots. Without `onStep`
+ * all three present as "nothing is happening".
+ *
+ * @param {BluetoothDevice} device
+ * @param {(what: string) => void} [onStep] called before each GATT step
+ */
+export async function attach(device, onStep) {
+  const step = (what) => { if (onStep) onStep(what); };
+
+  step("opening the connection");
+  const server = await withTimeout(device.gatt.connect(), "connecting");
+
+  step("looking up the update service");
+  const svc = await withTimeout(server.getPrimaryService(SMP_SVC_UUID),
+                                "finding the update service");
+
+  step("looking up the characteristic");
+  const chr = await withTimeout(svc.getCharacteristic(SMP_CHR_UUID),
+                                "finding the update characteristic");
+
+  step("subscribing to notifications");
+  await withTimeout(chr.startNotifications(), "subscribing to notifications");
+
   return new Smp(new BleTransport(chr));
 }
 

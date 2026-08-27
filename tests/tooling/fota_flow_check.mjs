@@ -740,6 +740,15 @@ async function clickAndRun(label) {
   check("serial: said where the chooser actually is",
         said("just under the address bar"),
         statusLog.map((x) => x.text).join(" / "));
+  /* OBSERVED: a row highlighted but not confirmed looks, from the page, exactly
+   * like a chooser nobody has touched. Saying so is the difference between a
+   * two-second fix and half an hour of believing the page over your own eyes. */
+  /* The serial chooser's confirm button is "Connect"; Bluetooth's is "Pair".
+   * Naming the wrong one is as unhelpful as naming none, so each path is
+   * checked for its own. */
+  check("serial: named the serial chooser's own confirm button",
+        said("Connect button"),
+        statusLog.map((x) => x.text).join(" / "));
   check("serial: identified the board before prompting", said("Update available"));
   check("serial: asked for SW2 only after the board refused", pressedAfter >= 1);
   check("serial: waited the window out instead of failing", board.windowOpen);

@@ -165,12 +165,83 @@ function busy(on, label) {
 /** The button, while the thing being waited on is a person. */
 const WAITING_FOR_YOU = "Waiting for you…";
 
-/* Where the dialog actually is. Not decoration: a modal nobody can find is
- * indistinguishable from a page that has stopped responding. */
-const CHOOSER_WHERE =
-  "Chrome shows this as a panel just under the address bar — it is easy to miss if " +
-  "the window is scrolled. Nothing has been sent yet and nothing is written until " +
-  "you pick a device.";
+/*
+ * A CHOOSER CAN BE DISMISSED WITHOUT EITHER RESOLVING OR REJECTING, and when
+ * that happens the page has no way back on its own.
+ *
+ * Chrome draws the device chooser as a bubble anchored to the toolbar, and
+ * bubbles close when the window stops being key -- switching apps does it, and
+ * so does macOS's screenshot tool. The requestDevice() promise is then left
+ * pending forever: the await never returns, busy(true) keeps the button
+ * disabled, and no second chooser can be opened because the first flow never
+ * ended. The page sits on "Waiting for you…" looking hung, and only a reload
+ * clears it.
+ *
+ * OBSERVED, repeatedly and painfully: an operator screenshotting the page to
+ * report that it was stuck was, with each screenshot, the reason it was stuck.
+ *
+ * There is no API to cancel requestDevice(), so the honest escape is to let the
+ * button become a way to start again. `stuck` makes the next click reload
+ * rather than queue a second flow behind a promise that will never settle.
+ */
+let stuck = false;
+
+/**
+ * Where the dialog is, and that picking it is TWO actions.
+ *
+ * Not decoration on either count. A modal nobody can find is indistinguishable
+ * from a page that has stopped responding -- and a modal where you have
+ * highlighted a row but not pressed the button looks, from the page, exactly
+ * like one you have not touched at all. Both were mistaken for a hang on the
+ * first real run, and the second cost the most time of anything in this file.
+ *
+ * THE BUTTON HAS A DIFFERENT NAME IN EACH DIALOG, which is why this takes an
+ * argument rather than being one string. Chrome labels the Bluetooth chooser's
+ * button "Pair" and the serial port chooser's "Connect". Telling somebody to
+ * press a button that is not in front of them is its own small betrayal.
+ *
+ * @param {string} button what Chrome calls the confirm button in this dialog
+ */
+function chooserWhere(button) {
+  return (
+    "Chrome shows this as a panel just under the address bar — it is easy to miss if " +
+    `the window is scrolled. Select your board there and then press its ${button} ` +
+    "button: highlighting the row on its own does not do it. Nothing is sent and " +
+    "nothing is written until you press it."
+  );
+}
+
+/*
+ * macOS REFUSES BLUETOOTH DISCOVERY ON THIS BOARD, and no part of this page can
+ * work around it.
+ *
+ * The reader publishes Apple's credential service -- 0xFFF2 with the
+ * D3B5A130-... and BD4B9502-... characteristics
+ * (ports/zephyr/ble/ultrawidelock_ble_zephyr.c:57-64). macOS reserves those
+ * UUIDs for the system, so CoreBluetooth answers a third-party descriptor
+ * discovery on them with CBError 8, CBErrorUUIDNotAllowed. Web Bluetooth always
+ * walks the WHOLE GATT table, so Chrome hits it every time and
+ * getPrimaryService() never settles.
+ *
+ * MEASURED 2026-08-27 on a DWM3001CDK that was advertising, had a free
+ * connection slot, and accepted the connection:
+ *
+ *   Failed to discover descriptors for characteristic 13:
+ *   CBErrorDomain Code=8 "The specified UUID is not allowed for this operation."
+ *
+ * scripts/ultrawidelock_smp.py has dodged this for weeks by passing
+ * services=[SMP] so CoreBluetooth only enumerates the one service. A browser
+ * has no equivalent -- there is no API to limit discovery -- so the CLI works
+ * where the page cannot, on the same machine, against the same board.
+ *
+ * NOT A UNIVERSAL LIMIT. The restriction is CoreBluetooth's. Chrome on Android,
+ * Windows and Linux has no such rule, and that is where "no cable" is actually
+ * used: a phone at the door. So this warns rather than disables -- somebody on
+ * another platform must not be told their working path is broken.
+ */
+const IS_MAC = typeof navigator !== "undefined" &&
+  /Mac/i.test((navigator.userAgentData && navigator.userAgentData.platform) ||
+              navigator.platform || "");
 
 /**
  * The transports that could be used on this board, in this browser.
@@ -309,32 +380,74 @@ const HOW = {
 const CHOOSER_EMPTY_HINT_MS = 12000;
 
 async function linkBle() {
+  if (IS_MAC) {
+    say("warn", "On a Mac, Bluetooth updates do not complete.",
+        "Your board will appear and connect, and then discovery stops: macOS reserves " +
+        "the Apple credential service this reader publishes, so it refuses to enumerate " +
+        "it for any third-party app, and a browser cannot skip that step. Measured, not " +
+        "guessed. Use “USB cable” here — or Bluetooth from an Android phone, where the " +
+        "restriction does not exist. Trying anyway is harmless; it will stall at " +
+        "“looking up the update service”.");
+  }
   say("prompt", "Pick your board in the chooser…",
-      "It advertises as “ultrawidelock”. " + CHOOSER_WHERE);
+      "It advertises as “ultrawidelock”. " + chooserWhere("Pair"));
   busy(true, WAITING_FOR_YOU);
 
   const hint = setTimeout(() => {
-    /* WHAT BRINGS ADVERTISING BACK IS NOT SW2, and this said it was. The button
-     * opens the update WINDOW -- ports/zephyr/dfu/dfu_ble_zephyr.c:294-302 calls
-     * ultrawidelock_dfu_window_open() and nothing else. Re-advertising comes from
+    stuck = true;
+    busy(false, null);
+    const go_ = el("fota-go");
+    if (go_) go_.textContent = "Start over";
+    /*
+     * THIS MUST NOT CLAIM THE LIST IS EMPTY, and its first version did.
+     *
+     * Web Bluetooth gives the page no way to see inside the chooser -- that is
+     * deliberate, it is the whole privacy model -- so after twelve seconds the
+     * page knows exactly one thing: nobody has picked yet. It does NOT know
+     * whether the list is empty. The first wording said "Nothing in the list
+     * yet?" as a statement of fact, and on the first real run it said that
+     * while the board sat in the list, unselected. The reader believed the
+     * page over their own eyes, which is what a confident wrong message earns.
+     *
+     * So it asks rather than asserts, and puts the likelier cause first: a row
+     * highlighted but not confirmed.
+     *
+     * WHAT BRINGS ADVERTISING BACK IS ALSO NOT SW2, and an earlier version said
+     * it was. The button opens the update WINDOW --
+     * ports/zephyr/dfu/dfu_ble_zephyr.c calls ultrawidelock_dfu_window_open()
+     * and nothing else. Re-advertising comes from
      * ultrawidelock_ble_readvertise(), whose callers are Matter fabric events
-     * and the reader, never the button. So telling somebody to press SW2 at an
-     * empty chooser is advice that cannot work, which is worse than none. */
-    say("prompt", "Nothing in the list yet?",
-        "A board only appears here while it is advertising, and this one stops once its " +
-        "commissioning window closes — so a board that is powered, working and sitting " +
-        "right there can still be absent from this list. Pressing SW2 will NOT bring it " +
-        "back: that opens the update window, which is a later step and a different " +
-        "thing. Reset or power-cycle the board, or open pairing mode from Apple Home. " +
-        "Or cancel and choose “USB cable” instead — a serial port is listed whether or " +
-        "not the radio is up, because it belongs to the probe and not to the board.");
+     * and the reader, never the button.
+     */
+    say("prompt", "Still waiting on the chooser",
+        "If you see NO panel at all: it was dismissed. Chrome's chooser closes when " +
+        "the window loses focus — switching apps or taking a screenshot does it — and " +
+        "the page cannot reopen it. Press “Start over” above. " +
+        "If your board IS listed: select it and press the panel's Pair button — Chrome " +
+        "labels it “Pair” here, not Connect — " +
+        "highlighting the row is not enough, and this page cannot see the list to tell " +
+        "you which it is. " +
+        "If the list is genuinely empty: a board only appears while it is advertising, " +
+        "so a board that is powered, working and sitting right there can still be " +
+        "absent. Pressing SW2 will NOT bring it back — that opens the update window, " +
+        "which is a later step and a different thing. Reset or power-cycle the board, " +
+        "or open pairing mode from Apple Home. Or cancel and choose “USB cable”, whose " +
+        "port is listed whether or not the radio is up.");
   }, CHOOSER_EMPTY_HINT_MS);
 
   let device, session;
   try {
-    ({ device, smp: session } = await smp.connect());
+    ({ device, smp: session } = await smp.connect(smp.SCAN_NAME, (what) => {
+      /* The chooser is behind us the moment the first step runs, so this also
+       * disarms the "still waiting on the chooser" hint and its escape. */
+      clearTimeout(hint);
+      stuck = false;
+      busy(true);
+      say("busy", "Connecting to the board…", `Now ${what}.`);
+    }));
   } finally {
     clearTimeout(hint);
+    stuck = false;
   }
   busy(true);
 
@@ -375,7 +488,7 @@ async function linkSerial() {
   say("prompt", "Pick the board's serial port…",
       "On the DWM3001CDK this is the J-Link port, not the second one — the probe owns " +
       "uart0 and the application talks down it. It is usually named for SEGGER. " +
-      CHOOSER_WHERE);
+      chooserWhere("Connect"));
   busy(true, WAITING_FOR_YOU);
 
   /* The port is not kept: `release` goes through the session, whose transport
@@ -532,7 +645,7 @@ async function runCdkRecovery(target) {
       "Hold SW2 for five seconds while the board is running: it restarts into the " +
       "bootloader and waits there. If the board's software is already broken it is " +
       "waiting there anyway, and there is nothing to press. Then pick the J-Link port. " +
-      CHOOSER_WHERE);
+      chooserWhere("Connect"));
 
   busy(true, WAITING_FOR_YOU);
   const { smp: session } = await smp.connectSerial(serial.MCUBOOT_CHUNK);
@@ -778,6 +891,14 @@ async function runEsp(target) {
 async function go() {
   const select = el("fota-target");
   const key = select ? select.value : "";
+
+  /* A previous flow is parked on a chooser that will never answer. Reloading is
+   * the only thing that frees it, and it is better done by a button that says
+   * so than by an instruction the reader has to be given. */
+  if (stuck) {
+    location.reload();
+    return;
+  }
 
   /* Remembered because the chooser throws BEFORE any link exists, and the
    * message for "nothing picked" is different for a device chooser and a port
