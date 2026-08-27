@@ -258,6 +258,33 @@ INSTRUMENT_MAKE        ?= make
 CDK_KEY  ?= $(SIGN_KEY)
 CDK_SIGN := -DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE='"$(CDK_KEY)"'
 
+# ---- the version the BOARD reports -------------------------------------------
+#
+# Left unset, CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION defaults to "0.0.0+0" and
+# every board ever built reports `v0.0.0.0` in its image list -- over the radio,
+# over the cable, and on the flasher page. That is not a cosmetic gap. The only
+# thing distinguishing two builds is then a SHA-256, which is correct and is
+# what the update path matches on, but it means the one human-readable field in
+# `make ota-smp-list` identifies nothing, and an operator comparing a board
+# against a release is left comparing 16 hex digits by eye.
+#
+# Taken from the repository's VERSION file, so it moves when the project moves
+# rather than when somebody remembers. A release can override it:
+#
+#     make release IMAGE_VERSION=0.3.1
+#
+# NOTE THAT THIS CHANGES THE IMAGE HASH, because the version sits in the MCUboot
+# header and the SHA-256 TLV covers the header. That is correct and is the point
+# -- two releases that differ only in their version really are different images,
+# and a delta between them is a real delta. It does mean the deployed record has
+# to be re-recorded after the first build that sets it, which `make flash` and
+# the ota-* targets already do.
+#
+# The `+0` is imgtool's build number. Kept at zero: the build number is meant to
+# distinguish rebuilds of one version, and nothing here would set it honestly.
+IMAGE_VERSION ?= $(shell cat $(REPO_ROOT)/VERSION 2>/dev/null || echo 0.0.0)
+CDK_SIGN += -DCONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION='"$(IMAGE_VERSION)+0"'
+
 # ---- delta update over BLE ---------------------------------------------------
 # modules/ultrawidelock_dfu has to reach BOTH images, and they need opposite halves of it:
 # the patch APPLIER is compiled into MCUboot, because an application cannot

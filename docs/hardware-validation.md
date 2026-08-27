@@ -105,7 +105,7 @@ it granted access rather than just actuating locally.
 | CDK-29 | Open https://ultrawidelock.com/flash/index.html in Chrome, pick the DWM3001CDK, and connect | The chooser lists the board, and the page names the image it is running before asking for anything | **open, never run** |
 | CDK-30 | Continue CDK-29 on a board whose image the release publishes a delta from, pressing SW2 when the page asks | The delta goes over Web Bluetooth, the board reboots, and the page reconnects and reports the target SHA-256 | **open, never run.** This is CDK-13 driven from a browser instead of a phone, and the firmware is the same `SMP=1` image, so what is untested is the JavaScript and nothing else |
 | CDK-31 | Repeat CDK-30 on a board running a build the release ships no delta from | The page says no over-the-air update applies, names the single-slot reason, points at the J-Link, and sends nothing | **open, never run.** Proven against a fake board in the `fotawire` suite; never against a real one |
-| CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **identify half PASSED 2026-08-27** over the CLI (`make ota-smp-list OTA_SERIAL=auto`); board reported `sha=000f654e8c031181`, byte-identical to what the radio reported for the same board in the same minute. Multi-frame writes PASSED separately: a 384 B payload (420 B frame, 583 B on the wire, 5 lines) arrived whole and was refused with rc=11, the window gate answering correctly. **Upload half still open** -- it needs a two-build delta, and the browser has not been run at all |
+| CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **identify half PASSED 2026-08-27** over the CLI (`make ota-smp-list OTA_SERIAL=auto`); board reported `sha=000f654e8c031181`, byte-identical to what the radio reported for the same board in the same minute. Multi-frame writes PASSED separately: a 384 B payload (420 B frame, 583 B on the wire, 5 lines) arrived whole and was refused with rc=11, the window gate answering correctly. **upload half PASSED 2026-08-27** as well: a 7,667 B delta `000f654e8c031181 -> 78224934aa586a84` went over uart0 in 384 B chunks, MCUboot applied it, and the board came back reporting the produced hash and `v0.3.0.0`. Confirmed over Bluetooth in the same minute. **The browser has still not been run against a board at all** -- every result here is the CLI |
 | CDK-33 | Time CDK-30 and CDK-32 on the same delta | The cable is materially faster; 384-byte chunks against 105 | **open, never run.** The ratio is arithmetic, the wall-clock is not: per-request latency over a UART is unmeasured |
 | CDK-34 | With the application running normally, pick **reinstall everything** and try to write | The page says the application answered rather than the bootloader, writes nothing, resets nothing, and does not tell anyone to press SW2 | **open, never run.** Covered against a fake board; the point is that rc=11 means something different on this path and must not be read as "open the window" |
 | CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **open, and gated on CDK-16.** This is CDK-16's upload driven from a browser instead of the Go `mcumgr` binary. Worth running FOR that reason: a different host implementation on the same board is the one experiment that separates "the board does not answer" from "that client does not get an answer" |
@@ -164,13 +164,30 @@ board, minutes apart), and -- because the application receives 127-byte
 back-to-back mcumgr frames on this exact UART without losing any -- that CDK-16
 cannot be blamed on the wire.
 
-Two more measurements from the same session, both worth keeping:
+The upload half followed, and closes the row: `make ota-window` to open the
+update window over SWD (so no button press was needed), then `make ota-smp
+OTA_SERIAL=auto`. 7,667 B of delta in 384 B chunks, staged, reset, and the board
+back on `78224934aa586a84` about half a minute later -- the hash the delta was
+built to produce, not merely a hash that changed.
+
+That run also proved the thing a synthetic test cannot: that the window gate,
+the signature check, the receiver, MCUboot's applier and the deployed-record
+bookkeeping all still work when the bytes arrive over a cable instead of a
+radio. None of that code knew which it was.
+
+Three more measurements from the same session, all worth keeping:
 
 - A 600 B payload, which overflows `CONFIG_MCUMGR_TRANSPORT_UART_MTU=512`, is
   answered with **complete silence**: no error, no reply, nothing. That is why
   the chunk sizes in `web/flasher/serial.js` sit under their budget rather than
   at it, and it is now a measured fact rather than an expectation. The board
   recovers on its own; the next request is answered normally.
+- Every board built before 2026-08-27 reports `v0.0.0.0`, because
+  `CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION` was never set and Zephyr's default is
+  `0.0.0+0`. It is taken from the repository's `VERSION` file now, so the image
+  list finally carries something a person can read: `v0.3.0.0`. The SHA-256 was
+  and remains the authoritative identity -- this is about the field an operator
+  actually looks at.
 - `EVENTS_RXDRDY=1 and ERRORSRC=0x1` is recorded in `scripts/cdk-dfu.sh` under
   "verified WORKING". On nRF52 `ERRORSRC` bit 0 is **OVERRUN**, so that line is
   evidence that bytes arrived AND were dropped -- not evidence that RX is

@@ -18,6 +18,7 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 | `LTO=0` | opt out of link-time optimisation, which is on by default and worth 41,084 B. Use it when a stack trace has to name every frame |
 | `RELEASE=1` | trade the 8 KB RTT ring for 7,168 B of RAM, and set errors-only logging to save 20,568 B of flash. Codegen is identical either way |
 | `SMP=1` | add mcumgr over Bluetooth **and** over `uart0`, which is what nRF Device Manager and the browser both speak. `make build SMP=1` is a valid debug configuration and leaves 12,764 B free. `RELEASE=1` remains the shipping configuration |
+| `IMAGE_VERSION=x.y.z` | the version the BOARD reports in its image list. Defaults to the repository's `VERSION` file. Left unset entirely, Zephyr's default is `0.0.0+0` and every board reports `v0.0.0.0`, which identifies nothing — the SHA-256 stays authoritative either way, but it is the version an operator actually reads |
 | `DFU_LOG=1` | make the bootloader narrate what it does with a staged patch. Read it with MCUboot's own ELF, not the application's |
 | `ANCHOR=1` | layer `overlay-anchor.conf`: the second-anchor geometry, the door-swing angle and the LIS2DH12 impact latch, plus the two DoorLockAlarm events those feed. Default off, and the default image is byte-identical without it. Every threshold it turns on is a placeholder; see below |
 | `CDK_BUILD=<dir>` | which build directory `flash`, `flash-erase` and `monitor` mean. Default `build/cdk-matter` |
@@ -34,6 +35,14 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 against a 433,664 B `app` partition, and the build fails rather than ships. See
 [`../apps/dwm3001cdk-lock/pm_static.yml`](../apps/dwm3001cdk-lock/pm_static.yml), which carries the
 derivation of every number in that map.
+
+`IMAGE_VERSION` changes the image hash, and that is correct rather than a side
+effect: the version sits in the MCUboot header, the SHA-256 TLV covers the
+header, so two builds differing only in their version really are different
+images and a delta between them is a real delta. The practical consequence is
+that the first build after setting it produces a new hash, so the deployed
+record has to be re-recorded — which `make flash` and the `ota-*` targets do on
+their own.
 
 Serial recovery is a separate thing on the same wire, and it belongs to MCUboot
 rather than to the application: see
