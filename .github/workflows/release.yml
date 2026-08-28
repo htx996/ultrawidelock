@@ -287,6 +287,32 @@ jobs:
             exit 1
           fi
           command -v make
+      - name: make sure a C++ compiler exists
+        # `make ota-fan` below builds the update-tooling virtualenv, and detools
+        # is published as a SOURCE DISTRIBUTION ONLY -- no wheel for any version
+        # on PyPI -- so pip compiles its three extensions right here. One of
+        # them, HDiffPatch, is C++. The NCS image installs `gcc gcc-multilib`
+        # and no g++, so on v0.4.0 the fan died at `ccache: error: Could not
+        # find compiler "g++" in PATH` after this job had already built and
+        # SIGNED the release, at the last step before the upload.
+        #
+        # The apt compiler is the right one: Nordic installs the system gcc for
+        # exactly this kind of host build, and the C half of the same package
+        # compiles and links against it in the same pip run. This is the missing
+        # half of that pair, not a second toolchain.
+        #
+        # Up here rather than beside the fan step so an apt failure costs thirty
+        # seconds instead of a toolchain fetch and a full build.
+        run: |
+          if command -v g++ >/dev/null 2>&1; then
+            echo "g++ $(g++ --version | head -1)"
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends g++
+          else
+            echo "::error::no g++ and no apt-get to install one -- detools builds a C++ extension from source and will not install without one"
+            exit 1
+          fi
+          command -v g++
       - name: bootstrap the workspace
         # One retry: bootstrap is resumable (fetch sentinel), so a transient
         # fetch failure costs a resume, not the whole multi-GB fetch.
