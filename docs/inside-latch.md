@@ -1,10 +1,9 @@
 # Inside latch: never a passive unlock from inside, on two BLE dongles
 
 The DWM3001CDK must never passively unlock while the credentialed phone is
-inside the door. This document is the design for meeting that goal with the
-hardware already on the bench -- the lock plus two nRF52840 BLE witness
-dongles -- connected entirely wirelessly: no Raspberry Pi, no J-Link held
-open, no USB host in steady state, no new sensor types.
+inside the door. The design meets that with the hardware already on the bench
+-- the lock plus two nRF52840 BLE witness dongles -- wirelessly: no Raspberry
+Pi, no J-Link held open, no USB host in steady state, no new sensor types.
 
 > Convention (matches `approach-direction.md`): **VERIFIED** = confirmed
 > against this tree or on silicon; **MEASURED** = a dated bench observation
@@ -12,8 +11,7 @@ open, no USB host in steady state, no new sensor types.
 > not yet observed; **LIKELY** = consistent with vendor documentation from
 > memory, to be verified before it is load-bearing.
 
-Two consequences of the goal, restated because every decision below leans on
-them:
+Two consequences of the goal:
 
 - Failing to unlock outside is not a defect. The user retries, taps NFC, or
   uses the app. No inside-safety is traded for outside-availability.
@@ -24,8 +22,8 @@ them:
 
 ## 1. Route decision
 
-The three candidate routes from the task brief, evaluated against the owner
-constraint "BLE dongles only, wireless, no Pi":
+The three candidate routes from the task brief, against the owner constraint
+"BLE dongles only, wireless, no Pi":
 
 | route | verdict | why |
 |---|---|---|
@@ -33,15 +31,14 @@ constraint "BLE dongles only, wireless, no Pi":
 | B: door-transition latch | **core of the chosen design** | nothing to train; a dead sensor while latched INSIDE leaves the latch INSIDE |
 | C: hybrid (latch + live classification at crossings) | **chosen, with BLE in place of UWB** | the latch is the veto authority; the BLE differential is consulted only at the one moment it is reliable |
 
-The chosen design is route C with one structural change to how the BLE
-witnesses are used. They are not a continuous classifier -- the 2026-08-11
-bench notes in `ultrawidelock_side.c` record why that fails (49% of windows
-in the dead band at the door plane, 37 refusals against 2 grants on one
-walk). Instead the witnesses are a **walk-up notary**: their evidence is
-consulted only to CLEAR the inside veto during a live approach, at 3-8 m out
-where the differential is unambiguous, and the cleared state then persists
-through the dead band as state rather than as an expiring reading. This
-retires the `outside_hold_ms` hack rather than tuning it.
+Route C, with one structural change to how the witnesses are used. Not a
+continuous classifier -- the 2026-08-11 bench notes in `ultrawidelock_side.c`
+record why that fails (49% of windows in the dead band at the door plane, 37
+refusals against 2 grants on one walk) -- but a **walk-up notary**: consulted
+only to CLEAR the inside veto during a live approach, at 3-8 m out where the
+differential is unambiguous, the cleared state then persisting through the dead
+band as state rather than an expiring reading. That retires the
+`outside_hold_ms` hack rather than tuning it.
 
 Answers to the brief's three explicit questions:
 
@@ -51,20 +48,21 @@ Answers to the brief's three explicit questions:
 2. **Wireless:** yes. Reports ride Thread (the lock already runs standalone
    OpenThread as a Matter MTD); one-time enrollment rides BLE. No probe, no
    USB data connection, ever.
-3. **What removes per-session learning and the address handshake:** identity
-   matching moves to the lock. The witnesses report keyed-hash tuples for
-   the loudest advertisers they hear; the lock, which already holds the live
-   credential peer address for the session, computes the same keyed hash and
-   matches. `LEARN` and `ADDR` retire. Role, Thread dataset, and link key
-   are written once at enrollment and persist in the witness's NVS, so both
-   dongles run one firmware image and cold-boot into a working state.
+3. **What removes per-session learning and the address handshake:** the lock
+   stops trying to identify the phone at all. The witnesses report keyed-hash
+   tuples for the loudest advertisers they hear, under a group key the lock
+   does not hold, and the lock picks the one label whose RSSI rises at the
+   outside witness while its authenticated UWB range falls (section 5).
+   `LEARN` and `ADDR` retire. Role, Thread dataset and link key are written
+   once at enrollment and persist in the witness's NVS, so both dongles run
+   one image and cold-boot working.
 
 ---
 
 ## 2. Architecture: two layers with different failure semantics
 
-The single most important property: the two layers fail in opposite
-directions, and the safe layer is the authority.
+The two layers fail in opposite directions, and the safe layer is the
+authority.
 
 **Layer 1 -- the latch (authority).** Per-credential persistent state on the
 lock. Its resting state is INSIDE. It needs no RF evidence to hold, so
@@ -126,14 +124,12 @@ factor.
    measures out, a sensed LIS2DH12 door swing is a second such event; it
    carries no identity, so it sets every credential's flag too.
 
-   This is a correction, MADE 2026-08-20, and it is worth naming because the
-   rule it replaces was both wrong and unfalsifiable. Clearing the granting
-   credential's flag meant that in a **single-credential household nothing
-   ever set one**: no firmware path calls `note_opportunity`, so the veto
-   refused every passive unlock forever with `R_NO_OPPORTUNITY`, from either
-   side of the door. The host suite missed it because the tests set the flag
-   by hand. A latch that never opens is not a safe latch; it is one whose
-   safety cannot be measured.
+   Correction, MADE 2026-08-20: clearing the granting credential's flag meant
+   that in a **single-credential household nothing ever set one**. No firmware
+   path calls `note_opportunity`, so the veto refused every passive unlock
+   forever with `R_NO_OPPORTUNITY`, from either side of the door. The host
+   suite missed it because the tests set the flag by hand. A latch that never
+   opens is not a safe latch; it is one whose safety cannot be measured.
 3. **Reboot:** records restore from settings. Corruption degrades to INSIDE
    with no opportunity.
 
@@ -147,10 +143,10 @@ holds:
 2. `C.crossing_opportunity == true` -- there has been a door-crossing
    opportunity since C was last confirmed inside. With two or more credentials
    this is independent evidence: a phone that never left cannot be freed by RF
-   alone, because somebody else has to have opened the door. With ONE enrolled
-   credential it reduces to "this lock has been opened at least once", which
-   every lock in service satisfies, and the discrimination then rests entirely
-   on the dwell in 1 and the window run in 4. Size those accordingly.
+   alone, because somebody else has to have opened the door. With ONE credential
+   it reduces to "this lock has been opened at least once", which every lock in
+   service satisfies, and the discrimination rests entirely on the dwell in 1
+   and the window run in 4. Size those accordingly.
 3. Witness reports echo the current challenge nonce, their counters are
    monotonic per (witness, boot_id), and their age is inside the staleness
    bound. This is `ultrawidelock_satellite`'s staleness rule plus the nonce.
@@ -173,9 +169,9 @@ deliberate unlock re-seeds the record and restores normal walk-up behaviour.
   event): the opportunity from the last grant still stands, so the walk-up
   turns on the dwell and the window run like any other. Before the 2026-08-20
   correction this case was vetoed until an NFC tap. P7's accelerometer is
-  correspondingly less load-bearing now: what it would buy is restoring
-  opportunity as *independent* evidence for the single-credential case, not
-  unsticking a door that would otherwise stay shut.
+  correspondingly less load-bearing now: it would restore opportunity as
+  *independent* evidence for the single-credential case, not unstick a door
+  that would otherwise stay shut.
 - **Multi-credential, one leaves and one stays:** latches are per
   credential. B inside stays latched; A outside clears and unlocks on
   approach. Opening for A while B is inside is the normal household case,
@@ -185,10 +181,9 @@ deliberate unlock re-seeds the record and restores normal walk-up behaviour.
   evidence, which a phone that stayed inside does not produce.
 - **Resident walks to the door from inside:** latched INSIDE. If no
   opportunity since their entry, the clear is impossible regardless of RF.
-  With opportunity set (someone else used the door), the clear additionally
-  needs N consecutive confident-OUTSIDE windows plus a closing UWB
-  trajectory from beyond 3 m -- a through-door misread must survive all of
-  that to cause harm. Residual, stated in section 8.
+  With opportunity set (someone else used the door), the clear still needs
+  conditions 3 and 4 above, which a through-door misread must survive to cause
+  harm. Residual, stated in section 8.
 
 ---
 
@@ -208,12 +203,11 @@ VERIFIED in-tree: the lock runs standalone OpenThread (`overlay-thread.conf`,
 to an existing stack, not a new stack.
 
 **Witnesses join the home's Thread network as SEDs** polling at ~500 ms.
-SED, not MED, and mains-powered regardless (USB chargers): the choice is
-about radio time, not battery. BLE scanning wants the radio; a SED gives
-Thread the radio only at poll instants, so the scan duty cycle survives.
-Uplink reports are child-initiated and suffer no poll latency; only the
-challenge nonce rides the downlink, bounded by the poll period, which is
-well inside the staleness budget.
+SED not MED, though mains-powered (USB chargers): the choice is radio time,
+not battery. BLE scanning wants the radio; a SED gives Thread the radio only
+at poll instants, so the scan duty cycle survives. Uplink reports are
+child-initiated and suffer no poll latency; only the challenge nonce rides the
+downlink, bounded by the poll period, well inside the staleness budget.
 
 Witness -> lock traffic routes child -> parent router -> lock (the lock is
 itself an MED child); two mesh hops, tens of milliseconds against a 1500 ms
@@ -221,8 +215,8 @@ staleness bound.
 
 The witness firmware becomes dual-stack: BLE observer plus OpenThread SED
 under MPSL dynamic multiprotocol. LIKELY supported on nRF52840 (Nordic
-ships BLE/Thread dynamic multiprotocol samples for this SoC); this is the
-plan's riskiest assumption and is stage P0, first, on hardware.
+ships BLE/Thread dynamic multiprotocol samples for this SoC); the plan's
+riskiest assumption, and stage P0, first, on hardware.
 
 ---
 
@@ -249,19 +243,19 @@ CCM: key = 128-bit per-witness link key, nonce = witness_id || boot_id || ctr,
      seal: one 802.15.4 frame.
 ```
 
-K is 8 rather than 4 because the binding case is the INSIDE witness, not the
-outside one. During a walk-up the phone is nearly on top of the outside
-witness and certainly ranks in the top few; the inside witness hears that same
-phone through a door and ranks it below whatever else the house is running. If
-it misses the cut there the pair has no inside reading, quorum fails, and no
-clear is possible -- safe, and indistinguishable from a broken lock. In a denser
-RF environment than K = 8 covers, the lock hints its picked label back on the
-challenge (the nonce grows a hash24 trailer, 9 B to 12 B) and the witness
-forces that label into the report -- appended when there is room, else in
-place of the quietest tuple. A hint can only name a label the witness actually
-heard in the window; a label heard zero times cannot be conjured, so a forged
-hint buys at most one junk tuple. A bare 9 B challenge clears any standing
-hint. Built on both ends; see ultrawidelock_witness_core_include().
+K is 8 rather than 4 because the binding case is the INSIDE witness. During a
+walk-up the phone is nearly on top of the outside witness and ranks in the top
+few; the inside witness hears that same phone through a door and ranks it below
+whatever else the house is running. If it misses the cut the pair has no inside
+reading, quorum fails, and no clear is possible: safe, and indistinguishable
+from a broken lock. In a denser RF environment than K = 8 covers, the lock
+hints its picked label back on the challenge (the nonce grows a hash24 trailer,
+9 B to 12 B) and the witness forces that label into the report, appended when
+there is room, else in place of the quietest tuple. A hint can only name a
+label the witness heard in the window; a label heard zero times cannot be
+conjured, so a forged hint buys at most one junk tuple. A bare 9 B challenge
+clears any standing hint. Built on both ends; see
+ultrawidelock_witness_core_include().
 
 Rules the lock enforces (all lock-side; witnesses hold no authority):
 
@@ -281,20 +275,19 @@ Rules the lock enforces (all lock-side; witnesses hold no authority):
    time. Alignment error is bounded by the poll period (~500 ms); the
    outside margin must absorb the residual smear (bench-sized in P8).
 
-Identity: there is none, and that is a correction to an earlier revision of
-this document rather than a refinement of it. The witness computes `hash24 =
+Identity: there is none. The witness computes `hash24 =
 trunc24(hash(group_key, AdvA))` for the loudest K advertisers, under a key the
-WITNESSES share and the lock does not -- so the same advertiser carries the
-same label at both witnesses, which is what lets inside be compared against
-outside, while staying opaque to the lock and to the air.
+WITNESSES share and the lock does not, so the same advertiser carries the same
+label at both witnesses, which is what lets inside be compared against outside,
+while staying opaque to the lock and to the air.
 
 The lock does not match that label against anything. It cannot. The phone is
 the central, so the address the lock holds from the credential connection is
-an InitA generated for the initiating role, while what the witnesses hear
-comes from advertising sets with their own address state and their own
-rotation timers. The Core Spec permits one RPA across roles and does not
-require it; nothing Apple publishes promises it. Matching the two would fail
-in the ordinary case, not in a corner.
+an InitA generated for the initiating role, while the witnesses hear
+advertising sets with their own address state and rotation timers. The Core
+Spec permits one RPA across roles and does not require it; nothing Apple
+publishes promises it. Matching the two would fail in the ordinary case, not in
+a corner.
 
 Instead the lock picks the phone by TRAJECTORY: exactly one advertiser in the
 room gets louder at the outside witness while the authenticated UWB range
@@ -318,8 +311,8 @@ SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
 ```
 
 - **role** — `inside`, `outside` or `threshold`. A mounting fact, declared
-  once. It is no longer a build flag, so all dongles run one image and moving
-  one from inside to outside is a re-provision, not a reflash.
+  once. Not a build flag, so all dongles run one image and moving one from
+  inside to outside is a re-provision, not a reflash.
 - **link key** — 16 bytes, DIFFERENT per dongle. Seals that witness's reports;
   the lock holds the same bytes at
   `ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role`.
@@ -327,12 +320,12 @@ SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
   the lock. It labels advertisers so inside can be compared against outside
   (section 5) while the labels stay opaque to the lock.
 - **dataset** — the Thread active operational dataset TLVs. Take them from the
-  lock, which is already on the network: build it with
+  lock, already on the network: build it with
   `overlays/thread-dataset-dump.conf` appended to the whole default `CDK_CONF`
   list (its header says why the whole list), flash, and press SW2. The dump is
   on the commissioning-window path, not the attach path, so it prints when the
-  window opens. `ot-ctl dataset active -x` is the alternative and needs a node
-  with a CLI, which an Apple border router does not give you.
+  window opens. The alternative, `ot-ctl dataset active -x`, needs a node with a
+  CLI, which an Apple border router does not give you.
 
 All four persist through the witness's numeric key-value seam. It cold-boots
 into scanning, joining and reporting, and holds that for weeks with nothing
@@ -374,16 +367,12 @@ limited to once per 10 s.
 **Why this is not over the air, which was the earlier plan.** The lock builds
 with `CONFIG_BT_OBSERVER=n` and `CONFIG_BT_CENTRAL=n`: it advertises and
 accepts a connection, and that is all its BLE stack does. Wireless enrollment
-needs the lock to either scan for a dongle or connect to one, so it means
-adding a BLE role to the stack that carries the credential -- the single most
-security-sensitive surface on the device -- to save a one-time step performed
-while the dongle is already in your hand, plugged into the machine that just
-flashed it. That trade is bad in the direction that matters. It is a deferral
-with a stated reason, not an oversight, and it does not touch the requirement
-that STEADY STATE be wireless, which it is.
-
-The provisioning console prints no key material back, so a captured session
-log does not compromise the link.
+needs the lock to scan for a dongle or connect to one, so it means adding a BLE
+role to the stack that carries the credential -- the most security-sensitive
+surface on the device -- to save a one-time step performed while the dongle is
+in your hand, plugged into the machine that just flashed it. Bad in the
+direction that matters, and it does not touch the requirement that STEADY STATE
+be wireless, which it is.
 
 ## 7. Privacy
 
@@ -416,16 +405,15 @@ log does not compromise the link.
 | 10 | through-door RF misread past the dwell | must survive N consecutive confident-OUTSIDE paired windows plus a closing UWB trajectory | residual, stated; since 2026-08-20 this row covers the single-credential case too, so N, the margin and `entry_dwell_ms` are the whole defence. Sized on the bench in P8 |
 
 Every row degrades to "the door does not open passively", except 9 and 10,
-which are stated residuals with their preconditions -- neither is reachable
-by evidence LOSS, only by evidence FORGERY plus independent conditions.
+which are stated residuals with their preconditions; neither is reachable by
+evidence LOSS, only by evidence FORGERY plus independent conditions.
 
-Load-bearing physical assumption, called out as the one that can sink the
-design: **the phone keeps advertising with the session's AdvA during the
-approach.** MEASURED 2026-08-11 on this bench (3-8 filtered packets per 2 s
-window, recorded in `ultrawidelock_side.c`); re-verify after iOS updates
-(P0/P8). If it stops holding, the fallback is the lock's own connection
-RSSI plus a single inside dongle -- a weaker discriminator, deliberately
-not designed here.
+The physical assumption that can sink the design: **the phone keeps
+advertising with the session's AdvA during the approach.** MEASURED 2026-08-11
+on this bench (3-8 filtered packets per 2 s window, recorded in
+`ultrawidelock_side.c`); re-verify after iOS updates (P0/P8). If it stops
+holding, the fallback is the lock's own connection RSSI plus a single inside
+dongle, a weaker discriminator, deliberately not designed here.
 
 ---
 
@@ -438,8 +426,8 @@ not designed here.
   debug; the deployed path is WV2 over Thread.
 - **`outside_hold_ms` as a load-bearing mechanism**: the cleared latch is
   state and survives the dead band by construction. The side-module
-  defaults are not changed by this design; the latch simply stops relying
-  on that one.
+  defaults are not changed by this design; the latch stops relying on that
+  one.
 - **`ultrawidelock_fusion_may_predict()`** stays out of the new path. Its
   fail-open-on-UNKNOWN polarity is documented and intentional for the
   legacy ANCHOR=1 availability goal, and is exactly wrong for this one.
@@ -472,8 +460,8 @@ ULTRAWIDELOCK_WITNESS_STALE_MS       int, default 1500
 decisions) plus the three new bools; `SIDE_FEED_RTT` and `SIDE_PEER_EMIT`
 stay off -- no probe, no address logging.
 
-Size, MEASURED 2026-08-20 on this tree. The estimate this section used to
-carry was ~7 KB flash / ~1.1 KB RAM, and it held.
+Size, MEASURED 2026-08-20 on this tree. The earlier estimate of ~7 KB flash /
+~1.1 KB RAM held.
 
 | build | FLASH | RAM |
 |---|---|---|
@@ -486,19 +474,19 @@ The `RELEASE=1` row is from 2026-08-19 and predates the 128 B the
 no-key-opened warning added; the two dev rows are current.
 
 The delta is not the interesting number; the residue is. On the dev config
-LATCH=1 leaves 8,992 B free, which is not a budget anything else can be added
-to. On the shipping configuration it leaves 27,128 B, which is workable. The
+LATCH=1 leaves 8,992 B free, not a budget anything else can be added to. On
+the shipping configuration it leaves 27,128 B, which is workable. The
 asymmetry is the logging the dev config carries, and it means the enrollment
 path (stage P7, unbuilt) must be measured against the shipping config or it
 will look affordable and not be.
 
 Default build unchanged, VERIFIED 2026-08-20: commit 588459f5 and this
 branch's HEAD both produce a 417,684 B loadable image differing in exactly 8
-bytes, all of them inside OpenThread's version string (`Aug 19 2026 05:14:11`
-against `Aug 20 2026 14:27:53` -- the build date rolled between the two
-comparisons, so more digits differ than the 4 measured on 2026-08-19). text,
-data and bss are identical to the byte, and every allocated section matches in
-size and placement.
+bytes, all inside OpenThread's version string (`Aug 19 2026 05:14:11` against
+`Aug 20 2026 14:27:53` -- the build date rolled between the two comparisons,
+so more digits differ than the 4 measured on 2026-08-19). text, data and bss
+are identical to the byte, and every allocated section matches in size and
+placement.
 
 ---
 
@@ -506,9 +494,8 @@ size and placement.
 
 Order: plan-invalidators first, then platform-free code, then integration,
 then hardware. P0 needs the bench; P2-P4 do not depend on its numbers and
-can proceed in parallel with it. Each stage carries its pass/fail check; a
-stage failing twice after fixes stops downstream work per the working
-rules.
+can run in parallel. Each stage carries its pass/fail check; a stage failing
+twice after fixes stops downstream work per the working rules.
 
 **P0 -- multiprotocol spike (plan invalidator, hardware).**
 Build the existing ble-witness with an added OpenThread SED overlay on an
@@ -519,8 +506,7 @@ design review (BLE transport reconsidered) before any integration work.
 Also re-verifies the section 8 advertising assumption on current iOS.
 
 **P1 -- this document.** Done when it answers every question in the task
-brief and the safety table enumerates every loss case. (This stage is what
-you are reading.)
+brief and the safety table enumerates every loss case.
 
 **P2 -- WV2 codec, platform-free.**
 `modules/ultrawidelock_anchor/{include/ultrawidelock_witness_msg.h,src/ultrawidelock_witness_msg.c}`:
@@ -560,13 +546,12 @@ delta against the section 10 budget.
 **P5a -- lock-side enrollment. BUILT.**
 `ultrawidelock witkey <role> <hex32>` on the reader image writes
 `ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role`; the record survives the
-reflash to the Thread image because
-`make flash` does not erase. Restoring it exposed a separate defect: commit
-4bdfd44a had replaced `prov_shell.c`'s line in
-`apps/dwm3001cdk-lock/CMakeLists.txt` with the `side_feed.c` one instead of
-adding it, so the whole provisioning console -- `prov`, `import`, `export`,
-`erase` -- had been absent from every build since 2026-08-11 while the file and
-its comment stayed in the tree. Both are fixed here.
+reflash to the Thread image because `make flash` does not erase. Restoring it
+exposed a separate defect: commit 4bdfd44a had replaced `prov_shell.c`'s line
+in `apps/dwm3001cdk-lock/CMakeLists.txt` with the `side_feed.c` one instead of
+adding it, so the provisioning console -- `prov`, `import`, `export`, `erase`
+-- had been absent from every build since 2026-08-11 while the file and its
+comment stayed in the tree. Both fixed here.
 Pass: `make reader` links and `cmd_witkey` is in its map (VERIFIED); the lock
 image is unchanged (VERIFIED, section 10). NOT exercised on hardware.
 
@@ -575,18 +560,17 @@ image is unchanged (VERIFIED, section 10). NOT exercised on hardware.
 labels every advertiser under the group key, ranks them with the shared
 accumulator, seals a WV2 window under its link key and sends it over Thread as
 a sleepy end device. `LEARN`, `ADDR`, the per-role build flag and the UART
-summary line are all gone, and it shares the lock's codec rather than
-reimplementing it. Builds at 285,576 B flash / 96,360 B RAM on the nRF52840,
-27.56% and 36.76% of the part.
+summary line are gone, and it shares the lock's codec. Builds at 285,576 B
+flash / 96,360 B RAM on the nRF52840, 27.56% and 36.76% of the part.
 Pass: two dongles, flashed identically, provisioned with different roles, each
 cold-boots to solid-LED and reports with no host attached. NOT YET RUN -- it
-needs the hardware, and it is the same session as P0.
+needs the hardware, the same session as P0.
 
 **P7 -- optional accel opportunity source.**
 A bench capture deciding whether LIS2DH12 door-swing transients are detectable
-at low mg (UNMEASURED; the SLAM Kconfig proves the IRQ wiring exists). If they
-are not, the accel opportunity source is dropped and the NFC-after-mechanical-
-exit tax in section 3.4 stands.
+at low mg (UNMEASURED; the SLAM Kconfig proves the IRQ wiring exists). If not,
+the accel opportunity source is dropped and the NFC-after-mechanical-exit tax
+in section 3.4 stands.
 Wireless enrollment is NOT in this stage any more; see section 6 for what
 replaced it and why.
 Pass: 20 normal door swings all detected, 0 false events overnight; otherwise

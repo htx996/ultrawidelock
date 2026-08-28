@@ -1,16 +1,15 @@
 # Door Lock events
 
-A lock that only reports its bolt can say what it did. It cannot say what
-happened to it. This is what the hand-written Matter node
-(`modules/ultrawidelock_matter`) sends when something happens, why there are
-exactly two of them, and which half of that is proven.
+A lock that only reports its bolt can say what it did, not what happened to it.
+These are what the hand-written Matter node (`modules/ultrawidelock_matter`)
+sends.
 
 ## The two events
 
-Both are on the Door Lock cluster (0x0101) at endpoint 1, and both are priority
+Both are on the Door Lock cluster (0x0101) at endpoint 1, both priority
 CRITICAL. That is not a judgement call: it is `priority="critical"` on the event
-element in the cluster XML, and it is the field a subscriber reads to decide
-what it may drop.
+element in the cluster XML, the field a subscriber reads to decide what it may
+drop.
 
 | Event | Id | Fields | Raised when |
 |---|---|---|---|
@@ -18,28 +17,28 @@ what it may drop.
 | `DoorLockAlarm` | 0 | alarm code | the door was forced, or left ajar while locked |
 
 `LockOperation` exists because the CHIP-based lock builds serve it and this one
-served no events at all; Apple Home's "Manage Access" pane is the working
-hypothesis for what that absence gates. It reports Remote for a controller
-command and the credential source for a walk-up, with a null fabric and a null
-source node, because a walk-up belongs to no fabric and naming one would tell a
-controller that IT opened the door.
+served none; Apple Home's "Manage Access" pane is the working hypothesis for
+what that absence gates. It reports Remote for a controller command and the
+credential source for a walk-up, with a null fabric and null source node,
+because a walk-up belongs to no fabric and naming one would tell a controller
+that IT opened the door.
 
-`DoorLockAlarm` carries one field, so there is no optional to decide about.
-Only two of the nine `AlarmCodeEnum` values are ever sent:
+`DoorLockAlarm` carries one field. Two of the nine `AlarmCodeEnum` values are
+ever sent:
 
 | Code | Value | What this board actually observes |
 |---|---|---|
 | `DoorForcedOpen` | 6 | the LIS2DH12 impact classifier latched a tamper while the bolt still reported LOCKED |
 | `DoorAjar` | 7 | the frame-to-leaf swing angle stood away from CLOSED past the dwell, bolt still thrown |
 
-The other six describe a motor, a keypad or an enclosure switch this board does
-not have. `LockJammed` on a lock with no bolt to jam is a lie a controller
-cannot check, so it is not sent.
+The other six describe a motor, keypad or enclosure switch this board does not
+have. `LockJammed` on a lock with no bolt to jam is a lie a controller cannot
+check, so it is not sent.
 
 ## How one reaches a controller
 
-There is no separate event channel. A recorded event goes into a ring of four
-in `struct matter_device_info` and rides out on the next report.
+No separate event channel: a recorded event goes into a ring of four in
+`struct matter_device_info` and rides out on the next report.
 
 - **Four slots, not an audit log.** A subscriber hears about each event as it
   happens, so the ring only has to survive the gap between an event and the
@@ -67,21 +66,21 @@ one test the sensors cannot: the bolt has to report LOCKED. An alarm about a
 door the owner deliberately left open is noise, and this node has one report
 channel to spend.
 
-## What it costs, and what it does not
+## What it costs
 
-The alarms are compiled only into the anchor build. `matter_clusters.[ch]` gates
-them on `MATTER_FEATURE_DL_ALARMS`, a plain portable macro rather than a Kconfig
-symbol, because those sources are platform-agnostic C11 that the host suite
-compiles directly and the flag has to mean the same thing to both. The Zephyr
-side defines it in `modules/ultrawidelock_matter/CMakeLists.txt` under
-`CONFIG_ULTRAWIDELOCK_ANCHOR`, which is the only build carrying a sensor that
-can witness an alarm.
+The alarms compile only into the anchor build. `matter_clusters.[ch]` gates them
+on `MATTER_FEATURE_DL_ALARMS`, a portable macro rather than a Kconfig symbol,
+because those sources are platform-agnostic C11 the host suite compiles directly
+and the flag has to mean the same thing to both. The Zephyr side defines it in
+`modules/ultrawidelock_matter/CMakeLists.txt` under
+`CONFIG_ULTRAWIDELOCK_ANCHOR`, the only build carrying a sensor that can witness
+an alarm.
 
-Off, every file preprocesses to what it was before the event existed. Verified
-rather than asserted: the default image was built from HEAD and from the change,
-same build directory, both `PRISTINE=1`, same signing key, and the only five
-differing bytes are the embedded build-time string. On the anchor image the
-alarms cost 300 B of flash and no RAM.
+Off, every file preprocesses to what it was before the event existed. Verified,
+not asserted: the default image built from HEAD and from the change, same build
+directory, both `PRISTINE=1`, same signing key, and the only five differing
+bytes are the embedded build-time string. On the anchor image the alarms cost
+300 B of flash and no RAM.
 
 `LockOperation` is not gated. It is in every image that has the Matter node.
 

@@ -11,10 +11,10 @@ in the [repository README](../README.md).
 | DWM3000EVB (DW3110) | UWB radio, on the Arduino header (SPIM4) |
 | X-NUCLEO-NFC12A1 (ST25R300) | NFC reader front end for tap (SPIM1) |
 
-Pin assignments live in
-[`../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay`](../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay);
-that file is the source of truth. [nrf5340-wiring.md](nrf5340-wiring.md) transcribes it
-into both-ends tables with Arduino header positions and the 9 NFC jumpers.
+Pin assignments are in
+[`../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay`](../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay),
+the source of truth. [nrf5340-wiring.md](nrf5340-wiring.md) transcribes it into
+both-ends tables with Arduino header positions and the 9 NFC jumpers.
 
 ## Before powering
 
@@ -31,14 +31,12 @@ make nrf-term
 ```
 
 The image lands in `./build/nrf5340dk/merged.hex`; the console is on VCOM1
-(VCOM0 is silent).
-
-The first flash and any net-core config change need the erase; plain
-`make nrf-flash` otherwise.
+(VCOM0 is silent). The first flash and any net-core config change need the
+erase; plain `make nrf-flash` otherwise.
 
 ## First-boot checks
 
-* `make nrf-selftest` exercises the radio with no phone present: it separates a
+* `make nrf-selftest` exercises the radio with no phone present, separating a
   wiring problem from a protocol one.
 * On the shell: `ultrawidelock status`, `ultrawidelock chip` (DW3110 device ID over SPI),
   `ultrawidelock range`.

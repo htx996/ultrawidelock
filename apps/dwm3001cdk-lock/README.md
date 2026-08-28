@@ -1,25 +1,22 @@
 # DWM3001CDK lock
 
-This application turns one DWM3001CDK into a credential reader and Matter lock. It
-runs the portable credential, UWB, and Matter modules on the board's nRF52833 and
-DW3110.
+One DWM3001CDK as a credential reader and Matter lock, running the portable
+credential, UWB and Matter modules on the board's nRF52833 and DW3110.
 
 ## Build
 
-Prepare the NCS workspace and the checkout-specific MCUboot key once:
+Once, for the NCS workspace and this checkout's MCUboot key:
 
 ```sh
 make bootstrap
 make dfu-key
 ```
 
-Build the default Matter over Thread lock from the repository root:
+Then, from the repository root:
 
 ```sh
 make build
 ```
-
-Useful related images are:
 
 | Command | Image |
 |---|---|
@@ -28,15 +25,15 @@ Useful related images are:
 | `make cirdiag` | Matter lock with unattended CIR capture |
 | `make mlgate` | Lock with LOS/NLOS classification in the unlock path |
 
-Use `make flash` to program the built image and `make monitor` to open the RTT
-console. `make flash-erase` also erases commissioning and reader state.
+`make flash` programs it, `make monitor` opens the RTT console.
+`make flash-erase` also erases commissioning and reader state.
 
 ## Apple Home plus Home Assistant
 
-The lock supports five Matter fabrics. Apple Home normally consumes two and
-Home Assistant consumes one, leaving two spare. All administrators must use one
-Thread dataset. Do not commission the board onto a new Home Assistant Thread
-network after Apple Home has already put it on the Apple network.
+Five Matter fabrics: Apple Home normally takes two and Home Assistant one,
+leaving two spare. All administrators must use **one** Thread dataset. Do not
+commission the board onto a new Home Assistant Thread network after Apple Home
+has put it on the Apple network.
 
 ### Before pairing
 
@@ -69,19 +66,17 @@ network after Apple Home has already put it on the Apple network.
 4. Operate the lock from both apps, power-cycle it, and repeat both operations.
    Confirm the Wallet key still unlocks on approach.
 
-No `HA=1` build option is required. That option belongs only to the nRF5340
-generated data-model variant; DWM3001CDK multi-admin is standard Matter.
+No `HA=1` needed: that option belongs to the nRF5340 generated data-model
+variant, and DWM3001CDK multi-admin is standard Matter.
 
 ### Optional Home Assistant integration
 
-The manufacturer-specific UWB cluster can be exposed as native Home Assistant
-entities and dashboard cards using the companion
-[UltraWideLock Home Assistant integration](https://github.com/UWL-HA/UWL-Home-Assistant).
-
-The integration provides live distance, credential presence, movement, policy
-controls, history, and two dashboard cards. Read-only use works without modifying
-Matter Server; writable custom attributes require the optional schema described
-in that repository.
+The companion
+[UltraWideLock Home Assistant integration](https://github.com/UWL-HA/UWL-Home-Assistant)
+exposes the manufacturer-specific UWB cluster as native entities: live distance,
+credential presence, movement, policy controls, history and two dashboard cards.
+Read-only use needs no Matter Server changes; writable custom attributes need
+the optional schema described there.
 
 ### Recovery without a factory reset
 
@@ -93,11 +88,11 @@ in that repository.
 | A controller was removed locally but its fabric remains on the lock | From a controller that still reaches the lock, use **Settings > Matter > Devices > _lock_ > Share device > Manage fabrics** and remove the stale controller. `RemoveFabric` is authenticated, durable, and scoped to that fabric. |
 | No surviving controller can reach the lock | Hold **SW2 through reset**. The LED blinks and all Matter/Home Key state is erased. This is the last resort because every controller and Wallet key must then be paired again. |
 
-Removing the last fabric clears the Home Key trust state and returns the board to
-commissionable advertising. A failed `AddNOC` does not consume a persistent
-slot. The persistent `mf2` records commit one fabric at a time and tombstone a
-removal before success is returned, so an interrupted update loads either the
-old or new valid record rather than a half-written table.
+Removing the last fabric clears the Home Key trust state and returns the board
+to commissionable advertising. A failed `AddNOC` consumes no persistent slot.
+The `mf2` records commit one fabric at a time and tombstone a removal before
+returning success, so an interrupted update loads either the old or the new
+valid record, never a half-written table.
 
 ### What is verified
 
@@ -117,9 +112,8 @@ old or new valid record rather than a half-written table.
 
 ### Verified size
 
-Both sides of this comparison were pristine builds of revision `3dee6531`,
-using NCS v3.3.0, Zephyr 4.3.99, LTO, `RELEASE=1`, and `SMP=1`. The only
-difference was this worktree's multi-admin changes.
+Pristine builds of revision `3dee6531` on NCS v3.3.0, Zephyr 4.3.99, LTO,
+`RELEASE=1`, `SMP=1`, differing only in this worktree's multi-admin changes.
 
 | Region | Clean `main` | This worktree | Increase | Free now |
 |---|---:|---:|---:|---:|
@@ -132,7 +126,7 @@ five-fabric/per-fabric state, 1,400 B for exact-response replay across seven
 exchanges, 496 B for the bounded persistence serializer, 272 B for its request
 snapshot, and 264 B for the larger SRP registry.
 
-Reproduce the current half after `make bootstrap` with:
+Reproduce the current half after `make bootstrap`:
 
 ```sh
 make build RELEASE=1 SMP=1 PRISTINE=1
@@ -141,39 +135,37 @@ make cdk-size CDK_SIZE_REPORTS=0
 
 ## Overlays
 
-`overlay-*.conf` beside this file are the shipping profiles, and `make build`
-picks between them from the command line: `RELEASE=1`, `SMP=1`, `OTLOG=1`,
-`ANCHOR=1`, `SIDE=1`, `LATCH=1`, and `LTO=0` to turn off the LTO that is on by
-default. `make anchorlink` spells its own list out instead, because two of its
-overlays are not the caller's to choose.
+`overlay-*.conf` beside this file are the shipping profiles, chosen from the
+command line: `RELEASE=1`, `SMP=1`, `OTLOG=1`, `ANCHOR=1`, `SIDE=1`, `LATCH=1`,
+and `LTO=0` to turn off the default LTO. `make anchorlink` spells its own list
+out, because two of its overlays are not the caller's to choose.
 
-`overlays/` is a different thing: bench instrumentation, calibration and
-bisection arms, none of which belong in a shipping image. Four are reachable
-from a target -- `uwb-selftest.conf` (`make selftest`), `cirdiag.conf` (`make
-cirdiag`), `mlgate.conf` (`make mlgate`), and `bench-anchorlink.conf` (`make
-anchorlink BENCH=1`, this desk's calibration). The rest are layered by hand,
-which the command line allows because `CDK_CONF` names the whole list:
+`overlays/` is bench instrumentation, calibration and bisection arms. Four are
+reachable from a target: `uwb-selftest.conf` (`make selftest`), `cirdiag.conf`
+(`make cirdiag`), `mlgate.conf` (`make mlgate`), and `bench-anchorlink.conf`
+(`make anchorlink BENCH=1`, this desk's calibration). The rest are layered by
+hand, since `CDK_CONF` names the whole list:
 
 ```sh
 make build CDK_CONF="overlay-thread.conf;overlay-lto.conf;overlays/bench.conf"
 ```
 
-Order matters -- later files win -- and each overlay's own header says what it
-measures and what it costs. Several stack on another one rather than on the
-base, and say so in their first lines. Nothing in `overlays/` is safe to ship:
-`thread-dataset-dump.conf` prints the Thread network key, `bench-side-margin.conf`
-lowers the margin the inside/outside decision rests on, and `bench-latch.conf`
-relaxes the latch choreography.
+Order matters, later files win, and each overlay's header says what it measures
+and costs. Several stack on another overlay rather than on the base and say so
+in their first lines. **Nothing in `overlays/` is safe to ship**:
+`thread-dataset-dump.conf` prints the Thread network key,
+`bench-side-margin.conf` lowers the margin the inside/outside decision rests on,
+and `bench-latch.conf` relaxes the latch choreography.
 
 ## Contents
 
-- `src/` contains the product entry point and product policy.
-- `boards/` and `overlays/` describe board wiring and optional build profiles.
-- `sysbuild/` configures MCUboot.
-- `keys/` holds the ignored local signing key generated by `make dfu-key`.
-  Regenerating it is free only until a bootloader is flashed. After that, MCUboot
-  on that board trusts one key, and losing it means the board takes no further
-  image over DFU -- it needs the bootloader replaced over SWD. Because the key is
-  gitignored it exists in exactly one working directory and no clone, worktree or
-  push carries it, so pruning a worktree or moving a checkout can destroy it.
-  Back it up somewhere that is not this tree.
+- `src/`, the product entry point and policy.
+- `boards/` and `overlays/`, board wiring and optional build profiles.
+- `sysbuild/`, MCUboot configuration.
+- `keys/`, the gitignored local signing key from `make dfu-key`. Regenerating it
+  is free only until a bootloader is flashed: after that MCUboot on that board
+  trusts one key, and losing it means the board takes no further image over DFU
+  and needs its bootloader replaced over SWD. Being gitignored, the key exists in
+  exactly one working directory and no clone, worktree or push carries it, so
+  pruning a worktree or moving a checkout can destroy it. **Back it up outside
+  this tree.**

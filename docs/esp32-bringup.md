@@ -1,14 +1,14 @@
 # ESP32 bring-up (S3, C5, and C6)
 
-One page, match-the-table. The pin map's source of truth is
-`ports/esp32/components/ultrawidelock_uwb/port/board_pins.h`; if you change it there, change it
-here.
+The pin map's source of truth is
+`ports/esp32/components/ultrawidelock_uwb/port/board_pins.h`. Change it there,
+change it here.
 
 ## 1. Wire the radio
 
 ### DWM3000EVB shield
 
-Power the EVB from the ESP32 board's **3V3** pin, not 5 V — the DW3000 is a 3.3 V
+Power the EVB from the ESP32 board's **3V3** pin, not 5 V: the DW3000 is a 3.3 V
 part. Share a common ground and USB-power the board during bring-up.
 
 | DWM3000EVB pin | Signal | ESP32-S3 | ESP32-C5 | ESP32-C6 |
@@ -25,13 +25,12 @@ part. Share a common ground and USB-power the board during bring-up.
 | D1 | SPI-POL | GND (mode-0 strap) | same | same |
 | D0 | SPI-PHA | GND (mode-0 strap) | same | same |
 
-Mode-0 strap: the DW3000 SPI must run CPOL=0/CPHA=0. Tie D0 and D1 to GND unless your
-EVB revision already fixes the mode on the shield — check the EVB manual before
-soldering.
+Mode-0 strap: the DW3000 SPI must run CPOL=0/CPHA=0. Tie D0 and D1 to GND unless
+your EVB revision already fixes the mode on the shield; check the EVB manual
+before soldering.
 
-GPIO 4, 5, 6, and 10-13 are clear of the S3's octal PSRAM pins. SPI2 routes
-through the GPIO matrix, so the bus can be remapped in `board_pins.h` if your
-board does not break these pins out.
+GPIO 4, 5, 6 and 10-13 are clear of the S3's octal PSRAM pins. SPI2 routes
+through the GPIO matrix, so the bus can be remapped in `board_pins.h`.
 
 Why the C5 data pins differ: on the C5 the S3's GPIO11/12 are the UART0 console and
 GPIO13 is USB-Serial-JTAG; GPIO8/9/23 also avoid the strapping pins (2/7/25/27/28,
@@ -51,10 +50,10 @@ and [ESP32-C6-DevKitC-1 pin/flash guide](https://docs.espressif.com/projects/esp
 ### BU04 module in direct-SPI mode
 
 The same C6 firmware can drive the DW radio inside a BU04 directly. The onboard
-STM32F103 shares the DW SPI and control nets, so connect BU04 pad 2 (`ST_NRST`)
-to GND before powering either board and keep it low for the entire session. Do
-not release `ST_NRST` while the ESP32 is driving those nets; otherwise both MCUs
-can drive the bus.
+STM32F103 shares the DW SPI and control nets, so tie BU04 pad 2 (`ST_NRST`) to
+GND before powering either board and keep it low for the whole session.
+Releasing `ST_NRST` while the ESP32 drives those nets lets both MCUs drive the
+bus.
 
 | BU04 module pad | Signal | ESP32-C6-DevKitC-1 |
 |---|---|---|
@@ -78,17 +77,15 @@ different voltage.
 
 Source: [Ai-Thinker BU04 specification](https://ai-thinker.com/Uploads/file/20240927/20240927190544_82504.pdf).
 
-This first image still selects the existing DW3000-family driver profile. On
-boot, capture the raw `DEV_ID` line. IDs ending in `...02`/`...12` use the
-current profile; `...04`/`...14` require switching the component to its
-in-tree DW3720 profile before ranging.
+This first image selects the existing DW3000-family driver profile. Capture the
+raw `DEV_ID` line at boot: IDs ending `...02`/`...12` use the current profile,
+`...04`/`...14` need the in-tree DW3720 profile before ranging.
 
-### Check the EVB power-select jumper
+### Check the EVB power-select jumper first
 
-Do this before anything else. Correct wiring is not enough if the EVB's own power-select
-jumper picks the wrong source: SPI then fails silently, with no valid device ID and a
-responder that never listens, and it looks exactly like a software fault. This cost days
-of debugging once. Check the jumper first.
+Correct wiring is not enough. With the jumper on the wrong source, SPI fails
+silently: no valid device ID, a responder that never listens, and it looks
+exactly like a software fault. This cost days of debugging once.
 
 ## 2. Build and flash
 
@@ -100,10 +97,10 @@ make flash
 make monitor
 ```
 
-`make esp-set-target` runs `idf.py set-target` once per checkout. ESP-IDF is expected at
-`~/esp/esp-idf`; override with `IDF_EXPORT=`. The port is
-auto-detected and SEGGER/J-Link ports are refused; `make ports` lists what is attached
-and how each is classified.
+`make esp-set-target` runs `idf.py set-target` once per checkout. ESP-IDF is
+expected at `~/esp/esp-idf`; override with `IDF_EXPORT=`. The port is
+auto-detected and SEGGER/J-Link ports refused; `make ports` lists what is
+attached and how each is classified.
 
 ## 3. What good output looks like
 
@@ -112,27 +109,27 @@ responder:
 
     I (xxx) ultrawidelock_esp32: app_responder_start() = 0 (DW3000 up, responder listening)
 
-- `= 0` — SPI, DW3000, and the CCC init path all came up. The engine is talking to the
-  chip. With no peer present there are no range lines, which is expected.
-- `= <nonzero> (FAILED -- check wiring/SPI)` — the DW3000 did not answer. In order:
-  recheck the power-select jumper, then CS/SCLK/MOSI/MISO, then the mode-0 strap, then
-  drop to slow-only by setting `ULTRAWIDELOCK_DW3000_SPI_FAST_HZ` to `2000000` in `board_pins.h`.
+- `= 0`: SPI, DW3000 and the CCC init path all came up. With no peer present
+  there are no range lines.
+- `= <nonzero> (FAILED -- check wiring/SPI)`: the DW3000 did not answer. In
+  order, recheck the power-select jumper, then CS/SCLK/MOSI/MISO, then the mode-0
+  strap, then set `ULTRAWIDELOCK_DW3000_SPI_FAST_HZ` to `2000000` in
+  `board_pins.h`.
 
 ## 4. Prove a real range
 
-Ranging needs a peer to drive the DS-TWR exchange: an Aliro-capable iPhone with a key
-provisioned for this reader, or a second DW3000 board acting as initiator. With a peer,
-`range: NN cm` lines appear and `status` reports a trusted range.
+Ranging needs a peer to drive the DS-TWR exchange: an Aliro-capable iPhone with a
+key provisioned for this reader, or a second DW3000 board as initiator. With a
+peer, `range: NN cm` lines appear and `status` reports a trusted range.
 
-For the full approach-unlock path — commissioning, a key in the phone's wallet, and the
-Wallet unlock animation — use the Matter app in
-[`apps/esp32-matter-lock`](../apps/esp32-matter-lock) instead. This bench
-app has no Matter layer, so nothing provisions a real credential into a phone for it.
+For the full approach-unlock path (commissioning, a key in the wallet, the Wallet
+unlock animation) use [`apps/esp32-matter-lock`](../apps/esp32-matter-lock). This
+bench app has no Matter layer, so nothing provisions a real credential for it.
 
-No antenna calibration was needed on this hardware. If distances come out negative or
-absurd, read
-[`docs/esp32-gotchas.md`](esp32-gotchas.md) §6.4 before reaching for a
-calibration constant — it was a timestamp-pairing bug, not a physical offset.
+No antenna calibration was needed on this hardware. If distances come out
+negative or absurd, read [`docs/esp32-gotchas.md`](esp32-gotchas.md) §6.4 before
+reaching for a calibration constant: it was a timestamp-pairing bug, not a
+physical offset.
 
 ESP32-S3 is hardware-validated with the DWM3000EVB. ESP32-C6 is
 hardware-validated with the BU04 in direct-SPI mode and `ST_NRST` held low.

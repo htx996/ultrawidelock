@@ -1,14 +1,13 @@
 # DWM3001CDK surgery
 
-Hard-won, non-obvious findings from putting a **hand-written Matter node** next to the
-credential UWB reader on a DWM3001CDK (nRF52833 + DW3110, NCS v3.3.0 / Zephyr). The goal was
-a board that goes from factory to walk-up unlock **and a working Home tile** with nothing
-but the Home app — no build-time key, no donor ESP32, nothing typed in.
+Non-obvious findings from putting a **hand-written Matter node** beside the credential
+UWB reader on a DWM3001CDK (nRF52833 + DW3110, NCS v3.3.0 / Zephyr). Goal: factory to
+walk-up unlock **and a working Home tile** with nothing but the Home app — no build-time
+key, no donor ESP32, nothing typed in.
 
-The sibling document for the other port is [`esp32-gotchas.md`](esp32-gotchas.md). This
-one is narrower and deeper: the nRF52833 has **128 KB of RAM**, and almost every trap
-below is either that constraint or a consequence of writing the Matter node by hand
-rather than linking CHIP.
+Sibling document for the other port: [`esp32-gotchas.md`](esp32-gotchas.md). The nRF52833
+has **128 KB of RAM**, and almost every trap below is either that constraint or a
+consequence of writing the Matter node by hand rather than linking CHIP.
 
 Code lives under [`firmware`](../apps/dwm3001cdk-lock), the portable Matter node in
 `modules/ultrawidelock_matter`, and the reader in `modules/ultrawidelock_cred` (shared byte-for-byte with
@@ -35,13 +34,11 @@ Zephyr 4.3.99, LTO, release logging, and SMP.
 the same image measures **118,312 B RAM (90.3%)** and **417,684 B of the 433,664 B
 `app` partition (96.3%)** — roughly 12.8 KB of RAM spare against 15.6 KB of flash.
 RAM was reclaimed and flash was spent, so **flash is now the binding constraint**,
-and it is the one to check first. Everything below about *how* to measure RAM
-still applies; only which number is closest to the wall has changed.
+and it is the one to check first.
 
-**127,352 B has been recorded as unrunnable on this board.** That is an observation, not
-a spec, but treat it as a ceiling: builds above it have failed to come up. Every RAM
-change needs a boot check (§8.4), and the ECDH self-test line is the cheap proof the
-image is alive:
+**127,352 B has been recorded as unrunnable on this board.** An observation, not a spec,
+but treat it as a ceiling: builds above it have failed to come up. Every RAM change needs
+a boot check (§8.4), and the ECDH self-test line is the cheap proof the image is alive:
 
 ```
 *** Booting nRF Connect SDK v3.3.0 ***
@@ -61,10 +58,9 @@ symptom, and two presented as something else entirely:
 | `z_main_stack` | — | 4096, blown by a 1,642 B frame | board advertised, froze 4 s into boot |
 | `matter_wq_stack` | 2,776 B of 4,096 | healthy | — measuring it is what *ruled it out* |
 
-The lesson is not "these numbers": it is that **a default is a starting point, not a
-size**, and that two of the three were within a few hundred bytes of fitting. A margin
-that thin fails only when something else happens to run at the same moment, which is why
-identical firmware worked for weeks and then failed twice in an evening.
+**A default is a starting point, not a size.** Two of the three were within a few hundred
+bytes of fitting, and a margin that thin fails only when something else runs at the same
+moment, which is why identical firmware worked for weeks then failed twice in an evening.
 
 ### 1.3 Read the paint; never estimate
 
@@ -110,9 +106,9 @@ headroom, not in BSS** — but only after that headroom has been measured.
 
 ## 2. Matter state must not be written from the OpenThread thread
 
-**VERIFIED.** Matter datagrams arrive through the OpenThread UDP callback, so the entire
+**VERIFIED.** Matter datagrams arrive through the OpenThread UDP callback, so the whole
 Interaction Model — decrypt, decode, cluster command, response encode, framing — runs on
-`ot_work_q`. Two separate failures came from that:
+`ot_work_q`. Two failures came from that:
 
 1. **An NVS write there overflows it.** `CommissioningComplete → store fabrics → NVS`
    faulted after both fabrics were accepted, both CASE sessions established and the
@@ -122,16 +118,16 @@ Interaction Model — decrypt, decode, cluster command, response encode, framing
    milliseconds. The commissioner retransmitted Sigma1 and the second fabric's CASE died
    with `Sigma3 REJECTED (-6)` ×5, then `RemoveFabric`.
 
-**Current rule: prepare only provisional state before `CommissioningComplete`,
-then cross a durability boundary on the system work queue before returning
-success.** The OpenThread callback waits on a bounded semaphore; it never writes
-NVS itself. A failed persistence operation therefore fails the command instead
-of acknowledging an identity that will disappear after reset.
+**Current rule: prepare only provisional state before `CommissioningComplete`, then cross
+a durability boundary on the system work queue before returning success.** The OpenThread
+callback waits on a bounded semaphore; it never writes NVS itself. A failed persistence
+operation therefore fails the command instead of acknowledging an identity that will
+disappear after reset.
 
-Each attempt owns only the slots and staged Thread data it created. Completion
-promotes those slots to committed state; fail-safe expiry clears only those
-provisional slots. An established Apple fabric is no longer collateral damage
-when a later Home Assistant commissioner aborts.
+Each attempt owns only the slots and staged Thread data it created. Completion promotes
+those slots to committed; fail-safe expiry clears only those provisional slots. An
+established Apple fabric is no longer collateral damage when a later Home Assistant
+commissioner aborts.
 
 ---
 
@@ -142,7 +138,7 @@ when a later Home Assistant commissioner aborts.
 
 
 **VERIFIED.** "Matter Accessory / No Response", and a Home tile stuck spinning on
-*Unlocking*, were four independent bugs. Each looked like the whole problem on its own.
+*Unlocking*, were four independent bugs, each of which looked like the whole problem.
 
 ### 3.1 The priming report must fit the IPv6 MTU
 
@@ -151,13 +147,13 @@ IPv6 and UDP headers — so the exchange headers (36) and the AEAD tag (16) come
 it, not on top. Spending all 1232 on the payload builds a datagram up to 52 bytes over
 the MTU.
 
-Nothing logs. The framing succeeds, the send returns fine, and the datagram is simply
-never delivered, so the subscriber re-subscribes forever and the CASE table churns.
+Nothing logs: the framing succeeds, the send returns fine, and the datagram is never
+delivered, so the subscriber re-subscribes forever and the CASE table churns.
 
 **BLE hides this.** BTP re-fragments, so the identical report crosses a commissioning
-session intact and only subscriptions carried over Thread fail — which presents as an
-accessory that works while pairing and dies immediately after. **Tell it apart by which
-transport the established subscription sat on**, not by whether one established at all.
+session intact and only Thread-carried subscriptions fail, which presents as an accessory
+that works while pairing and dies immediately after. **Tell it apart by which transport
+the established subscription sat on**, not by whether one established at all.
 
 ### 3.2 The node must be able to *initiate* an exchange
 
@@ -167,7 +163,7 @@ accessory unresponsive however healthy the session is.
 
 The session role is unchanged, which makes this cheap: keys stay role-relative to CASE
 (still encrypt with `r2i`) and the message counter is per-session, not per-exchange. Only
-the exchange role differs — set `I`, use an id of your own, and **do not** write it back
+the exchange role differs: set `I`, use an id of your own, and **do not** write it back
 over the peer's live exchange id.
 
 Three subtleties, all found by tests rather than by reading the code:
@@ -187,9 +183,9 @@ Three subtleties, all found by tests rather than by reading the code:
 
 ### 3.3 Report on change
 
-The tile reads `LockState`, not the InvokeResponse. A controller takes the `SUCCESS` and
-then waits for the attribute to be reported before the UI moves — so answering the
-command and stopping there is a lock that opens and a UI that spins forever.
+The tile reads `LockState`, not the InvokeResponse. A controller takes the `SUCCESS` then
+waits for the attribute to be reported before the UI moves, so answering the command and
+stopping there is a lock that opens and a UI that spins forever.
 
 ### 3.4 Report on a **timer**, not only on change
 
@@ -197,18 +193,17 @@ Matter's contract is a report at least every `max_interval` whether or not anyth
 changed (600 s is what Apple asks for here). Reporting only on change means **a lock
 nobody touches for ten minutes stops existing**.
 
-One timer for all subscriptions, not one each: they carry the same attribute, the
-interval is a floor rather than a schedule, and six timers are still unnecessary at
-92.12% RAM. 120 s is deliberately early — a report is ~67 B on a link whose round
-trip measured 1.4 s, so being early is nearly free and being late is the entire failure.
-Stop re-arming when nothing is subscribed, so a node nobody watches is not waking its
-radio.
+One timer for all subscriptions, not one each: they carry the same attribute, the interval
+is a floor not a schedule, and six timers are unnecessary at 92.12% RAM. 120 s is early on
+purpose — a report is ~67 B on a link whose round trip measured 1.4 s, so early is nearly
+free and late is the entire failure. Stop re-arming when nothing is subscribed, so a node
+nobody watches is not waking its radio.
 
 ### 3.5 Bridge the reader's own state into `LockState`
 
 **VERIFIED.** A walk-up unlock never touches the Door Lock cluster — it is the reader's
 own Aliro transaction — so the tile keeps showing whatever the last tile tap set. The
-Wallet animates *unlocked* while the app says locked, and the app is not wrong so much as
+Wallet animates *unlocked* while the app says locked; the app is not wrong so much as
 **uninformed**.
 
 Hook the point that sends the reader-status notification, because it carries **both**
@@ -224,53 +219,48 @@ tile would show a lock that opens and never closes.
 
 **VERIFIED.** The fabric table was plain RAM, so every reset silently un-commissioned the
 node: it came back advertising commissionable, Thread never started because nothing
-replayed the dataset, and the controller showed an accessory that was simply gone. Every
-flash cost a full re-pair, which is also why iterating on this port was so expensive.
+replayed the dataset, and the controller showed an accessory simply gone. Every flash cost
+a full re-pair.
 
-The current image persists the fabrics, per-fabric ACLs, Thread dataset, xPAN id
-and the ICAC slot. Then **restore is
-not enough on its own**: a restored identity is commissioned but not *reachable* until
-the dataset is handed to the stack and one SRP instance per fabric is registered. That
-pair is what commissioning does as a side effect; the boot path has no commissioner to
-trigger it.
+The current image persists the fabrics, per-fabric ACLs, Thread dataset, xPAN id and the
+ICAC slot. **Restore is not enough on its own**: a restored identity is commissioned but
+not *reachable* until the dataset is handed to the stack and one SRP instance per fabric
+is registered. That pair is what commissioning does as a side effect; the boot path has no
+commissioner to trigger it.
 
 ### 4.2 Versioned per-slot records, not a table rewrite
 
-The `mf2` namespace stores metadata, network state, one record per fabric, one
-ACL record per fabric, and the shared ICAC. Each record is versioned, sealed,
-and written through the backend's atomic replacement primitive. A removal
-writes a valid tombstone before returning success, so a power cut cannot expose
-an older deleted fabric. One corrupt fabric or ACL record is discarded without
-destroying its neighbours.
+The `mf2` namespace stores metadata, network state, one record per fabric, one ACL record
+per fabric, and the shared ICAC. Each record is versioned, sealed, and written through the
+backend's atomic replacement primitive. A removal writes a valid tombstone before
+returning success, so a power cut cannot expose an older deleted fabric. One corrupt
+fabric or ACL record is discarded without destroying its neighbours.
 
-The fabric record also carries the fabric's `UpdateFabricLabel` string, which is
-why an image from before that field cannot be restored: `record_read()` rejects
-any record whose stored length is not the length it expects, so a pre-label
-identity is dropped at load and the node comes back uncommissioned. One re-pair,
-once.
+The fabric record also carries the fabric's `UpdateFabricLabel` string, which is why an
+image from before that field cannot be restored: `record_read()` rejects any record whose
+stored length is not the length it expects, so a pre-label identity is dropped at load and
+the node comes back uncommissioned. One re-pair, once.
 
-The serializer is a bounded 528 B static union, not an object on the
-OpenThread stack. The settings region is 16 KB at `0x7c000`; Zephyr NVS and the
-FreeRTOS log use different media formats but implement this same transaction
-contract.
+The serializer is a bounded 528 B static union, not an object on the OpenThread stack. The
+settings region is 16 KB at `0x7c000`; Zephyr NVS and the FreeRTOS log use different media
+formats but implement the same transaction contract.
 
 ### 4.3 Completion belongs to an attempt, not the node
 
-The old global `commissioning_complete` boolean made fail-safe rollback a no-op
-as soon as *any* administrator had completed. Two bitsets now distinguish
-committed slots from the slots owned by the active attempt. The persistent
-records contain only committed fabrics, so a reboot cannot promote a half-added
-controller and a later PASE session cannot erase a working one.
+The old global `commissioning_complete` boolean made fail-safe rollback a no-op as soon as
+*any* administrator had completed. Two bitsets now distinguish committed slots from the
+slots owned by the active attempt. The persistent records contain only committed fabrics,
+so a reboot cannot promote a half-added controller and a later PASE session cannot erase a
+working one.
 
 ### 4.4 Erase SRP identity as one unit
 
-The original failure remains instructive: keeping a stable SRP host name while
-destroying its client key can make a border router reject the new owner as
-`OT_ERROR_DUPLICATED`. The current port persists the SRP key and service-name
-identity together. Its registration slots have `live`, `removing`, and `free`
-lifetimes, and their OpenThread service structures are not reused until the
-asynchronous removal callback returns them. A duplicate registration is retried
-with a fresh service name instead of being logged as false success.
+Keeping a stable SRP host name while destroying its client key can make a border router
+reject the new owner as `OT_ERROR_DUPLICATED`. The current port persists the SRP key and
+service-name identity together. Its registration slots have `live`, `removing` and `free`
+lifetimes, and their OpenThread service structures are not reused until the asynchronous
+removal callback returns them. A duplicate registration is retried with a fresh service
+name instead of being logged as false success.
 
 `make flash-erase` still intentionally clears commissioning and reader state.
 Use controller `RemoveFabric` for one administrator and SW2 only for an
@@ -301,30 +291,30 @@ the `disconnected` callback — Zephyr has not released the connection object ye
 to a work item and retry.
 
 Worse than the failure was the silence: the advert logged only on success, so a failed
-restart left the reader invisible with nothing in the log but the "re-advertising" line
-before it. The board had unlocked once and then ignored every approach, **while the Home
-tile kept working**, because Matter runs over Thread and this is BLE. An advertising
-failure must never be quiet — it presents as dead hardware and points the investigation
-everywhere except at advertising.
+restart left the reader invisible with nothing in the log but the "re-advertising" line.
+The board unlocked once then ignored every approach **while the Home tile kept working**,
+because Matter runs over Thread and this is BLE. An advertising failure must never be
+quiet: it presents as dead hardware and points the investigation everywhere except at
+advertising.
 
 ### 5.3 Matter provisioning must refresh the advertisement
 
 **VERIFIED, and it hid for weeks.** A phone resolves a reader by a dynamic tag derived
 from the **GRK**. The reader starts advertising long before `SetAliroReaderConfig`
-arrives, since the controller sends it as a post-commissioning operational command — so
-at start the GRK is the dev default's all zeros and only the bare `0xFFF2` UUID goes out.
+arrives, since the controller sends it as a post-commissioning operational command, so at
+start the GRK is the dev default's all zeros and only the bare `0xFFF2` UUID goes out.
 
 Without an explicit refresh the board ends up provisioned, holding both credentials,
 reachable over Matter, tile working — **and invisible to every walk-up**.
 
 **A reboot hides it**, because the boot path applies the stored GRK before it advertises
-at all, and every earlier test power-cycled after pairing. It only surfaced when a reboot
-happened *before* a pairing instead.
+at all, and every earlier test power-cycled after pairing. It surfaced only when a reboot
+happened *before* a pairing.
 
 ### 5.4 The advert gate must be re-run after a restore
 
 The advert is chosen at BLE start, **before** stored fabrics are loaded. Without re-running
-it, a restored reader keeps advertising commissionable and never offers `0xFFF2` again —
+it, a restored reader keeps advertising commissionable and never offers `0xFFF2` again:
 a node that unlocks until its first reboot and silently stops after it.
 
 ---
@@ -333,26 +323,26 @@ a node that unlocks until its first reboot and silently stops after it.
 
 ### 6.1 A full store must evict, not refuse
 
-**VERIFIED.** An Apple home installs **two endpoint keys per pairing**, they accumulate,
-and nothing removed them. With a cap of 4, the store filled on the second pairing and
-`trust_add()` answered a full store with a permanent refusal — so the key the phone
-actually presents could never be added, and pairing again only made it worse by adding
-more stale anchors. **There is no recovery from that on a board with no console.**
+**VERIFIED.** An Apple home installs **two endpoint keys per pairing**; they accumulate
+and nothing removed them. With a cap of 4 the store filled on the second pairing, and
+`trust_add()` answered a full store with a permanent refusal, so the key the phone
+presents could never be added and pairing again only added more stale anchors. **No
+recovery from that on a board with no console.**
 
-Observed as 13 consecutive walk-ups reaching `device signature OK` and then
-`credential key NOT trusted`. The two unlocks that appeared to work in the same session
-had gone through the expedited-fast path, which skips the trust check entirely — so the
-store had not matched a presented key once.
+Observed as 13 consecutive walk-ups reaching `device signature OK` then
+`credential key NOT trusted`. The two apparent unlocks in that session went through the
+expedited-fast path, which skips the trust check, so the store never matched a presented
+key.
 
 Evict a slot that has never completed a standard phase first (no `Kpersistent` means no
-phone ever authenticated with it), and only then the oldest.
+phone authenticated with it), then the oldest.
 
 ### 6.2 Log the operands, not just the verdict
 
 "not in trust store" names the comparison but not what was compared. The two candidate
-explanations — a credential that was never delivered, versus stale anchors crowding out
-the current one — are told apart **only by the bytes**. Printing the presented key beside
-every anchor turned an evening of guessing into one attempt.
+explanations — a credential never delivered, versus stale anchors crowding out the current
+one — are told apart **only by the bytes**. Printing the presented key beside every anchor
+turned an evening of guessing into one attempt.
 
 ### 6.3 Credential types, and a conclusion that was wrong twice
 
@@ -360,32 +350,30 @@ every anchor turned an evening of guessing into one attempt.
 anchor) and **type 7** (evictable endpoint key — stored). A pairing observed 3 calls:
 one type 6, two type 7.
 
-This project recorded, then withdrew, then partly re-recorded a claim about these keys.
-The lesson that survived: **an absence in a capture is evidence about the capture, not
-about the protocol.** Captures that only ever showed type 6 were captures of pairings
-that never got far enough to send type 7 — the subscription bug (§3.1) was stopping them.
+**An absence in a capture is evidence about the capture, not about the protocol.**
+Captures that only ever showed type 6 were captures of pairings that never got far enough
+to send type 7 — the subscription bug (§3.1) was stopping them.
 
 ---
 
 ## 7. A failed pairing used to be a brick
 
-**VERIFIED on the old design, hit four times in one evening.** A commissioning
-could install and persist a fabric, time out, and leave the advert gate offering
-Aliro `0xFFF2` to a controller that had already forgotten the accessory.
+**VERIFIED on the old design, hit four times in one evening.** A commissioning could
+install and persist a fabric, time out, and leave the advert gate offering Aliro `0xFFF2`
+to a controller that had already forgotten the accessory.
 
-The current design has two recovery levels. Fail-safe expiry rolls back only
-the active attempt, including its staged Thread data, ACL, ICAC ownership, SRP
-service, sessions, and subscriptions. A fabric that did reach
-`CommissioningComplete` can be removed by an authenticated surviving
+Two recovery levels now. Fail-safe expiry rolls back only the active attempt, including
+its staged Thread data, ACL, ICAC ownership, SRP service, sessions and subscriptions. A
+fabric that did reach `CommissioningComplete` can be removed by an authenticated surviving
 administrator; the targeted tombstone is durable before the success response.
 
-Factory reset on **SW2 held through reset** remains the last resort when no
-administrator can reach the node. `led0` blinks to confirm the hold, the reader
-identity, every trust anchor, and every Matter fabric are erased, and the boot
-continues commissionable. It is no longer the normal response to a failed share.
+Factory reset on **SW2 held through reset** remains the last resort when no administrator
+can reach the node. `led0` blinks to confirm the hold, the reader identity, every trust
+anchor and every Matter fabric are erased, and the boot continues commissionable. It is no
+longer the normal response to a failed share.
 
-If you are recovering a board without that button (older images), the equivalent is a
-one-boot clear flag, flashed once and then flashed away.
+Recovering a board without that button (older images): a one-boot clear flag, flashed once
+and then flashed away.
 
 ---
 
@@ -406,7 +394,7 @@ one-boot clear flag, flashed once and then flashed away.
 
 Read `WrOff`/`RdOff`, `savebin` the ring, slice host-side for the wrap, then **write
 `RdOff` back**. Without the write-back the ring fills and `NO_BLOCK_SKIP` discards
-everything new — which looks exactly like a board that stopped logging.
+everything new, which looks exactly like a board that stopped logging.
 
 Control block layout from the map: `aUp[0] = _SEGGER_RTT + 24`, then
 `sName/pBuffer/SizeOfBuffer/WrOff/RdOff` at `+0/+4/+8/+12/+16`.
@@ -443,15 +431,13 @@ failed pairings linger and are not evidence of anything.
 ### 9.1 Every reboot costs ~10 minutes of controller sulk
 
 **VERIFIED, and it is not a bug to fix.** Matter subscriptions are RAM on both sides.
-After a reset the controller keeps retransmitting into sessions the node lost — visible as
-`encrypted for session 0xNNNN, which is not ours` — and re-subscribes only when its own
+After a reset the controller keeps retransmitting into sessions the node lost, visible as
+`encrypted for session 0xNNNN, which is not ours`, and re-subscribes only when its own
 `max_interval` expires.
 
 **The node cannot force it.** The exchange id needed to answer is inside ciphertext it has
-no key for. (An earlier claim here that a real node replies with a StatusReport was
-withdrawn; CHIP drops these too.)
-
-The practical consequence dominates everything else in this document:
+no key for. (An earlier claim that a real node replies with a StatusReport was withdrawn;
+CHIP drops these too.)
 
 > **Batch changes and test once.** Flashing after each change resets the very state the
 > previous change needed to prove itself. Eight flashes in an hour demonstrated this the
@@ -479,8 +465,8 @@ asserting the bug §6.1 exists.
 
 ### 9.3 A test proves nothing until you watch it fail
 
-House rule, and it earned its keep repeatedly here: revert the fix, confirm the exact
-checks fail, restore. Two real bugs in §3.2 were found this way and not by reading.
+House rule: revert the fix, confirm the exact checks fail, restore. Two real bugs in
+§3.2 were found this way and not by reading.
 
 ### 9.4 Check exit codes, not output
 
@@ -503,7 +489,7 @@ invisible. Write to a file and test `$?`.
 - **One ICAC owner.** Five fabrics fit, but the RAM-bounded portable table has
   one shared ICAC buffer. A second fabric that requires its own intermediate
   certificate is rejected without mutating the existing owner.
-- **RAM at 90.3%, flash at 96.4%.** Flash is now the tighter of the two: about
+- **RAM at 90.3%, flash at 96.4%.** Flash is the tighter of the two: about
   15 KB spare in the `app` partition against roughly 13 KB of RAM. Any further
   work starts by measuring, not by adding, and a new static allocation is now a
   smaller decision than a new code path.
@@ -512,13 +498,12 @@ invisible. Write to a file and test `$?`.
 
 All three shipped in the speed/robustness work, all three passed `make check`
 with thousands of assertions green, and all three stopped the walk-up dead on a
-real DWM3001CDK. They share one root cause, so they are worth reading together.
+real DWM3001CDK. They share one root cause.
 
-**The pattern: a fixture that agrees with itself proves nothing.** Each bug was a
-comparison between a value derived by a helper and the same value as it arrives
-on air. The host tests built *both sides* from that same helper, so the fixture
-agreed with itself no matter which byte order the code chose. The radio does not
-have that luxury.
+**The pattern: a fixture that agrees with itself proves nothing.** Each bug compared a
+value derived by a helper against the same value as it arrives on air. The host tests
+built *both sides* from that helper, so the fixture agreed with itself whatever byte order
+the code chose. The radio does not have that luxury.
 
 1. **KeySource compared in the wrong byte order.** `ccc_uad_addresses()` emits
    `KeySourceHigh || KeySourceLow`; `ccc_parse_mhr()` copies the Aux Security

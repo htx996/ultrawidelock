@@ -5,9 +5,9 @@ runs end to end on an ESP32-S3 against a live iPhone. Phase 5 (the NFC tap path)
 attempted. The code lives in [`ports/esp32`](../ports/esp32) (components, plus the
 bench-reader and matter-lock apps).
 
-This document keeps the original plan, written before any ESP32 code existed, and marks
-what the plan got right and wrong. The plan's own estimates are left unedited so the
-comparison is honest. For the bring-up detail that the plan could not have predicted, see
+The original plan, written before any ESP32 code existed, with what it got right
+and wrong. Its estimates are left unedited so the comparison is honest. Bring-up
+detail the plan could not have predicted is
 [`docs/esp32-gotchas.md`](esp32-gotchas.md).
 
 Target hardware: ESP32-S3-WROOM (N16R8, 16 MB flash / 8 MB octal PSRAM, Wi-Fi + BLE, no
@@ -15,54 +15,56 @@ Target hardware: ESP32-S3-WROOM (N16R8, 16 MB flash / 8 MB octal PSRAM, Wi-Fi + 
 
 ## 0. What the plan got wrong
 
-Worth stating up front, because it is the useful part of a retrospective:
-
-- **The BLE transport was not the dominant rewrite.** The plan called ~650 lines of
-  NimBLE GATT + L2CAP the concentrated new work. It was the easy part. The real work was
-  the layer the plan assumed it could keep: the credential authentication and ranging-key
-  derivation, which the reference delegates to a closed ARM-only library that cannot link
-  on Xtensa. That had to be reimplemented from the wire up — key schedule, two separate
-  GCM channels, wire codec, reader identity.
-- **The plan had no line item for real-time behavior.** The DS-TWR responder was treated
-  as "already done, just recompile it." The logic was indeed already correct — the nRF
-  proves it — but the ESP32 has slower SPI and jitterier callback dispatch, and arming
-  each frame inside a 2 ms slot took a separate campaign: DMA-disabled SPI, an STS key
-  cache, and throttling a per-round log that was starving the ISR task.
+- **The BLE transport was not the dominant rewrite.** The plan called ~650 lines
+  of NimBLE GATT + L2CAP the concentrated new work; it was the easy part. The real
+  work was the layer the plan assumed it could keep: credential authentication and
+  ranging-key derivation, which the reference delegates to a closed ARM-only
+  library that cannot link on Xtensa. Reimplemented from the wire up: key
+  schedule, two separate GCM channels, wire codec, reader identity.
+- **No line item for real-time behaviour.** The DS-TWR responder was treated as
+  "already done, just recompile it". The logic was correct, as the nRF proves, but
+  the ESP32 has slower SPI and jitterier callback dispatch, and arming each frame
+  inside a 2 ms slot took its own campaign: DMA-disabled SPI, an STS key cache,
+  and throttling a per-round log that was starving the ISR task.
 - **The reference source did not have to be a Nordic-licensed study target.** The
-  provenance discipline was kept: the decisive facts are in the published Aliro 1.0
-  specification, not in the add-on's C++.
+  decisive facts are in the published Aliro 1.0 specification, not the add-on's
+  C++.
 
 ## 1. Summary
 
-This is not a spec reverse-engineering project. The DIY Nordic lock already provisions a credential
-into Apple Wallet today, and the reader that does it is readable, layered Nordic source: the
-`subsys/aliro/` subsystem (about 12 components, ~4.4k lines of the relevant parts) plus the
-app-side `src/aliro/` (~5.1k lines). The port is reimplementing that ~10k lines of C++ on ESP-IDF,
-tiered by how portable each piece is. The genuine rewrite is small and concentrated: ~650 lines of
-BLE transport (Zephyr Bluetooth to NimBLE). Everything else is either common-SDK, PSA-portable, or
-already seam-defined.
+Not a spec reverse-engineering project. The DIY Nordic lock already provisions a
+credential into Apple Wallet, and the reader that does it is readable, layered
+Nordic source: `subsys/aliro/` (about 12 components, ~4.4k relevant lines) plus
+the app-side `src/aliro/` (~5.1k lines). The port reimplements that ~10k lines of
+C++ on ESP-IDF, tiered by portability. The genuine rewrite is ~650 lines of BLE
+transport (Zephyr Bluetooth to NimBLE); everything else is common-SDK,
+PSA-portable, or already seam-defined.
 
-Decision: **ESP-IDF + esp-matter**. First real engineering is the UWB engine on silicon (Phase 1,
-fully unblocked). The old "will Apple provision a DIY lock" gate is closed by the working nRF.
+Decision: **ESP-IDF + esp-matter**. First real engineering is the UWB engine on
+silicon (Phase 1). The old "will Apple provision a DIY lock" gate is closed by the
+working nRF.
 
-Constraint held throughout: **the working nRF5340DK stays untouched** (observe-only reference; no
-reflash, reconfigure, reprovision, or key readout, and no connection to it without sign-off).
+Constraint held throughout: **the working nRF5340DK stays untouched**, an
+observe-only reference with no reflash, reconfigure, reprovision or key readout,
+and no connection without sign-off.
 
-Licensing overlay (important): the add-on is `LicenseRef-Nordic-5-Clause`, which restricts use to
-Nordic devices, so nothing under it can ship in an ESP32 port. The port is built from the published
-Aliro 1.0 specification, matching the provenance discipline already used in this project.
+Licensing: the add-on is `LicenseRef-Nordic-5-Clause`, restricted to Nordic
+devices, so nothing under it can ship in an ESP32 port. The port is built from the
+published Aliro 1.0 specification.
 
 ## 2. Port map (grounded in the add-on source)
 
 > Historical. The tier assignments below held up for Matter, crypto primitives, and
 > storage. They missed the closed-library boundary described in §0.
 
-The engine seam is confirmed. Nordic's credential reader talks to UWB only through the `UltraWideBand`
-C++ interface (`subsys/aliro/uwb/.../uwb.h`), and this repo's engine already implements it (the
-in-repo `integrations/nrfconnect-door-lock/patches/custom_impl-uwb.patch` fills `_ConfigureRangingSession(sessionId,
-ursk, ...)` to call `ultrawidelock_uwb_session_set_ursk`, and `_HandleBleMessage(...)` to route the Aliro
-UWB messages, backed by `ultrawidelock_uwb_facade`). So on ESP32 the engine keeps implementing the same
-interface; the reader above it is what gets rebuilt.
+The engine seam is confirmed. Nordic's credential reader talks to UWB only
+through the `UltraWideBand` C++ interface (`subsys/aliro/uwb/.../uwb.h`), and this
+repo's engine implements it:
+`integrations/nrfconnect-door-lock/patches/custom_impl-uwb.patch` fills
+`_ConfigureRangingSession(sessionId, ursk, ...)` to call
+`ultrawidelock_uwb_session_set_ursk`, and `_HandleBleMessage(...)` to route the
+Aliro UWB messages, backed by `ultrawidelock_uwb_facade`. On ESP32 the engine
+keeps implementing the same interface; the reader above it is rebuilt.
 
 Portability tiers (line counts are the Nordic reference, not a copy target):
 
@@ -78,8 +80,8 @@ Portability tiers (line counts are the Nordic reference, not a copy target):
 | uwb/custom_impl over ultrawidelock_uwb | small + engine | D: done + engine port | Keep the `UltraWideBand` impl; port the engine per section 4. Do NOT port `uwb/qm35_impl` (the Qorvo coprocessor path, ~3k lines, unused here). |
 | platform/nfc (RFAL + ECP) | 647 | E: use esp-aliro | Espressif ships **esp-aliro** (github.com/espressif/esp-aliro), first-party Aliro-over-NFC on ESP32, license-clean. Use it for the tap applet instead of an independent RFAL reimplementation. NFC-only today; BLE + UWB are on its roadmap. |
 
-Take-away: the frightening parts (provisioning, crypto) are the portable ones (common
-connectedhomeip; PSA). The concentrated new work is BLE transport on NimBLE.
+The frightening parts (provisioning, crypto) are the portable ones: common
+connectedhomeip, PSA. The concentrated new work is BLE transport on NimBLE.
 
 ## 3. Decision: ESP-IDF, not Zephyr
 
@@ -97,17 +99,17 @@ core-pinning mattered for the ranging task.
 
 ### Toolchain
 
-- `make esp-bootstrap` installs the pair on a machine that has neither: ESP-IDF at the
-  version esp-matter recommends, then esp-matter on top of that same tree, each stage
-  asked for separately. The two apps share one toolchain. The Makefiles still pin only
-  paths (`IDF_EXPORT`, `ESP_MATTER_PATH`) and still only check that the export scripts
-  exist, so an install you manage yourself is untouched by any of this and `make tools`
-  reports whichever one the build will use. CI pins its own copy (an
-  ESP-IDF container digest plus a bench-validated esp-matter revision, in
-  `.github/workflows/firmware-builds.yml` and `release.yml`).
-- Stage the install if disk is tight: plain ESP-IDF with the `esp32s3` target is enough
-  for the bench reader app (a few GB). The matter-lock app additionally needs esp-matter,
-  which is much larger because connectedhomeip is heavy.
+- `make esp-bootstrap` installs both on a machine with neither: ESP-IDF at the
+  version esp-matter recommends, then esp-matter on that same tree, each stage
+  asked for separately. The Makefiles pin only paths (`IDF_EXPORT`,
+  `ESP_MATTER_PATH`) and only check that the export scripts exist, so a
+  self-managed install is untouched and `make tools` reports whichever the build
+  will use. CI pins its own copy: an ESP-IDF container digest plus a
+  bench-validated esp-matter revision, in
+  `.github/workflows/firmware-builds.yml` and `release.yml`.
+- Stage the install if disk is tight: plain ESP-IDF with the `esp32s3` target
+  covers the bench reader app (a few GB). The matter-lock app also needs
+  esp-matter, which is much larger.
 
 ## 4. Engine port surface (Phase 1, concrete)
 
@@ -180,8 +182,7 @@ The UWB engine (`modules/ultrawidelock_uwb`) already compiles as pure C on host 
 
 ## 8. If you are doing this yourself
 
-Read [`docs/esp32-gotchas.md`](esp32-gotchas.md) first. It is the
-document this plan should have been able to write in advance and could not: forty-odd
-specific traps, each with what it looks like on a console and what actually fixed it.
-Three cost more than a day each — an EVB power jumper, a ranging session id that is
-derived rather than chosen, and a per-round log line that starved the DW3000 ISR task.
+Read [`docs/esp32-gotchas.md`](esp32-gotchas.md) first: forty-odd specific traps,
+each with what it looks like on a console and what fixed it. Three cost more than
+a day each, being an EVB power jumper, a ranging session id that is derived rather
+than chosen, and a per-round log line that starved the DW3000 ISR task.

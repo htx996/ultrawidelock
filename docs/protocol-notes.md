@@ -1,11 +1,8 @@
 # Time synchronization
 
-Firmware-level notes on one subsystem: how the reader obtains wall-clock time, how
-that interacts with Aliro's time-based credential checks, and the fixes this repo
-carries. This is the implementation-and-debugging companion to
-[`protocol-research.md`](protocol-research.md), which documents the on-air protocol
-itself (discovery, authentication, the M1-M4 ranging setup, the STS ladder, and
-hopping).
+How the reader obtains wall-clock time, how that meets Aliro's time-based
+credential checks, and the fixes this repo carries. The on-air protocol itself
+is [`protocol-research.md`](protocol-research.md).
 
 File references use paths inside the fetched workspace (`workspace/`); upstream
 line numbers are as of the pins in `west.yml` / `bootstrap.sh`.
@@ -32,18 +29,18 @@ line numbers are as of the pins in `west.yml` / `bootstrap.sh`.
   minted.
 - The Nordic add-on's `GetCurrentTime()`
   (`subsys/aliro/time_utils/src/time_utils_chip.cpp`) returns the wall clock
-  when valid and otherwise **silently substitutes LKGT**, converting "time
-  unknown" into a confidently wrong answer. `GetCurrentUnixTime()` has no
-  fallback and simply fails.
+  when valid and otherwise **silently substitutes LKGT**, turning "time unknown"
+  into a confidently wrong answer. `GetCurrentUnixTime()` has no fallback and
+  fails.
 
 ### Access Document validity
 
 Access Documents are minted on demand with `validFrom` set to the phone's
-current time and `validUntil` effectively unbounded (year 4001). The check in
+current time and `validUntil` effectively unbounded (year 4001). So
 `VerifyValidityPeriod`
 (`applications/matter-aliro-door-lock-app/src/aliro/interface_impl/access_document.cpp`),
-which runs after the document signature has been verified, therefore degenerates
-to: **the reader clock must not be behind the phone clock**.
+which runs after the signature is verified, degenerates to: **the reader clock
+must not be behind the phone clock**.
 
 Failure chain after any reboot, without the fixes below:
 
@@ -101,13 +98,13 @@ form whenever the clock is not yet valid.
 ### Deferred: network time (SNTP / DefaultNTP)
 
 Real network time is the only fix that makes expiry and schedule enforcement
-accurate, but plain SNTP is unauthenticated: it would be the only input to the
-trust chain controllable by an attacker on the home network or DNS path
-(backward spoof: unlock denial; forward spoof: weakened not-before without
-issuer keys). It also depends on the border router offering a routable path
-(IPv6 NTP or NAT64/DNS64) and must be strictly fail-open for offline homes.
-If built later: clamp to never-before-firmware-build-time, cap backward steps,
-run async with backoff, and rank it below `SetUTCTime` as a source.
+accurate, but plain SNTP is unauthenticated: the only input to the trust chain
+an attacker on the home network or DNS path could control (backward spoof:
+unlock denial; forward spoof: weakened not-before without issuer keys). It also
+needs the border router to offer a routable path (IPv6 NTP or NAT64/DNS64) and
+must be strictly fail-open for offline homes. If built later: clamp to
+never-before-firmware-build-time, cap backward steps, run async with backoff,
+and rank it below `SetUTCTime`.
 
 ### Bench validation
 

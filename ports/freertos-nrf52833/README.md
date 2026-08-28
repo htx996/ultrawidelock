@@ -1,10 +1,8 @@
 # nRF52833 FreeRTOS Port
 
-This directory owns the standalone FreeRTOS backends for the DWM3001CDK.
-Shared protocol code selects them with `ULTRAWIDELOCK_PORT_FREERTOS`; it must not include
-Nordic, Qorvo, or FreeRTOS headers directly.
-
-The implemented foundation now includes:
+Standalone FreeRTOS backends for the DWM3001CDK. Shared protocol code selects
+them with `ULTRAWIDELOCK_PORT_FREERTOS` and must not include Nordic, Qorvo or
+FreeRTOS headers directly.
 
 - `include/ultrawidelock_freertos_platform.h` defines the BSP-owned clock, cycle-counter,
   busy-wait, flash, and logging hooks. Flash is BSP-owned because MPSL has to
@@ -140,8 +138,8 @@ The implemented foundation now includes:
   `ULTRAWIDELOCK_TRUST_MAX` 6) inside one record, so raising the anchor limit fails the
   build rather than the first provisioning write.
 - `radio/nrf_802154_irq_freertos.c` maps the driver's IRQ abstraction to CMSIS
-  NVIC operations; `nrf_802154_misc_freertos.c` supplies entropy-seeded random
-  and die-temperature callouts.
+  NVIC; `nrf_802154_misc_freertos.c` supplies entropy-seeded random and
+  die-temperature callouts.
 - `board/time_freertos.c` supplies the three time hooks, from two sources on
   purpose. `ultrawidelock_freertos_uptime_us` must never step backwards over the life of
   the product, so it is the FreeRTOS tick count extended past its 32-bit wrap,
@@ -162,25 +160,25 @@ The implemented foundation now includes:
   is not guaranteed to expose a prescaler read. A counter that never advances is
   fatal on first use rather than an unbounded spin: a lock that hangs during
   driver bring-up looks like dead hardware.
-- `board/entropy_freertos.c` is the hardware entropy source on RNG, and it keeps
-  a pool rather than polling bare. The SoftDevice Controller registers it as its
-  randomness source and the 802.15.4 driver seeds itself from it, and neither
-  states which context it will ask from; the RNG with bias correction takes on
-  the order of a hundred microseconds per byte, so a caller blocking for that at
-  a radio interrupt priority would overrun a radio event. Filling from the RNG's
-  own vector makes the ordinary request a copy. Bias correction is on, which
-  costs throughput and buys uniformly distributed bits: the reader's key
+- `board/entropy_freertos.c` is the hardware entropy source on RNG, pooled
+  rather than polled bare. The SoftDevice Controller registers it as its
+  randomness source and the 802.15.4 driver seeds from it, neither stating which
+  context it asks from; the RNG with bias correction takes on the order of a
+  hundred microseconds per byte, so a caller blocking for that at a radio
+  interrupt priority would overrun a radio event. Filling from the RNG's own
+  vector makes the ordinary request a copy. Bias correction is on, costing
+  throughput and buying uniformly distributed bits, because the reader's key
   material comes from here. A caller that outruns the pool polls the peripheral
   directly with only the RNG vector masked, so the handler cannot take the byte
   it is waiting for while the radio keeps running. The generator stops once the
-  pool is full and starts again when it drains, and a byte already in flight as
-  it stops is dropped rather than written over the oldest entry.
-- `board/temperature_freertos.c` reads the die temperature from MPSL, not from
-  TEMP. MPSL owns that peripheral and takes its own readings to calibrate the
-  low-frequency clock, and TEMP answers one measurement at a time, so a second
-  reader driving `TASKS_START` underneath it would corrupt the timebase the
-  whole radio rests on. MPSL reports quarter degrees; the 802.15.4 driver, the
-  only consumer, wants whole ones.
+  pool is full and restarts when it drains; a byte in flight as it stops is
+  dropped rather than written over the oldest entry.
+- `board/temperature_freertos.c` reads the die temperature from MPSL, not TEMP.
+  MPSL owns that peripheral and reads it to calibrate the low-frequency clock,
+  and TEMP answers one measurement at a time, so a second reader driving
+  `TASKS_START` underneath it would corrupt the timebase the whole radio rests
+  on. MPSL reports quarter degrees; the 802.15.4 driver, its only consumer, wants
+  whole ones.
 - `board/flash_freertos.c` is internal flash on NVMC, arbitrated against the
   radio with MPSL timeslots. Programming this flash stalls the CPU: a word write
   is tens of microseconds and a page erase is 89.7 ms, which is longer than MPSL
@@ -207,32 +205,29 @@ The implemented foundation now includes:
   that adds a DFU slot widens `ULTRAWIDELOCK_FREERTOS_FLASH_WRITABLE_BASE` and `_LIMIT`
   deliberately. Reads need neither the window nor the controller, since program
   flash is memory-mapped.
-- `board/log_rtt_freertos.c` is the log sink, as a SEGGER RTT up-buffer. RTT and
-  not the UART, and that is the board's decision rather than a preference:
-  `uart0` is the J-Link OB's virtual COM port and MCUboot's serial recovery
-  rides it, so an application console there would collide with the DFU path.
-  The Zephyr oracle makes the same choice for the same reason. The control block
-  is written here against the published RTT layout rather than by linking
-  SEGGER's implementation, which is licensed for use with SEGGER's own products;
-  nothing is vendored and no third-party source is compiled, and a J-Link finds
-  this by scanning RAM for the identifier exactly as it finds SEGGER's. The
-  buffer is in no-block-skip mode, which is the only safe choice: a blocking
-  sink would stall its caller, and at 115200 baud an 80-character line is about
-  7 ms against a 1.836 ms DW3110 response-arm deadline. A line that does not fit
-  is dropped whole, because a partial line would splice with the next writer's
-  and a log that invents lines is worse than one that admits it lost some. The
-  write offset never reaches the read offset, since equal offsets are how a host
-  is told the buffer is empty. With no debugger attached the host never advances
-  the read offset, the buffer fills once, and every later write costs a bounds
-  check. A write masks interrupts for the length of the copy, roughly a
-  microsecond per hundred bytes at 64 MHz, so this hook must not be called from
-  the radio's priority-zero handlers. The struct offsets are a wire format and
-  are pinned by static assert on a 32-bit target.
-- `board/fault_freertos.c` resets rather than halts, because this is a door
-  lock: a board spinning in a fault has stopped answering, while one that
-  reboots comes back and can be opened. Define `ULTRAWIDELOCK_FREERTOS_FATAL_HALT` for
-  bench builds to stop instead. The reset shows up in RESETREAS as SOFTWARE,
-  which `otPlatGetResetReason` then reports.
+- `board/log_rtt_freertos.c` is the log sink, a SEGGER RTT up-buffer. RTT rather
+  than the UART because `uart0` is the J-Link OB's virtual COM port and MCUboot's
+  serial recovery rides it, so an application console there would collide with
+  the DFU path; the Zephyr oracle chooses the same way. The control block is
+  written against the published RTT layout rather than by linking SEGGER's
+  implementation, which is licensed for use with SEGGER's own products: nothing
+  is vendored, no third-party source is compiled, and a J-Link finds this by
+  scanning RAM for the identifier exactly as it finds SEGGER's. The buffer is in
+  no-block-skip mode, the only safe choice, since a blocking sink would stall its
+  caller and at 115200 baud an 80-character line is about 7 ms against a 1.836 ms
+  DW3110 response-arm deadline. A line that does not fit is dropped whole, since
+  a partial line would splice with the next writer's. The write offset never
+  reaches the read offset, because equal offsets are how a host is told the
+  buffer is empty. With no debugger attached the read offset never advances, the
+  buffer fills once, and every later write costs a bounds check. A write masks
+  interrupts for the length of the copy, roughly a microsecond per hundred bytes
+  at 64 MHz, so this hook must not be called from the radio's priority-zero
+  handlers. The struct offsets are a wire format, pinned by static assert on a
+  32-bit target.
+- `board/fault_freertos.c` resets rather than halts: a door lock spinning in a
+  fault has stopped answering, while one that reboots can be opened.
+  `ULTRAWIDELOCK_FREERTOS_FATAL_HALT` stops instead, for bench builds. The reset
+  shows in RESETREAS as SOFTWARE, which `otPlatGetResetReason` reports.
 - `crypto/` selects and starts the crypto provider: Mbed TLS 3.6.6, built
   standalone from its own CMake with the PSA core on. The provider is chosen for
   what already compiles against it rather than for speed:
@@ -270,28 +265,25 @@ The implemented foundation now includes:
   recognises. That last row earned itself immediately by catching
   `PSA_WANT_GENERATE_RANDOM`, which is Nordic's Kconfig and not an Mbed TLS
   option, copied in from the oracle's list where it would have been silent.
-- `peripherals.yml` freezes RTC, TIMER, EGU, vector, and clock ownership before
+- `peripherals.yml` freezes RTC, TIMER, EGU, vector and clock ownership before
   the first target link.
-- `platform.lock.yml` pins the Qorvo base and the exact OpenThread, nrfxlib,
-  SDC opcode-dispatcher, Nordic HAL, Mbed TLS, and NimBLE revisions.
-- `make freertos-port-test` compiles and runs this production backend against a
-  recording FreeRTOS test double.
+- `platform.lock.yml` pins the Qorvo base and the exact OpenThread, nrfxlib, SDC
+  opcode-dispatcher, Nordic HAL, Mbed TLS and NimBLE revisions.
+- `make freertos-port-test` runs this backend against a recording FreeRTOS
+  double.
 
-Every kernel object this port owns is statically allocated, but the build is
-not heap-free. Apache NimBLE's FreeRTOS porting layer creates its own objects
-with the dynamic APIs: one 32-entry event queue, the host, HCI, and GAP
+Every kernel object this port owns is static, but the build is not heap-free:
+Apache NimBLE's FreeRTOS porting layer creates its own objects dynamically. One 32-entry event queue, the host, HCI and GAP
 preemption mutexes, the HCI acknowledgement semaphore, and one software timer
 per callout. Patching the vendor tree is not an option, so the board build must
 set `configSUPPORT_DYNAMIC_ALLOCATION=1` and `configUSE_TIMERS=1` and provide a
-heap. Those allocations all happen once inside `nimble_port_init()` and are
-never freed, so the heap is a fixed startup cost, not a source of runtime
-fragmentation. `make freertos-ble-source-check` asserts the allocation sites so
+heap. Those allocations happen once inside `nimble_port_init()` and are never
+freed, so the heap is a fixed startup cost, not runtime fragmentation. `make freertos-ble-source-check` asserts the allocation sites so
 a NimBLE bump that adds more has to be re-costed. The exact heap size is a
 first-link measurement and is not yet established.
 
-The dispatch task defaults to a
-4096-byte stack and priority `tskIDLE_PRIORITY + 2`; the eventual board build
-may override `ULTRAWIDELOCK_FREERTOS_OSAL_STACK_BYTES`,
+The dispatch task defaults to a 4096-byte stack at
+`tskIDLE_PRIORITY + 2`; a board build may override `ULTRAWIDELOCK_FREERTOS_OSAL_STACK_BYTES`,
 `ULTRAWIDELOCK_FREERTOS_OSAL_QUEUE_DEPTH`, and `ULTRAWIDELOCK_FREERTOS_OSAL_TASK_PRIORITY`. The
 NimBLE host task defaults to a 4096-byte stack at `tskIDLE_PRIORITY + 1`,
 below the HCI receive pump, and is overridden with
@@ -308,31 +300,18 @@ MPSL/SoftDevice Controller, the nRF 802.15.4 service layer, and Apache NimBLE
 1.10.0, which keeps standalone MCUboot at address zero. Bundled S113 is only an
 interim bring-up option because its fixed application origin breaks that map.
 The complete evidence and remaining gates are in
-[`internal/dwm3001cdk-freertos-platform-qualification.md`](../../internal/dwm3001cdk-freertos-platform-qualification.md).
-
-Reproduce the Qorvo artifact audit with:
+`internal/dwm3001cdk-freertos-platform-qualification.md`, which is gitignored.
 
 ```sh
 make freertos-platform-check \
-  QORVO_SDK_ARCHIVE=<path-to-DW3_QM33_SDK_1.1.1.zip>
+  QORVO_SDK_ARCHIVE=<path-to-DW3_QM33_SDK_1.1.1.zip>   # the Qorvo artifact audit
+make freertos-radio-source-check NCS_WORKSPACE=<path>  # radio source pins
+make freertos-ble-source-check NIMBLE_SOURCE=<path>    # the BLE host pin
 ```
 
-Verify an existing NCS workspace against the radio source pins with:
-
-```sh
-make freertos-radio-source-check NCS_WORKSPACE=<path-to-ncs-workspace>
-```
-
-Verify an Apache NimBLE checkout against the BLE host pin with:
-
-```sh
-make freertos-ble-source-check NIMBLE_SOURCE=<path-to-mynewt-nimble>
-```
-
-The check verifies that the exact archive contains the board/UWB/FreeRTOS base,
-S113 L2CAP CoC API, and radio Timeslot API. It explicitly reports OpenThread,
-802.15.4 coexistence, and CoC target integration as port-owned work. Release
-still requires all of the following on the DWM3001CDK:
+The platform check verifies that the exact archive contains the board/UWB/FreeRTOS base,
+S113 L2CAP CoC API, and radio Timeslot API. It reports OpenThread, 802.15.4 coexistence and CoC target integration as
+port-owned work. Release still requires all of this on the DWM3001CDK:
 
 1. BLE peripheral GATT plus a 512-byte L2CAP CoC.
 2. OpenThread MTD attachment while BLE remains connected.
@@ -371,8 +350,6 @@ dispatcher answers most commands itself and stages the resulting Command
 Complete or Command Status in its own buffer; a read path that skipped it would
 lose every command response.
 
-Build and run the pinned NCS sources against an NCS workspace with:
-
 ```sh
 make freertos-ncs-source-check NCS_WORKSPACE=<path-to-ncs-workspace>
 ```
@@ -398,13 +375,10 @@ make freertos-build \
   QORVO_SDK_DIR=<path-to-extracted-DW3_QM33_SDK_1.1.1>
 ```
 
-The image was assembled in layers, and a layer was only added once the one below
-it linked. The binding constraint is 512 KB of flash and 128 KB of RAM. The
-current Zephyr production oracle fits at 120,740 B of RAM with 10,332 B spare;
-FreeRTOS must still be measured from its own ELF because its task and storage
-layout differs. The base layers below are linked and have hardware evidence.
-
-What is linked:
+Assembled in layers, each added only once the one below it linked. 512 KB of
+flash and 128 KB of RAM bind. The Zephyr oracle fits at 120,740 B of RAM with
+10,332 B spare; FreeRTOS must be measured from its own ELF, because its task and
+storage layout differs. Every layer below is linked and has hardware evidence.
 
 | Layer | Contents |
 | --- | --- |
@@ -418,12 +392,11 @@ What is linked:
 | UWB | the ranging engine, the vendored decadriver, and the DW3110 backends |
 | Thread | OpenThread as an MTD, built through its own CMake, plus the port's adapters |
 
-The recorded non-Matter image is 418,584 bytes of flash and 108,092 of RAM: 96 percent of
-the 0x6a000 application slot and 82 percent of the RAM budget. Flash is the tight
-one, with under 16 KB spare. `FREERTOS_MATTER=ON` selects the separate Matter
-variant and links the portable commissioning stack; do not use the non-Matter
-number as its budget. A credential is typed over USB only in the non-Matter
-console build.
+The recorded non-Matter image is 418,584 B of flash and 108,092 B of RAM: 96%
+of the `0x6a000` application slot and 82% of RAM, so flash is the tight one with
+under 16 KB spare. `FREERTOS_MATTER=ON` selects the Matter variant and links the
+portable commissioning stack; **do not use the non-Matter number as its budget**.
+A credential is typed over USB only in the non-Matter console build.
 
 `ultrawidelock_uwb_reach` still runs on every build and still reports an upper bound
 rather than a cost, because `--gc-sections` charges only what is reachable and a
@@ -485,6 +458,6 @@ are static assertions, one in `board/FreeRTOSConfig.h` and one in
 visible. Priorities 0 through 3 are radio-only by construction.
 
 The deprecated Nordic nRF5 Thread SDK is reference material only; its bundled
-OpenThread build is not a shipping dependency. The pinned current OpenThread,
-MPSL, SoftDevice Controller, and nRF 802.15.4 components must be integrated
-through their RTOS-independent APIs without importing Zephyr into the release.
+OpenThread build is not a shipping dependency. The pinned OpenThread, MPSL,
+SoftDevice Controller and nRF 802.15.4 components integrate through their
+RTOS-independent APIs, with no Zephyr in the release.

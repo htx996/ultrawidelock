@@ -1,22 +1,21 @@
 # Satellite — the second UWB anchor
 
-One half of the two-anchor inside/outside product; the DWM3001CDK lock
-(`apps/dwm3001cdk-lock`, built with `make anchorlink`) is the other. This board
-runs the CRED-tier CCC ranging engine without BLE credential auth, joins the
-phone's own ranging session as responder 1 in the slot the phone reserves when
-the lock advertises a 2-responder round, and measures its own DS-TWR distance
-to the phone.
+One half of the two-anchor inside/outside product; the lock
+(`apps/dwm3001cdk-lock`, built with `make anchorlink`) is the other. It runs the
+CRED-tier CCC ranging engine without BLE credential auth, joins the phone's own
+session as responder 1 in the slot the phone reserves when the lock advertises a
+2-responder round, and measures its own DS-TWR distance to the phone.
 
-Two distances to one phone from the same ranging block is what makes a side
-decision possible: the lock pairs its own measurement with this one and asks
-which side of the anchor pair's frontier the phone is on. Design and receipts
-live in `docs/second-anchor.md`.
+Two distances to one phone from the same block is what makes a side decision
+possible: the lock pairs its measurement with this one and asks which side of
+the anchor pair's frontier the phone is on. Design and receipts:
+`docs/second-anchor.md`.
 
 Developed on the nRF5340 DK + DWM3000EVB. `SAT_BOARD=decawave_dwm3001cdk`
-builds this same image for a second DWM3001CDK (stage E): 272,160 B flash
+builds the same image for a second DWM3001CDK (stage E): 272,160 B flash
 (52.73%) and 108,032 B RAM (82.42%) with Thread, recorded in
-`size-baseline-decawave_dwm3001cdk-thread.json` beside this file. It has not
-been flown -- the second board is not on the bench yet.
+`size-baseline-decawave_dwm3001cdk-thread.json`. Not yet flown; the second board
+is not on the bench.
 
 ## The link to the lock
 
@@ -26,18 +25,17 @@ shared 16-byte key, 13-byte nonce, 8-byte tag, on
 compiled only under `CONFIG_OPENTHREAD`, which `overlay-thread.conf` supplies
 and `mk/satellite.mk` layers only for `SAT_THREAD=1`.
 
-There is no cable in the steady state, and no per-session step: the sealed link
-carries the session handoff itself. USB is used once, at install, to type the
-key and the Thread dataset in.
+No cable in the steady state and no per-session step: the sealed link carries
+the handoff itself. USB is used once, at install, to type in the key and the
+Thread dataset.
 
 ## Build and flash
 
     make sat-build SAT_THREAD=1
     make sat-flash
 
-`SAT_THREAD` is opt-in rather than default so the ranging arm margin measured
-without OpenThread on this core stays buildable as the baseline to judge the
-Thread build against.
+`SAT_THREAD` is opt-in so the ranging arm margin measured without OpenThread
+stays buildable as the baseline to judge the Thread build against.
 
 ## Provision, once per board
 
@@ -71,7 +69,7 @@ The dataset comes off the lock: build it with
 
 ## Known limit
 
-A stock iPhone reports `nresp=1` no matter who answers in slot 3, which is why
-the stage-B pass criterion is unreachable as written; the satellite itself
-joins, decodes and transmits correctly. `docs/second-anchor.md` stage B has the
-receipts and stage B' has where this goes next.
+A stock iPhone reports `nresp=1` no matter who answers in slot 3, so the
+stage-B pass criterion is unreachable as written; the satellite itself joins,
+decodes and transmits correctly. `docs/second-anchor.md` stage B has the
+receipts, stage B' has where this goes next.

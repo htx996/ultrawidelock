@@ -5,8 +5,7 @@ behind them, and runtime consoles on the running reader.
 
 Bare make targets mean the DWM3001CDK, the primary board. The nRF5340 DK is
 `nrf-` prefixed and the ESP32 is `esp-` prefixed. `make` with no target prints
-the grouped list, and each target's own comment block in `mk/*.mk` is the
-authority for its options.
+the grouped list; each target's comment block in `mk/*.mk` is the authority.
 
 ## Build options (DWM3001CDK)
 
@@ -33,36 +32,30 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 
 `LTO=0` no longer fits the flash map: the image measures 446,380 B without it
 against a 433,664 B `app` partition, and the build fails rather than ships. See
-[`../apps/dwm3001cdk-lock/pm_static.yml`](../apps/dwm3001cdk-lock/pm_static.yml), which carries the
-derivation of every number in that map.
+[`../apps/dwm3001cdk-lock/pm_static.yml`](../apps/dwm3001cdk-lock/pm_static.yml) for the derivation.
 
-`IMAGE_VERSION` changes the image hash, and that is correct rather than a side
-effect: the version sits in the MCUboot header, the SHA-256 TLV covers the
-header, so two builds differing only in their version really are different
-images and a delta between them is a real delta. The practical consequence is
-that the first build after setting it produces a new hash, so the deployed
-record has to be re-recorded — which `make flash` and the `ota-*` targets do on
-their own.
+`IMAGE_VERSION` changes the image hash, and that is correct: the version sits in
+the MCUboot header and the SHA-256 TLV covers the header, so two builds differing
+only in their version are different images and a delta between them is a real
+delta. The first build after setting it produces a new hash, so the deployed
+record has to be re-recorded, which `make flash` and the `ota-*` targets do.
 
-Serial recovery is a separate thing on the same wire, and it belongs to MCUboot
-rather than to the application: see
+Serial recovery is a separate thing on the same wire, belonging to MCUboot rather
+than the application: see
 [`../apps/dwm3001cdk-lock/sysbuild/mcuboot.conf`](../apps/dwm3001cdk-lock/sysbuild/mcuboot.conf).
-It accepts a **whole** image where everything else on this board takes a delta,
-because it is not running the application and the slot is therefore free. That
-is what makes it the only path that can install onto a board whose software does
-not boot — and `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` means such a board is
-already sitting in recovery, with nothing to press. `make ota-fan` publishes the
-whole image beside the deltas for it.
+It accepts a **whole** image where everything else takes a delta, because the
+slot is free while the application is not running, which makes it the only path
+onto a board whose software does not boot. `CONFIG_BOOT_SERIAL_NO_APPLICATION=y`
+means such a board already sits in recovery with nothing to press, and
+`make ota-fan` publishes the whole image beside the deltas.
 
 `make fota` and `make ota-smp` set `SMP=1 RELEASE=1` themselves and build in
-their own directory. That is deliberate rather than a convenience: a board
-without SMP does not speak mcumgr at all, so inheriting a bare `make`'s defaults
-would build the wrong image and then diff the board against it.
+their own directory: a board without SMP does not speak mcumgr, so inheriting a
+bare `make`'s defaults would build the wrong image and diff the board against it.
 
 ## Kconfig overlays (DWM3001CDK)
 
-They live beside the application in [`../apps/dwm3001cdk-lock`](../apps/dwm3001cdk-lock) and are
-selected by the options above:
+In [`../apps/dwm3001cdk-lock`](../apps/dwm3001cdk-lock), selected by the options above:
 
 - `overlay-thread.conf`: always applied by `make build`. The Matter node,
   OpenThread MTD/MED and SRP. `make reader` omits it, which is the whole
@@ -70,15 +63,15 @@ selected by the options above:
 - `overlay-release.conf`, `overlay-smp.conf`, `overlay-lto.conf`: `RELEASE=1`,
   `SMP=1` and the default `LTO=1`. Ordered so that later files win.
 
-  `overlay-smp.conf` turns on two transports, not one. The Bluetooth one is
-  what nRF Device Manager and the flasher page's radio path use. The UART one
+  `overlay-smp.conf` turns on two transports. The Bluetooth one is what nRF
+  Device Manager and the flasher page's radio path use. The UART one
   (`CONFIG_MCUMGR_TRANSPORT_UART`) binds `zephyr,uart-mcumgr`, which the board
-  DTS already points at `uart0` — the J-Link OB's VCOM, which enumerates as USB
-  CDC-ACM and which the application otherwise leaves alone, since its console
-  is RTT. Both reach the same handler in
+  DTS already points at `uart0`, the J-Link OB's VCOM: it enumerates as USB
+  CDC-ACM and the application otherwise leaves it alone, its console being RTT.
+  Both reach the same handler in
   [`ports/zephyr/dfu/dfu_smp_img.c`](../ports/zephyr/dfu/dfu_smp_img.c), so a
-  cable and a radio get the same signature check and the same update window.
-  Measured cost of adding the UART transport: **+2,408 B flash, +464 B RAM**.
+  cable and a radio get the same signature check and update window. Measured
+  cost of the UART transport: **+2,408 B flash, +464 B RAM**.
 - `overlays/uwb-selftest.conf`: the `make selftest` image, which reads the
   DW3110's `DEV_ID` at boot and stops.
 - `overlay-anchor.conf`: `ANCHOR=1`. Turns on `ULTRAWIDELOCK_ANCHOR` and the
@@ -91,11 +84,10 @@ selected by the options above:
 
 ### Overlays no `make` target selects
 
-The rest are applied by hand, because they exist to answer a question rather
-than to build a shipping image. There is no `make` option for them: override
-`CDK_CONF`, which is what `make build` hands to `-DEXTRA_CONF_FILE`, and repeat
-the overlays you still want (`;`-separated, later files win). The CDK recipes
-detect that argument change and reconfigure the existing build directory:
+The rest are applied by hand, because they answer a question rather than build a
+shipping image. Override `CDK_CONF`, which is what `make build` hands to
+`-DEXTRA_CONF_FILE`, and repeat the overlays you still want (`;`-separated, later
+files win). The CDK recipes reconfigure the existing build directory:
 
 ```sh
 make build \
@@ -113,12 +105,12 @@ make build \
   and `make mlgate` respectively, listed here because they are easy to miss.
 - `overlays/ble-verbose.conf`, `overlays/thread-dataset-dump.conf`: debug aids.
 
-**`ULTRAWIDELOCK_BENCH` is a required acknowledgement, not a convenience.**
-Two of the bench arms weaken the range-integrity evidence — `RANGE_TRUST_K` below
-3 and `APPROACH_NEAR_DWELL` below 2 — and `apps/dwm3001cdk-lock/CMakeLists.txt`
-fails configuration outright unless `ULTRAWIDELOCK_BENCH` *and*
-`ULTRAWIDELOCK_RANGE_GATE_STRICT` are both set. A bench image is not a shipping
-image; see [`range-integrity.md`](range-integrity.md).
+**`ULTRAWIDELOCK_BENCH` is a required acknowledgement, not a convenience.** Two
+bench arms weaken the range-integrity evidence (`RANGE_TRUST_K` below 3 and
+`APPROACH_NEAR_DWELL` below 2), so `apps/dwm3001cdk-lock/CMakeLists.txt` fails
+configuration unless `ULTRAWIDELOCK_BENCH` *and* `ULTRAWIDELOCK_RANGE_GATE_STRICT`
+are both set. A bench image is not a shipping image; see
+[`range-integrity.md`](range-integrity.md).
 
 ### Kconfig worth knowing about
 
@@ -163,9 +155,8 @@ Set on the command line, e.g. `make nrf-build PRETTY=1 CHIP=dw3720`:
 
 ### Kconfig overlays (nRF5340 DK)
 
-They live in [`../apps/nrf5340dk-lock/overlays`](../apps/nrf5340dk-lock/overlays)
-and layer over the stock Nordic app; each file documents every setting it
-touches.
+In [`../apps/nrf5340dk-lock/overlays`](../apps/nrf5340dk-lock/overlays), layered
+over the stock Nordic app; each file documents every setting it touches.
 
 - `ultrawidelock-cred.conf`: always applied. UWB heap and threads, BLE time-sync,
   the Apple ECP Express tap, log levels.
@@ -185,9 +176,8 @@ touches.
   Matter debug logs for timing notification delays.
 
 `CONFIG_ULTRAWIDELOCK_CRED_SOURCE_STACK=y` is the nRF default. `make nrf-build` sets it
-explicitly and verifies the final link map contains no member from
-`libultrawidelock_ble.a`. Keep `ULTRAWIDELOCK_SOURCE=0` for comparison and regression isolation,
-not as the normal build.
+explicitly and verifies the final link map contains no member from `libultrawidelock_ble.a`.
+Keep `ULTRAWIDELOCK_SOURCE=0` for comparison and regression isolation, not as the normal build.
 
 ## ESP32-S3, ESP32-C5, and ESP32-C6
 
@@ -196,9 +186,9 @@ on): it advertises the Aliro features so Apple Home can put a key in
 Wallet. Commissioning is standard Matter over Wi-Fi; `codes` reprints the
 QR URL and pairing code.
 
-ESP32-S3 is hardware-validated. ESP32-C5 has source and release-build support.
-ESP32-C6 is hardware-validated for direct-SPI BU04 bring-up with `ST_NRST`
-held low. No C5 hardware validation is recorded.
+ESP32-S3 is hardware-validated. ESP32-C5 has source and release-build support but
+no recorded hardware validation. ESP32-C6 is hardware-validated for direct-SPI
+BU04 bring-up with `ST_NRST` held low.
 
 ### Over-the-air updates
 
@@ -209,10 +199,9 @@ held low. No C5 hardware validation is recorded.
 | `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` | on by default. An update that does not reach the end of `app_main` is rolled back to the previous slot at the next boot. Without it, a bad image is simply what the lock now runs, and the only way back is a cable |
 
 This is **not** `CONFIG_ENABLE_OTA_REQUESTOR`, which is also on. That one is
-Matter OTA: BDX from a commissioned provider node over Wi-Fi. It is the right
-path for a fleet and no use to someone with a board and a browser, because a web
-page cannot join a Matter fabric. The two share the `ota_0`/`ota_1` slots and
-nothing else.
+Matter OTA: BDX from a commissioned provider node over Wi-Fi, right for a fleet
+and no use to someone with a board and a browser, because a web page cannot join
+a Matter fabric. The two share the `ota_0`/`ota_1` slots and nothing else.
 
 The long press is the commissioning window and stays that way. Overloading it
 would mean everyone opening a commissioning window also spent five minutes
@@ -220,15 +209,15 @@ accepting firmware from whoever was in radio range.
 
 ## Runtime consoles
 
-Every firmware has a console, and none of them needs a reflash to use.
+None of these needs a reflash to use.
 
-**DWM3001CDK** (`make monitor`): read-only, and it is RTT over `probe-rs`, not a
-serial port. There is no UART console on this board, because on a single-core
-part the DW3110's delayed-transmit reply window cannot afford a blocking console
-write. `make nrf-term` does not reach it. The Matter image has no shell at all,
-by configuration: `CONFIG_ULTRAWIDELOCK_PROV_CONSOLE=n` and `CONFIG_SHELL=n`, so
-`ultrawidelock export` and friends do not exist there. Back up `settings_storage` over
-SWD instead of trying to export from it.
+**DWM3001CDK** (`make monitor`): read-only RTT over `probe-rs`, not a serial
+port, and `make nrf-term` does not reach it. There is no UART console on this
+board: on a single-core part the DW3110's delayed-transmit reply window cannot
+afford a blocking console write. The Matter image has no shell at all
+(`CONFIG_ULTRAWIDELOCK_PROV_CONSOLE=n`, `CONFIG_SHELL=n`), so
+`ultrawidelock export` and friends do not exist there. Back up
+`settings_storage` over SWD instead of trying to export from it.
 
 **DWM3001CDK, `make reader` only**: hold **SW2 and tap RESET** for provisioning
 mode, which brings up a USB CDC-ACM console on the second USB port with the
@@ -241,13 +230,12 @@ radios down. Commands: `ultrawidelock prov`, `ultrawidelock import <hex>`, `ultr
 
 `make nrf-term` prints this image's Matter pairing code and QR payload before it
 attaches, because on the Matter build there may be nothing else to see: the
-add-on sets `CONFIG_LOG_DEFAULT_LEVEL=0` and enables no UART log backend, and the
-build drops the shell (`CONFIG_SHELL=n`), so an empty terminal on that image is
-the expected result and not a fault. `make nrf-pairing-code` prints the same
-thing on its own. The payload is generated at build time and merged into the hex,
-so it describes what you built rather than what is on the board, and the
-discriminator and passcode are fixed in Kconfig: bench credentials, not
-per-device secrets.
+add-on sets `CONFIG_LOG_DEFAULT_LEVEL=0`, enables no UART log backend and drops
+the shell (`CONFIG_SHELL=n`), so an empty terminal there is expected, not a
+fault. `make nrf-pairing-code` prints the same thing on its own. The payload is
+generated at build time and merged into the hex, so it describes what you built
+rather than what is on the board; the discriminator and passcode are fixed in
+Kconfig, bench credentials rather than per-device secrets.
 
 **ESP32 Matter lock** (`make esp-monitor APP=matter-lock`): `status`, `lock`,
 `unlock`, `codes`, `range`, `factoryreset`, `ultrawidelock <prov|trust|clear>`.
@@ -263,11 +251,10 @@ per-device secrets.
 
 When its missing integration patch is restored, `ULTRAWIDELOCK_TRACE=1` logs protocol
 states, message metadata, device or credential identifiers, and a truncated URSK
-fingerprint. It does not log the raw URSK, but the trace is still a bring-up
-artifact: do not ship it in production firmware or publish a capture without
-review. In the current tree, selecting this option stops before the firmware
-build: the required vendor trace patch is not in this repository, which is
-what `make help` reports against `ULTRAWIDELOCK_TRACE=1`.
+fingerprint. It does not log the raw URSK, but the trace is a bring-up artifact:
+do not ship it in production firmware or publish a capture without review. In the
+current tree, selecting it stops before the firmware build because the vendor
+trace patch is not in this repository, which `make help` reports.
 
 Flight-recorder data is more sensitive. Raw serial logs containing `[FREC]`
 records and binary `.frc` files include the full ephemeral URSK. Keep them

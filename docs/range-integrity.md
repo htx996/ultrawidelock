@@ -1,12 +1,9 @@
 # Range integrity: what a signed distance is worth
 
 A presence assertion exists to be believed by someone who was not in the room.
-Its whole content is a distance, so the interesting question is not "what did
-the radio report" but "why should a third party believe that number was
-measured rather than chosen".
-
-This document records what defends the number today, what does not, and the one
-measurement still missing.
+Its whole content is a distance, so the question is not "what did the radio
+report" but "why should a third party believe that number was measured rather
+than chosen".
 
 ## The layers
 
@@ -19,22 +16,22 @@ measurement still missing.
 | 3 | Ipatov first-path check | **Removed** — untunable on this hardware |
 | 4 | Cross-block consensus: K consecutive blocks agreeing within 50 cm | Enforced; K=3 shipping, K=2 only under `ULTRAWIDELOCK_BENCH` |
 
-Layer 2 is the one that matters against a distance-reduction attack. A spoofed
+Layer 2 is the one that matters against a distance-reduction attack: a spoofed
 early first path cannot reproduce the scrambled sequence, so its STS quality
-collapses. Layers 1 and 4 are statistical filters; they raise the cost of an
-attack without making it a cryptographic impossibility.
+collapses. Layers 1 and 4 are statistical filters, raising the cost of an attack
+without making it a cryptographic impossibility.
 
 ## What was wrong
 
 `CONFIG_ULTRAWIDELOCK_RANGE_GATE_STRICT` gated layer 2 before it could reach the range
 store. It defaulted to `n` ("shadow mode": log the verdict, latch the block
 anyway), and the symbol was declared only in the Zephyr Kconfig tree. On ESP32
-it was not merely off — it was **unreachable**, so `idf.py` could not produce
-it and the `#if` in `ccc_shim_rx.c` could never be true.
+it was not merely off, it was **unreachable**, so `idf.py` could not produce it
+and the `#if` in `ccc_shim_rx.c` could never be true.
 
 That is the platform that signs presence assertions. Every frame the bench run
 produced carried a distance that had passed plausibility and consensus but no
-integrity check at all, and the frame had no field in which to say so.
+integrity check, and no field in which to say so.
 
 ## What changed
 
@@ -83,11 +80,10 @@ rejects only what the DW3000 driver itself calls bad. This matters more now that
 the DWM3001CDK enforces rather than shadows: an untuned floor that is enforced is
 a door that can refuse to open.
 
-**Relay resistance is still not measured.** Nothing here tests it. The
-time-of-flight argument is structural, and enforcing STS is what the structural
-argument depends on, but no one has attacked this stack. Do not describe it as
-tested. The relevant published work to read first is the literature on
-distance-reduction attacks against HRP UWB with STS.
+**Relay resistance is still not measured.** The time-of-flight argument is
+structural and depends on enforcing STS, but no one has attacked this stack.
+Do not describe it as tested. Read the literature on distance-reduction attacks
+against HRP UWB with STS first.
 
 **A compromised producer can still assert anything.** The evidence is signed by
 the same key that signs the distance, so it proves the frame came from an

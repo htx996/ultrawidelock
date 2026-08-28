@@ -1,17 +1,16 @@
 # nRF5340 wiring
 
-Every pin and every connection on the nRF bench stack in one table. Bring-up procedure is
-in [nrf5340-bringup.md](nrf5340-bringup.md).
+Every pin and connection on the nRF bench stack. Bring-up is
+[nrf5340-bringup.md](nrf5340-bringup.md).
 
 ## Source of truth
 
 [`../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay`](../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay)
-remains authoritative, because the build compiles it and it cannot drift. This page adds
-what a devicetree cannot carry: Arduino header positions, the pin names on the far end,
-the power rails, and the stack order. If the two disagree, the overlay wins.
+is authoritative: the build compiles it and it cannot drift. This page adds what
+a devicetree cannot carry, being Arduino header positions, far-end pin names,
+power rails and stack order. **If the two disagree, the overlay wins.**
 
-Everything below was resolved from the generated
-`build/matter-aliro-door-lock-app/zephyr/zephyr.dts`:
+Resolved from the generated `build/matter-aliro-door-lock-app/zephyr/zephyr.dts`:
 
 * Header positions from the `arduino_header` node's `gpio-map`, where map indices 0 to 5
   are A0 to A5 and 6 onward are D0 to D15.

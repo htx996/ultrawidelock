@@ -1,13 +1,13 @@
 # Add the key
 
-Flashing a board is half the job. The image carries no credential: Apple Home mints the
-Aliro key during Matter commissioning, and until that happens the lock is a radio with
-nothing to say. This page is the commissioning step for every target, from the setup code
-to the first walk-up.
+Flashing a board is half the job. The image carries no credential: Apple Home
+mints the Aliro key during Matter commissioning, and until then the lock is a
+radio with nothing to say. Commissioning, for every target, from setup code to
+first walk-up.
 
-If you flashed an ESP32 from the browser, the flasher page walks the same ground for that
-one board; come here for the other targets, for what a healthy pairing looks like, and for
-what to do when one does not finish.
+The browser flasher covers the same ground for an ESP32. Come here for the other
+targets, for what a healthy pairing looks like, and for what to do when one does
+not finish.
 
 ## Before you start
 
@@ -22,14 +22,12 @@ what to do when one does not finish.
 | nRF5340 DK | Thread | The same |
 | ESP32-S3, C5, C6 | Wi-Fi | A 2.4 GHz network; there is no Improv step, the join happens inside commissioning |
 
-The `make reader` build on the DWM3001CDK is the exception to this whole page. It has no
-Matter node, so nothing commissions it and nothing mints a key for it; its credential is
-imported over USB instead. See [`../apps/dwm3001cdk-lock/README.md`](../apps/dwm3001cdk-lock/README.md).
+`make reader` on the DWM3001CDK is the exception to this whole page: no Matter
+node, so nothing commissions it and nothing mints a key. Its credential is
+imported over USB instead. See
+[`../apps/dwm3001cdk-lock/README.md`](../apps/dwm3001cdk-lock/README.md).
 
 ## 1. Get the setup code
-
-Where the code comes from is not the same on all three targets, and on the DWM3001CDK it
-is the one that surprises people.
 
 | Target | Where the code comes from |
 |---|---|

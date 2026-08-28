@@ -69,11 +69,10 @@ make flash CDK_BUILD=build/cdk-latch          # NOT flash-erase
 `flash-erase` would take the keys you just stored, along with the credential
 and the Matter fabric. Never use it here.
 
-Nothing to press. The bench build retries the dump from its main loop until a
-dataset exists, so it prints itself a second or two after the node attaches.
-No controller involved, which matters: the commissioning window was the only
-trigger until 2026-08-20, and it needs a controller that is talking to you --
-exactly what you do not have when the dataset is what you are missing.
+Nothing to press: the bench build retries the dump from its main loop until a
+dataset exists, printing a second or two after the node attaches. No controller
+involved, which matters, because the commissioning window was the only trigger
+until 2026-08-20 and it needs a controller already talking to you.
 
 **Do not hold SW2 through reset on this image.** There is no provisioning
 console here, so that gesture is a factory reset: credential and Matter fabric
@@ -105,18 +104,16 @@ red -- then:
 make witness-flash WITNESS_PORT_DEV=$(ls /dev/tty.usbmodem*)
 ```
 
-It re-enumerates as a serial console. Open it (`screen /dev/tty.usbmodem* 115200`)
-and provision:
+It re-enumerates as a serial console. Open it
+(`screen /dev/tty.usbmodem* 115200`) and provision:
 
 ```
 PROV inside <inside link key> <group key> <dataset hex>
 SHOW
 ```
 
-Repeat for the second dongle with `outside` and its own link key. Same group
-key, same dataset, both times.
-
-`make witness-prov-help` prints this whole flow if you lose it.
+Repeat for the second dongle with `outside` and its own link key, same group key
+and dataset both times. `make witness-prov-help` reprints this flow.
 
 ## 4. Link check, on a table, before anything goes near the door
 
@@ -136,19 +133,18 @@ witness datagram no enrolled key opened (N B); check the link keys match
 
 That warning means a key differs between a dongle and the lock. Retype it.
 
-LED on each dongle: **solid** = attached and reporting. Slow blink = provisioned
-but not attached (dataset wrong, or no router in reach). Fast blink = not
-provisioned.
+Dongle LED: **solid** = attached and reporting; slow blink = provisioned but not
+attached (dataset wrong, or no router in reach); fast blink = not provisioned.
 
-> **This step is the plan invalidator.** If reports do not arrive, stop. It
-> means BLE scanning and Thread cannot share the radio on this part, and no
-> result from step 6 means anything. Say so and come back to the design.
+> **This step is the plan invalidator.** If reports do not arrive, stop: BLE
+> scanning and Thread cannot share the radio on this part, and no result from
+> step 6 means anything. Say so and come back to the design.
 
 ## 5. Mount
 
-Inside dongle on the inside wall, outside dongle on the outside wall, both near
-the door, both mains powered. Roughly symmetric about the door; the design reads
-the *difference* between them, so a lopsided mounting biases every window.
+Inside dongle on the inside wall, outside on the outside wall, both near the
+door, both mains powered, roughly symmetric about it. The design reads the
+*difference* between them, so a lopsided mounting biases every window.
 
 ## 6. The two tests
 
@@ -168,12 +164,12 @@ passive unlock withheld: side=<n> conf=<n> flags=0x<nn>    <- the side gate
 passive unlock withheld: inside latch (why=0x<nn>)         <- the latch
 ```
 
-The side gate runs first and `break`s, so the latch line only appears once the
-witnesses have produced a confident OUTSIDE decision. During Test A you should
-mostly see the side-gate line: the witnesses are saying INSIDE or nothing, and
-the classifier never hands the latch a decision to veto. Seeing the latch line
-during Test A means the side gate was convinced you were outside and the latch
-caught it -- a much narrower escape, and worth writing down.
+The side gate runs first and `break`s, so the latch line appears only once the
+witnesses have produced a confident OUTSIDE decision. Test A should mostly show
+the side-gate line: the witnesses say INSIDE or nothing, and the classifier never
+hands the latch a decision to veto. A latch line during Test A means the side
+gate was convinced you were outside and the latch caught it, a much narrower
+escape. Write it down.
 
 Side-gate flags:
 

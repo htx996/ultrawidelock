@@ -11,27 +11,26 @@ the control renders and its Left/Front/Right selection round-trips to the device
 
 ## 1. It is not a standard Matter attribute
 
-**VERIFIED.** No attribute of the standard Door Lock cluster (`0x0101`) carries approach
-direction, through spec revision 1.6 — not in the Aliro attribute block (`0x0080`–
-`0x0088`), not anywhere else. Searching the standard cluster for it will always come up
-empty, and that emptiness is not evidence the feature does not exist.
+**VERIFIED.** No attribute of the standard Door Lock cluster (`0x0101`) carries
+approach direction through spec revision 1.6, neither in the Aliro attribute block
+(`0x0080`-`0x0088`) nor anywhere else. That emptiness is not evidence the feature
+does not exist.
 
-The control is driven by a **manufacturer-specific cluster** using a Matter MEI
-(Manufacturer Extensible Identifier): vendor ID in the upper 16 bits, cluster ID in the
-lower 16. Manufacturer clusters live in a separate ID space that a search of the standard
-data model cannot reach.
+The control is driven by a **manufacturer-specific cluster** using a Matter MEI:
+vendor ID in the upper 16 bits, cluster ID in the lower 16. Manufacturer clusters
+live in a separate ID space a search of the standard data model cannot reach.
 
 Vendor `0x1349` is Apple (`CHIPVendorIdentifiers.hpp:46`), so the cluster is
 **`0x1349FC03`**.
 
 ## 2. The descriptor
 
-**VERIFIED** on silicon — the control renders and its selection round-trips with exactly
-these values — and against the type tables in `chip-types.xml` and
+**VERIFIED** on silicon (the control renders and its selection round-trips with
+exactly these values) and against the type tables in `chip-types.xml` and
 `attribute-metadata.h`.
 
-Cluster `0x1349FC03`, mask `0x40` (server), on the **door lock endpoint** — the same
-endpoint as the Door Lock cluster, not endpoint 0. Three attributes, 7 bytes total:
+Cluster `0x1349FC03`, mask `0x40` (server), on the **door lock endpoint**, the same
+endpoint as the Door Lock cluster, not endpoint 0. Three attributes, 7 bytes:
 
 | Attribute | Size | Type | Mask | Default |
 |---|---|---|---|---|
@@ -43,23 +42,23 @@ Type codes per `chip-types.xml` lines 28/30/33; mask bits per
 `attribute-metadata.h:110,112` (`MATTER_ATTRIBUTE_FLAG_WRITABLE` = `0x01`,
 `..._NONVOLATILE` = `0x02`).
 
-Two things are easy to get wrong here:
+Two things are easy to get wrong:
 
-- The direction attribute is a **bitmap8**, not `int8u`. Declaring it as an unsigned
-  integer is the wrong type code (`0x20` instead of `0x18`).
-- The default of **7** is `0b111`, all three directions permitted, matching Home's
+- The direction attribute is a **bitmap8**, not `int8u`. An unsigned integer is the
+  wrong type code (`0x20` instead of `0x18`).
+- The default **7** is `0b111`, all three directions permitted, matching Home's
   "unlock when you approach from any direction". Which single bit means Left versus
-  Right is **still unknown** and nothing in the port depends on it.
+  Right is **still unknown**, and nothing in the port depends on it.
 
 ## 3. The expensive one: missing global attributes fail silently, then loudly
 
 **VERIFIED, cost three pairing cycles.**
 
-`FeatureMap` and `ClusterRevision` are mandatory on every Matter cluster.
-`esp_matter`'s `cluster::create()` emits **neither** — every generated cluster in the SDK
-adds them explicitly (see any file under `data_model/generated/clusters/`).
+`FeatureMap` and `ClusterRevision` are mandatory on every Matter cluster, and
+`esp_matter`'s `cluster::create()` emits **neither**; every generated cluster in
+the SDK adds them explicitly (any file under `data_model/generated/clusters/`).
 
-Declaring the cluster with only the direction attribute produces a cluster that cannot
+Declaring the cluster with only the direction attribute produces one that cannot
 answer `ClusterRevision`. The failure does not look like a failure:
 
 1. Home runs a **complete** commissioning — PASE, attestation, CSR request, AddNOC,
@@ -68,12 +67,11 @@ answer `ClusterRevision`. The failure does not look like a failure:
 3. The UI says **"Unable to Add Accessory"**
 
 Nothing in the device log errors. The read Home makes immediately before bailing
-*succeeds*, so the rejection is based on a value it received, not on an error status.
+*succeeds*, so the rejection rests on a value it received, not an error status.
 
-**How to recognise it:** search the log for `OpCreds: Received a RemoveFabric Command`
-appearing *after* a successful `Commissioning completed successfully`. That sequence
-means the accessory was accepted and then rejected, which is a data-model problem, not a
-connectivity or crypto problem.
+**How to recognise it:** `OpCreds: Received a RemoveFabric Command` in the log
+*after* a successful `Commissioning completed successfully`. Accepted then
+rejected is a data-model problem, not connectivity or crypto.
 
 **Fix:**
 
@@ -90,21 +88,19 @@ cluster::global::attribute::create_cluster_revision(c, 1);
 
 ## 4. The endpoint descriptor is cached at commissioning
 
-**VERIFIED.** A controller reads the endpoint's cluster list once, when the accessory is
-commissioned, and caches it. Adding a cluster to a device that is already paired changes
-nothing visible — the control will not appear no matter how many times the app is
-restarted.
-
-Any newly declared cluster requires **removing the accessory and adding it again**.
+**VERIFIED.** A controller reads the endpoint's cluster list once, at
+commissioning, and caches it. Adding a cluster to an already-paired device changes
+nothing visible, however many times the app is restarted. Any newly declared
+cluster requires **removing the accessory and adding it again**.
 
 ## 5. Removal and re-pairing traps
 
 Three separate ways to end up unable to re-add a device, all seen on the bench:
 
 **5.1 Removing while the device is unreachable.** Removing an accessory sends
-`RemoveFabric` *to the device*. If the device is offline at that moment, the controller
-removes it locally and the device never hears about it — it still boots with
-`Fabric already commissioned. Disabling BLE advertisement` and cannot be discovered.
+`RemoveFabric` *to the device*. If it is offline, the controller removes it locally
+and the device never hears: it still boots with `Fabric already commissioned.
+Disabling BLE advertisement` and cannot be discovered.
 
 **5.2 Multiple fabrics.** A device commissioned into Apple Home typically holds **two**
 fabrics. Removing the accessory in the app clears one; the device stays commissioned on

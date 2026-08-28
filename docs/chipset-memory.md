@@ -1,12 +1,12 @@
 # Memory usage
 
-Scope: the nRF5340 DK image only. The DWM3001CDK image (`apps/dwm3001cdk-lock/pm_static.yml`) and the
-ESP32-S3 apps (`apps/*/partitions.csv`) have their own budgets and partition
-layouts and are not measured here.
+The nRF5340 DK image only. The DWM3001CDK image
+(`apps/dwm3001cdk-lock/pm_static.yml`) and the ESP32-S3 apps
+(`apps/*/partitions.csv`) have their own budgets and are not measured here.
 
-Snapshot measured 2026-07-19 from the build artifacts of 2026-07-17 19:55 in `build/`
-(repo HEAD `56df8df` at measurement time). `apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf` and several
-`modules/ultrawidelock_uwb` sources are newer than these artifacts, so expect small shifts on the next
+Measured 2026-07-19 from build artifacts of 2026-07-17 19:55 (repo HEAD
+`56df8df`). `apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf` and several
+`modules/ultrawidelock_uwb` sources are newer, so expect small shifts on the next
 `make nrf-build`.
 ## Hardware budgets
 

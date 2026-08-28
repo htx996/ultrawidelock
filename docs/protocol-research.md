@@ -2,17 +2,15 @@
 
 ## Abstract
 
-This report documents the on-air behavior of a phone-driven ultra-wideband (UWB)
-proximity unlock: how a phone opens a fixed reader on approach. The phone conducts the
-protocol exchange over Bluetooth LE, then the two run a UWB secure ranging exchange that
-lets the reader measure distance before it unlocks. The scope here is deliberately
-narrow: what reaches the air, and what must hold before ranging can begin.
+The on-air behavior of a phone-driven ultra-wideband (UWB) proximity unlock. The
+phone runs the protocol exchange over Bluetooth LE, then the two run a UWB secure
+ranging exchange that lets the reader measure distance before it unlocks. Scope: what
+reaches the air, and what must hold before ranging can begin.
 
-The work began from a specific failure: NFC tap-to-unlock worked, but the door would not
-open on approach. Tap working is a useful signal: it means the BLE transport,
-provisioning, and credentials are healthy, so the fault is UWB-specific. The fallback to
-NFC when UWB is disturbed is by design, which is why tap continued to work throughout the
-period when ranging was dead.
+The work began from a specific failure: NFC tap-to-unlock worked, the door would not
+open on approach. Tap working means BLE transport, provisioning and credentials are
+healthy, so the fault is UWB-specific. The fallback to NFC when UWB is disturbed is by
+design.
 
 > **Educational, research, and study use only.** These notes exist for learning,
 > independent research, and personal study of how BLE + UWB secure ranging systems behave
@@ -30,14 +28,12 @@ period when ranging was dead.
 
 - The **phone** is the UWB initiator (the side sending poll packets). It carries a U-class
   UWB chip and runs iOS 26 or later.
-- The **reader** is the fixed lock, acting as the UWB responder with a single anchor. The
-  radio studied here is a bare DW3000-family part (a DW3110) on an nRF5340, with no
-  dedicated UWB coprocessor, so the MAC, PHY, and STS are all implemented in host
-  firmware.
-- All protocol-level traffic rides on BLE. UWB carries no application data; it is purely
-  the distance measurement. The unlock policy is entirely the reader's decision: in the
-  configuration studied, it unlocks at 150 cm or closer and relocks past 180 cm, giving
-  30 cm of hysteresis.
+- The **reader** is the fixed lock, the UWB responder with a single anchor. The radio is a
+  bare DW3000-family part (a DW3110) on an nRF5340 with no UWB coprocessor, so MAC, PHY
+  and STS are all host firmware.
+- All protocol-level traffic rides on BLE. UWB carries no application data, only the
+  distance measurement. Unlock policy is the reader's decision: in the configuration
+  studied it unlocks at 150 cm or closer and relocks past 180 cm, 30 cm of hysteresis.
 
 ## 2. The full transaction, top to bottom
 
@@ -59,18 +55,18 @@ authentication-protected; everything below is encrypted under BleSK.
 ```
 
 Once "Access Protocol Completed" passes, both sides drop the authentication session keys.
-BleSK persists, and it guards all ranging control traffic from that point on (time sync,
-M1-M4, suspend/resume).
+BleSK persists and guards all ranging control traffic from there on (time sync, M1-M4,
+suspend/resume).
 
 ## 3. Discovery and connection (all sniffable)
 
-The reader beacons `ADV_IND` on LE 1M (and optionally coded S=2). The payload is service
-data under 16-bit UUID `0xFFF2`. The fields relevant to reverse engineering:
+The reader beacons `ADV_IND` on LE 1M (optionally coded S=2). The payload is service
+data under 16-bit UUID `0xFFF2`. Fields that matter:
 
-- Byte 7, bit 7 is the "BLE + UWB flow supported" flag. This is the one bit a UWB-capable
-  build sets and a control-only build leaves at 0; if it is 0, the phone will not attempt
-  to range. For reference, the rest of that byte: bit 6 is the BLE-only flow, bits 4:3 are
-  notification/error, bits 2:0 are the advertisement version.
+- Byte 7, bit 7 is the "BLE + UWB flow supported" flag: a UWB-capable build sets it, a
+  control-only build leaves it 0, and at 0 the phone will not attempt to range. Rest of
+  that byte: bit 6 BLE-only flow, bits 4:3 notification/error, bits 2:0 advertisement
+  version.
 - Byte 8 is TX power. Bytes 9-18 are a truncated reader group identifier plus a
   sub-identifier.
 - Bytes 19-22 are the dynamic tag expiry as Unix time, or `0xFFFFFFFF` if the reader has
@@ -79,18 +75,17 @@ data under 16-bit UUID `0xFFF2`. The fields relevant to reverse engineering:
   `AES-128(GroupResolvingKey, pad ‖ AdvA ‖ expiry)`.
 
 The phone scans passively and identifies its own readers by recomputing the dynamic tag
-with each group resolving key it holds. On a match, it sends `CONNECT_IND`. Conversely, a
-reader that has gone stale or been reprovisioned is effectively invisible to the phone
-even while advertising, because the tag no longer resolves.
+with each group resolving key it holds; on a match it sends `CONNECT_IND`. A reader gone
+stale or reprovisioned is invisible to the phone even while advertising, because the tag
+no longer resolves.
 
-The GATT and L2CAP handshake proceeds as follows. The phone reads a characteristic that
-returns the dynamic SPSM (in `0x0080-0x00FF`), the supported protocol versions
-(`v1.0 = 0x0100`), and a feature bitmap (bit 0 is time sync procedure 0, bit 1 is
-procedure 1, bit 2 is LE coded PHY). It writes back the version and bitmap it selected.
-Both version values are folded into the secure channel KDF, so a version downgrade makes
-the two sides derive mismatched keys and the exchange fails. From there everything runs
-over an L2CAP connection-oriented channel on that SPSM. The reader is the GAP peripheral
-and GATT server, the phone is central and client, and BLE pairing is not required.
+The phone reads a characteristic returning the dynamic SPSM (in `0x0080-0x00FF`), the
+supported protocol versions (`v1.0 = 0x0100`), and a feature bitmap (bit 0 time sync
+procedure 0, bit 1 procedure 1, bit 2 LE coded PHY), then writes back the version and
+bitmap it selected. Both version values fold into the secure channel KDF, so a downgrade
+makes the two sides derive mismatched keys and the exchange fails. Everything then runs
+over an L2CAP connection-oriented channel on that SPSM. The reader is GAP peripheral and
+GATT server, the phone central and client; BLE pairing is not required.
 
 For initial sniffing, the fastest sanity check is `0xFFF2` service data with byte 7 bit 7
 set: it confirms the reader side of discovery is alive within seconds.
@@ -100,27 +95,26 @@ set: it confirms the reader side of discovery is alive within seconds.
 The phone sends *Initiate Access Protocol* in the clear, and the reader runs one of two
 paths:
 
-- The **fast path** is symmetric. It works from a cached long-term key, `Kpersistent`,
-  from an earlier transaction, and produces a 160-byte block of derived keys. The target
-  key is URSK, at offset 128, 32 bytes long.
+- The **fast path** is symmetric: from a cached long-term key `Kpersistent` it produces a
+  160-byte block of derived keys. The target key is URSK, at offset 128, 32 bytes long.
 - The **standard path** is ECDH: AUTH0/AUTH1 with certificates, deriving a fresh 160-byte
   block (URSK still at offset 128) and caching a new `Kpersistent`. If the fast-path check
   fails, it falls through to the standard path.
 
-Two properties here are load-bearing for the whole effort:
+Two properties are load-bearing:
 
 1. The URSK never goes out on the wire. Both sides derive it independently from the
-   authentication, which cryptographically ties UWB ranging to a credential check that
-   actually passed. It cannot be lifted from sniffed BLE traffic and injected or replayed.
+   authentication, tying UWB ranging to a credential check that actually passed. It
+   cannot be lifted from sniffed BLE traffic and injected or replayed.
 2. After authentication, the reader sends an EXCHANGE command with a zero-length trigger
    (observed tagged `0x98`) that instructs the phone to load the URSK into its UWB chip.
    If the phone never sees that trigger, it responds with `URSK_Unavailable`, leaving
    tap-style behavior and no ranging. A build that authenticates cleanly but never emits
-   `0x98` is the classic silent failure, and is worth learning to recognize on sight.
+   `0x98` is the classic silent failure.
 
-Glossary of the labels used: `Kpersistent` is the long-term symmetric seed, `BleSK`
-guards the ranging control messages, `URSK` is the 32-byte ranging root above, and
-`transaction_identifier` is a per-transaction value both sides feed into the crypto.
+Labels: `Kpersistent` is the long-term symmetric seed, `BleSK` guards the ranging control
+messages, `URSK` is the 32-byte ranging root above, and `transaction_identifier` is a
+per-transaction value both sides feed into the crypto.
 
 ## 5. Time sync (using a BLE event to align the UWB clocks)
 
@@ -129,13 +123,13 @@ when the phone will transmit. The mechanism takes one BLE event both sides can o
 maps it into each side's own UWB clock.
 
 The reference instant is the anchor point of a BLE connection event: the on-air boundary
-where the phone (central) transmits and the reader catches the first packet of the event,
-so both radios observe the same moment. There are two procedures for selecting the event:
+where the phone (central) transmits and the reader catches the first packet, so both
+radios observe the same moment. Two procedures select the event:
 
-- **Procedure 0** happens at connection. The phone timestamps the very first connection
-  event, sets `DeviceEventCount = 0`, and sends the time sync unprompted. This lands
-  before any session key exists, so it is readable in the clear. It is the only time sync
-  that can be snooped.
+- **Procedure 0** happens at connection. The phone timestamps the first connection event,
+  sets `DeviceEventCount = 0`, and sends the time sync unprompted. It lands before any
+  session key exists, so it is readable in the clear: the only time sync that can be
+  snooped.
 - **Procedure 1** is a resync. The reader initiates an `LE Set PHY` (`LL_PHY_REQ`), and
   the event carrying the phone's `LL_PHY_UPDATE_IND` becomes the reference. The reader
   uses this when it judges the phone's clock has drifted more than about 1 ms (for
@@ -144,8 +138,8 @@ so both radios observe the same moment. There are two procedures for selecting t
 
 Each side reads its own UWB clock at that instant. The phone reports its value as
 `UWB_Device_Time`; the reader keeps its own as `UWBVehicleTime` and never transmits it.
-How each side maps the BLE anchor into its UWB clock is implementation-defined, which is
-the difficult part covered in section 9.
+How each side maps the BLE anchor into its UWB clock is implementation-defined, the
+difficult part covered in section 9.
 
 The time sync message (phone to reader) carries: device event count (8 B), UWB device time
 (8 B, µs resolution, 64-bit, scoped to the session and free to start at any value), UWB
@@ -168,9 +162,9 @@ reader opens block-i RX window at:
 `UWB_Time0` is in µs (the same 64-bit counter as `UWB_Device_Time`), and
 `T_Block = N_RAN × 96 ms`. The phone's clock becomes undefined if the session suspends or
 dies, or after 30 s with neither UWB nor BLE present. At least one successful time sync is
-required before M1-M4. Once the first UWB packet lands, everything resyncs in-band far
-tighter than BLE could manage. The BLE time sync only has to be good enough to place the
-listen window in roughly the right spot, and the bar there is about 1 ms.
+required before M1-M4. Once the first UWB packet lands everything resyncs in-band far
+tighter than BLE could manage, so the BLE sync only has to place the listen window roughly
+right: the bar is about 1 ms.
 
 ## 6. Ranging setup (M1-M4)
 
@@ -185,23 +179,21 @@ but M1 must not be sent while a session is already live.
 | **M3** | R→P | selected RAN Multiplier, **Chaps per Slot**, Number Responder Nodes, **Slots per Round** (≥ responders+4), SYNC code subset, hopping, **MAC Mode** (1 or 2 rounds/block + round offset) |
 | **M4** | P→R | **STS Index0, UWB Time0**, Hop Mode Key, selected SYNC code index |
 
-The key point: every negotiated parameter is load-bearing for the crypto, not just for the
-radio config. This set is hashed into a value referred to here as the *SaltedHash*:
+Every negotiated parameter is load-bearing for the crypto, not just the radio config. The
+set is hashed into a value called here the *SaltedHash*:
 
 `ProtocolVersion ‖ ConfigId ‖ SessionId ‖ STS_Index0 ‖ ResponderNodes ‖ RAN_Multiplier ‖
 SlotsPerRound ‖ ChapsPerSlot ‖ PulseShape`
 
-and that hash feeds the ranging key KDF. So if the two sides disagree on any of it, they
+and that hash feeds the ranging key KDF. If the two sides disagree on any of it they
 derive different STS keys and never hear each other, even though the setup handshake
-reported "success." That is the exact failure revisited in section 7 and section 10: the
-negotiation "worked," and the radio is silent. (Aside: MAC mode set to 2 rounds per block
-is the mechanism used to distinguish front-of-door from back-of-door.)
+reported "success." That is the failure revisited in sections 7 and 10: the negotiation
+"worked," and the radio is silent. (MAC mode set to 2 rounds per block is the mechanism
+that distinguishes front-of-door from back-of-door.)
 
 ## 7. The UWB session
 
 ### Time grid (block → round → slot)
-
-Time is carved into blocks, rounds, and slots:
 
 ```
 RSTU    = 416 / 499.2 MHz ≈ 833.33 ns
@@ -218,8 +210,8 @@ slot_start(i,s,n)   = round_start(i,s) + n × T_Slot
 reader_local(…)     = (any of the above) − SyncOffset      [reader UWB clock]
 ```
 
-Of the `N_Round` rounds in a block, only one or two are active (that is the MAC mode), and
-which one is selected by the hopping sequence below.
+Of the `N_Round` rounds in a block only one or two are active (the MAC mode), selected by
+the hopping sequence below.
 
 ### Who transmits in which slot (DS-TWR, one to many)
 
@@ -234,26 +226,25 @@ which one is selected by the hopping sequence below.
 | N_Resp+2 | Final | SP3 | phone |
 | N_Resp+3 | Final_Data | SP0 | phone: encrypted Poll/Final timestamps, `Hop_Flag(i+1)`, `Round_Idx(i+1)` |
 
-So Slots-per-Round must be at least `N_Resp + 4`. The SP3 frames carry only a scrambled
+So Slots-per-Round must be at least `N_Resp + 4`. SP3 frames carry only a scrambled
 timestamp sequence (the STS): no readable payload, and the distance falls out of RMARKER
-timing across poll, response, and final. The SP0 frames are the opposite: plain data
-(vendor OUI `0x4A191B`) wrapped in AES-CCM*. SP0 and SP3 are structurally different
-packets, so rebuilding a single round means switching the radio between no-STS data RX/TX
-and STS-only RFRAME RX/TX, and reloading the STS IV on every SP3 slot. One easy mistake:
-the STS index increments on every slot whether or not it is used, so a skipped slot must
-skip its IV too; never reuse it.
+timing across poll, response and final. SP0 frames are the opposite: plain data
+(vendor OUI `0x4A191B`) wrapped in AES-CCM*. The two are structurally different packets,
+so rebuilding one round means switching the radio between no-STS data RX/TX and STS-only
+RFRAME RX/TX, and reloading the STS IV on every SP3 slot. Easy mistake: the STS index
+increments on every slot used or not, so a skipped slot must skip its IV too; never
+reuse it.
 
 ### Bench check: the phone honors `N_Resp = 2` (2026-07-17)
 
-The table above is written for general `N_Resp`, but everything this repo ships runs at
-`N_Resp = 1`. To find out whether the phone actually builds the larger round, a firmware
-build advertised `N_Resp = 2` with only one physical anchor present: slot 2 (`Response_0`)
-ours as usual, slot 3 (`Response_1`) reserved and deliberately silent.
+Everything this repo ships runs at `N_Resp = 1`. To find out whether the phone builds the
+larger round, a firmware build advertised `N_Resp = 2` with one physical anchor present:
+slot 2 (`Response_0`) ours as usual, slot 3 (`Response_1`) reserved and silent.
 
-The count has to change in two places at once, because both feed the `RangingConfiguration`
+The count changes in two places at once, both feeding the `RangingConfiguration`
 SaltedHash the phone independently recomputes: the M3 `Number Responder Nodes` attribute and
 byte 12 of the `RangingConfiguration` blob in §6. If they disagree, every derived STS, dURSK
-and dUDSK diverges and nothing decodes at all. `ultrawidelock_round_config.h` now defines both from
+and dUDSK diverges and nothing decodes. `ultrawidelock_round_config.h` defines both from
 one macro (`ULTRAWIDELOCK_NUM_RESPONDERS`, default 1) so they cannot desync.
 
 Two frames move when `N_Resp` goes from 1 to 2, and they arrive on independent receive paths:
@@ -269,12 +260,11 @@ FINALDATA-2RESP blk=… nresp=1 fd_slots=4                          × 38   (× 
 ```
 
 Both offsets are differences of real RX timestamps, not printed constants. The Final result
-is the stronger of the two because it fails cleanly rather than quietly: the receiver is
-armed at POLL+3 carrying the STS for index+3, so had the phone kept a 1-responder round its
-Final at POLL+2 would have been missed altogether instead of reported at a wrong offset. 40
-hits at exactly 3 slots with the STS chip-error flag clear (`cper=0`) means the phone
-scrambled that frame with the key for index+3, which it derives only from a 2-responder
-schedule.
+is the stronger because it fails cleanly rather than quietly: the receiver is armed at
+POLL+3 carrying the STS for index+3, so had the phone kept a 1-responder round its Final at
+POLL+2 would have been missed altogether instead of reported at a wrong offset. 40 hits at
+exactly 3 slots with the STS chip-error flag clear (`cper=0`) means the phone scrambled that
+frame with the key for index+3, derived only from a 2-responder schedule.
 
 **What this establishes.** The phone accepts `N_Resp = 2`, keeps its SaltedHash key
 derivation in step, and grows the round by exactly one slot. Reserving a slot for a second
@@ -282,20 +272,19 @@ anchor is a solved problem on the phone side.
 
 **What it does not.** No second anchor ever transmitted, so a real `Response_1` in slot 3
 (POLL+2, STS index+2) has never been accepted or turned into a range. `Final_Data` reported
-`nresp=1` throughout, which is expected rather than a failure: the phone emits a timestamp
-record only for a responder that actually replied.
+`nresp=1` throughout, expected rather than a failure: the phone emits a timestamp record
+only for a responder that actually replied.
 
 Source: commits `9106aed` (the probe) and `2da85c4` (collapsed onto the
 `ULTRAWIDELOCK_NUM_RESPONDERS` knob), PR #8. The raw serial capture was never committed.
 
 ### Bench check: a real `Response_1`, and what CCC v4 requires (2026-08-21)
 
-The 2026-07-17 probe left one thing open: no second anchor had ever transmitted. On
-2026-08-21 one did. A satellite (`apps/satellite`, nRF5340 DK + DWM3000EVB)
-holding the session URSK joined from the air alone, decoded Pre-POLL, POLL and Final at
-`cper=0`, and transmitted `Response_1` in slot 3 every round with about 3 ms of arm margin
-and no HPDWARN. The phone's `Final_Data` still reported `nresp=1`. A control run with the
-LOCK's own proven radio rebuilt as `RESPONDER_INDEX=1` answered the same way: `tx123`
+On 2026-08-21 a second anchor transmitted. A satellite (`apps/satellite`, nRF5340 DK +
+DWM3000EVB) holding the session URSK joined from the air alone, decoded Pre-POLL, POLL and
+Final at `cper=0`, and transmitted `Response_1` in slot 3 every round with about 3 ms of arm
+margin and no HPDWARN. The phone's `Final_Data` still reported `nresp=1`. A control run with
+the LOCK's own proven radio rebuilt as `RESPONDER_INDEX=1` answered the same way: `tx123`
 responses, zero records, session FAILED at the phase deadline.
 
 **Our slot and STS arithmetic is spec-conformant, so it is not the cause.** Checked against
@@ -339,9 +328,9 @@ and identity is positional by design (l.55789-55792):
 > known to each other such that information about the source and/or the destination are
 > implicit in the knowledge of what STS is used for transmission and reception."
 
-So a responder is identified by *which slot it transmits in and which STS it uses*, and
-nothing else. Both were verified conformant above. This kills the obvious benign
-explanation -- there is no address field we could have failed to populate.
+So a responder is identified by *which slot it transmits in and which STS it uses*, nothing
+else. Both were verified conformant above, which kills the benign explanation: there is no
+address field we could have failed to populate.
 
 What the initiator is able to object to is enumerated in Table 20-7 (l.54536-54556):
 `0x0` success, `0x1` transaction overflow ("RESPONSE SP3 frame from this responder cannot be
@@ -351,10 +340,9 @@ responder was not correct"). Had the phone padded a record for responder 1, that
 have named the reason. It padded nothing, which the spec permits, so the silence carries no
 diagnosis.
 
-That leaves the conclusion the 2026-08-21 run reached, now on firmer ground: **the phone's
-report path is single-responder in practice**, whatever the spec permits. The residual
-alternative is only that it never armed a receiver in slot 3 -- which is the same statement
-from the other side.
+That leaves the 2026-08-21 run's conclusion on firmer ground: **the phone's report path is
+single-responder in practice**, whatever the spec permits. The residual alternative, that it
+never armed a receiver in slot 3, is the same statement from the other side.
 
 The discriminator still worth running: have the LOCK listen in slot 3 and verify the
 satellite's `Response_1` STS using the session keys it already holds. A peer holding the same
@@ -362,8 +350,8 @@ keys validating that frame closes the last gap between "we transmitted something
 "the phone does not listen there."
 
 **Roles, for the record** (l.52707-52716). The PHONE is initiator *and* controller; the lock
-is the "responder-device"; each anchor is a "responder". The party that builds and transmits
-the measurement report is therefore the phone, and a lock cannot compel what goes into it.
+is the "responder-device"; each anchor is a "responder". So the phone builds and transmits
+the measurement report, and a lock cannot compel what goes into it.
 
 **Two clauses that matter for any two-anchor design.** First, silence in a slot is ordinary
 (l.54128-54130):
@@ -385,14 +373,13 @@ responder-device's duty. Also noted there: one round is limited to 7 responders 
 maximum time stamp value for the Final message", with `N_Responder <= 10` fixed at setup.
 
 Source: `ccc-v4.txt`, the CCC Digital Key Technical Specification v4.0.0 (CCC-TS-101), read
-locally. Line numbers index that text extraction, not the PDF's pages. Quotes above were
-re-read at those lines rather than copied from notes.
+locally. Line numbers index that text extraction, not the PDF's pages.
 
 ### The stage B verdict is not safe: a 64-byte stash drops the two-record Final_Data
 
-Found 2026-08-21 by reading `scottjg/ultrawidelock` at branch `wip`, which is a fork of this
-tree that built the same two-responder round on one reader with two radios. Its commit
-`af95ec3f` reports, as an aside:
+Found 2026-08-21 reading `scottjg/ultrawidelock` at branch `wip`, a fork of this tree that
+built the same two-responder round on one reader with two radios. Its commit `af95ec3f`
+reports, as an aside:
 
 > "the Pre-POLL stash was 64 bytes and a two-record Final_Data is 65 on the air. Every one of
 > them was received cleanly and then dropped by a size gate, one byte over, which on the bench
@@ -415,7 +402,7 @@ An SP0 Final_Data on the air is `CCC_MHR_LEN` + `CCC_FINAL_DATA_HDR_LEN` +
 | 2 (a dual-responder round) | 23 + 18 + 14 + 8 + 2 = **65** | **dropped, one byte over** |
 
 So the one frame that would prove the phone validated a second responder is the one frame this
-tree cannot receive, and it fails silently -- no counter, no log line, an early `return`.
+tree cannot receive, and it fails silently: no counter, no log line, an early `return`.
 
 **The host suite cannot catch it.** `tests/host/test_prepoll_round.c:101` sets
 `fd.num_responders = 1u`, so every Final_Data the suite has ever built is the 58-byte one; the
@@ -423,57 +410,54 @@ gate is unreachable from the tests. The fork reports its fixture was also short 
 bytes the driver counts, which is why several thousand host checks passed over this on both
 sides.
 
-**What this does to the stage B verdict above.** It does not overturn it -- our bench did
+**What this does to the stage B verdict above.** It does not overturn it: our bench did
 decode `Final_Data` frames reporting `nresp=1`, and a dropped frame would have produced no
-`Final_Data` at all rather than a one-record one, so the two observations are not the same
-event. What it removes is the verdict's safety. A block in which the phone *did* validate both
-responders would have been discarded without trace, and the run cannot distinguish "the phone
-never validated the satellite" from "the phone validated it in some blocks and we deleted the
-evidence." The control run's session failing at the phase deadline is the observation most
-consistent with frames going missing. Stage B has to be re-run with the stash enlarged before
-its conclusion means anything.
+`Final_Data` at all, so the two observations are not the same event. What it removes is the
+verdict's safety. A block where the phone *did* validate both responders would have been
+discarded without trace, so the run cannot distinguish "the phone never validated the
+satellite" from "the phone validated it in some blocks and we deleted the evidence." The
+control run's session failing at the phase deadline is most consistent with frames going
+missing. Stage B has to be re-run with the stash enlarged before its conclusion means
+anything.
 
 **The fork's bench is direct counter-evidence, at second hand.** Commit `65c00313` reports two
-DWM3000EVBs about 25 cm apart on an ESP32-C6 both ranging the same block, with 58 ranges on the
+DWM3000EVBs about 25 cm apart on an ESP32-C6 both ranging the same block, 58 ranges on the
 primary and 661 on Responder_1 over one capture. If that holds, a phone does report a second
-responder's record and this whole line of investigation was chasing our own buffer. Not
-verified here: different phone, different silicon, different port, and the 58-versus-661
-inversion is itself unexplained -- a secondary that out-ranges the primary eleven to one wants
-an explanation before the number is leaned on.
+responder's record and this line of investigation was chasing our own buffer. Not verified
+here: different phone, silicon and port, and the 58-versus-661 inversion is unexplained; a
+secondary that out-ranges the primary eleven to one wants an explanation before the number is
+leaned on.
 
 **A second defect in the same area, also from the fork.** `ccc_responder_ds_twr()`
 (`ccc_mac.c:330-342`) selects the phone's record by *array position*, `fd->responders[l]`,
 guarded by `l >= fd->num_responders`. CCC obliges the initiator to report only the responders
 it validated, in no guaranteed order, and each record carries its own `responder_index` tag
 (`ccc_mac.h:73`). If the phone validates only responder 1, it sends one record tagged 1, and
-this tree reads it as responder 0's -- attributing the satellite's timestamp to the lock. The
+this tree reads it as responder 0's, attributing the satellite's timestamp to the lock. The
 fork's `fd_record_for()` searches by tag, validates that the tags are in range and unique, and
-falls back to position only when they are not, which is the behaviour the 1:1 baseline always
-had. That function is worth taking whether or not the rest of the fork's architecture is.
+falls back to position only when they are not, the behaviour the 1:1 baseline always had.
+Worth taking whether or not the rest of the fork's architecture is.
 
 ### The estimator's error budget: what can and cannot move a CCC distance (2026-08-21)
 
 Block-parity alternation (`second-anchor.md` stage B') produced the first authenticated
 DS-TWR distances a second anchor has ever computed from the phone's own round: 88 in one
 run, min 46 mm, median 159 mm, mean 335 mm, max 1323 mm. Those figures are the peer
-session's bench measurement, reported here rather than reproduced. What follows is the
-arithmetic that constrains their explanation. Two of the constraints refute claims made in
-this tree before they were checked; both refutations are marked below.
+session's bench measurement, reported rather than reproduced. Two constraints below refute
+claims made in this tree before they were checked; both refutations are marked.
 
-*Provenance, added after a later run.* Those four figures are contaminated and should not be
-quoted as the CCC path's accuracy. Two causes, both identified on 2026-08-21: the run was
-taken with the DK lacking clear line of sight at phone height, and some of the statistics
-were read out of a session that was still in progress, so approach samples sat inside the
-median. The arithmetic below was derived to explain that distribution and stands on its own
--- it is about what the estimator can and cannot do, not about those numbers -- but the
-distribution it was aimed at turned out to be an artifact. The clean measurement is at the
-end of this section.
+*Provenance.* Those four figures are contaminated and should not be quoted as the CCC
+path's accuracy. Two causes, both identified 2026-08-21: the DK lacked clear line of sight
+at phone height, and some statistics were read out of a session still in progress, so
+approach samples sat inside the median. The arithmetic below stands on its own, being about
+what the estimator can and cannot do rather than about those numbers, but the distribution
+it was aimed at was an artifact.
 
 **A constant cannot produce scatter.** A hard floor at 46 mm with a mean (335 mm) more than
-twice the median (159 mm) is a right-skewed distribution, and no additive offset produces
-skew: an offset slides a distribution and leaves its shape alone. So the run contains at
-least two phenomena -- whatever sets the centre, and whatever makes the tail -- and any
-single-cause explanation is wrong before its details are argued.
+twice the median (159 mm) is right-skewed, and no additive offset produces skew: an offset
+slides a distribution and leaves its shape alone. So the run contains at least two
+phenomena, whatever sets the centre and whatever makes the tail, and any single-cause
+explanation is wrong before its details are argued.
 
 **The estimator is exactly invariant to the reply/round split.** Write the six timestamps as
 `t1` poll TX, `t2` poll RX, `t3` response TX, `t4` response RX, `t5` final TX, `t6` final RX,
@@ -491,21 +475,20 @@ Checked numerically against `ds_twr_tof_signed()`'s own formula at `T` = 21, 213
 ticks (0.1 m, 1 m, 3 m), at reply ratios 1:1, 1.66:1 and 41:1, and at `d` = 0, +-15872 and
 +100000 ticks: the returned ToF is the input `T` in all 36 cases.
 
-*Correction.* This session earlier told the peer session that the sensitivity was
-`dtof = d * (r1-r2)/(r1+r2)`, and proposed logging the reply asymmetry as a diagnostic. That
-came from transposing the two relations above (`R1 = r2+2T` instead of `R1 = r1+2T`). The
-sensitivity is zero, so the diagnostic would measure nothing. The conclusion it was offered
-in support of -- that `CCC_RESP_ANT_DLY_HI32` cannot be biasing our own distance -- survives,
-and is now stronger than when it rested on a small-asymmetry argument.
+*Correction.* An earlier claim to the peer session that the sensitivity was
+`dtof = d * (r1-r2)/(r1+r2)` came from transposing the two relations above (`R1 = r2+2T`
+instead of `R1 = r1+2T`). The sensitivity is zero, so the reply-asymmetry diagnostic
+proposed with it would measure nothing. The conclusion it supported, that
+`CCC_RESP_ANT_DLY_HI32` cannot be biasing our own distance, survives and is stronger for
+not resting on a small-asymmetry argument.
 
 **So `CCC_RESP_ANT_DLY_HI32` is exonerated by construction, and the code comment beside it is
 right.** That constant (`ccc_shim_rx.c:657`, 62 hi32 = 15872 DTU ticks) moves the Response
-RMARKER earlier so that a peer computing a *single-sided* ToF -- which assumes the responder
-replied exactly one nominal slot after the POLL -- lands on the right answer. Its size is a
-receipt for that reading: 15872 ticks x 4.6917 mm is 74.5 m of round trip, so 37.2 m
-one-way, matching the "constant ~+37 m high" the comment records measuring. Our own DS-TWR
-consumes the measured `t3`, not the scheduled one, so by the invariance above it does not
-see the shift at all.
+RMARKER earlier so a peer computing a *single-sided* ToF, which assumes the responder replied
+exactly one nominal slot after the POLL, lands on the right answer. Its size is a receipt for
+that reading: 15872 ticks x 4.6917 mm is 74.5 m of round trip, so 37.2 m one-way, matching
+the "constant ~+37 m high" the comment records measuring. Our own DS-TWR consumes the
+measured `t3`, not the scheduled one, so by the invariance above it never sees the shift.
 
 **Clock offset cannot explain the spread either.** Let the responder's clock run at `1+e`
 relative to the initiator's, which scales the two intervals the responder measures (`r1`,
@@ -516,12 +499,11 @@ relative to the initiator's, which scales the two intervals the responder measur
 so the error is `T*e/2`: proportional to the distance, independent of reply asymmetry, and
 tiny. At 1 m and 20 ppm it is 0.010 mm; at 3 m and 100 ppm, 0.150 mm; at 3 m and a
 preposterous 1000 ppm, 1.50 mm. Numerics agree with the closed form to four decimals. This
-immunity is the whole reason the asymmetric four-term estimator is the one CCC uses -- the
-symmetric variant would need the reply times balanced, which a phone's schedule never
-guarantees.
+immunity is why CCC uses the asymmetric four-term estimator: the symmetric variant needs the
+reply times balanced, which a phone's schedule never guarantees.
 
-**Why the anchor bench needs a 19 m calibration and the CCC path does not.** The two paths
-differ in one respect that fully accounts for it:
+**Why the anchor bench needs a 19 m calibration and the CCC path does not.** One difference
+fully accounts for it:
 
 | | anchor bench | CCC responder |
 |---|---|---|
@@ -536,18 +518,16 @@ constant, and 4092 is that constant measured (2,229 samples, mean 1003.3 mm at a
 the fact and the phone reports its own measured timestamps, so the same term is never
 introduced and must not be subtracted.
 
-*Correction.* This session earlier told the peer that the CCC path was "missing" the anchor
-path's antenna-delay subtraction and that it was worth fixing. Applying 4092 there would
-subtract 19.2 m from distances whose median is 159 mm. The empirical check refutes it
-without any of the above: an uncompensated 19.2 m offset cannot coexist with a 159 mm
-median. What remains genuinely uncompensated on the CCC path is the RF delay between the
-chip's timestamp reference plane and the antenna, at both ends. The clean run below bounds
-it: under 25 mm, and if anything negative rather than positive.
+*Correction.* An earlier claim to the peer that the CCC path was "missing" the anchor path's
+antenna-delay subtraction, and that it was worth fixing, was wrong: applying 4092 there would
+subtract 19.2 m from distances whose median is 159 mm, and an uncompensated 19.2 m offset
+cannot coexist with a 159 mm median. What remains genuinely uncompensated on the CCC path is
+the RF delay between the chip's timestamp reference plane and the antenna, at both ends. The
+clean run below bounds it: under 25 mm, and if anything negative rather than positive.
 
-**Precision is excellent; accuracy is conditional and not yet established.** The experiment
-this section originally proposed -- tape the phone at a known distance and read *medians only*,
-the median being robust to the tail -- was run at a nominal 2.0 m. It produced four internally
-tight clusters that sit hundreds of millimetres apart:
+**Precision is excellent; accuracy is conditional and not yet established.** Tape the phone
+at a known distance and read *medians only*, the median being robust to the tail: run at a
+nominal 2.0 m it produced four internally tight clusters hundreds of millimetres apart:
 
 | Sessions | Medians (mm) | IQR (mm) | Offset from 2.0 m | Stated condition |
 |---|---|---|---|---|
@@ -557,48 +537,43 @@ tight clusters that sit hundreds of millimetres apart:
 
 Within a cluster the spread is ~15 mm, tighter than the 20.5 mm sigma stage A measured on the
 dedicated anchor bench where both ends are our own boards. Between clusters something
-uncontrolled moves the level by up to 420 mm, and it has not been identified. So: the
+uncontrolled moves the level by up to 420 mm, and it has not been identified. So the
 instrument is precise, the -20 mm of the first cluster shows no fixed offset and no scale
 error *for that condition*, and none of these is the CCC path's accuracy as such. The
-calibration thread stays closed -- no correction term is owed, which is what the
-predicted-versus-measured argument above independently predicts -- but "nothing to calibrate"
-is a statement about one condition among at least three.
+calibration thread stays closed, no correction term owed, which the predicted-versus-measured
+argument above independently predicts, but "nothing to calibrate" is a statement about one
+condition among at least three.
 
-**The tail was placement, not first-path physics.** This section previously argued that
-leading-edge detection explained the right tail, on the grounds that first-path error is
-one-sided positive and so produces exactly a hard floor with a long tail. The reasoning is
-sound and the conclusion was wrong. The 28% of samples above 400 mm disappeared completely
-once the DK had clear line of sight at phone height; later sessions span 136-272 mm with zero
-outliers. The signature fit, but the cause was geometry. No CIR or `fp_index` investigation is
-needed, and the run that would have "confirmed" it would have confirmed an artifact.
+**The tail was placement, not first-path physics.** Leading-edge detection was argued to
+explain the right tail, first-path error being one-sided positive and so producing a hard
+floor with a long tail. Sound reasoning, wrong conclusion: the 28% of samples above 400 mm
+disappeared once the DK had clear line of sight at phone height, and later sessions span
+136-272 mm with zero outliers. The signature fit, the cause was geometry. No CIR or
+`fp_index` investigation is needed.
 
-**A methodology rule came out of this, and it is the transferable part.** Never read a
-session's statistics until a *later* session has started. Reading them in flight leaves
-approach samples inside the median: one session read 1656 mm while running and 1975 mm from
-its last-8 stationary samples once complete. That single mistake produced a ~320 mm apparent
-offset that was briefly believed and is now retracted. Both this session and the peer session
-published numbers derived from in-flight reads before the rule existed; treat any figure in
+**A methodology rule came out of this.** Never read a session's statistics until a *later*
+session has started. Reading them in flight leaves approach samples inside the median: one
+session read 1656 mm while running and 1975 mm from its last-8 stationary samples once
+complete, a ~320 mm apparent offset briefly believed and now retracted. Treat any figure in
 the repo dated before 2026-08-21 that came from a live session as suspect.
 
-**Unresolved: what moves the level, occlusion included.** An earlier draft of this section
-attributed the -420 mm cluster to a person sitting between the DK and the phone. That is
-withdrawn: the operator has since stated the geometry never moved and that their body is in
-the path during the *+130 mm* cluster, not the -420 one. So the body-in-path group, on the
-only condition anyone has stated, reads long rather than short, and the -420 cluster has no
-established cause at all.
+**Unresolved: what moves the level, occlusion included.** The -420 mm cluster was attributed
+to a person sitting between the DK and the phone. Withdrawn: the operator states the geometry
+never moved and that their body is in the path during the *+130 mm* cluster, not the -420
+one. So the body-in-path group, on the only condition anyone has stated, reads long rather
+than short, and the -420 cluster has no established cause.
 
-Two attributions have now been made and withdrawn on this run -- a fixed offset, then an
-occlusion penalty -- each for the same reason: the conditions changed between clusters and
-were only established afterwards. The methodological point is the durable one, and it is the
-handheld phone that defeated the run, because a handheld phone moves with the person and body
-position is never independent of phone position.
+Two attributions have been made and withdrawn here, a fixed offset then an occlusion penalty,
+each because conditions changed between clusters and were established only afterwards. The
+handheld phone defeated the run: it moves with the person, so body position is never
+independent of phone position.
 
-The controlled version: phone resting on a fixed surface rather than handheld, taped distance,
-two sessions differing only by a body stepping into the line, operator recording which is
-which. This gates stage B'' rather than being a curiosity. Two rounds per block read the
-difference between two anchors as geometry, and at a door one anchor sits behind a person
-nearly every time; if a body moves a range by even a fraction of what these clusters move,
-that assumption needs a number before anything is built on it. It does not have one.
+The controlled version: phone resting on a fixed surface, taped distance, two sessions
+differing only by a body stepping into the line, operator recording which is which. This
+gates stage B''. Two rounds per block read the difference between two anchors as geometry,
+and at a door one anchor sits behind a person nearly every time; if a body moves a range by
+even a fraction of what these clusters move, that assumption needs a number first. It does
+not have one.
 
 **Still unverified.** Whether two boards built at `NUM_RESPONDERS=1` / `RESPONDER_INDEX=0`
 and sharing one session's keys derive byte-identical per-block and per-slot material has not
@@ -620,15 +595,14 @@ URSK (32 B, from section 4)
          └─ dUDSK   → encrypts the Final_Data timestamps
 ```
 
-The finding that made responders tractable is *pre-poll recovery*. Because `mUPSK1` comes
-straight off the URSK and stays static for the whole session, the responder can decrypt
-the very first pre-poll with no ranging-round state set up yet. Decrypt it, read
-`Poll_STS_Index`, subtract 1, derive `URSK_KT`, then `dURSK` and `dUDSK`, and the SP3 STS
-is armed for the poll that lands one slot later. Between slot 0 and slot 1 that is about 4
-AES-CMAC chains of work. This was the finding that mattered most: anchor every block on
-the in-band pre-poll `Poll_STS_Index` rather than on the BLE time sync, and arm each slot
-*before* the ~2 ms KDF/decrypt cost hits. That is the change that turned "setup is fine but
-the radio is silent" into live distance reports.
+The finding that made responders tractable is *pre-poll recovery*. `mUPSK1` comes straight
+off the URSK and stays static for the session, so the responder decrypts the first pre-poll
+with no ranging-round state set up. Decrypt it, read `Poll_STS_Index`, subtract 1, derive
+`URSK_KT`, then `dURSK` and `dUDSK`, and the SP3 STS is armed for the poll one slot later:
+about 4 AES-CMAC chains between slot 0 and slot 1. Anchor every block on the in-band
+pre-poll `Poll_STS_Index` rather than the BLE time sync, and arm each slot *before* the
+~2 ms KDF/decrypt cost hits. That is what turned "setup is fine but the radio is silent"
+into live distance reports.
 
 ### Hopping (which round is active)
 
@@ -641,25 +615,24 @@ f_i = h_i + O_k                                                              (O_
 ```
 
 `HOP_Key` is the hop mode key from M4 (0 means no hopping). Block 0 is always unhopped, on
-rounds 0 and `O_k`, and the sequence only takes over from block 1 onward. Test vector: with
+rounds 0 and `O_k`, and the sequence takes over from block 1 onward. Test vector: with
 `HOP_Key = 0xCC5DD79F` and `N_Round = 80`, blocks 1 and 2 land on rounds 62 and 37. Three
 modes: none (fixed round), continuous (recompute `h_i` every block), and adaptive (stay put
 while things work, hop on interference; the phone announces the next block's flag and round
-inside Final_Data, and a missing Final_Data is assumed to be "hop"). Because the whole
-thing is deterministic, losing a Final_Data costs nothing; both sides still land in the
-same next round.
+inside Final_Data, and a missing Final_Data is assumed to be "hop"). Because it is
+deterministic, losing a Final_Data costs nothing; both sides still land in the same next
+round.
 
 On the PHY side: HRP UWB high band, either channel 5 (6489.6 MHz) or channel 9
 (7987.2 MHz), BPRF, with the preamble and pulse shape as negotiated in M2/M3/M4.
 
 ## 8. Session lifecycle and key lifetimes
 
-Suspend and resume: either side can suspend to save power. In practice the phone usually
-suspends while the door sits unlocked and resumes when the reader flips from unlocked back
-to locked (or when the phone detects motion). A resume hands over a fresh `UWB_Time0` and
-`STS_Index0`, giving a new grid without redoing M1-M4, and it only works if the reader
-still holds a URSK that has not expired. A session paused while the door is unlocked is
-normal, not a bug.
+Suspend and resume: either side can suspend to save power. The phone usually suspends
+while the door sits unlocked and resumes when the reader flips from unlocked back to
+locked (or when it detects motion). A resume hands over a fresh `UWB_Time0` and
+`STS_Index0`, a new grid without redoing M1-M4, and works only if the reader still holds a
+URSK that has not expired. A session paused while the door is unlocked is normal, not a bug.
 
 The URSK is dropped when any of these occur: the STS index reaches `2^31−1`, the STS index
 is lost, a 12-hour TTL expires (counted from the first `dURSK` derivation at M4), or the
@@ -675,7 +648,7 @@ controller on the network core, host and UWB on the app core), this cannot be do
 software alone. The app core cannot read the controller's clock or the network-core timer,
 and the ready-made radio-notification conversion path is fused off on this SoC family.
 
-The approach adopted is a physical bridge rather than cross-core clock math:
+The approach is a physical bridge rather than cross-core clock math:
 
 ```
 controller "event-start task" ──▶ network-core GPIOTE pin (one edge / conn event) ──▶ DW3110 time-latch
@@ -709,16 +682,15 @@ reset over the sync pin) as the primitive that defines the epoch. Two items rema
 | Ranging stops while unlocked, resumes at lock | Conformant suspend/resume for power saving (section 8), not a bug. |
 | Everything dies after BLE drop / ~12 h | URSK lifetime rules (section 8); a fresh fast-path transaction is required. |
 
-On instruments: a BLE sniffer alone yields everything through section 6 (discovery, the
-versions, the message IDs, suspend/resume) with no UWB gear. The clear-text half of that is
-decoded by a Wireshark dissector, which is no longer in this repository: the
-`0xFFF2` advert of this section and the Procedure-0 time sync of
-section 5. Resolving section 7 needs a
-UWB capture, or the radio's own per-frame diagnostics, which is what separates "setup
-negotiated but the STS is mismatched" from "STS lines up but there is no RF link." The
-single most useful question when distances vanish: is BLE still trading setup and ranging
-control messages while the UWB side has gone silent? If so, the problem is in the
-radio/parameter/STS path, not the control stack.
+On instruments: a BLE sniffer alone yields everything through section 6 (discovery,
+versions, message IDs, suspend/resume) with no UWB gear. The clear-text half, the `0xFFF2`
+advert of this section and the Procedure-0 time sync of section 5, was decoded by a
+Wireshark dissector no longer in this repository. Resolving section 7 needs a UWB capture,
+or the radio's own per-frame diagnostics, which separates "setup negotiated but the STS is
+mismatched" from "STS lines up but there is no RF link." The single most useful question
+when distances vanish: is BLE still trading setup and ranging control messages while the
+UWB side has gone silent? If so, the problem is in the radio/parameter/STS path, not the
+control stack.
 
 ## 11. Aliro 1.0: what it inherits, and the two-round block
 
@@ -729,7 +701,7 @@ everything: the MAC layer to CCC §20 (l.9555-9557), the ranging exchange sequen
 §22.1/22.2 (l.10015-10016). Roles are preserved exactly: User Device is Initiator, Reader is
 Responder-device (Figure 12-2, l.9762-9767).
 
-What it actually changes:
+What it changes:
 
 | Area | Aliro |
 |---|---|
@@ -744,12 +716,11 @@ What it actually changes:
 `Number_Responder_Nodes` is left alone: Aliro states no numeric constraint, so CCC's 1-255
 range and 10-per-round cap govern. Its one arithmetic addition,
 `N_Slot_per_Round >= N_Responder + 4` (l.9955-9959), independently corroborates the slot
-layout above -- four overhead slots plus one per responder puts `Response_l` at slot `2+l`.
+layout above: four overhead slots plus one per responder puts `Response_l` at slot `2+l`.
 
 ### The two-round block -- Aliro's own answer to inside/outside
 
-This is the single architectural idea Aliro adds, and it addresses precisely the question
-this repo exists to answer (§12.1.1, l.9571-9582):
+The single architectural idea Aliro adds (§12.1.1, l.9571-9582):
 
 > "One or two ranging rounds out of all the ranging rounds per ranging block of a ranging
 > session are used for the UWB ranging procedure. [...] **Two ranging rounds per ranging
@@ -779,16 +750,15 @@ Three properties make this stronger than anything on the multi-responder path:
 **Each of the two rounds is a complete exchange.** Figure 12-1 (p.157 of the PDF; the text
 extraction drops it) draws the round as `PP | P | R1 | R2 | R3 | F | FD` and the block as six
 ranging rounds with two of them shaded, their positions moving block to block under the two
-hopping sequences. So a two-round block is not one exchange with extra responder slots -- it
-is *two* full exchanges, each with its own Pre-POLL, POLL, responder slots, Final and
+hopping sequences. So a two-round block is not one exchange with extra responder slots, it is
+*two* full exchanges, each with its own Pre-POLL, POLL, responder slots, Final and
 Final_Data. That is why §12.1.2 subscripts everything by `p` (`Hop_Flag_p`, `Round_Idx_p`,
 `p = 1` and `p = 2`) and why l.9709-9736 speaks of Final_Data1 and Final_Data2.
 
-The consequence for a second anchor is the whole argument for this route. In round 2 the
+The consequence for a second anchor is the whole argument for this route: in round 2 the
 satellite is **responder 0 of its own round**, and the phone sends it an ordinary
 single-responder `Final_Data` containing its record. It never depends on the phone reporting
-a *second* responder in one round -- which is precisely the behaviour that failed on
-2026-08-21. The route sidesteps the observed limitation instead of arguing with it.
+a *second* responder in one round, precisely the behaviour that failed on 2026-08-21.
 
 The specific hazard (l.9709-9736): if *either* Final_Data goes unheard, the responder-device
 unconditionally assumes a hop and sets both `Hop_Flag` to 1. Two physical units must

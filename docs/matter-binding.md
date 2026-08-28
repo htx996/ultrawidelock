@@ -3,7 +3,7 @@
 The DWM3001CDK is a Matter door lock. This is how it also becomes a Matter
 *client*: when the UWB gate opens the local lock, it sends `UnlockDoor` straight
 to another Matter lock on the same Thread network. No hub, no automation, no
-cloud round trip. The two locks talk to each other.
+cloud round trip.
 
 Off by default. Everything below needs `CONFIG_ULTRAWIDELOCK_MATTER_CLIENT=y`.
 
@@ -16,16 +16,14 @@ Off by default. Everything below needs `CONFIG_ULTRAWIDELOCK_MATTER_CLIENT=y`.
 
 ## The idea in ten lines
 
-Matter calls this the **Binding** pattern, and it has exactly three moving
-parts:
+Matter calls this the **Binding** pattern. Three moving parts:
 
 1. **A shared fabric.** Both locks must be commissioned onto the same fabric.
-   Apple Home will not let you write bindings, so you add a *second*
-   administrator -- Home Assistant or `chip-tool`. Both fabrics coexist: Apple
-   Home keeps working, and the second fabric is what carries the binding.
-   Whichever one writes the binding is not a setup-time convenience you can
-   discard afterwards: a binding is fabric-scoped, so that fabric is where the
-   CASE session runs and where the target's ACL entry names this node.
+   Apple Home will not let you write bindings, so add a *second* administrator,
+   Home Assistant or `chip-tool`; both fabrics coexist and Apple Home keeps
+   working. A binding is fabric-scoped, so the fabric that writes it is where the
+   CASE session runs and where the target's ACL entry names this node, and it is
+   not a setup-time convenience you can discard afterwards.
 2. **A binding on this lock.** The Binding cluster (0x001E) holds a list of
    targets. An administrator writes "node X, endpoint 1, cluster 0x0101" onto
    the UWB lock, and that is the entire configuration.
@@ -34,8 +32,8 @@ parts:
    DoorLock to the UWB lock's node id. Without it, every unlock comes back
    `UNSUPPORTED_ACCESS` and nothing opens.
 
-Miss any one and it fails silently from the user's point of view, which is why
-the helper below does all three and the log names which one broke.
+Miss any one and it fails silently; the helper below does all three and the log
+names which one broke.
 
 ## The helper
 
@@ -43,8 +41,7 @@ the helper below does all three and the log names which one broke.
 python3 scripts/bind-helper.py
 ```
 
-It is interactive, idempotent, and keeps no secrets on disk. It walks you
-through:
+Interactive, idempotent, and keeps no secrets on disk. It walks through:
 
 - checking `chip-tool` is installed (and printing how to get it if not),
 - putting each lock into pairing mode and commissioning it onto the helper's
@@ -54,33 +51,28 @@ through:
 - writing the binding onto the UWB lock,
 - optionally test-firing one real unlock, behind an explicit `y/N`.
 
-Re-running it is safe. It re-reads state before every write, so a half-finished
-run is finished rather than duplicated.
+Re-running is safe: it re-reads state before every write, so a half-finished run
+is finished rather than duplicated.
 
-Every command it runs is printed before it runs. `chip-tool`'s argument
-spelling has drifted between releases, so if one is rejected by your build, the
-printed line is the thing to adjust.
+Every command is printed before it runs. `chip-tool`'s argument spelling has
+drifted between releases, so a line your build rejects is the thing to adjust.
 
 ## Any administrator will do, not just chip-tool
 
-The helper uses `chip-tool` because it is the reference implementation and it
-runs anywhere. Nothing in the design requires it. Both writes in the list above
-are ordinary Matter attribute writes, so **any** administrator on the fabric
-that can write an attribute can do them: the ACL entry on the target lock, and
-the binding list on this one.
+The helper uses `chip-tool` because it is the reference implementation. Both
+writes above are ordinary Matter attribute writes, so **any** administrator on
+the fabric can do them: the ACL entry on the target lock, and the binding list
+on this one.
 
-Home Assistant's Matter integration is the obvious second option, and it is a
-better one for most people: it is probably already commissioned onto the target
-lock, and it does not need a terminal. **This is the route the 2026-08-22
-bring-up actually used**, start to finish, without `chip-tool` installed.
+Home Assistant's Matter integration is the better option for most people: it is
+probably already commissioned onto the target lock, and it needs no terminal.
+**This is the route the 2026-08-22 bring-up used**, without `chip-tool`
+installed.
 
-Note what role it is playing. It is the *administrator*, used once at setup
-time to write two attributes. It is **not** in the unlock path afterwards, and
-it can be switched off, rebooted or thrown away without the front door
-noticing -- with one caveat the fabric note above spells out: its FABRIC has to
-stay, because that is the one the binding is scoped to. That is a different
-arrangement from the automation described at the bottom of this page, and the
-difference is the whole point of the binding.
+It is the *administrator*, used once at setup to write two attributes. It is
+**not** in the unlock path afterwards and can be switched off, rebooted or
+thrown away without the front door noticing -- but its FABRIC has to stay,
+because that is the one the binding is scoped to.
 
 ### Driving it without the UI
 
@@ -105,12 +97,10 @@ administrator's own entry and it locks itself out with no way back but a
 factory reset. `scripts/bind-helper.py` refuses to write without finding one;
 anything hand-rolled should do the same.
 
-Whichever administrator you use, the sequence and the values are the ones below.
-
 ## Doing it by hand
 
-The helper is a wrapper, not magic. The four commands, with `$UWB` the UWB
-lock's node id and `$PEER` the target lock's:
+The four commands, with `$UWB` the UWB lock's node id and `$PEER` the target
+lock's:
 
 ```sh
 # 1. both locks onto your fabric (get the setup code off each device)
@@ -138,9 +128,8 @@ in step 2.
 
 ## Testing it without buying a lock
 
-You do not need a Nuki or an Aqara to prove the whole path. This repository
-already contains a second Matter door lock: `apps/esp32-matter-lock` is a full
-DoorLock server. Bind the CDK to it and the entire chain is in-repo firmware.
+`apps/esp32-matter-lock` is a full DoorLock server. Bind the CDK to it and the
+entire chain is in-repo firmware.
 
 ```sh
 # build and flash the ESP32 lock (see docs/esp32-bringup.md for the board setup)
@@ -152,22 +141,19 @@ make build RELEASE=1 SMP=1 CDK_CONF="overlay-thread.conf;overlay-release.conf;ov
 make flash
 ```
 
-Then run the helper, pointing it at both. Watch the CDK's RTT console
-(`make monitor`) while you walk up to it: one line per attempt and one per
-outcome.
+Then run the helper, pointing it at both, and watch the CDK's RTT console
+(`make monitor`) while you walk up: one line per attempt and one per outcome.
 
-The ESP32 lock requires no PIN, which makes it the right first target. Add the
-PIN only once the no-PIN path works.
+The ESP32 lock requires no PIN, which makes it the right first target.
 
 ## The PIN caveat
 
-Some locks set `RequirePINforRemoteOperation`. They will refuse an `UnlockDoor`
-that carries no `PINCode`, and the refusal looks like any other failure.
+Some locks set `RequirePINforRemoteOperation`. They refuse an `UnlockDoor` that
+carries no `PINCode`, and the refusal looks like any other failure.
 
-The Matter binding entry has nowhere to put a credential. A binding says *who*
-to talk to and never *how* to authenticate. So this node carries the PIN in a
-manufacturer-specific attribute beside the binding list, and that is a real
-tradeoff rather than a feature:
+A binding says *who* to talk to and never *how* to authenticate, so this node
+carries the PIN in a manufacturer-specific attribute beside the binding list.
+That is a tradeoff, not a feature:
 
 - It is **one PIN for the node**, not one per target. Two locks demanding two
   different PINs are not supported.
@@ -176,9 +162,8 @@ tradeoff rather than a feature:
 - It **never reads back**. The attribute always returns empty, so an
   administrator on the fabric cannot harvest it.
 
-If your target lock can be configured not to require a PIN for remote
-operation, that is the better configuration. Use the PIN only when the lock
-gives you no choice.
+If the target lock can be configured not to require a PIN for remote operation,
+do that. Use the PIN only when the lock gives you no choice.
 
 ## What it costs, and what it will not do
 
@@ -197,14 +182,13 @@ the client build is the one to watch when anything grows.
 About 4 KB of the flash is OpenThread's DNS client, which a default build does
 not carry; the rest is the CASE initiator, the Interaction Model's outbound
 direction, the binding table and the driver. Off, the sources are not compiled
-and the two places that could not move into a source file of their own
-(`matter_clusters.c`, `matter_exchange.c`) preprocess away -- with one
-exception, so the image is no longer byte for byte the one that existed before
-any of it. `matter_exchange_ack_initiator()` is deliberately outside the
+and `matter_clusters.c` and `matter_exchange.c` preprocess away, with one
+exception: `matter_exchange_ack_initiator()` is deliberately outside the
 `MATTER_FEATURE_CLIENT` guard, because the server's own subscription reports
-ride exchanges this node opened and every image needs that ack.
+ride exchanges this node opened and every image needs that ack. So the image is
+no longer byte for byte the one that existed before any of it.
 
-Four limits, stated because none of them is visible from the outside:
+Four limits, none of them visible from the outside:
 
 - **One target per unlock.** The table holds four and the first bound DoorLock
   target that resolves is the one that gets the command. Two locks bound means
@@ -213,8 +197,7 @@ Four limits, stated because none of them is visible from the outside:
   Sigma3 is resent on an MRP timer. Past `CASE ESTABLISHED` it is not: those
   messages are sealed by `matter_exchange`, whose counters the client does not
   own, so a lost invoke costs the whole attempt and the retry restarts from the
-  resolve rather than resuming. The peer's messages *are* acknowledged
-  throughout.
+  resolve. The peer's messages *are* acknowledged throughout.
 - **A granted unlock expires after 8 seconds.** It is not retried until it
   succeeds; see the last row of the table below for why.
 - **The binding survives a reboot, and dies with its fabric.** It is stored in
@@ -223,10 +206,10 @@ Four limits, stated because none of them is visible from the outside:
 
 ## Before any of it: getting a second administrator on
 
-Everything on this page assumes this lock already carries a second
-administrator, because Apple Home will not write a binding and no ecosystem
-lets a device bind itself. Adding one is the AdministratorCommissioning path:
-open a window from the first ecosystem, then commission from the second.
+This page assumes the lock already carries a second administrator, because Apple
+Home will not write a binding and no ecosystem lets a device bind itself. Adding
+one is the AdministratorCommissioning path: open a window from the first
+ecosystem, then commission from the second.
 
 **If that ends in "pairing failed", check the build date before anything
 else.** Adding a non-Apple administrator needs two things that this firmware
@@ -238,13 +221,11 @@ did not always have, and without either one the attempt fails exactly that way:
 | 2026-08-07 | PASE answered over IP as well as over BLE. Before this a controller could resolve the node, match the discriminator, open an exchange, and then time out waiting for a `PBKDFParamResponse` the node had decided not to send. |
 
 Apple Home needs neither, because it commissions over BLE, which this node has
-always advertised. So a build from before 2026-08-07 pairs perfectly with Apple
-Home and cannot be added to Home Assistant at all. That is the single most
-likely explanation for a "pairing failed" report, and it is a re-flash rather
-than a bug.
+always advertised. A build from before 2026-08-07 pairs perfectly with Apple
+Home and cannot be added to Home Assistant at all: the most likely explanation
+for a "pairing failed" report, and a re-flash rather than a bug.
 
-If you are on a build newer than that and it still fails, that is worth filing,
-and the thing that identifies it is a capture of the RTT console
+On a newer build it is worth filing, with a capture of the RTT console
 (`make monitor`) across one failed attempt: where it stops (PASE, AddNOC, or
 operational discovery and CASE) picks out which third of the path is broken.
 
@@ -261,19 +242,15 @@ operational discovery and CASE) picks out which third of the path is broken.
 
 ## Before you trust any of it
 
-None of the client half has run against real hardware. If you are the first to
-try it, `docs/matter-binding-bench.md` is the bring-up procedure: what to prove
-before involving this node, which line the log stops on, and the four things
-most likely to be wrong.
+`docs/matter-binding-bench.md` is the bring-up procedure: what to prove before
+involving this node, which line the log stops on, and what is most likely wrong.
 
 ## The Home Assistant alternative
 
-If you would rather not run `chip-tool`, Home Assistant's Matter integration can
-do the same job from an automation: trigger on the UWB lock's `LockOperation`
-event and call `lock.unlock` on the other lock.
+Home Assistant's Matter integration can do the same job from an automation:
+trigger on the UWB lock's `LockOperation` event and call `lock.unlock` on the
+other lock.
 
-It is easier to set up and it is not the same thing. The hub becomes a
-dependency of your front door: if it is rebooting, updating, or off the network
-when you walk up, nothing opens. The binding path has no such dependency, which
-is the whole reason it exists. Use Home Assistant to try the idea, and the
-binding for the installation you actually live with.
+Easier to set up, and not the same thing: the hub becomes a dependency of your
+front door, and if it is rebooting, updating or off the network when you walk
+up, nothing opens. The binding path has no such dependency.

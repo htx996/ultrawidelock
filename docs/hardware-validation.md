@@ -4,19 +4,18 @@ CI gates the host-side logic (`make ci`: the KAT suite, sanitizers, CBMC, the
 tooling gates) and compile-gates four images in the NCS toolchain container: the
 `CLIENT=1` build (the tightest configuration in the tree), the shipping image
 (`SMP=1 RELEASE=1`, what `make release` wraps), `anchorlink` (the witness
-transport, the side gate and the door alarms), and the nRF5340 satellite.
-Between them that is nine of the thirteen DWM3001CDK application sources, plus
-the satellite app. It does not build the nRF5340 DK lock, the remaining CDK
-configurations, the size baseline or anything ESP32, so `make regress` still
-compile-gates those on a bench. The `release` workflow does build the DK and all
-three ESP32 chips, but only when a release is cut, so those two legs are first
-compiled at the moment they ship -- which is the argument for a throwaway tag
-ahead of a real one. What none of that can
-exercise is the product itself, which runs against a live iPhone.
+transport, the side gate and the door alarms), and the nRF5340 satellite. That
+is nine of the thirteen DWM3001CDK application sources, plus the satellite app.
+It does not build the nRF5340 DK lock, the remaining CDK configurations, the
+size baseline or anything ESP32, so `make regress` still compile-gates those on
+a bench. The `release` workflow does build the DK and all three ESP32 chips, but
+only when a release is cut, so those two legs are first compiled at the moment
+they ship -- the argument for a throwaway tag ahead of a real one. None of it
+exercises the product itself, which runs against a live iPhone.
 
 This checklist is the manual gate: run every applicable item before cutting a
-release, and record the results table in the release notes. Part of it is no longer
-manual -- `make regress-hil` runs the rows marked automated below and writes
+release, and record the results table in the release notes. `make regress-hil`
+runs the rows marked automated below and writes
 `build/regress-hil/<timestamp>/verdict.txt` naming each one:
 
 | Row | Automated by | Stage |
@@ -42,7 +41,7 @@ does not inherit the ST25R300 checklist result.
 
 The primary target, and the shortest bench setup there is: one nRF52833 and the
 DW3110 in the same module, nothing to wire, on-board J-Link OB. No NFC tap path
-exists here and none can, so there is no equivalent of HV-5. The board carries no
+exists here and none can, so there is no equivalent of HV-5: the board carries no
 reader IC, and the nRF52833's own NFC peripheral is tag-emulation only.
 
 ### Test setup
@@ -64,9 +63,8 @@ reader IC, and the nRF52833's own NFC peripheral is tag-emulation only.
 
 ### Checklist
 
-The Recorded column is what this repository has already seen on hardware. It is
-not a substitute for running the row: a release records the result you got, not
-this one.
+The Recorded column is what this repository has already seen on hardware, not a
+substitute for running the row: a release records the result you got.
 
 | ID | Procedure | Pass criterion | Recorded |
 |---|---|---|---|
@@ -97,9 +95,8 @@ this one.
 | CDK-25 | While Apple Home is live, offer the lock a different Home Assistant Thread dataset | Commissioning refuses that dataset without detaching or replacing the working Apple network | **open, never run** |
 | CDK-26 | Cut power once during a fabric commit and once during `RemoveFabric`, reboot after each cut | Each boot loads an old or new valid per-slot record; no torn table, resurrected removal, or damage to another fabric | **open, never run** |
 
-CDK-8 is this target's EV-7, and it is faked the same way: the bolt moving is not a
-pass. The Wallet animation is, because that is what proves the reader told the phone
-it granted access rather than just actuating locally.
+CDK-8 is this target's EV-7, faked the same way: the bolt moving is not a pass,
+the Wallet animation is.
 | CDK-27 | With a second administrator on and a Matter DoorLock peer bound, walk up once and read the RTT log | The peer's bolt moves, and the log reaches `the bound lock UNLOCKED` | **PASSED 2026-08-22**, against `apps/nrf5340dk-lock` on a Home Assistant fabric. Took five runs and five interoperability fixes; `docs/matter-binding-bench.md` records each fault and its signature. Never run against a commercial peer |
 | CDK-28 | After CDK-27, walk away and let the departure gate relock | Both bolts close, and the log reaches `the bound lock LOCKED` | **PASSED 2026-08-22.** Home Assistant showed both locks unlocked and then both locked within the same second |
 | CDK-29 | Open https://ultrawidelock.com/flash/index.html in Chrome, pick the DWM3001CDK, and connect | The chooser lists the board, and the page names the image it is running before asking for anything | **open, never run** |
@@ -114,30 +111,24 @@ it granted access rather than just actuating locally.
 | CDK-38 | Repeat CDK-37 with a Matter pairing window open, or on an uncommissioned board | 0xFFF6 is published and the unrestricted walk fails again with `CBError 8` at C1 | **open, never run.** This is the negative control: it proves the fix is the gating and not something else that changed. It is also the case the page still warns about on macOS |
 | CDK-39 | With a commissioned lock, run CDK-30 for real in Chrome on macOS | The delta goes over Web Bluetooth and the page reports the target SHA-256 | **PASSED 2026-08-27, both halves.** Chrome connected, discovered and identified the board, then installed the `344da6f022364f7f -> 8613358327a47e00` delta over Web Bluetooth. Verified afterwards over the cable, not by asking the page: the board reports `v0.3.1.0 sha=8613358327a47e00 confirmed=True`. Same row as CDK-30, kept separate because this one is specifically about macOS, where every attempt before `matter_ble_publish()` stalled in discovery |
 
-CDK-14 through CDK-26 are the open rows, and none has ever been run to
-completion. CDK-16, CDK-17 and CDK-18 cover recovery, STS quality and NLOS
-walk-up. CDK-19 through CDK-26 are the Apple Home plus Home Assistant release
-gate added with the five-fabric transaction work: host tests and the target
-build cover their local state machines, but none inherits a hardware result
-from those tests. Do not describe multi-admin operation as hardware-robust
-until all eight of those rows pass. CDK-27 and CDK-28 are the binding, and both
-PASSED on 2026-08-22 -- which incidentally settles CDK-20 in passing, since a
-second administrator had to exist before anything could write a binding at all.
-Note what that does NOT settle: the binding was proven against this repo's own
-DK, and every one of the five faults it took to get there was a place the code
-agreed with itself and not with another implementation. A commercial peer has
-still never answered. CDK-14 is
-the only rate on this list: everything above it has been demonstrated at least once,
-and none of it at a rate. CDK-15 is the resumable apply, whose step counter is
-exercised by design and by host test but has never met a real power cut.
+CDK-14 through CDK-26 are the open rows, none ever run to completion. CDK-16,
+CDK-17 and CDK-18 cover recovery, STS quality and NLOS walk-up. CDK-19 through
+CDK-26 are the Apple Home plus Home Assistant release gate added with the
+five-fabric transaction work: host tests and the target build cover their local
+state machines, but none inherits a hardware result from those tests. Do not
+describe multi-admin operation as hardware-robust until all eight pass. CDK-27
+and CDK-28 are the binding, both PASSED on 2026-08-22, which settles CDK-20 in
+passing since a second administrator had to exist before anything could write a
+binding at all. It does not settle interoperability: the binding was proven
+against this repo's own DK, and a commercial peer has still never answered.
+CDK-14 is the only rate on this list. CDK-15 is the resumable apply, whose step
+counter is exercised by design and by host test but has never met a power cut.
 
-CDK-29 through CDK-31 are the browser update path, and they are the cheapest
-open rows on this list to close: the firmware is the same `SMP=1` release image
-CDK-13 already passed by hand, so the only thing that has never met a board is
-the JavaScript. CDK-31 is the one worth running even though it sounds like a
-non-event -- a board with no applicable delta is the normal state of anything
-more than a few releases old, and a page that handled it badly would be the
-first thing most people saw.
+CDK-29 through CDK-31 are the browser update path and the cheapest open rows to
+close: the firmware is the same `SMP=1` release image CDK-13 already passed by
+hand, so the only thing that has never met a board is the JavaScript. CDK-31 is
+worth running even though it sounds like a non-event: a board with no applicable
+delta is the normal state of anything more than a few releases old.
 
 CDK-32 through CDK-36 are the cable. CDK-32 and CDK-33 are low risk and cost one
 build: the transport changed, nothing above it did, and a host suite already
@@ -154,78 +145,67 @@ make ota-smp-list OTA_SERIAL=auto        # CDK-32, the identify half
 make ota-smp      OTA_SERIAL=auto        # CDK-32, the upload half
 ```
 
-Running the CLI first is worth the extra step rather than a detour. If it works
-and the page does not, the fault is in JavaScript; if neither works, the fault
-is in the firmware or the wire, and no amount of reading the page will find it.
-That split is otherwise expensive to make.
+If the CLI works and the page does not, the fault is in JavaScript; if neither
+works, the fault is in the firmware or the wire. That split is otherwise
+expensive to make.
 
 **It has already paid for itself.** On 2026-08-27 the first CLI run answered on
-the first attempt, which settled three things at once that were going to be
-argued about separately: that the transport works, that the two paths really do
+the first attempt, settling three things: the transport works; the two paths do
 reach one implementation (both reported `sha=000f654e8c031181` for the same
-board, minutes apart), and -- because the application receives 127-byte
-back-to-back mcumgr frames on this exact UART without losing any -- that CDK-16
-cannot be blamed on the wire.
+board, minutes apart); and, because the application receives 127-byte
+back-to-back mcumgr frames on this exact UART without losing any, CDK-16 cannot
+be blamed on the wire.
 
-The upload half followed, and closes the row: `make ota-window` to open the
-update window over SWD (so no button press was needed), then `make ota-smp
-OTA_SERIAL=auto`. 7,667 B of delta in 384 B chunks, staged, reset, and the board
-back on `78224934aa586a84` about half a minute later -- the hash the delta was
-built to produce, not merely a hash that changed.
+The upload half followed and closes the row: `make ota-window` to open the update
+window over SWD (no button press needed), then `make ota-smp OTA_SERIAL=auto`.
+7,667 B of delta in 384 B chunks, staged, reset, and the board back on
+`78224934aa586a84` about half a minute later -- the hash the delta was built to
+produce, not merely a hash that changed.
 
-That run also proved the thing a synthetic test cannot: that the window gate,
-the signature check, the receiver, MCUboot's applier and the deployed-record
-bookkeeping all still work when the bytes arrive over a cable instead of a
-radio. None of that code knew which it was.
+That run also proved what a synthetic test cannot: the window gate, the signature
+check, the receiver, MCUboot's applier and the deployed-record bookkeeping all
+still work when the bytes arrive over a cable instead of a radio.
 
-Three more measurements from the same session, all worth keeping:
+Three more measurements from the same session:
 
 - A 600 B payload, which overflows `CONFIG_MCUMGR_TRANSPORT_UART_MTU=512`, is
   answered with **complete silence**: no error, no reply, nothing. That is why
   the chunk sizes in `web/flasher/serial.js` sit under their budget rather than
-  at it, and it is now a measured fact rather than an expectation. The board
-  recovers on its own; the next request is answered normally.
+  at it. The board recovers on its own; the next request is answered normally.
 - Every board built before 2026-08-27 reports `v0.0.0.0`, because
   `CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION` was never set and Zephyr's default is
   `0.0.0+0`. It is taken from the repository's `VERSION` file now, so the image
-  list finally carries something a person can read: `v0.3.0.0`. The SHA-256 was
-  and remains the authoritative identity -- this is about the field an operator
-  actually looks at.
+  list carries `v0.3.0.0`. The SHA-256 remains the authoritative identity; this
+  is about the field an operator actually looks at.
 - `EVENTS_RXDRDY=1 and ERRORSRC=0x1` is recorded in `scripts/cdk-dfu.sh` under
   "verified WORKING". On nRF52 `ERRORSRC` bit 0 is **OVERRUN**, so that line is
-  evidence that bytes arrived AND were dropped -- not evidence that RX is
-  healthy. It is filed under the wrong heading. Whether it is CDK-16's cause is
-  now less likely given the result above, but it should not keep sitting in the
-  "ruled out" column.
+  evidence that bytes arrived AND were dropped, not that RX is healthy. It is
+  filed under the wrong heading, and should not keep sitting in the "ruled out"
+  column.
 
-CDK-35 and CDK-36 are the ones that matter, and CDK-35 should be run before
-anything else on this list is attempted, because of what it can settle. It has a
-command-line form too -- `ultrawidelock_smp.py --serial PORT --chunk 128` against
-a board held in recovery -- which is the same second opinion without the browser
-in the way. CDK-16
-has been open since 2026-08-02 with a symptom nobody has explained: MCUboot sits
-in its recovery window on a UART that is measurably working, and does not
-answer. Everything ruled out so far was ruled out from the board's side. The
-browser is a SECOND, INDEPENDENT HOST IMPLEMENTATION of the same protocol on the
-same wire -- so if it gets an answer, the fault was never the board, and if it
-does not, the fault is not the Go client. That is a real bisection of a stuck
-bug, available for the cost of one page load, and it is the reason CDK-35 is
-worth running even though CDK-16 is expected to fail.
+CDK-35 and CDK-36 matter most, and CDK-35 should be run before anything else on
+this list. It has a command-line form too -- `ultrawidelock_smp.py --serial PORT
+--chunk 128` against a board held in recovery -- the same second opinion without
+the browser in the way. CDK-16 has been open since 2026-08-02 with a symptom
+nobody has explained: MCUboot sits in its recovery window on a UART that is
+measurably working and does not answer, and everything ruled out so far was ruled
+out from the board's side. The browser is a SECOND, INDEPENDENT HOST
+IMPLEMENTATION of the same protocol on the same wire, so if it gets an answer the
+fault was never the board, and if it does not, the fault is not the Go client.
 
-CDK-37 through CDK-39 are the Bluetooth path on macOS, and CDK-37 is the only
-row here that was found by measurement rather than designed. The board published
-the Matter commissioning service unconditionally while advertising as a
-credential reader -- the GATT table did not follow the advert -- and macOS
-reserves those UUIDs, so CoreBluetooth refused descriptor discovery on C1 and
-Chromium's backend never completed discovery at all (crbug.com/609844). Every
-Web Bluetooth client on that host lost the board, firmware updates included, and
-because a refused discovery poisons the host cache it looked intermittent rather
-than absolute. CDK-38 is the negative control and is the only one of the three still open.
-CDK-37 was measured with bleak, which shares CoreBluetooth with Chrome but is
-not Chrome; CDK-39 then closed it properly, ending with a board that had taken a
-firmware update from a web page over the air with no cable attached. Until
-CDK-38 runs, the gating is the LIKELIEST cause of that rather than the proven
-one: something else changed that day too, and a negative control is how you tell.
+CDK-37 through CDK-39 are the Bluetooth path on macOS, and CDK-37 is the only row
+here found by measurement rather than designed. The board published the Matter
+commissioning service unconditionally while advertising as a credential reader,
+so the GATT table did not follow the advert; macOS reserves those UUIDs, so
+CoreBluetooth refused descriptor discovery on C1 and Chromium's backend never
+completed discovery at all (crbug.com/609844). Every Web Bluetooth client on that
+host lost the board, firmware updates included, and because a refused discovery
+poisons the host cache it looked intermittent rather than absolute. CDK-38 is the
+negative control and the only one of the three still open: CDK-37 was measured
+with bleak, which shares CoreBluetooth with Chrome but is not Chrome, and CDK-39
+closed it with a board that took a firmware update from a web page over the air,
+no cable attached. Until CDK-38 runs, the gating is the LIKELIEST cause of that
+rather than the proven one: something else changed that day too.
 
 One thing CDK-39 taught that no test asked for: the image embeds a build
 timestamp, so `make fota-done` after a rebuild reports the board is running
@@ -237,15 +217,13 @@ sentence is a design intention rather than a measured fact.
 
 ## What 2026-08-27 settled about CDK-16
 
-It had been open since 2026-08-02 as "MCUboot sits in its window on a working
-UART and does not answer". That description was wrong in a way that kept the
-investigation pointed at the wrong half.
+"MCUboot sits in its window on a working UART and does not answer" was wrong in a
+way that kept the investigation pointed at the wrong half.
 
-`make ota-recovery` was added to separate the two halves, because every previous
-test exercised both at once. It writes `BOOT_MODE_TYPE_BOOTLOADER` (0x01) to
-GPREGRET2 at 0x40000520 over SWD and resets -- exactly what the application's
-button handler does -- so the ENTRY is performed by the probe and the SERIAL is
-then tested on its own.
+`make ota-recovery` separates the two halves, because every previous test
+exercised both at once. It writes `BOOT_MODE_TYPE_BOOTLOADER` (0x01) to GPREGRET2
+at 0x40000520 over SWD and resets -- exactly what the application's button
+handler does -- so the probe performs the ENTRY and the SERIAL is tested alone.
 
 MCUboot answered on the first attempt, and took a whole 406,524 B image. The
 board booted it. So:
@@ -260,10 +238,9 @@ board booted it. So:
 
 The next measurement is a one-liner and needs a person: hold SW2 for five
 seconds, then run `make ota-smp-list` (Bluetooth). If a board is found, the
-application is still running and the hold never entered recovery -- which would
-make CDK-16 a button-and-retention bug that has been mistaken for a serial one
-for three weeks. If no board is found, the hold worked and the Go client is what
-failed.
+application is still running and the hold never entered recovery, making CDK-16 a
+button-and-retention bug mistaken for a serial one. If no board is found, the
+hold worked and the Go client is what failed.
 
 Note also that MCUboot's ceiling is HIGHER than the application's, not lower:
 `CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE` is 1024. The 128-byte chunk this project
@@ -341,27 +318,25 @@ a pass. The Wallet animation is the pass criterion, because that is what proves 
 reader told the phone it granted access rather than just actuating locally.
 
 EV-12 to EV-16 gate the RSSI power gate and the relock policy. The guide that
-explained each measurement and its thresholds documented bench tooling that is no
-longer in this repository, so it is not included here. EV-14 and EV-16 are regression rows: both behaviours were
-shipped broken once and are invisible unless specifically looked for.
+explained each measurement and its thresholds documented bench tooling no longer in
+this repository. EV-14 and EV-16 are regression rows: both behaviours were shipped
+broken once and are invisible unless specifically looked for.
 
 EV-17 and EV-18 are the third such row. The ranging-setup latency stamps used to be
 assigned by arrival order, and the phone sends a proto-3 (supplementary-service) SDU
-ahead of Initiate-Ranging-Session, so every device-to-reader label sat one frame early
-— the report claimed M2 arrived before M1 was sent. Nothing in the protocol depended
-on it, but every setup timing read from those captures was wrong. Measured on the
-fixed firmware, the setup exchange is IRS +2.0 ms M1, +27.8 ms M2, +2.4 ms M3,
-+27.7 ms M4; the old labelling reported that as a 29.7 ms IRS-to-M4 span, which was
-really IRS to M2.
+ahead of Initiate-Ranging-Session, so every device-to-reader label sat one frame early:
+the report claimed M2 arrived before M1 was sent. Nothing in the protocol depended on
+it, but every setup timing read from those captures was wrong. On the fixed firmware
+the setup exchange is IRS +2.0 ms M1, +27.8 ms M2, +2.4 ms M3, +27.7 ms M4; the old
+labelling reported that as a 29.7 ms IRS-to-M4 span, which was really IRS to M2.
 
 EV-19 through EV-23 are the over-the-air update path, and none of it has ever
-executed: unlike the DWM3001CDK, which already spoke mcumgr, this is entirely
-new firmware. EV-23 is the row that decides whether the feature is safe to have
-at all. An update that links and then panics is not hypothetical, and without a
-working rollback the recovery for it is a cable -- which is the one thing the
-whole path exists to avoid. EV-21 and EV-22 are the other two ways it can go
-wrong quietly: a half-written slot that the bootloader is nonetheless pointed
-at, and an image that was never signed by the release key.
+executed: unlike the DWM3001CDK, which already spoke mcumgr, this is entirely new
+firmware. EV-23 decides whether the feature is safe to have at all: an update that
+links and then panics is not hypothetical, and without a working rollback the
+recovery is a cable, the one thing the whole path exists to avoid. EV-21 and EV-22
+are the other two ways it can go wrong quietly: a half-written slot the bootloader
+is nonetheless pointed at, and an image never signed by the release key.
 
 ## Recording results
 

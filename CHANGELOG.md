@@ -58,7 +58,7 @@ reports its distance sealed and bound to the ranging block it came from, and the
 lock fuses the pair only when both halves come from one block.
 
 - **The side gate fails closed** for passive unlock: no agreeing second opinion,
-  no walk-up open. `make witness-trio` runs the three-board bench.
+  no walk-up open. `docs/bench-inside-outside.md` runs the three-board bench.
 - **Inside and outside BLE witnesses**, with a proven pick that outlives the
   approach and follows BLE address rotation.
 - A lock-owned freshness epoch, so a reboot cannot roll the replay window back.
