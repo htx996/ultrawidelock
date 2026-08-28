@@ -383,6 +383,23 @@ jobs:
             FOTA_VERSION="${TAG#v}" \
             PREV_HEXES="$bases"
 
+          # A BASE THAT GOT NO DELTA IS INVISIBLE OTHERWISE. mk/cdk.mk skips a
+          # pair of images that differ by more than patch_staging holds rather
+          # than failing the release over it -- the right call, since everything
+          # else in this release is still worth publishing -- but a green job and
+          # a published release look identical whether the fan covered every
+          # board in the field or none of them. The boards on that version are
+          # simply never offered an update, and nothing says so.
+          #
+          # Not a failure: an out-of-range delta is the single-slot design, and
+          # those boards still have the whole-image reinstall over a cable.
+          skipped=build/release/ota/skipped-bases.txt
+          if [ -s "$skipped" ]; then
+            while IFS= read -r base; do
+              echo "::warning::no delta from $(basename "$(dirname "$base")") -- it differs from $TAG by more than patch_staging holds, so boards running it get no over-the-air update from this release and the page will send them to \"Reinstall over USB\"."
+            done < "$skipped"
+          fi
+
       # The "no private key in the bundle" check is not a step here: it runs
       # inside scripts/release-bundle.sh, so all three bundles get it and a
       # local `make release` gets it too, rather than only a tag build.
