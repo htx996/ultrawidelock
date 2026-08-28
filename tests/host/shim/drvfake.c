@@ -288,6 +288,15 @@ int dw3000_hw_init_interrupt(void)
 	return 0;
 }
 
+/* uwb_radio_ensure_init() calls this unconditionally, ahead of its own
+ * g_radio_ready fast path, so that a part left in DEEPSLEEP is awake before
+ * anything reaches it over SPI. On the target it is a no-op unless the part is
+ * actually asleep; here it only has to link and be countable. */
+void dw3000_hw_wakeup(void)
+{
+	drvfake.hw_wakeup_calls++;
+}
+
 void dw3000_spi_wakeup(void)
 {
 	drvfake.spi_wakeup_calls++;

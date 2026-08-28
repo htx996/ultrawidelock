@@ -132,7 +132,7 @@ erased page saves silently and looks exactly like a backup.
 | Is USB drawing? | `USBD.ENABLE = 0` | Off. `usb_enable()` is provisioning-only (`main.c:239`). Correct. |
 | Is anything advertising-adjacent left on? | `SAADC`, `UARTE1`, `SPIM2`, `TWI/SPI1` all 0 | Clean. |
 | **Is the 2.4 GHz radio idle?** | `MODE = 0x0F`, `STATE = 3` on **20/20** | **No. 802.15.4 receive, 100% duty.** |
-| **Is UART0 enabled with nobody using it?** | `UART0.ENABLE = 4` | **Yes.** Legacy UART mode, and the app consoles over RTT with the shell on CDC-ACM. |
+| **Is UART0 enabled with nobody using it?** | `UART0.ENABLE = 4` | Enabled, legacy UART mode. Idle almost always, but it is the MCUmgr serial-DFU transport, not a leak. See §2.2. |
 
 ### 2.1 The radio result is the Thread MED decision, showing up as current
 
@@ -151,20 +151,39 @@ any outside advice on the subject: `CONFIG_OPENTHREAD_MTD_SED=y` with
 `src/matter_thread_port.c` and `modules/ultrawidelock_matter/src/matter_case.c`
 with it, "the three lie if they diverge".
 
-### 2.2 UART0 is the one unambiguous leak
+### 2.2 UART0 is enabled and idle, but it is a transport, not a leak
 
-`ENABLE = 4` is "enabled, legacy UART", not `8` (UARTE) and not `0`. Nothing in
-the application uses it: `CONFIG_UART_CONSOLE=n`, the console is RTT, the shell
-is bound to CDC-ACM, and uart0 is the J-Link OB's VCOM.
-`apps/dwm3001cdk-lock/overlay-anchorlink.conf:40` already proves the app builds
-with `CONFIG_SERIAL=n`, so a `&uart0 { status = "disabled"; };` in the board
-overlay is a small change. MCUboot's serial recovery is a separate image and is
-not affected.
+**This section said "the one unambiguous leak" and that was wrong for the
+shipping image.** The correction is worth more than the original claim.
 
-Caveat worth keeping: an nRF52 legacy UART is the classic HFCLK pin, but HFXO is
-already held here by the permanent 802.15.4 receive, so **UART0's cost is masked
-today and only becomes visible once the radio duty drops**. Fix the radio first
-or this one measures as zero.
+`ENABLE = 4` is "enabled, legacy UART", not `8` (UARTE) and not `0`. The console
+is RTT (`CONFIG_UART_CONSOLE=n`) and the shell is bound to CDC-ACM, so at a
+glance nothing in the application uses it and
+`&uart0 { status = "disabled"; };` looks like a free win.
+
+**It is not free.** `apps/dwm3001cdk-lock/overlay-smp.conf:149` sets
+`CONFIG_MCUMGR_TRANSPORT_UART=y`, and MCUmgr binds to the `zephyr,uart-mcumgr`
+chosen node, which the upstream board DTS points at `&uart0`. That is the
+signed-update-over-a-cable path the browser flasher uses
+(`web/flasher/serial.js`). Disabling uart0 in an `SMP=1` build does not remove a
+leak, it removes a shipped transport.
+
+So the honest reading of `ENABLE = 4` is: a transport that is enabled and idle
+almost all of the time, waiting for a DFU session that happens rarely. The way
+to have both is `CONFIG_PM_DEVICE` with runtime suspend on uart0, so the
+peripheral is only powered while a transfer is in flight. That is a real
+follow-up and is not attempted here.
+
+Two caveats on the size of the prize, both of which argue for leaving it alone
+until the radio is dealt with:
+
+1. An nRF52 legacy UART is the classic HFCLK pin, but HFXO is already held here
+   by the permanent 802.15.4 receive, so **UART0's marginal cost is masked
+   today**. It only becomes visible once the radio duty drops.
+2. A build that genuinely does not need serial DFU can already drop the whole
+   thing: `apps/dwm3001cdk-lock/overlay-anchorlink.conf:40` sets
+   `CONFIG_SERIAL=n` and proves the app links without it. MCUboot's serial
+   recovery is a separate image and is unaffected either way.
 
 ---
 
@@ -283,3 +302,110 @@ exactly what is being measured. It is left out deliberately: with the DW3110 at
 delta is one to two orders of magnitude down and cannot change the ranking. It
 becomes worth measuring only after both radios are dealt with, at which point
 `CONFIG_THREAD_RUNTIME_STATS` is the cheaper instrument than PC sampling.
+
+---
+
+## 6. What was implemented
+
+### 6.1 The DW3110 sleeps now
+
+`CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP`, default y, Zephyr only. Four files:
+
+| File | Change |
+| --- | --- |
+| `modules/ultrawidelock_uwb/Kconfig` | the option, with the 18 mA / 260 nA figures in its help |
+| `modules/ultrawidelock_uwb/include/uwb_min.h` | declares `uwb_min_sleep()` |
+| `modules/ultrawidelock_uwb/src/driver/uwb_min.c` | the sleep entry, and the wake in `uwb_radio_ensure_init()` |
+| `modules/ultrawidelock_uwb/src/ccc/ccc_shim_rx.c` | calls it from `ccc_prepoll_stop()` |
+
+Three things decided the shape:
+
+1. **`DWT_DW_IDLE_RC`, not `DWT_DW_IDLE`.** The two halves have to agree on
+   which state the part wakes into. `dw3000_hw_wakeup()` spins on
+   `dwt_checkidlerc()`, so sleeping with `DWT_DW_IDLE` would wake into
+   `IDLE_PLL` and leave that spin running to its 5 ms timeout every session.
+   `IDLE_RC` is also what the SDK recommends for wake speed.
+2. **The wake goes before the `g_radio_ready` early return**, not after. That
+   fast path is exactly the one a second session takes, and a slept part
+   answers SPI with nothing. Every route into the radio funnels through
+   `uwb_radio_ensure_init()`, which is why `uwb_min_sleep()` deliberately has
+   no public counterpart: waking is not a decision a caller is trusted to
+   remember. `dw3000_hw_wakeup()` already no-ops when the part is awake.
+3. **`ccc_prepoll_stop()` sleeps whether or not a listener was up.** Its old
+   early return skipped the SPI work when the driver might be unprobed, and
+   that was the case that mattered most: `ultrawidelock_ranging_init()` probes at boot
+   and stops without ever listening, so a board no phone had come near still
+   sat in `IDLE_PLL` from power-on. The no-SPI-when-unprobed guarantee moved
+   into `uwb_min_sleep()`, which makes the same `g_radio_ready` test.
+
+**The prewarm risk named in §4 turned out not to exist.** `ccc_prepoll_stop()`
+already sets `g_phy_valid = false` on every stop, so the next prewarm re-runs
+`dwt_configure` regardless of what the AON restored. Nothing depends on the PHY
+surviving the sleep.
+
+### 6.2 What was deliberately not done
+
+**UART0.** It is a transport, not a leak. See §2.2.
+
+**The 250 ms housekeeping tick and the 16 s log wrap timer.** §3 ranks these at
+tens of µA and negligible. Against a post-sleep board total on the order of
+5 mA they are under 1% between them, and the tick change would alter timing on
+the unlock path while the log-timer change needs the DWT timestamp source
+reworked to be wrap-free. Neither is worth its risk at that size. If a PPK2
+later says §3 was wrong about them, they are easy and the analysis is in place.
+
+**Two-rate BLE advertising.** Needs a design, not a constant: a flat slower
+interval regresses walk-up latency, Matter commissioning discovery and the Web
+Bluetooth chooser at once. Not attempted here.
+
+### 6.3 The largest remaining term is a decision, not a bug
+
+With the DW3110 asleep, the **802.15.4 receiver at 100% duty is what is left**,
+and on the numbers in §3 it is roughly 90% of the remainder. It is not an
+oversight: `overlay-thread.conf:52` chose MED over SED deliberately, measured
+the latency it bought, and wrote down the exact recipe for reversing it. That
+recipe is unchanged and is the next lever, but it is a product decision about
+walk-up and tile-tap latency, so it is not taken here.
+
+### 6.4 What is verified, and what is not
+
+**VERIFIED on this silicon:** the sleep entry runs at boot and the board carries
+on. RTT from the flashed image, `CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP=y`:
+
+```
+I: DW3000 raw DEV_ID = 0xdeca0302 (expect 0xDECA03xx)
+DIAG ull_configure chan=9
+DIAG ull_setchannel ch=9 dw_state=0x03
+DIAG ioctl ENTERSLEEP parm=2
+  ⟐ idle · no ranging · sts○
+```
+
+`ENTERSLEEP parm=2` is the SDK's ioctl dispatch showing `DWT_ENTERSLEEP` with
+`DWT_DW_IDLE_RC`. That is the boot-time probe-and-stop path from §6.1 item 3
+putting the part down, which is the case that used to leave a board at 18 mA
+from power-on. No fault, no `WAKEUP: chip never reached IDLE_RC`, and the node
+went on to rejoin Thread (§1.1 registers, re-read after the flash, unchanged).
+
+**MEASURED:** the host suite runs 9,610 checks with 0 failures, two of them new
+and asserting exactly this: that a cold stop still sleeps, and that a stop after
+a listen sleeps *after* the `forcetrxoff` rather than instead of it.
+
+**NOT VERIFIED, and this is the gap that matters:** that a walk-up still ranges.
+The sleep is proven above; **the wake is not**. `dw3000_hw_wakeup()` has never
+run on hardware before this change, because nothing ever slept the part for it
+to wake. Its first real execution will be the first walk-up after a boot, and it
+needs a phone, an approach and an unlock to happen at all. Until that has been
+seen, treat `CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP=n` as the known-good configuration.
+
+What to watch for on that test, in `make monitor`:
+
+| Line | Means |
+| --- | --- |
+| `WAKEUP CS` | the wake fired; this is the line that has never appeared before |
+| `WAKEUP: chip never reached IDLE_RC` | the wake failed. Set the option to `n` and say so |
+| a distance in cm, then an unlock | it works end to end |
+| silence where ranging used to start | the part did not come back; option to `n` |
+
+**Also not verified:** that the current actually dropped. That still needs the
+PPK2 procedure in §5.1. The register baseline cannot see it, because the DW3110's
+state lives behind SPI where SWD cannot reach (§5.2).

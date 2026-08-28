@@ -218,6 +218,7 @@ struct ultrawidelock_host_rx_rec {
 	unsigned rxenable_calls;      /* dwt_rxenable invocations */
 	int32_t last_rxenable_mode;
 	unsigned forcetrxoff_calls;
+	unsigned sleep_calls;         /* uwb_min_sleep invocations (DW3110 DEEPSLEEP entry) */
 	unsigned starttx_calls;
 	unsigned seq;                 /* global call sequencer */
 	unsigned last_rxenable_seq;   /* seq at the last dwt_rxenable */

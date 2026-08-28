@@ -184,6 +184,15 @@ uint32_t uwb_min_radio_generation(void)
 	return 1u; /* single init, never reset, on the host */
 }
 
+/* Counted rather than ignored: ccc_prepoll_stop() is the only caller, and the
+ * whole point of moving the sleep past that function's old early return was
+ * that a boot-time probe-and-stop must still put the part down. A stub that
+ * silently swallowed the call would let that regress unnoticed. */
+void uwb_min_sleep(void)
+{
+	ultrawidelock_host_rx.sleep_calls++;
+}
+
 bool uwb_rxdiag_stream_get(void)
 {
 	return false;

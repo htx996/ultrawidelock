@@ -61,4 +61,13 @@ int uwb_min_radio_init(void);
 /** @brief Count of fresh radio inits; changes whenever the base config was re-applied. */
 uint32_t uwb_min_radio_generation(void);
 
+/** @brief Put the DW3110 into DEEPSLEEP. No-op if the radio was never brought up,
+ *  if it is already asleep, or if CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP is off.
+ *
+ *  There is no matching uwb_min_wake(): waking is not a decision a caller makes.
+ *  uwb_min_radio_init() wakes unconditionally before it does anything else, and
+ *  every path into the radio goes through it, so a slept part cannot be reached
+ *  over SPI by accident. */
+void uwb_min_sleep(void);
+
 #endif /* ULTRAWIDELOCK_UWB_MIN_H_ */

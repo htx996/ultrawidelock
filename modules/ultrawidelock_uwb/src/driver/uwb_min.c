@@ -129,6 +129,19 @@ static const dwt_txconfig_t g_uwb_txcfg = {
 /** @brief Bring the SDK up to "radio configured + LEDs on" state. */
 static int uwb_radio_ensure_init(void)
 {
+	/* WAKE FIRST, BEFORE THE EARLY RETURN. A part in DEEPSLEEP has all its
+	 * clocks off and answers SPI with nothing, so the wake cannot sit behind
+	 * the g_radio_ready fast path -- that path is exactly the one a second
+	 * session takes. Every route into the radio comes through here, which is
+	 * why uwb_min_sleep() has no public counterpart: waking is not a decision
+	 * a caller is trusted to remember.
+	 *
+	 * Free when the part is awake: dw3000_hw_wakeup() returns immediately
+	 * unless dw3000_hw_mark_asleep() said otherwise, and toggling CS at an
+	 * awake chip would corrupt the next transfer, which is why that guard is
+	 * in the port rather than here. */
+	dw3000_hw_wakeup();
+
 	if (g_radio_ready) {
 		return 0;
 	}
@@ -169,6 +182,43 @@ static int uwb_radio_ensure_init(void)
 int uwb_min_radio_init(void)
 {
 	return uwb_radio_ensure_init();
+}
+
+/*
+ * Path-A sleep entry: the half dw3000_hw.h named and nobody wrote.
+ *
+ * The wake half has been complete and registered the whole time --
+ * dw3000_hw_wakeup() drives CS low, waits out the IDLE_RC startup and spins on
+ * dwt_checkidlerc(), and deca_port.c binds it as .wakeup_device_with_io -- and
+ * uwb_radio_ensure_init() above has always armed the sleep PARAMETERS with
+ * dwt_configuresleep(..., DWT_WAKE_CSN | DWT_SLP_EN). Only the one call that
+ * actually puts the part under was missing, so the DW3110 rested in IDLE_PLL
+ * from boot for the life of every board: 18 mA against 260 nA in DEEPSLEEP
+ * (DW3000 Datasheet v1.3, Figures 26 and 28, all supplies at 3.0 V), on a lock
+ * whose radio is wanted for a few seconds a day.
+ *
+ * DWT_DW_IDLE_RC, NOT DWT_DW_IDLE, and the two halves have to agree. It clears
+ * the auto-INIT2IDLE bit before sleeping so the part wakes into IDLE_RC with
+ * the PLL still off; the SDK recommends it for wake speed, and more to the
+ * point dw3000_hw_wakeup() already spins on dwt_checkidlerc() waiting for
+ * exactly that state. Sleeping with DWT_DW_IDLE would wake into IDLE_PLL and
+ * leave the wake spinning to its 5 ms timeout on every session.
+ *
+ * Nothing here depends on the PHY surviving the sleep: ccc_prepoll_stop()
+ * drops the g_phy_valid cache on every stop, so the next prewarm re-runs
+ * dwt_configure regardless of what the AON restored.
+ */
+void uwb_min_sleep(void)
+{
+#if defined(CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP)
+	/* An unprobed driver must not be touched over SPI, and a part that is
+	 * already down must not be told twice. */
+	if (!g_radio_ready || dw3000_hw_is_asleep()) {
+		return;
+	}
+	dwt_entersleep(DWT_DW_IDLE_RC);
+	dw3000_hw_mark_asleep();
+#endif
 }
 
 uint32_t uwb_min_radio_generation(void)
