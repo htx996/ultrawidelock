@@ -373,14 +373,89 @@ static void c2_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	}
 }
 
-/* Order matters: attrs[4] is the C2 VALUE, which is what an indication targets. */
-BT_GATT_SERVICE_DEFINE(matter_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_16(0xFFF6)),
-		       BT_GATT_CHARACTERISTIC(&k_chr_c1_uuid.uuid,
-					      BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
-					      BT_GATT_PERM_WRITE, NULL, c1_write, NULL),
-		       BT_GATT_CHARACTERISTIC(&k_chr_c2_uuid.uuid, BT_GATT_CHRC_INDICATE,
-					      BT_GATT_PERM_NONE, NULL, NULL, NULL),
-		       BT_GATT_CCC(c2_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), );
+/*
+ * PUBLISHED ONLY WHILE COMMISSIONING IS ACTUALLY POSSIBLE. This is a dynamic
+ * service, registered and withdrawn to follow the advert, for one reason:
+ *
+ * MACOS REFUSES THIS SERVICE TO THIRD PARTIES, AND THAT BREAKS EVERY OTHER
+ * SERVICE ON THE BOARD. CoreBluetooth reserves the Matter commissioning UUIDs
+ * for the system and answers a descriptor discovery on C1 with CBError 8,
+ * CBErrorUUIDNotAllowed. Chromium's macOS backend logs that error and returns
+ * without marking the characteristic discovered, so its GATT-discovery-complete
+ * event never fires (bluetooth_low_energy_device_mac.mm; the TODO is
+ * crbug.com/609844). getPrimaryService() then never settles -- Web Bluetooth
+ * has no timeout of its own -- and the browser update path hangs on a board
+ * that connected perfectly.
+ *
+ * MEASURED 2026-08-27 against this reader, one service at a time:
+ *
+ *     SMP              ok     h23
+ *     native DFU       ok     h19
+ *     credential FFF2  ok     h27 h29
+ *     Matter FFF6      FAILS  CBError 8 at handle 13   <- C1
+ *     SMP again        FAILS  <- the host cache is now poisoned
+ *
+ * The last line is why this looked intermittent for so long: one refused
+ * discovery makes every later connection to the board fail, including ones that
+ * would have worked, until the cache clears.
+ *
+ * A COMMISSIONED LOCK HAS NO USE FOR THIS SERVICE. The advert already carries
+ * the credential payload rather than the commissionable one, chosen by exactly
+ * the predicate that now gates registration (ultrawidelock_ble_zephyr.c's
+ * advertising_payload_build). The GATT table simply did not follow the advert:
+ * the board said "I am a reader, do not commission me" and published a
+ * commissioning service anyway. Making the two agree is correct on its own
+ * terms, and it happens to hand macOS a table it will walk.
+ *
+ * Order matters: attrs[4] is the C2 VALUE, which is what an indication targets.
+ */
+static struct bt_gatt_attr matter_attrs[] = {
+	BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_16(0xFFF6)),
+	BT_GATT_CHARACTERISTIC(&k_chr_c1_uuid.uuid,
+			       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
+			       BT_GATT_PERM_WRITE, NULL, c1_write, NULL),
+	BT_GATT_CHARACTERISTIC(&k_chr_c2_uuid.uuid, BT_GATT_CHRC_INDICATE,
+			       BT_GATT_PERM_NONE, NULL, NULL, NULL),
+	BT_GATT_CCC(c2_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+};
+static struct bt_gatt_service matter_svc = BT_GATT_SERVICE(matter_attrs);
+
+/* Whether the service is in the database right now. Static zero is correct:
+ * nothing is registered until the advertising worker asks for it, which it does
+ * on its first pass, before anything can connect. */
+static atomic_t s_svc_published;
+
+int matter_ble_publish(bool on)
+{
+	int rc;
+
+	if (on == (atomic_get(&s_svc_published) != 0)) {
+		return 0;
+	}
+	/* Never pull the table out from under a live commissioning link. The
+	 * caller runs on every advertising pass and will ask again.
+	 *
+	 * s_conn is written from the Bluetooth connection callback and read here
+	 * on the advertising work queue, deliberately without a lock. An aligned
+	 * pointer cannot tear, and both ways of losing the race are harmless: a
+	 * stale non-NULL defers the withdrawal to the next pass, and a stale NULL
+	 * withdraws a service a peer has only just connected to, which Zephyr
+	 * permits and which the disconnect that follows would have caused anyway.
+	 * A lock here would sit between the advertising path and the BLE stack for
+	 * no property worth having. */
+	if (!on && s_conn != NULL) {
+		return -EBUSY;
+	}
+
+	rc = on ? bt_gatt_service_register(&matter_svc) : bt_gatt_service_unregister(&matter_svc);
+	if (rc != 0) {
+		LOG_WRN("0xFFF6 %s failed (%d)", on ? "register" : "unregister", rc);
+		return rc;
+	}
+	atomic_set(&s_svc_published, on ? 1 : 0);
+	LOG_INF("0xFFF6 service %s", on ? "published" : "withdrawn");
+	return 0;
+}
 
 /**
  * Return true if a BLE connection is active and subscribed to indications on the C2 characteristic.
@@ -689,10 +764,9 @@ int matter_ble_commissionable_svc_data(uint8_t *out, size_t cap)
 /* ---- init ---------------------------------------------------------------- */
 
 /*
- * Started by SYS_INIT rather than by the application, because
- * BT_GATT_SERVICE_DEFINE registers the 0xFFF6 service unconditionally: the C1
- * write handler is live the moment BLE comes up, whether or not anything asked
- * for it. Leaving the queue to an explicit call meant the two lifetimes could
+ * Started by SYS_INIT rather than by the application, because the C1 write
+ * handler goes live the moment matter_ble_publish() puts the service in the
+ * database, which the advertising worker does without asking the application. Leaving the queue to an explicit call meant the two lifetimes could
  * disagree, and they did -- with no caller, --gc-sections dropped this function
  * and matter_wq_stack with it, so a C1 write would have submitted to a work
  * queue that was never started. Tying the queue to the service removes the
@@ -705,7 +779,8 @@ static int matter_ble_init(void)
 	k_work_init(&s_msg_work, msg_work_handler);
 	k_work_init(&s_hs_work, hs_work_handler);
 	reset_link();
-	LOG_INF("0xFFF6 service ready (rx buffer %u B)", (unsigned int)sizeof(s_rx_buf));
+	LOG_INF("0xFFF6 transport ready (rx buffer %u B); the service itself is published "
+		"only while commissioning is possible", (unsigned int)sizeof(s_rx_buf));
 	return 0;
 }
 

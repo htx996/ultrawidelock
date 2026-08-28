@@ -1,0 +1,50 @@
+menu "UltraWideLock over-the-air update"
+
+config ULTRAWIDELOCK_DFU_ESP32
+	bool "Accept signed firmware updates over Bluetooth"
+	depends on BT_NIMBLE_ENABLED
+	default n
+	help
+	  Adds a GATT service that takes a signed application image and writes
+	  it into the OTA slot this image is not running from, then points the
+	  bootloader at it. The same wire protocol the DWM3001CDK and the
+	  standalone FreeRTOS port speak, so one host tool and one web page
+	  drive all three.
+
+	  Costs a second OTA slot's worth of nothing -- ota_0 and ota_1 already
+	  exist in the partition table -- plus roughly 4 KB of code and the P-256
+	  verify path, which the credential stack has already linked.
+
+	  Off by default. This lets a peer in radio range erase a flash slot
+	  once an owner has opened the update window, and an image built without
+	  a signing key cannot verify anything, so it has to be asked for.
+
+if ULTRAWIDELOCK_DFU_ESP32
+
+config ULTRAWIDELOCK_DFU_LOG_LEVEL
+	int "Log level for the update path"
+	range 0 5
+	default 3
+	help
+	  Maps onto the ultrawidelock_log.h contract, not esp_log's own levels.
+	  3 is warnings and above, which is every refusal and nothing per-frame:
+	  a 2 MB image is roughly eight thousand frames, and logging each one
+	  costs more time than the radio does.
+
+config ULTRAWIDELOCK_DFU_WINDOW_MS
+	int "How long the update window stays open, in milliseconds"
+	range 10000 3600000
+	default 300000
+	help
+	  Nothing is accepted until the window is opened by hand on the board,
+	  and it shuts again after this long. Five minutes is the same default
+	  the other two ports use: long enough to walk back to a computer, short
+	  enough that a lock does not sit accepting firmware all afternoon.
+
+	  This is an availability gate, not an authenticity one. Authenticity is
+	  the P-256 signature over the image header, which is checked before a
+	  single byte is written and re-checked by the bootloader afterwards.
+
+endif # ULTRAWIDELOCK_DFU_ESP32
+
+endmenu

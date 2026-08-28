@@ -72,6 +72,48 @@ for f in "$@"; do
 	[ -f "$f" ] || die "no such firmware file: $f" "build it before bundling"
 done
 
+# Some firmware files are not optional, and their absence is silent.
+#
+# THE DWM3001CDK HAS ONE MCUBOOT SLOT, so an over-the-air update is a delta
+# against the exact bytes already on the board, and building one requires the
+# image that board is running. The only copy of that is zephyr.signed.hex as
+# published with its own release. It cannot be rebuilt later: the image embeds a
+# build timestamp, so two builds of identical sources at the same version differ
+# (measured 2026-08-27, 105 bytes of 408,206, hashes 8613358327a47e00 and
+# f9443287420eaedf). merged.hex is not a substitute -- a delta cannot be built
+# from it, because the first thing in a merged hex is the bootloader and not an
+# MCUboot image.
+#
+# So a CDK release that ships without it strands every board that installs it on
+# a J-Link FOREVER, and nothing says so at the time. The next release simply
+# reports "no usable base" as a notice, which is the correct behaviour for an
+# old bundle and indistinguishable from this mistake. One release too late.
+#
+# The files arrive as positional arguments, so until now the requirement lived
+# only in the mk/cdk.mk call site and a comment beside it. Checked here so a
+# local `make release` gets it too, the same reason the private-key check is
+# here rather than in the workflow.
+case "$TARGET" in
+dwm3001cdk*)
+	needed="zephyr.signed.hex"
+	;;
+*)
+	needed=""
+	;;
+esac
+for want in $needed; do
+	found=""
+	for f in "$@"; do
+		[ "$(basename "$f")" = "$want" ] && found=1
+	done
+	[ -n "$found" ] || die "$TARGET must ship $want and does not" \
+		"An over-the-air update for this board is a delta against the exact" \
+		"bytes on it, so a future release needs this image to build one, and" \
+		"the image cannot be reproduced after this build. Publishing without" \
+		"it strands every board that installs this release on a J-Link" \
+		"permanently. Pass it alongside merged.hex."
+done
+
 VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
 BUILT="$(date -u +%Y-%m-%dT%H:%MZ)"

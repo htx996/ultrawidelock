@@ -227,13 +227,55 @@ which is the version esp-matter itself asks for at that revision. `IDF_VER` and
 
 ## Update over the air
 
-No cable, no probe. Two MCUboot slots do not fit on a 512 KB part, so what
-travels is a signed delta.
+No probe. Either chip, from a browser:
+
+**[ultrawidelock.com/flash](https://ultrawidelock.com/flash/index.html)** finds the
+board, reads what it is running, and sends the one update that applies. Chrome or
+Edge on a computer, or Chrome on Android — neither Web Bluetooth nor WebSerial
+exists in Safari, so not from an iPhone. Nothing is written until you open the
+update window on the board itself: **SW2** on the CDK, a **double-click** on the
+ESP32's button. That press is the whole availability gate; authenticity is a
+P-256 signature checked before a byte is written and again by the bootloader.
+
+The two chips travel differently, and the page hides the difference:
+
+| | DWM3001CDK | ESP32-S3 / C5 / C6 |
+|---|---|---|
+| Transport | mcumgr, over BLE **or** USB | native GATT frames |
+| Payload | signed delta, ~11 KB | signed whole image, ~2 MB |
+| Why | one MCUboot slot in 512 KB | two full OTA slots |
+| Time | seconds | several minutes over BLE |
+
+One MCUboot slot means a CDK delta is cut against the *exact* bytes on the part,
+so a release ships one file per earlier release still in the field.
+
+The cable is the same update through a different pipe — `uart0` is the J-Link
+OB's VCOM, it enumerates as USB CDC-ACM, and WebSerial can open it. It is about
+three times faster, because Web Bluetooth will not report an MTU and the radio
+path has to assume the floor.
+
+And there is a third option on the CDK, which is the one that matters when
+things have gone wrong: **reinstall everything**, over the same cable. That
+writes a whole signed image through MCUboot's serial recovery rather than a
+patch through the application — so it needs no starting image, no update window,
+and no working software on the board. A board whose application does not boot
+stays in recovery by construction (`CONFIG_BOOT_SERIAL_NO_APPLICATION=y`) and
+can be reinstalled from the page. The J-Link is needed once, to put the
+bootloader there; after that it is optional.
+
+> Serial recovery itself is [CDK-16](docs/hardware-validation.md), which is
+> open: it completed one upload in August 2026 and has not reproduced. The
+> browser is a second, independent host implementation on the same wire, which
+> is why running it is worth doing even though it is expected to fail.
+
+From the command line instead:
 
 ```sh
-make dfu                    # build, diff, sign, push
-make fota                   # instead: one file a phone can install
+make dfu                    # CDK: build, diff, sign, push
+make fota                   # CDK: one file a phone can install
 make fota-done              # after every phone push
+make ota-fan  PREV_HEXES=…  # the delta fan + the index the web page reads
+make esp-ota                # ESP32: sign each chip's app image
 ```
 
 `make fota-done` is not optional. The delta is cut against the exact bytes on

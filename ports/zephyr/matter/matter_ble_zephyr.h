@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -98,6 +99,26 @@ void matter_ble_set_discriminator(uint16_t discriminator);
 
 /** The discriminator currently advertised. */
 uint16_t matter_ble_discriminator(void);
+
+/**
+ * Put the 0xFFF6 service in the GATT database, or take it out.
+ *
+ * Call it from whatever decides which advert this node carries, so the table
+ * and the advert say the same thing: a node advertising the credential payload
+ * is not offering to be commissioned and must not publish a commissioning
+ * service. Idempotent, and cheap enough for the advertising worker to call on
+ * every pass.
+ *
+ * Withdrawal is refused with -EBUSY while a commissioning link is up; the
+ * caller is expected to ask again rather than to force it.
+ *
+ * macOS makes this load-bearing rather than tidy -- see the comment on the
+ * service definition. Publishing 0xFFF6 costs the board every Web Bluetooth
+ * client on that host, SMP firmware updates included.
+ *
+ * @return 0 on success or no change, -EBUSY if a link is up, or a Zephyr error.
+ */
+int matter_ble_publish(bool on);
 
 #ifdef __cplusplus
 }

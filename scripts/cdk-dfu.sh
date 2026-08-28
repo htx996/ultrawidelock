@@ -24,11 +24,32 @@
 # (the application used to appear ~5 s after reset, which was the old window
 # elapsing).
 #
-# So MCUboot sits in its window on a working UART and does not answer. The next
-# measurement worth taking is instrumenting MCUboot itself rather than inferring
-# it from outside: CONFIG_MCUBOOT_INDICATION_LED with an mcuboot-led0 alias, or
-# logging over RTT, to see whether boot_serial_check_start is entered and with
-# what timeout.
+# So MCUboot sits in its window on a working UART and does not answer.
+#
+# NARROWED 2026-08-27, and this is the useful part. The APPLICATION now speaks
+# mcumgr on this same uart0 (CONFIG_MCUMGR_TRANSPORT_UART in overlay-smp.conf),
+# and it answers on the first try -- image list, and multi-frame requests too: a
+# 384 B payload arrives as five back-to-back 127-byte frames, intact, and is
+# refused with rc=11 by the window gate. The same board reported the same
+# sha=000f654e8c031181 over Bluetooth minutes later.
+#
+# That exonerates everything underneath MCUboot: the pins, the probe's VCOM, the
+# 115200 rate, the nRF's legacy non-DMA UART driver, and the host end. Whatever
+# CDK-16 is, it is inside MCUboot's serial adapter. Reach for
+# `ultrawidelock_smp.py --serial` when testing it -- it is a second, independent
+# host implementation, so a failure there is the bootloader's and not the Go
+# mcumgr's.
+#
+# ONE CORRECTION TO THE LIST ABOVE. "ERRORSRC=0x1" is filed under verified
+# WORKING. On nRF52, ERRORSRC bit 0 is OVERRUN -- so that measurement says bytes
+# arrived AND were dropped, which is not the same as RX being healthy. Given the
+# application now receives full frames on this UART it is unlikely to be the
+# cause, but it does not belong in the "ruled out" column either.
+#
+# The next measurement worth taking is still instrumenting MCUboot itself rather
+# than inferring it from outside: CONFIG_MCUBOOT_INDICATION_LED with an
+# mcuboot-led0 alias, or logging over RTT, to see whether boot_serial_check_start
+# is entered and with what timeout.
 
 # Single slot: the upload OVERWRITES the running image. A torn transfer leaves no
 # application, which is recoverable and not a brick -- MCUboot stays in recovery

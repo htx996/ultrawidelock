@@ -32,6 +32,28 @@ extern "C" {
 #define ULTRAWIDELOCK_DFU_ABI_VERSION 1u
 
 /**
+ * The payload is a whole application image, not a detools delta.
+ *
+ * The ESP32 has two full OTA slots and no MCUboot, so it has no use for a
+ * delta and no applier to run one; what it wants is the image itself, written
+ * into the slot it is not currently booted from. Everything else about the
+ * container is unchanged -- same magic, same ABI, same 64-byte P-256 signature
+ * over the same 32 header bytes, same CRC-32 over the payload -- so one signer,
+ * one receiver and one wire protocol serve both chips.
+ *
+ * NOT AN ABI BUMP, because nothing about the layout changed: this occupies the
+ * `flags` word that was already reserved and already covered by both the header
+ * CRC and the signature, so it cannot be flipped by anyone without the key.
+ *
+ * A port MUST reject a payload whose flag does not match what it can apply. A
+ * delta handed to the ESP32 would be written into an OTA slot as if it were an
+ * image; a whole image handed to the CDK does not fit patch_staging at all and
+ * is refused for size long before this matters, but the check is cheap and the
+ * failure should say what is actually wrong.
+ */
+#define ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE 0x0001u
+
+/**
  * Layout of the staging partition. Page-granular because the erase unit is a
  * page, and the three regions have different write patterns: the header is
  * written once, the step log is appended to during the apply, and the patch is
@@ -85,7 +107,7 @@ struct ultrawidelock_dfu_hdr {
 	uint32_t magic;
 	/** @ref ULTRAWIDELOCK_DFU_ABI_VERSION. */
 	uint16_t abi_version;
-	/** Reserved, written as zero. */
+	/** @ref ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE, or zero for a delta. */
 	uint16_t flags;
 	/** Patch length in bytes, starting at @ref ULTRAWIDELOCK_DFU_PATCH_OFFSET. */
 	uint32_t patch_len;

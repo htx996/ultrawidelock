@@ -85,7 +85,7 @@ this one.
 | CDK-13 | `make fota`, push the file from a phone with nRF Device Manager's **Images** tab, then `make fota-done` | The board comes back reporting the target image's SHA-256 | yes, on the commissioned lock (`53b2fe1`, `8447e91`) |
 | CDK-14 | 100 walk-ups, counting the ones that unlock | 95% or better | **open, never run**; the sample so far is single digits |
 | CDK-15 | Cut the power in the middle of a CDK-11 apply, then restore it | The board resumes at the right step and boots the target image | **open, never run** |
-| CDK-16 | Hold SW2 for 5 s while the application runs, then upload with `scripts/cdk-dfu.sh` | The board warm-reboots into MCUboot serial recovery and accepts the image | **open**; serial recovery has completed exactly one real upload and is not yet reproducible |
+| CDK-16 | Hold SW2 for 5 s while the application runs, then upload with `scripts/cdk-dfu.sh` | The board warm-reboots into MCUboot serial recovery and accepts the image | **SERIAL RECOVERY ITSELF WORKS -- proven 2026-08-27.** Entered over SWD with `make ota-recovery` (writes BOOT_MODE_TYPE_BOOTLOADER to GPREGRET2, resets), MCUboot answered `ultrawidelock_smp.py --serial` immediately and accepted a full 406,524 B image; the board booted it and reported the expected `8259462cce91ba50`. So the bootloader, the UART and the protocol are all fine. What remains untested is the BUTTON entry -- whether a 5 s SW2 hold actually sets the boot mode -- and the Go `mcumgr` client. This row is now about those two things and nothing else |
 | CDK-17 | Record a walk-up with the flight recorder, histogram the STS quality index, pick a floor above the noise | `ULTRAWIDELOCK_STS_QUALITY_MIN` is set from data rather than left at 0 | **open, never run.** The DWM3001CDK now *enforces* this gate, so an untuned floor is a door that can refuse to open |
 | CDK-18 | Walk-up in NLOS: phone pocketed on the far side of the body, and through an interior door | The gate still publishes a range and the bolt opens | **open, never run.** One LOS walk-up passed at `sts_ok=1`, STS index 62, verdict 24, d=107 mm; that is not a calibration |
 | CDK-19 | In Home Assistant's Thread integration, send the iPhone's Apple Thread credentials, make that dataset preferred, and join the Home Assistant OTBR to it | Apple and Home Assistant border routers report one Extended PAN ID; no second preferred dataset is created | **open, never run** |
@@ -102,6 +102,17 @@ pass. The Wallet animation is, because that is what proves the reader told the p
 it granted access rather than just actuating locally.
 | CDK-27 | With a second administrator on and a Matter DoorLock peer bound, walk up once and read the RTT log | The peer's bolt moves, and the log reaches `the bound lock UNLOCKED` | **PASSED 2026-08-22**, against `apps/nrf5340dk-lock` on a Home Assistant fabric. Took five runs and five interoperability fixes; `docs/matter-binding-bench.md` records each fault and its signature. Never run against a commercial peer |
 | CDK-28 | After CDK-27, walk away and let the departure gate relock | Both bolts close, and the log reaches `the bound lock LOCKED` | **PASSED 2026-08-22.** Home Assistant showed both locks unlocked and then both locked within the same second |
+| CDK-29 | Open https://ultrawidelock.com/flash/index.html in Chrome, pick the DWM3001CDK, and connect | The chooser lists the board, and the page names the image it is running before asking for anything | **open, never run** |
+| CDK-30 | Continue CDK-29 on a board whose image the release publishes a delta from, pressing SW2 when the page asks | The delta goes over Web Bluetooth, the board reboots, and the page reconnects and reports the target SHA-256 | **PASSED 2026-08-27**, in Chrome on macOS, over Bluetooth with no cable. Board read back `v0.3.1.0 sha=8613358327a47e00 active=True confirmed=True`, which is exactly the delta target. This is the row the whole branch exists for and it had been open since the first commit |
+| CDK-31 | Repeat CDK-30 on a board running a build the release ships no delta from | The page says no over-the-air update applies, names the single-slot reason, points at the J-Link, and sends nothing | **open, never run.** Proven against a fake board in the `fotawire` suite; never against a real one |
+| CDK-32 | Repeat CDK-30 with **USB cable** picked instead of Bluetooth, on the J-Link port | The same delta goes over uart0 as mcumgr serial frames, the board reboots, and the page reports the target SHA-256 without the port ever closing | **identify half PASSED 2026-08-27** over the CLI (`make ota-smp-list OTA_SERIAL=auto`); board reported `sha=000f654e8c031181`, byte-identical to what the radio reported for the same board in the same minute. Multi-frame writes PASSED separately: a 384 B payload (420 B frame, 583 B on the wire, 5 lines) arrived whole and was refused with rc=11, the window gate answering correctly. **upload half PASSED 2026-08-27** as well: a 7,667 B delta `000f654e8c031181 -> 78224934aa586a84` went over uart0 in 384 B chunks, MCUboot applied it, and the board came back reporting the produced hash and `v0.3.0.0`. Confirmed over Bluetooth in the same minute. **The browser has still not been run against a board at all** -- every result here is the CLI |
+| CDK-33 | Time CDK-30 and CDK-32 on the same delta | The cable is materially faster; 384-byte chunks against 105 | **open, never run.** The ratio is arithmetic, the wall-clock is not: per-request latency over a UART is unmeasured |
+| CDK-34 | With the application running normally, pick **reinstall everything** and try to write | The page says the application answered rather than the bootloader, writes nothing, resets nothing, and does not tell anyone to press SW2 | **open, never run.** Covered against a fake board; the point is that rc=11 means something different on this path and must not be read as "open the window" |
+| CDK-35 | Hold SW2 for 5 s, then pick **reinstall everything** and write the published whole image | MCUboot accepts ~400 KB over uart0, verifies it, and the board comes back on the published SHA-256 | **the transport half PASSED 2026-08-27** over the CLI: 406,524 B at 384 B/chunk into MCUboot, ~4 minutes, board back on `8259462cce91ba50` with `v0.3.1.0`. No longer gated on CDK-16. Still open only as a BROWSER test -- the page's recovery flow has never been run, and it asks for the SW2 hold rather than SWD, so it also depends on the button half of CDK-16 |
+| CDK-36 | Erase the application only (leave MCUboot), then run CDK-35 with no button press at all | `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` leaves the board already waiting in recovery, and the page installs onto a board with no working software | **open, never run.** This is the row that decides whether the probe is genuinely optional after the first flash |
+| CDK-37 | On a **commissioned** lock, enumerate the whole GATT table from a Mac (`BleakClient(dev)` with no `services=` restriction, which is the walk Chrome performs) | Three services enumerate -- native DFU, credential 0xFFF2, SMP -- with no `CBError 8` and no 0xFFF6 | **PASSED 2026-08-27.** The same probe against the previous image failed at ATT handle 13, the Matter C1 characteristic, and poisoned the host cache so that even restricted SMP discovery failed afterwards. `matter_ble_publish()` now withdraws 0xFFF6 whenever the advert carries the credential payload. **Confirmed in Chrome the same day**, which is what the row is really about: the flasher page connected over Web Bluetooth, completed discovery, and read `344da6f022364f7f` back off the board -- every attempt before the fix stalled at "looking up the update service" |
+| CDK-38 | Repeat CDK-37 with a Matter pairing window open, or on an uncommissioned board | 0xFFF6 is published and the unrestricted walk fails again with `CBError 8` at C1 | **open, never run.** This is the negative control: it proves the fix is the gating and not something else that changed. It is also the case the page still warns about on macOS |
+| CDK-39 | With a commissioned lock, run CDK-30 for real in Chrome on macOS | The delta goes over Web Bluetooth and the page reports the target SHA-256 | **PASSED 2026-08-27, both halves.** Chrome connected, discovered and identified the board, then installed the `344da6f022364f7f -> 8613358327a47e00` delta over Web Bluetooth. Verified afterwards over the cable, not by asking the page: the board reports `v0.3.1.0 sha=8613358327a47e00 confirmed=True`. Same row as CDK-30, kept separate because this one is specifically about macOS, where every attempt before `matter_ble_publish()` stalled in discovery |
 
 CDK-14 through CDK-26 are the open rows, and none has ever been run to
 completion. CDK-16, CDK-17 and CDK-18 cover recovery, STS quality and NLOS
@@ -119,6 +130,145 @@ still never answered. CDK-14 is
 the only rate on this list: everything above it has been demonstrated at least once,
 and none of it at a rate. CDK-15 is the resumable apply, whose step counter is
 exercised by design and by host test but has never met a real power cut.
+
+CDK-29 through CDK-31 are the browser update path, and they are the cheapest
+open rows on this list to close: the firmware is the same `SMP=1` release image
+CDK-13 already passed by hand, so the only thing that has never met a board is
+the JavaScript. CDK-31 is the one worth running even though it sounds like a
+non-event -- a board with no applicable delta is the normal state of anything
+more than a few releases old, and a page that handled it badly would be the
+first thing most people saw.
+
+CDK-32 through CDK-36 are the cable. CDK-32 and CDK-33 are low risk and cost one
+build: the transport changed, nothing above it did, and a host suite already
+compares the framing byte for byte across three implementations -- the standard
+library's CRC-16/XMODEM and base64, the CLI client, and the browser's copy.
+
+**None of these rows needs a browser.** `ultrawidelock_smp.py --serial` speaks
+the same protocol from the command line, which is the cheaper way to run them
+and the one that isolates the firmware:
+
+```sh
+make flash SMP=1 RELEASE=1               # the image with the UART transport in it
+make ota-smp-list OTA_SERIAL=auto        # CDK-32, the identify half
+make ota-smp      OTA_SERIAL=auto        # CDK-32, the upload half
+```
+
+Running the CLI first is worth the extra step rather than a detour. If it works
+and the page does not, the fault is in JavaScript; if neither works, the fault
+is in the firmware or the wire, and no amount of reading the page will find it.
+That split is otherwise expensive to make.
+
+**It has already paid for itself.** On 2026-08-27 the first CLI run answered on
+the first attempt, which settled three things at once that were going to be
+argued about separately: that the transport works, that the two paths really do
+reach one implementation (both reported `sha=000f654e8c031181` for the same
+board, minutes apart), and -- because the application receives 127-byte
+back-to-back mcumgr frames on this exact UART without losing any -- that CDK-16
+cannot be blamed on the wire.
+
+The upload half followed, and closes the row: `make ota-window` to open the
+update window over SWD (so no button press was needed), then `make ota-smp
+OTA_SERIAL=auto`. 7,667 B of delta in 384 B chunks, staged, reset, and the board
+back on `78224934aa586a84` about half a minute later -- the hash the delta was
+built to produce, not merely a hash that changed.
+
+That run also proved the thing a synthetic test cannot: that the window gate,
+the signature check, the receiver, MCUboot's applier and the deployed-record
+bookkeeping all still work when the bytes arrive over a cable instead of a
+radio. None of that code knew which it was.
+
+Three more measurements from the same session, all worth keeping:
+
+- A 600 B payload, which overflows `CONFIG_MCUMGR_TRANSPORT_UART_MTU=512`, is
+  answered with **complete silence**: no error, no reply, nothing. That is why
+  the chunk sizes in `web/flasher/serial.js` sit under their budget rather than
+  at it, and it is now a measured fact rather than an expectation. The board
+  recovers on its own; the next request is answered normally.
+- Every board built before 2026-08-27 reports `v0.0.0.0`, because
+  `CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION` was never set and Zephyr's default is
+  `0.0.0+0`. It is taken from the repository's `VERSION` file now, so the image
+  list finally carries something a person can read: `v0.3.0.0`. The SHA-256 was
+  and remains the authoritative identity -- this is about the field an operator
+  actually looks at.
+- `EVENTS_RXDRDY=1 and ERRORSRC=0x1` is recorded in `scripts/cdk-dfu.sh` under
+  "verified WORKING". On nRF52 `ERRORSRC` bit 0 is **OVERRUN**, so that line is
+  evidence that bytes arrived AND were dropped -- not evidence that RX is
+  healthy. It is filed under the wrong heading. Whether it is CDK-16's cause is
+  now less likely given the result above, but it should not keep sitting in the
+  "ruled out" column.
+
+CDK-35 and CDK-36 are the ones that matter, and CDK-35 should be run before
+anything else on this list is attempted, because of what it can settle. It has a
+command-line form too -- `ultrawidelock_smp.py --serial PORT --chunk 128` against
+a board held in recovery -- which is the same second opinion without the browser
+in the way. CDK-16
+has been open since 2026-08-02 with a symptom nobody has explained: MCUboot sits
+in its recovery window on a UART that is measurably working, and does not
+answer. Everything ruled out so far was ruled out from the board's side. The
+browser is a SECOND, INDEPENDENT HOST IMPLEMENTATION of the same protocol on the
+same wire -- so if it gets an answer, the fault was never the board, and if it
+does not, the fault is not the Go client. That is a real bisection of a stuck
+bug, available for the cost of one page load, and it is the reason CDK-35 is
+worth running even though CDK-16 is expected to fail.
+
+CDK-37 through CDK-39 are the Bluetooth path on macOS, and CDK-37 is the only
+row here that was found by measurement rather than designed. The board published
+the Matter commissioning service unconditionally while advertising as a
+credential reader -- the GATT table did not follow the advert -- and macOS
+reserves those UUIDs, so CoreBluetooth refused descriptor discovery on C1 and
+Chromium's backend never completed discovery at all (crbug.com/609844). Every
+Web Bluetooth client on that host lost the board, firmware updates included, and
+because a refused discovery poisons the host cache it looked intermittent rather
+than absolute. CDK-38 is the negative control and is the only one of the three still open.
+CDK-37 was measured with bleak, which shares CoreBluetooth with Chrome but is
+not Chrome; CDK-39 then closed it properly, ending with a board that had taken a
+firmware update from a web page over the air with no cable attached. Until
+CDK-38 runs, the gating is the LIKELIEST cause of that rather than the proven
+one: something else changed that day too, and a negative control is how you tell.
+
+One thing CDK-39 taught that no test asked for: the image embeds a build
+timestamp, so `make fota-done` after a rebuild reports the board is running
+something else -- and it is right. See the note on IMAGE_VERSION in mk/cdk.mk.
+
+CDK-36 is the claim the page now makes to first-time owners in as many words:
+that the J-Link is needed once and then never again. Until it has been run, that
+sentence is a design intention rather than a measured fact.
+
+## What 2026-08-27 settled about CDK-16
+
+It had been open since 2026-08-02 as "MCUboot sits in its window on a working
+UART and does not answer". That description was wrong in a way that kept the
+investigation pointed at the wrong half.
+
+`make ota-recovery` was added to separate the two halves, because every previous
+test exercised both at once. It writes `BOOT_MODE_TYPE_BOOTLOADER` (0x01) to
+GPREGRET2 at 0x40000520 over SWD and resets -- exactly what the application's
+button handler does -- so the ENTRY is performed by the probe and the SERIAL is
+then tested on its own.
+
+MCUboot answered on the first attempt, and took a whole 406,524 B image. The
+board booted it. So:
+
+| | verdict |
+|---|---|
+| the UART, pins, VCOM, 115200, legacy nRF driver | fine -- the application had already shown this |
+| MCUboot's serial adapter | **fine** -- it answers and accepts a full image |
+| the mcumgr protocol over this wire | fine, three implementations agree |
+| the 5 s SW2 hold setting the boot mode | **untested, and now the prime suspect** |
+| the Go `mcumgr` binary | **untested against a known-good bootloader, and the other suspect** |
+
+The next measurement is a one-liner and needs a person: hold SW2 for five
+seconds, then run `make ota-smp-list` (Bluetooth). If a board is found, the
+application is still running and the hold never entered recovery -- which would
+make CDK-16 a button-and-retention bug that has been mistaken for a serial one
+for three weeks. If no board is found, the hold worked and the Go client is what
+failed.
+
+Note also that MCUboot's ceiling is HIGHER than the application's, not lower:
+`CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE` is 1024. The 128-byte chunk this project
+used for recovery was a guess dressed as caution, and it cost about nine minutes
+on a 400 KB image -- measured at ~500 B/s against ~1.6 KB/s for 384.
 
 ## nRF5340 DK
 
@@ -180,6 +330,11 @@ No NFC tap path exists on this target, so there is no equivalent of HV-5.
 | EV-16 | Re-approach after EV-15 | No `relock.sent` between `ph.apc` and the grant, i.e. the Wallet does not flash locked then unlocked |
 | EV-17 | Score any capture that reached UWB-active. The bench scoring script this used is not in this repository | The `order` check passes. `ph.m1` before `ph.m2` and `ph.m3` before `ph.m4rx`: setup stamps follow message identity, not arrival order |
 | EV-18 | Read the `ranging setup:` line of that report | Reads `rrx SUPPL id=0, rrx IRS, rtx M1, rrx M2, rtx M3, rrx M4`. A bare `rrx id=` with no protocol means pre-fix firmware |
+| EV-19 | Double-click the board's button while the application runs | The update window opens, and the long press still opens a commissioning window rather than this | **open, never run** |
+| EV-20 | With the window open, install from https://ultrawidelock.com/flash/index.html in Chrome | The whole ~2 MB image goes over Bluetooth, the board reboots into it, and it commissions and unlocks as before | **open, never run.** The entire ESP32 update path is new firmware that has compiled and never executed |
+| EV-21 | Cut power partway through EV-20, then restore it | The board boots the image it was already running; otadata was never pointed at a half-written slot | **open, never run** |
+| EV-22 | Install an image signed with a different key | The board refuses it with the signature error and writes nothing | **open, never run** |
+| EV-23 | Install an image that links but panics before the end of `app_main` | The bootloader rolls back to the previous slot at the next boot, and the lock still answers | **open, never run.** This is the row that decides whether a bad update is recoverable without a cable |
 
 EV-7 is the row that matters most and the one most easily faked: the bolt moving is not
 a pass. The Wallet animation is the pass criterion, because that is what proves the
@@ -198,6 +353,15 @@ on it, but every setup timing read from those captures was wrong. Measured on th
 fixed firmware, the setup exchange is IRS +2.0 ms M1, +27.8 ms M2, +2.4 ms M3,
 +27.7 ms M4; the old labelling reported that as a 29.7 ms IRS-to-M4 span, which was
 really IRS to M2.
+
+EV-19 through EV-23 are the over-the-air update path, and none of it has ever
+executed: unlike the DWM3001CDK, which already spoke mcumgr, this is entirely
+new firmware. EV-23 is the row that decides whether the feature is safe to have
+at all. An update that links and then panics is not hypothetical, and without a
+working rollback the recovery for it is a cable -- which is the one thing the
+whole path exists to avoid. EV-21 and EV-22 are the other two ways it can go
+wrong quietly: a half-written slot that the bootloader is nonetheless pointed
+at, and an image that was never signed by the release key.
 
 ## Recording results
 

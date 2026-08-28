@@ -117,6 +117,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # FAIL IN THIRTY SECONDS, NOT IN TWENTY MINUTES.
+      #
+      # The real check is at the step that writes the key, and it stays there
+      # because that is the step that depends on it. But it sits after the
+      # workspace bootstrap, so an unset secret burns a full toolchain fetch
+      # before saying so -- and it says so on a TAG BUILD, where the tag already
+      # exists and re-running means deleting a published tag or cutting a
+      # throwaway one. The cost of finding out late is disproportionate to the
+      # cost of asking now.
+      #
+      # Presence only. Nothing here reads, prints, or writes the key.
+      - name: the signing key secret is set
+        env:
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment (not a repository secret), then re-run this workflow from the same tag."
+            exit 1
+          fi
+          echo "signing key secret is present"
       - name: make sure make exists
         # Belt and braces with the bash default above, because the NCS container
         # has shipped without a make of its own before and this job is too
@@ -179,6 +199,108 @@ jobs:
           make release \
             RELEASE_KEY="$RUNNER_TEMP/release.pem" \
             CDK_RELEASE_VER="$TAG"
+      # The over-the-air fan: one signed delta from every release still in the
+      # field to this one, plus the index the browser FOTA page reads.
+      #
+      # WHY IT NEEDS THE OLD RELEASES. The DWM3001CDK has a single MCUboot slot,
+      # so an update is a delta against the exact bytes already on the board --
+      # which means building one requires the image that board is running. The
+      # only copy of that is the zephyr.signed.hex published with its own
+      # release, which is why mk/cdk.mk ships that file in the bundle.
+      #
+      # FIVE RELEASES, not all of them. The fan is one file per prior release
+      # and each has to be built, signed and downloaded by every visitor's
+      # index; unbounded, a project with forty releases spends most of this job
+      # building deltas from images nobody runs. Someone further back than five
+      # releases uses the J-Link, and the page tells them so by name.
+      #
+      # Never fatal on a MISSING base. A first release has no prior releases,
+      # and an old bundle that predates zephyr.signed.hex simply has no usable
+      # base -- both are correct states that must not fail a release. Boards on
+      # those versions have no over-the-air path, which is the single-slot
+      # design, not a bug.
+      #
+      # FATAL ON A BASE THAT SHOULD BE THERE AND IS NOT, which is a different
+      # thing wearing the same output. Every way this step can come up empty
+      # used to print the same reassuring notice, including the ways that are
+      # wrong: a `gh release list` that failed, or a bundle that downloaded and
+      # would not unzip. An empty fan is invisible -- the release publishes, the
+      # page loads, boards in the field are simply told no update applies, and
+      # the next release does not fix it because a delta needs the image the
+      # board is running and this release's own bundle is the only new one. So
+      # the transport failures now stop the run, before a tag has a release,
+      # and the legitimately-empty cases keep their notice.
+      - name: over-the-air fan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bases=""
+          priors=0
+          mkdir -p "$RUNNER_TEMP/prev"
+
+          # LISTED INTO A VARIABLE FIRST, not straight into the `for`. A command
+          # substitution that fails inside a for-list does not fail the shell --
+          # `set -e` never sees its status -- so an API hiccup here read as a
+          # repository with no releases and the whole fan silently vanished.
+          # Assigned on its own line, its exit status is the statement's.
+          tags="$(gh release list --repo "$REPO" --limit 5 \
+                    --json tagName --jq '.[].tagName')"
+
+          for tag in $tags; do
+            # `[ ... ] && continue` would be a false statement under `set -e`
+            # on every tag that is not this one, i.e. all of them.
+            if [ "$tag" = "$TAG" ]; then continue; fi
+            priors=$((priors + 1))
+            d="$RUNNER_TEMP/prev/$tag"
+            mkdir -p "$d"
+            if ! gh release download "$tag" --repo "$REPO" \
+                   --pattern 'ultrawidelock-dwm3001cdk.zip' --dir "$d" 2>/dev/null; then
+              echo "::notice::$tag has no DWM3001CDK bundle, skipping"
+              continue
+            fi
+            # A bundle that downloaded and will not unzip is a corrupt asset or
+            # a truncated download, never a normal state -- and swallowing it
+            # would drop exactly one board version out of the fan with nothing
+            # to show for it.
+            if ! unzip -q -o "$d/ultrawidelock-dwm3001cdk.zip" -d "$d"; then
+              echo "::error::$tag's DWM3001CDK bundle downloaded but will not unzip. Boards on $tag would silently get no update from this release. Re-run this job; if it repeats, the published asset is corrupt."
+              exit 1
+            fi
+            hex="$(find "$d" -name zephyr.signed.hex -print -quit)"
+            if [ -z "$hex" ]; then
+              echo "::notice::$tag predates the shipped zephyr.signed.hex -- no delta from it"
+              continue
+            fi
+            bases="$bases $hex"
+          done
+
+          # NO EARLY EXIT when there is nothing to build a delta FROM. The
+          # first release has no prior image by definition, and it used to stop
+          # here -- which meant the release shipped no over-the-air artifact at
+          # all. It still has a whole image, MCUboot's serial recovery still
+          # installs it, and ota-index.py publishes a recovery-only index for
+          # exactly this case. `make ota-fan` handles an empty PREV_HEXES.
+          #
+          # But "there are no prior releases" and "there are prior releases and
+          # none of them yielded a base" are different facts that used to print
+          # the same line. The second is usually legitimate -- every prior
+          # bundle predating the shipped hex -- and stops being legitimate the
+          # moment one of them does ship it, so it says what it saw.
+          if [ -z "$bases" ] && [ "$priors" -eq 0 ]; then
+            echo "::notice::no prior release to build a delta from; publishing the whole image only"
+          elif [ -z "$bases" ]; then
+            echo "::warning::$priors prior release(s) exist and none yielded a base image, so this release ships NO deltas and every board in the field will be told no update applies. Correct only if every one of them predates the shipped zephyr.signed.hex; check the notices above."
+          fi
+
+          make ota-fan \
+            RELEASE_KEY="$RUNNER_TEMP/release.pem" \
+            CDK_RELEASE_VER="$TAG" \
+            FOTA_VERSION="${TAG#v}" \
+            PREV_HEXES="$bases"
+
       # The "no private key in the bundle" check is not a step here: it runs
       # inside scripts/release-bundle.sh, so all three bundles get it and a
       # local `make release` gets it too, rather than only a tag build.
@@ -187,6 +309,20 @@ jobs:
           name: ultrawidelock-dwm3001cdk
           path: build/release/ultrawidelock-dwm3001cdk
           if-no-files-found: error
+
+      # Separate from the bundle above: this is what the SITE consumes, not what
+      # a person downloads to flash a board. if-no-files-found is `ignore`
+      # because a first release legitimately produces nothing here.
+      #
+      # The deltas only. ota-index.json is NOT taken from here even though
+      # `make ota-fan` writes one, because the index has to name every target
+      # and the ESP32 images are built in a different job on a different runner.
+      # The publish job assembles both and generates the real index.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-ota-dwm3001cdk
+          path: build/release/ota/dwm3001cdk
+          if-no-files-found: ignore
 
   # nRF5340 DK: cold-bootstrap the pinned west workspace, build the sysbuild
   # image, and bundle both cores' hex files with the flash script + guide.
@@ -253,6 +389,19 @@ jobs:
   esp32-matter-lock:
     needs: guard
     runs-on: ubuntu-latest
+    # SIGNS WITH THE PRODUCTION KEY, so it has to ask for the environment that
+    # holds it. This job reads secrets.MCUBOOT_RELEASE_KEY in `sign the
+    # over-the-air images` and did not declare `environment: release`, and an
+    # environment secret is not visible to a job that has not joined the
+    # environment -- which the dwm3001cdk job's own error message insists is
+    # where this secret must live. The lookup would have resolved to the empty
+    # string, that step's own guard would have fired, and every release would
+    # have failed at ESP32 signing, taking the publish job with it.
+    #
+    # It is also the same argument that put the DWM3001CDK job here: the key
+    # decides what every board flashed from this release will ever accept, with
+    # no revocation path, so a human approves the run before it is used.
+    environment: release
     timeout-minutes: 240
     container:
       image: espressif/idf@sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5fa3363db892b # v5.5.4
@@ -262,6 +411,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # FAIL IN THIRTY SECONDS, NOT IN TWENTY MINUTES.
+      #
+      # The real check is at the step that writes the key, and it stays there
+      # because that is the step that depends on it. But it sits after the
+      # workspace bootstrap, so an unset secret burns a full toolchain fetch
+      # before saying so -- and it says so on a TAG BUILD, where the tag already
+      # exists and re-running means deleting a published tag or cutting a
+      # throwaway one. The cost of finding out late is disproportionate to the
+      # cost of asking now.
+      #
+      # Presence only. Nothing here reads, prints, or writes the key.
+      - name: the signing key secret is set
+        env:
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment (not a repository secret), then re-run this workflow from the same tag."
+            exit 1
+          fi
+          echo "signing key secret is present"
       - name: read the bench-validated toolchain pins
         # Read from scripts/esp-bootstrap.sh rather than restated here. The
         # revision used to be a literal in this file, which meant a bench
@@ -351,6 +520,32 @@ jobs:
           path: build/release/ultrawidelock-esp32-matter-lock
           if-no-files-found: error
 
+      # The signed app images the browser's over-the-air panel sends.
+      #
+      # No fan and no prior releases needed, unlike the CDK: two whole OTA slots
+      # mean the update IS the image and applies to a board in any state. What it
+      # signs is door_lock.bin -- the application alone -- and not the merged
+      # image `esp-release` just built, which starts with the bootloader at 0x0
+      # and is what a cable writes.
+      - name: sign the over-the-air images
+        env:
+          ESP_RELEASE_VER: ${{ github.ref_name }}
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment, then re-run this workflow from the same tag."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/release.pem"
+          make esp-ota RELEASE_KEY="$RUNNER_TEMP/release.pem"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-ota-esp32
+          path: build/release/ota/esp32
+          if-no-files-found: ignore
+
   # Zip each bundle and publish the release. The tag check is redundant now that
   # `guard` gates every build job, and it stays anyway: this is the only job here
   # holding contents:write, so it should not depend on another job for the one
@@ -362,6 +557,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write # create the release and upload its assets
+      # Starts the pages workflow in `rebuild the site` below, and nothing else.
+      # This is the narrowest scope that can dispatch a workflow; it cannot read
+      # a secret, and the only workflow it is used against is named literally.
+      actions: write
       # Both are required by attest-build-provenance below and by nothing else. id-token mints
       # the short-lived Sigstore identity that binds the signature to this workflow; attestations
       # writes the resulting statement back to the repository. Without them the attest step fails
@@ -408,6 +607,41 @@ jobs:
           cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32s3.bin out/
           cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32c5.bin out/
           cp dist/ultrawidelock-esp32-matter-lock/ultrawidelock-matter-lock-esp32c6.bin out/
+          # The over-the-air set, as one asset: the CDK's delta fan, the ESP32's
+          # signed images, and the index that names both. This is what the Pages
+          # workflow downloads to publish the FOTA panel; it is not something a
+          # person unzips and flashes, though the wrapped .bin inside each CDK
+          # delta is exactly what nRF Device Manager's Images tab takes.
+          #
+          # THE INDEX IS BUILT HERE, not in either build job, because it is the
+          # one file that has to name every target and the two chips are built on
+          # different runners. Assembling first and indexing second is also what
+          # makes the index's own guarantees -- one update per board hash, a fan
+          # that converges -- checks over the whole published set rather than
+          # over half of it.
+          #
+          # Either half may be absent. A first release has nothing to update
+          # FROM, so the CDK fan is empty; neither case may fail the publish.
+          # if/fi rather than `[ -d x ] && cmd`: this step runs under `set -e`,
+          # where a false test is a failed statement and would end the publish.
+          mkdir -p dist/ota
+          index_args=""
+          if [ -d dist/ultrawidelock-ota-dwm3001cdk ]; then
+            mv dist/ultrawidelock-ota-dwm3001cdk dist/ota/dwm3001cdk
+            index_args="$index_args --cdk-dir dist/ota/dwm3001cdk"
+          fi
+          if [ -d dist/ultrawidelock-ota-esp32 ]; then
+            mv dist/ultrawidelock-ota-esp32 dist/ota/esp32
+            index_args="$index_args --esp-dir dist/ota/esp32"
+          fi
+          if [ -n "$index_args" ]; then
+            # shellcheck disable=SC2086
+            python3 scripts/ota-index.py --out dist/ota/ota-index.json \
+              --version "${{ github.ref_name }}" $index_args
+            (cd dist && zip -qr ../out/ultrawidelock-ota.zip ota)
+          else
+            echo "::notice::no over-the-air updates in this release"
+          fi
           (cd out && sha256sum ./*.zip ./*.bin > SHA256SUMS.txt)
           ls -l out
       # Provenance, before the release exists. SHA256SUMS.txt on its own is a self-referential
@@ -452,3 +686,39 @@ jobs:
           gh release create "$TAG" --repo "$REPO" --verify-tag \
             --title "ultrawidelock $TAG" --notes-file "$notes" \
             out/*.zip out/*.bin out/SHA256SUMS.txt
+
+      # THE SITE SERVES THE FIRMWARE, so a release that is not followed by a site
+      # build is only half published. web/build.py stages ota-index.json and the
+      # three merged ESP32 images out of "the latest release", which is the one
+      # the step above just created -- until this runs, the flasher page keeps
+      # offering the PREVIOUS release's updates and reports nothing wrong. A
+      # board updated in that window installs a version that is no longer
+      # current, and the only symptom is a version number nobody is looking at.
+      #
+      # DISPATCHED AGAINST main, NOT TRIGGERED BY THE RELEASE EVENT. A release
+      # event's ref is the tag, and the `github-pages` environment that workflow
+      # must name is restricted to deployments from main, so an event-triggered
+      # run would build the whole site and then be refused at the deploy. The
+      # reasoning is written out at the top of pages.yml.
+      #
+      # Ordered after `create the release` because the site reads that release's
+      # assets. Dispatched with the automatic token, which is documented to
+      # always create a run for workflow_dispatch -- the recursion guard that
+      # blocks push-triggered chains does not apply to it.
+      #
+      # FAILS THE JOB IF THE DISPATCH FAILS, and says what is and is not true so
+      # a red run here is not misread as a failed release. Silence was the whole
+      # bug; a warning nobody reads would be the same bug wearing a colour.
+      - name: rebuild the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh workflow run pages.yml --repo "$REPO" --ref main; then
+            echo "site rebuild dispatched against main; it will pick up $TAG's assets"
+          else
+            echo "::error::$TAG IS PUBLISHED AND ITS ASSETS ARE ATTACHED -- the release itself succeeded. What failed is the site rebuild that was meant to follow it, so the flasher page is still serving the PREVIOUS release's over-the-air updates and will not say so. Start it by hand: Actions -> pages -> Run workflow, with main selected."
+            exit 1
+          fi

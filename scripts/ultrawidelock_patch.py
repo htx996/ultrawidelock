@@ -65,6 +65,11 @@ ULTRAWIDELOCK_DFU_PATCH_OFFSET = 2 * ULTRAWIDELOCK_DFU_PAGE_SIZE
 ULTRAWIDELOCK_DFU_HDR_LEN = 32
 ULTRAWIDELOCK_DFU_HDR_CRC_LEN = 28
 ULTRAWIDELOCK_DFU_SIG_LEN = 64
+# The payload is a whole application image, not a detools delta. Occupies the
+# `flags` word that was already reserved, already covered by the header CRC and
+# already inside the 32 signed bytes -- so it is not an ABI change and cannot be
+# flipped by anyone without the key.
+ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE = 0x0001
 
 # magic, abi_version, flags, patch_len, to_len, patch_crc32, from_crc32, from_len
 HDR_FMT = "<IHHIIIII"
@@ -248,6 +253,32 @@ def build(args):
     from_data = load_image(args.from_image)
     to_data = load_image(args.to_image)
 
+    # A patch from an image to ITSELF, which detools will happily produce: the
+    # in-place format carries segment and step structure regardless, so the
+    # result is several KB of overhead that changes nothing. Signed and named
+    # like any other update, it then travels all the way to a board -- which
+    # spends a flash erase, a write and a reboot arriving exactly where it
+    # started, and reports success.
+    #
+    # The usual cause is an unchanged build: `make fota` after editing
+    # something outside the firmware sources rebuilds nothing, and ninja
+    # re-emits a byte-identical image. MEASURED 2026-08-27: 0 bytes differing
+    # between the deployed record and a fresh build, and a 7,391 B patch built
+    # from it anyway.
+    #
+    # The SHA-256 TLV is the right comparison rather than the raw bytes,
+    # because it is what the board reports and what the filename carries -- two
+    # builds of identical code can differ in their randomised signature while
+    # remaining the same image, and that is still nothing to ship.
+    if image_sha(args.from_image) == image_sha(args.to_image):
+        die(
+            f"--from and --to are the same image ({image_sha(args.from_image)[:8].hex()}).\n"
+            f"  A patch from an image to itself is several KB that changes nothing, and\n"
+            f"  a board would erase, write and reboot to arrive where it started.\n"
+            f"  Nothing in the firmware changed -- an edit outside the firmware sources\n"
+            f"  rebuilds nothing. Change something under apps/ or modules/ and rebuild."
+        )
+
     if args.memory_size:
         memory_size = args.memory_size
         staging_size = args.staging_size
@@ -313,6 +344,122 @@ def build(args):
     print(f"  patch     {len(patch):>9,} B  {ratio:.2f}% of the image")
     print(f"  capacity  {patch_capacity:>9,} B  {100.0*len(patch)/patch_capacity:.1f}% used")
     print(f"  wrote     {args.out}")
+
+
+def image(args):
+    """Sign a whole application image into the same .wdfu container.
+
+    THE ESP32 PATH. That part has two full OTA slots and no MCUboot, so it has
+    nowhere to run a delta and no reason to want one: what it needs is the image
+    itself, written into the slot it is not booted from. Rather than invent a
+    second container for it, this reuses the one the CDK already has -- same
+    magic, same ABI, same 32 signed header bytes, same P-256 signature, same
+    CRC-32 over the payload -- with ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE set in the
+    reserved `flags` word to say which kind of payload is inside.
+
+    One signer, one receiver, one wire protocol, two chips.
+
+    from_crc32 and from_len are zero and mean it: a whole image applies to any
+    starting state, which is exactly why the ESP32 needs no fan of updates and
+    no record of what each board is running.
+    """
+    data = Path(args.image).read_bytes()
+
+    # Checked before anything else, as `build` does and for the same reason:
+    # discovering that nothing can sign it after the work is wasted work.
+    sign(args.key, b"")
+
+    # The ESP-IDF application image magic. Not a deep validation -- the board
+    # runs esp_ota_set_boot_partition(), which walks the segment table and the
+    # checksum -- but it catches the mistake anyone actually makes, which is
+    # passing the merged 0x0 image (bootloader first) instead of the app.
+    if not data or data[0] != 0xE9:
+        die(
+            f"{args.image} does not start with the ESP-IDF image magic 0xE9.\n"
+            f"  The OTA slot takes the APP image, not the merged one that starts\n"
+            f"  with the bootloader at 0x0. Use build/esp32-matter-lock-<chip>/door_lock.bin."
+        )
+
+    body = struct.pack(
+        HDR_FMT,
+        ULTRAWIDELOCK_DFU_MAGIC,
+        ULTRAWIDELOCK_DFU_ABI_VERSION,
+        ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE,
+        len(data),
+        len(data),
+        zlib.crc32(data),
+        0,
+        0,
+    )
+    header = body + struct.pack("<I", zlib.crc32(body))
+    assert len(header) == ULTRAWIDELOCK_DFU_HDR_LEN
+    assert len(body) == ULTRAWIDELOCK_DFU_HDR_CRC_LEN
+
+    signature = sign(args.key, header)
+    Path(args.out).write_bytes(header + signature + data)
+
+    print(f"  image     {len(data):>9,} B  crc {zlib.crc32(data):#010x}")
+    print(f"  container {len(header) + len(signature):>9,} B  header + signature")
+    print(f"  wrote     {args.out}")
+    if args.slot_size and len(data) > args.slot_size:
+        die(f"  but it is larger than the {args.slot_size:,} B OTA slot it has to fit")
+
+
+def recovery(args):
+    """Emit the whole signed image, plus a sidecar, for MCUboot serial recovery.
+
+    WHAT THIS IS FOR. Everything else this script produces is a delta, because
+    the CDK has one MCUboot slot and a delta is the only thing that fits beside
+    a running image. Serial recovery is the exception: MCUboot is not running
+    the application, so the whole slot is free and a whole image can go into it.
+    That is the only path on this board that does not need a starting image to
+    subtract from -- which makes it the only one that can rescue a board whose
+    application no longer boots, and the only one that needs no probe to do it.
+
+    THE INPUT IS THE .hex, AND IT HAS TO BE. The build signs the image twice, in
+    separate imgtool runs, and ECDSA signatures are randomised -- so
+    zephyr.signed.bin and zephyr.signed.hex hold the same code under different
+    signatures and differ in their last 64 bytes. Only the .hex reaches
+    merged.hex, so only the .hex is what an SWD-flashed board is running. Both
+    would verify and both would boot, but publishing the other one would mean
+    the bytes on a recovered board differ from the bytes on a flashed board for
+    no reason anybody could later explain. load_image() refuses the .bin outright
+    when the .hex is beside it, which is what makes this hard to get wrong.
+
+    The SHA-256 in the sidecar is the TLV, not the hash of the file: it is the
+    value the board reports in its image list, and therefore the one the page
+    compares against after the reset to decide whether recovery worked.
+    """
+    blob = load_image(args.image)
+    sha = image_sha(args.image)
+
+    major, minor, rev = (int(x) for x in args.version.split("."))
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Named for the image it IS, where a delta is named for the two it sits
+    # between. Same reasoning either way: a stale file under a stable name is
+    # the failure that costs a flash dump to diagnose.
+    bin_name = f"ultrawidelock-cdk-{sha[:8].hex()}.bin"
+    bin_path = out_dir / bin_name
+    bin_path.write_bytes(blob)
+
+    sidecar = {
+        "file": bin_name,
+        "size": len(blob),
+        "sha256": sha.hex(),
+        "version": f"{major}.{minor}.{rev}",
+        "board": "decawave_dwm3001cdk",
+        "kind": "recovery",
+    }
+    side_path = out_dir / f"{bin_path.stem}.recovery.json"
+    side_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n")
+
+    print(f"  image     {len(blob):>9,} B  v{major}.{minor}.{rev}")
+    print(f"  sha256    {sha.hex()}")
+    print(f"  wrote     {bin_path}")
+    print(f"  wrote     {side_path}")
 
 
 def wrap(args):
@@ -432,7 +579,11 @@ def info(args):
 
     print(f"  magic       {magic:#010x} {'ok' if magic == ULTRAWIDELOCK_DFU_MAGIC else 'BAD'}")
     print(f"  abi         {abi} {'ok' if abi == ULTRAWIDELOCK_DFU_ABI_VERSION else 'BAD'}")
-    print(f"  flags       {flags:#06x}")
+    # Named, not just printed. This word decides which port can install the
+    # file at all, and "0x0001" tells a reader nothing about that.
+    kind = ("whole image (ESP32)" if flags & ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE
+            else "delta (DWM3001CDK)")
+    print(f"  flags       {flags:#06x}  {kind}")
     print(f"  from        {from_len:,} B  crc {from_crc:#010x}")
     print(f"  to          {to_len:,} B")
     print(f"  patch       {patch_len:,} B  crc {patch_crc:#010x}")
@@ -497,6 +648,15 @@ def main():
                         "multiple of the segment size, and 2 segments is its floor")
     b.set_defaults(func=build)
 
+    m = sub.add_parser("image", help="sign a whole application image (the ESP32 path)")
+    m.add_argument("image", help="the ESP-IDF app image, e.g. door_lock.bin")
+    m.add_argument("--out", required=True)
+    m.add_argument("--key", default="apps/dwm3001cdk-lock/keys/mcuboot_ec_p256.pem",
+                   help="the signing key; the board carries its public half")
+    m.add_argument("--slot-size", type=lambda v: int(v, 0), default=0,
+                   help="the OTA slot this has to fit in; checked when given")
+    m.set_defaults(func=image)
+
     i = sub.add_parser("info", help="describe a .wdfu and check its own CRCs")
     i.add_argument("patch")
     i.set_defaults(func=info)
@@ -505,6 +665,13 @@ def main():
     s.add_argument("patch")
     s.add_argument("--out", required=True)
     s.set_defaults(func=stage)
+
+    r = sub.add_parser("recovery",
+                       help="publish the whole signed image, for MCUboot serial recovery")
+    r.add_argument("image", help="the SIGNED .hex -- see the docstring, the .bin is not it")
+    r.add_argument("--out-dir", required=True, help="where to write the .bin and its sidecar")
+    r.add_argument("--version", default="1.0.0", help="major.minor.revision")
+    r.set_defaults(func=recovery)
 
     w = sub.add_parser("wrap", help="dress a .wdfu as an MCUboot image, for phone tooling")
     w.add_argument("patch")

@@ -78,3 +78,35 @@ update window closes; it is not a signature or a corruption failure.
 longer waits for mcumgr on every boot. Its operator step is now a **>= 5 s SW2
 hold while the application is running**, which requests MCUboot serial recovery
 and warm-reboots into it. Its fourth argument, the chip name, is vestigial.
+
+`ultrawidelock_smp.py` takes `--serial PORT` and then speaks the same mcumgr
+conversation down `uart0` instead of over the radio. Everything above the
+transport is one code path: the image list, the signature check, the update
+window and the reset do not know which one they are on.
+
+```sh
+make ota-smp-list OTA_SERIAL=auto        # what is the board running?
+make ota-smp      OTA_SERIAL=auto        # push the delta down the cable
+```
+
+`auto` picks the first `/dev/cu.usbmodem*`; give an explicit port when more than
+one probe is attached. On the DWM3001CDK that port is the **J-Link OB's VCOM**,
+not the second USB socket -- the probe owns `uart0` and the application talks
+down it, while the second socket goes to the nRF52833's own USB and is inert
+outside provisioning mode.
+
+Two different things answer on that one port, and the client cannot tell them
+apart by asking:
+
+| | answers when | takes | chunk |
+|---|---|---|---|
+| the application | it is running, and `SMP=1` | a signed delta | `--chunk 384` (default) |
+| MCUboot | after a >= 5 s SW2 hold, or when no valid image exists | a **whole** signed image | `--chunk 128` |
+
+MCUboot's is the only path on this board that needs no starting image, which is
+what makes it the one that can rescue a board whose application does not boot.
+It is also [CDK-16](../docs/hardware-validation.md), which is open: it completed
+one upload in August 2026 and has not reproduced. `ultrawidelock_smp.py
+--serial` is a second, independent host implementation of that protocol, so
+trying it is worth doing for what it can rule out, not only for what it can
+install.

@@ -17,7 +17,8 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 | `PRISTINE=1` | force a from-scratch build. Supported option changes reconfigure in place; use this only when the cache itself must be replaced |
 | `LTO=0` | opt out of link-time optimisation, which is on by default and worth 41,084 B. Use it when a stack trace has to name every frame |
 | `RELEASE=1` | trade the 8 KB RTT ring for 7,168 B of RAM, and set errors-only logging to save 20,568 B of flash. Codegen is identical either way |
-| `SMP=1` | add mcumgr over Bluetooth, which is what nRF Device Manager speaks. `make build SMP=1` is a valid debug configuration and leaves 12,764 B free. `RELEASE=1` remains the shipping configuration |
+| `SMP=1` | add mcumgr over Bluetooth **and** over `uart0`, which is what nRF Device Manager and the browser both speak. `make build SMP=1` is a valid debug configuration and leaves 12,764 B free. `RELEASE=1` remains the shipping configuration |
+| `IMAGE_VERSION=x.y.z` | the version the BOARD reports in its image list. Defaults to the repository's `VERSION` file. Left unset entirely, Zephyr's default is `0.0.0+0` and every board reports `v0.0.0.0`, which identifies nothing — the SHA-256 stays authoritative either way, but it is the version an operator actually reads |
 | `DFU_LOG=1` | make the bootloader narrate what it does with a staged patch. Read it with MCUboot's own ELF, not the application's |
 | `ANCHOR=1` | layer `overlay-anchor.conf`: the second-anchor geometry, the door-swing angle and the LIS2DH12 impact latch, plus the two DoorLockAlarm events those feed. Default off, and the default image is byte-identical without it. Every threshold it turns on is a placeholder; see below |
 | `CDK_BUILD=<dir>` | which build directory `flash`, `flash-erase` and `monitor` mean. Default `build/cdk-matter` |
@@ -26,11 +27,32 @@ Set on the command line, e.g. `make build RELEASE=1 SMP=1`:
 | `CDK_DEPLOYED=<hex>` | the record of what the board is running, which every delta is computed against |
 | `OTA_NAME=<name>` | the advertised name `make dfu` and `make ota-smp` connect to |
 | `FOTA_VERSION=<x.y.z>` | the version stamped into the file `make fota` leaves for a phone |
+| `PREV_HEXES='a.hex …'` | `make ota-fan` builds one delta from each of these to the release build. They are the `zephyr.signed.hex` shipped in each earlier release bundle — a board running something not in that list has no over-the-air path at all |
+| `CDK_OTA_DIR=<dir>` | where `make ota-fan` leaves the fan and `ota-index.json`. Defaults under `build/release/ota`, which is where `web/build.py` looks |
+| `ESP_OTA_DIR=<dir>` | the same, for `make esp-ota`'s signed per-chip images |
 
 `LTO=0` no longer fits the flash map: the image measures 446,380 B without it
 against a 433,664 B `app` partition, and the build fails rather than ships. See
 [`../apps/dwm3001cdk-lock/pm_static.yml`](../apps/dwm3001cdk-lock/pm_static.yml), which carries the
 derivation of every number in that map.
+
+`IMAGE_VERSION` changes the image hash, and that is correct rather than a side
+effect: the version sits in the MCUboot header, the SHA-256 TLV covers the
+header, so two builds differing only in their version really are different
+images and a delta between them is a real delta. The practical consequence is
+that the first build after setting it produces a new hash, so the deployed
+record has to be re-recorded — which `make flash` and the `ota-*` targets do on
+their own.
+
+Serial recovery is a separate thing on the same wire, and it belongs to MCUboot
+rather than to the application: see
+[`../apps/dwm3001cdk-lock/sysbuild/mcuboot.conf`](../apps/dwm3001cdk-lock/sysbuild/mcuboot.conf).
+It accepts a **whole** image where everything else on this board takes a delta,
+because it is not running the application and the slot is therefore free. That
+is what makes it the only path that can install onto a board whose software does
+not boot — and `CONFIG_BOOT_SERIAL_NO_APPLICATION=y` means such a board is
+already sitting in recovery, with nothing to press. `make ota-fan` publishes the
+whole image beside the deltas for it.
 
 `make fota` and `make ota-smp` set `SMP=1 RELEASE=1` themselves and build in
 their own directory. That is deliberate rather than a convenience: a board
@@ -47,6 +69,16 @@ selected by the options above:
   difference between the two images.
 - `overlay-release.conf`, `overlay-smp.conf`, `overlay-lto.conf`: `RELEASE=1`,
   `SMP=1` and the default `LTO=1`. Ordered so that later files win.
+
+  `overlay-smp.conf` turns on two transports, not one. The Bluetooth one is
+  what nRF Device Manager and the flasher page's radio path use. The UART one
+  (`CONFIG_MCUMGR_TRANSPORT_UART`) binds `zephyr,uart-mcumgr`, which the board
+  DTS already points at `uart0` — the J-Link OB's VCOM, which enumerates as USB
+  CDC-ACM and which the application otherwise leaves alone, since its console
+  is RTT. Both reach the same handler in
+  [`ports/zephyr/dfu/dfu_smp_img.c`](../ports/zephyr/dfu/dfu_smp_img.c), so a
+  cable and a radio get the same signature check and the same update window.
+  Measured cost of adding the UART transport: **+2,408 B flash, +464 B RAM**.
 - `overlays/uwb-selftest.conf`: the `make selftest` image, which reads the
   DW3110's `DEV_ID` at boot and stops.
 - `overlay-anchor.conf`: `ANCHOR=1`. Turns on `ULTRAWIDELOCK_ANCHOR` and the
@@ -167,6 +199,24 @@ QR URL and pairing code.
 ESP32-S3 is hardware-validated. ESP32-C5 has source and release-build support.
 ESP32-C6 is hardware-validated for direct-SPI BU04 bring-up with `ST_NRST`
 held low. No C5 hardware validation is recorded.
+
+### Over-the-air updates
+
+| Symbol | What it does |
+| --- | --- |
+| `CONFIG_ULTRAWIDELOCK_DFU_ESP32` | on by default. Adds the GATT service the browser writes a signed image to, and the commit hook that points the bootloader at the slot it landed in. Without the hook an update is received, verified, written — and then ignored at the next boot, because nothing wrote `otadata` |
+| `CONFIG_ULTRAWIDELOCK_DFU_WINDOW_MS` | how long a **double-click** on the board's button leaves the update window open. 300000 (5 min) |
+| `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` | on by default. An update that does not reach the end of `app_main` is rolled back to the previous slot at the next boot. Without it, a bad image is simply what the lock now runs, and the only way back is a cable |
+
+This is **not** `CONFIG_ENABLE_OTA_REQUESTOR`, which is also on. That one is
+Matter OTA: BDX from a commissioned provider node over Wi-Fi. It is the right
+path for a fleet and no use to someone with a board and a browser, because a web
+page cannot join a Matter fabric. The two share the `ota_0`/`ota_1` slots and
+nothing else.
+
+The long press is the commissioning window and stays that way. Overloading it
+would mean everyone opening a commissioning window also spent five minutes
+accepting firmware from whoever was in radio range.
 
 ## Runtime consoles
 

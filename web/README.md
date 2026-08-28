@@ -14,7 +14,7 @@ Stdlib Python only. No node, no bundler, nothing to install.
 |---|---|
 | `build.py` | the whole generator: page shell, asset bundle, link gate, drift gates |
 | `site/` | landing and docs page templates, the Markdown renderer |
-| `flasher/` | WebSerial flasher for the ESP32 lock |
+| `flasher/` | install over a cable (ESP32) and update over Bluetooth or USB (both boards) |
 | `twin/` | the walk-up digital twin, firmware logic compiled to WASM |
 | `graph/` | subsystem graph, generated from the source tree |
 | `assets/design/` | vendored design system: tokens, components, scripts |

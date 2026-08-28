@@ -47,7 +47,7 @@ CDK_PROBE ?= $(PROBE_RS_PROBE)
 # line before the first one runs, so a cache written by line 1 is invisible
 # to line 2 (measured on the macOS GNU make this repo is driven by).
 CDK_PROBE_CACHE ?= $(if $(wildcard $(LEGACY_CDK_KEY_DIR)/cdk-probe),$(LEGACY_CDK_KEY_DIR)/cdk-probe,$(CDK_KEY_DIR)/cdk-probe)
-CDK_PROBE_GOALS := flash flash-erase monitor monitor-rtt ota-window
+CDK_PROBE_GOALS := flash flash-erase monitor monitor-rtt ota-window ota-recovery
 ifeq ($(strip $(CDK_PROBE)),)
 ifneq ($(filter $(CDK_PROBE_GOALS),$(MAKECMDGOALS)),)
 CDK_PROBE := $(shell '$(REPO_ROOT)/scripts/cdk-find-probe.sh' '$(CDK_PROBE_CACHE)')
@@ -71,6 +71,26 @@ CDK_PROBE_GUARD = @if [ -z '$(CDK_PROBE)' ] && \
 	  printf '  Enumeration order is not stable, so this will not guess which board to write.\n' >&2; \
 	  printf '  Pick one:  make $@ CDK_PROBE=<VID:PID:Serial>\n' >&2; \
 	  printf '  Or once per shell:  export PROBE_RS_PROBE=<VID:PID:Serial>\n' >&2; \
+	  exit 1; \
+	fi
+
+# ./workspace is a LINK into the machine's workspace store, made once per
+# checkout by `make ws-link`. Every recipe below cds into it so west can find
+# its manifest, so a checkout that was never linked fails at that cd -- and a
+# bare `cd` failing says only
+#
+#   /bin/sh: line 0: cd: .../workspace: No such file or directory
+#
+# which names neither the cause nor the one-second fix. Every new worktree meets
+# this exactly once, which is precisely when someone knows least about the
+# store. The store itself already works; what was missing was saying so.
+CDK_WS_GUARD = @if [ ! -d '$(REPO_ROOT)/workspace' ]; then \
+	  printf '  this checkout has no ./workspace yet.\n' >&2; \
+	  printf '  It is a link into the machine store, not a copy, and making it is instant\n' >&2; \
+	  printf '  when the store already holds a tree for this branch:\n\n' >&2; \
+	  printf '    make ws-link\n\n' >&2; \
+	  printf '  `make ws-store` lists what this machine holds and who links to it.\n' >&2; \
+	  printf '  Nothing there yet?  `make bootstrap` fetches it once, several GB.\n' >&2; \
 	  exit 1; \
 	fi
 
@@ -238,6 +258,47 @@ INSTRUMENT_MAKE        ?= make
 CDK_KEY  ?= $(SIGN_KEY)
 CDK_SIGN := -DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE='"$(CDK_KEY)"'
 
+# ---- the version the BOARD reports -------------------------------------------
+#
+# Left unset, CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION defaults to "0.0.0+0" and
+# every board ever built reports `v0.0.0.0` in its image list -- over the radio,
+# over the cable, and on the flasher page. That is not a cosmetic gap. The only
+# thing distinguishing two builds is then a SHA-256, which is correct and is
+# what the update path matches on, but it means the one human-readable field in
+# `make ota-smp-list` identifies nothing, and an operator comparing a board
+# against a release is left comparing 16 hex digits by eye.
+#
+# Taken from the repository's VERSION file, so it moves when the project moves
+# rather than when somebody remembers. A release can override it:
+#
+#     make release IMAGE_VERSION=0.3.1
+#
+# NOTE THAT THIS CHANGES THE IMAGE HASH, because the version sits in the MCUboot
+# header and the SHA-256 TLV covers the header. That is correct and is the point
+# -- two releases that differ only in their version really are different images,
+# and a delta between them is a real delta. It does mean the deployed record has
+# to be re-recorded after the first build that sets it, which `make flash` and
+# the ota-* targets already do.
+#
+# The `+0` is imgtool's build number. Kept at zero: the build number is meant to
+# distinguish rebuilds of one version, and nothing here would set it honestly.
+#
+# AND THE VERSION IS NOT THE ONLY THING THAT MOVES THE HASH. The image embeds a
+# build timestamp -- "; Zephyr; Aug 27 2026 23:05:11" sits in rodata -- so TWO
+# BUILDS OF IDENTICAL SOURCES AT THE SAME VERSION PRODUCE DIFFERENT IMAGES.
+# Measured 2026-08-27: two builds one hour apart differed in exactly 105 bytes,
+# all of them that string, and their image hashes were 8613358327a47e00 and
+# f9443287420eaedf.
+#
+# The consequence is operational and sharp: AN IMAGE THAT IS ON A BOARD CANNOT
+# BE REBUILT. Delete or overwrite the build directory that produced it and the
+# only remaining copy of those bytes is the deployed record itself, which is why
+# that record is a FILE and not a hash. Rebuilding before `make fota-done` makes
+# the confirm fail -- correctly, since the board really is not running the image
+# in the build tree -- and the recovery is to reflash, not to re-record.
+IMAGE_VERSION ?= $(shell cat $(REPO_ROOT)/VERSION 2>/dev/null || echo 0.0.0)
+CDK_SIGN += -DCONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION='"$(IMAGE_VERSION)+0"'
+
 # ---- delta update over BLE ---------------------------------------------------
 # modules/ultrawidelock_dfu has to reach BOTH images, and they need opposite halves of it:
 # the patch APPLIER is compiled into MCUboot, because an application cannot
@@ -378,7 +439,7 @@ CDK_SIZE_ARGS      = --build '$(CDK_BUILD)' --image $(CDK_IMAGE) --json '$(CDK_S
 
 .PHONY: build rebuild instrument reader selftest cirdiag mlgate anchorlink flash flash-erase monitor monitor-rtt dfu release \
         cdk-size cdk-size-check cdk-size-baseline \
-        dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-deps \
+        dfu-serial fota fota-build fota-done fota-confirm ota-patch ota-push ota-smp ota-smp-push ota-smp-list ota-window ota-recovery ota-deps ota-fan ota-local \
         cdk-ultrawidelock-matter-thread cdk-reader cdk-flash cdk-flash-erase cdk-rtt
 
 # ---- the CMake argument tail ---------------------------------------------------
@@ -452,6 +513,7 @@ cdk_scrub = if [ -f '$($(1))/CMakeCache.txt' ] && \
 CDK_BUILD_ARGS = -DEXTRA_CONF_FILE="$(CDK_CONF)" -DCONFIG_ULTRAWIDELOCK_MATTER_BLE=y \
                  $(CDK_SIGN) $(CDK_DFU) $(CDK_DFU_LOG)
 build:
+	$(CDK_WS_GUARD)
 	@$(call cdk_scrub,CDK_BUILD)
 	@$(CDK_RUN) build -p $(CDK_PRISTINE) -b $(CDK_BOARD) \
 	  -d $(CDK_BUILD) $(CDK_APP) \
@@ -558,6 +620,7 @@ anchorlink:
 
 ## flash: flash the DWM3001CDK over its on-board J-Link OB
 flash:
+	$(CDK_WS_GUARD)
 	$(CDK_PROBE_GUARD)
 	@# `flash` does not rebuild, and a stale hex flashes without a word. On
 	@# 2026-08-07 that wrote a 00:35-era image at 21:05 as "the fix committed
@@ -586,6 +649,7 @@ flash:
 
 ## flash-erase: full chip erase + flash the DWM3001CDK
 flash-erase:
+	$(CDK_WS_GUARD)
 	$(CDK_PROBE_GUARD)
 	@$(CDK_RUN) flash --erase $(CDK_DEV_ID_ARG) -d $(CDK_BUILD)
 
@@ -641,9 +705,16 @@ fota-done:
 	  SMP=1 RELEASE=1 CDK_BUILD='$(CDK_FOTA_BUILD)'
 
 fota-confirm: $(CDK_OTA_PY)
-	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py \
-	  --expect '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.bin' \
-	  $(if $(OTA_NAME),--name '$(OTA_NAME)')
+	@if [ -n '$(OTA_SERIAL)' ]; then \
+	  $(CDK_PORT_RESOLVE); \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py \
+	    --expect '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.bin' \
+	    --serial "$$port" || exit 1; \
+	else \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py \
+	    --expect '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.bin' \
+	    $(if $(OTA_NAME),--name '$(OTA_NAME)') || exit 1; \
+	fi
 	@mkdir -p '$(dir $(CDK_DEPLOYED))'
 	@cp '$(CDK_SIGNED_HEX)' '$(CDK_DEPLOYED)'
 	@cp '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.elf' '$(CDK_DEPLOYED_ELF)'
@@ -671,6 +742,17 @@ ota-push: $(CDK_OTA_PY)
 	@printf '  recorded as deployed  ·  %s\n' '$(CDK_DEPLOYED)'
 
 ## ota-smp: push the patch over mcumgr instead, exactly as a phone would
+##   OTA_SERIAL=auto   go down the cable instead of the radio (or give a port)
+#
+# THE CABLE IS A VARIABLE, NOT A SECOND PAIR OF TARGETS, and that is the point
+# rather than a shortcut. uart0 carries the same mcumgr conversation the radio
+# carries -- same handler, same signature check, same update window -- so a
+# target that behaved differently would be claiming a difference that does not
+# exist. What changes is one argument to one script.
+#
+# `auto` picks the first /dev/cu.usbmodem*, which on a machine with one board
+# attached is the J-Link OB's VCOM. Give an explicit port when more than one
+# probe is plugged in; `ls /dev/cu.usbmodem*` lists them.
 #
 # SETS ITS OWN CONFIGURATION, like `fota` and for the same reason: this target
 # is definitionally the mcumgr path, and a board without SMP does not speak it
@@ -681,17 +763,72 @@ ota-smp:
 	@$(MAKE) --no-print-directory ota-smp-push \
 	  SMP=1 RELEASE=1 CDK_BUILD='$(CDK_FOTA_BUILD)'
 
+# Resolves OTA_SERIAL into $$port, or exits saying so. `auto` and `1` both mean
+# "find it", so `make ota-smp OTA_SERIAL=1` does the obvious thing.
+CDK_PORT_RESOLVE = port='$(OTA_SERIAL)'; \
+	if [ "$$port" = auto ] || [ "$$port" = 1 ]; then \
+	  port=$$(ls /dev/cu.usbmodem* 2>/dev/null | head -n1); \
+	fi; \
+	if [ -z "$$port" ]; then \
+	  printf '  no serial port found  ·  plug the J-Link (J9) in, or pass\n' >&2; \
+	  printf '  OTA_SERIAL=/dev/cu.usbmodemXXXX  ·  `ls /dev/cu.usbmodem*` lists them\n' >&2; \
+	  exit 1; \
+	fi
+
 ota-smp-push: $(CDK_OTA_PY)
 	@test -f '$(CDK_PATCH)' || { printf '  no patch at %s  ·  run `make fota`\n' '$(CDK_PATCH)' >&2; exit 1; }
-	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py '$(CDK_PATCH)' \
-	  $(if $(OTA_NAME),--name '$(OTA_NAME)')
+	@if [ -n '$(OTA_SERIAL)' ]; then \
+	  $(CDK_PORT_RESOLVE); \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py '$(CDK_PATCH)' \
+	    --serial "$$port" || exit 1; \
+	else \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py '$(CDK_PATCH)' \
+	    $(if $(OTA_NAME),--name '$(OTA_NAME)') || exit 1; \
+	fi
 	@mkdir -p '$(dir $(CDK_DEPLOYED))' && cp '$(CDK_SIGNED_HEX)' '$(CDK_DEPLOYED)'
 	@cp '$(CDK_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.elf' '$(CDK_DEPLOYED_ELF)' 2>/dev/null || true
 	@printf '  recorded as deployed  ·  %s\n' '$(CDK_DEPLOYED)'
 
+## ota-smp-list: print what the board is running  ·  OTA_SERIAL=auto for the cable
 ota-smp-list: $(CDK_OTA_PY)
-	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list \
-	  $(if $(OTA_NAME),--name '$(OTA_NAME)')
+	@if [ -n '$(OTA_SERIAL)' ]; then \
+	  $(CDK_PORT_RESOLVE); \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list --serial "$$port"; \
+	else \
+	  $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_smp.py --list \
+	    $(if $(OTA_NAME),--name '$(OTA_NAME)'); \
+	fi
+
+## ota-recovery: enter MCUboot serial recovery over SWD instead of holding SW2
+##   Then talk to it with:  make ota-smp-list OTA_SERIAL=auto
+#
+# WHY THIS EXISTS, and it is not convenience. CDK-16 -- serial recovery having
+# worked exactly once -- has two candidate halves that nobody has been able to
+# separate: the ENTRY (a 5 s button hold, which writes Zephyr's retained boot
+# mode and warm-resets) and the SERIAL (MCUboot answering once it is there).
+# Every test so far exercised both at once, so a failure never said which.
+#
+# This is the entry, done by the probe. It writes exactly what the application
+# writes -- BOOT_MODE_TYPE_BOOTLOADER, which is 0x01
+# (zephyr/include/zephyr/retention/bootmode.h:34-38), into GPREGRET2 at
+# 0x40000520 (zephyr/dts/arm/nordic/nrf52833.dtsi:93-98, reg = <0x40000520 1>)
+# -- and then resets. nRF52 clears GPREGRET only on power-on and brownout
+# reset, so a debugger reset retains it, which is what makes this work at all.
+#
+# MCUboot consumes and clears the byte on the boot that reads it, so this is
+# one-shot exactly like the button: reset again afterwards and the application
+# boots normally. Nothing is written to flash by this target.
+ota-recovery:
+	@printf '  writing BOOT_MODE_TYPE_BOOTLOADER to GPREGRET2 (0x40000520)\n'
+	@probe-rs write --chip $(CDK_CHIP) $(CDK_PROBE_ARG) b8 0x40000520 1
+	@probe-rs reset --chip $(CDK_CHIP) $(CDK_PROBE_ARG)
+	@printf '  reset. MCUboot should now be in serial recovery, and the\n'
+	@printf '  application should NOT be running -- which is the check:\n\n'
+	@printf '    make ota-smp-list                  # BLE. Finding a board here means\n'
+	@printf '                                       # the app booted, so recovery was\n'
+	@printf '                                       # never entered.\n'
+	@printf '    make ota-smp-list OTA_SERIAL=auto  # the cable. An answer here is\n'
+	@printf '                                       # MCUboot talking.\n\n'
 
 ## ota-window: open the update window over SWD instead of pressing SW2
 ota-window:
@@ -747,9 +884,117 @@ release:
 	    --board 'DWM3001CDK (decawave_dwm3001cdk, nRF52833)' \
 	    --setup-code "$$code" \
 	    --commission-note 'Type this into Apple Home. There is no QR label on this board.' \
-	    '$(CDK_RELEASE_BUILD)/merged.hex'
+	    '$(CDK_RELEASE_BUILD)/merged.hex' \
+	    '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex'
 	@printf '  Zip it and attach it to the release:\n'
 	@printf '    (cd %s && zip -qr ../ultrawidelock-dwm3001cdk.zip ultrawidelock-dwm3001cdk)\n\n' '$(dir $(CDK_RELEASE_OUT))'
+
+# zephyr.signed.hex ships BESIDE merged.hex, and it is not a duplicate of it.
+#
+# merged.hex is what a J-Link writes: bootloader at 0x0 and the signed app after
+# it. A delta cannot be built from that -- ultrawidelock_patch.py reads MCUboot
+# image headers, and the first thing in a merged hex is not an MCUboot image.
+#
+# So the fan below needs the bare signed app of EVERY release still in the
+# field, and the only moment that file provably exists is the release build that
+# produced it. Not shipping it means that once a version is published, no future
+# release can ever build an update for the boards running it: they are stranded
+# on a J-Link forever. It costs ~250 KB in the bundle.
+
+## ota-fan: build one delta per released image, the whole image, and the index
+##   PREV_HEXES='a.hex b.hex ...'  zephyr.signed.hex of every release in the field
+##
+##   Run AFTER `make release`, with the same RELEASE_KEY: the deltas are signed
+##   with it and every board checks that signature before it writes anything.
+##
+##   The whole signed image goes out beside the deltas. It is what MCUboot's
+##   serial recovery accepts, and it is the only artifact on this board that
+##   needs no starting image -- so it is the only one that can rescue a board
+##   whose application does not boot, and it needs no probe to do it.
+##   ota-index.py refuses to publish it unless it is the image the deltas
+##   converge on, because recovering a board onto a build nothing updates would
+##   strand it.
+CDK_OTA_DIR ?= $(ULTRAWIDELOCK_BUILD_ROOT)/release/ota
+CDK_OTA_DIR := $(abspath $(CDK_OTA_DIR))
+
+ota-fan: $(CDK_OTA_PY)
+	@if [ -z '$(PREV_HEXES)' ]; then \
+	  printf '  PREV_HEXES is empty, so there is nothing to build a DELTA from.\n'; \
+	  printf '  On the very first release there is nothing, and that is correct --\n'; \
+	  printf '  no board in the world is running an older image yet. The whole\n'; \
+	  printf '  image is still published, and serial recovery still installs it,\n'; \
+	  printf '  so the release does have an over-the-air path. To add deltas,\n'; \
+	  printf '  pass the zephyr.signed.hex of each release still in the field:\n\n'; \
+	  printf "    make ota-fan RELEASE_KEY=<key> PREV_HEXES='v0.3.0/zephyr.signed.hex ...'\n\n"; \
+	fi
+	@test -f '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' || { \
+	  printf '  no release build at %s  ·  run `make release RELEASE_KEY=...` first\n' \
+	    '$(CDK_RELEASE_BUILD)' >&2; exit 1; }
+	@test -n '$(RELEASE_KEY)' || { printf '  RELEASE_KEY is not set.\n' >&2; exit 1; }
+	@rm -rf '$(CDK_OTA_DIR)/dwm3001cdk'
+	@mkdir -p '$(CDK_OTA_DIR)/dwm3001cdk'
+	@to='$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex'; \
+	 for prev in $(PREV_HEXES); do \
+	   test -f "$$prev" || { printf '  no such image: %s\n' "$$prev" >&2; exit 1; }; \
+	   printf '  delta from %s\n' "$$prev"; \
+	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py build \
+	     --from "$$prev" --to "$$to" --build-dir '$(CDK_RELEASE_BUILD)' \
+	     --key '$(abspath $(RELEASE_KEY))' --out '$(CDK_OTA_DIR)/fan.wdfu' || exit 1; \
+	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py wrap \
+	     '$(CDK_OTA_DIR)/fan.wdfu' --version '$(FOTA_VERSION)' \
+	     --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
+	     --from-image "$$prev" --to-image "$$to" >/dev/null || exit 1; \
+	 done; \
+	 rm -f '$(CDK_OTA_DIR)/fan.wdfu'
+	@printf '  whole image for serial recovery\n'
+	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py recovery \
+	  '$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' \
+	  --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' --version '$(FOTA_VERSION)' >/dev/null
+	@python3 $(REPO_ROOT)/scripts/ota-index.py \
+	  --out '$(CDK_OTA_DIR)/ota-index.json' \
+	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
+	  --version "$$CDK_RELEASE_VER"
+
+## ota-local: stage the CURRENT build as an index the page can serve  ·  DEV ONLY
+##   Needs `make fota` first. Then `make docs-serve` and open /flash/index.html.
+#
+# WHY THIS IS NOT `ota-fan`. The page reads ota/ota-index.json, and until now the
+# only thing that produced one was the release flow -- which wants a release
+# build, an offline key and the signed .hex of every version still in the field.
+# That is correct for publishing and absurd as a prerequisite for opening the
+# page on localhost, and it is the reason the browser half of this feature has
+# never been run against a board: not because it was hard, but because there was
+# nothing for it to fetch.
+#
+# This assembles the same shape from whatever `make fota` just built. The
+# artifacts are signed with the DEV key, so a board flashed from a release will
+# refuse everything here -- which is the point of the dev key and not a fault.
+# Nothing here is publishable and nothing here goes near build/release from a
+# release build: it writes the same directory, so run `make ota-fan` again
+# before cutting one.
+ota-local: $(CDK_OTA_PY)
+	@delta=$$(ls -t '$(CDK_FOTA_BUILD)'/ultrawidelock-*-to-*.zip 2>/dev/null | head -1); \
+	if [ -z "$$delta" ]; then \
+	  printf '  no delta in %s  ·  run `make fota` first\n' '$(CDK_FOTA_BUILD)' >&2; \
+	  printf '  (a delta needs the board to be on a DIFFERENT build than the tree;\n' >&2; \
+	  printf '   `make fota` says so plainly if it is not.)\n' >&2; \
+	  exit 1; \
+	fi; \
+	rm -rf '$(CDK_OTA_DIR)/dwm3001cdk'; \
+	mkdir -p '$(CDK_OTA_DIR)/dwm3001cdk'; \
+	cp "$$delta" '$(CDK_OTA_DIR)/dwm3001cdk/'; \
+	cp "$${delta%.zip}.bin" '$(CDK_OTA_DIR)/dwm3001cdk/'; \
+	printf '  delta     %s\n' "$$(basename "$$delta")"
+	@$(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py recovery \
+	  '$(CDK_FOTA_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex' \
+	  --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' --version '$(IMAGE_VERSION)' >/dev/null
+	@python3 $(REPO_ROOT)/scripts/ota-index.py \
+	  --out '$(CDK_OTA_DIR)/ota-index.json' \
+	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' --version 'dev-$(IMAGE_VERSION)'
+	@printf '\n  now:  make docs-serve\n'
+	@printf '  then: http://localhost:8080/flash/index.html\n'
+	@printf '  localhost counts as a secure context, so WebSerial and Web\n'
+	@printf '  Bluetooth both work there without a certificate.\n\n'
 
 ## ota-deps: create the host virtualenv the update tooling runs in
 ota-deps: $(CDK_OTA_PY)
@@ -757,10 +1002,12 @@ $(CDK_OTA_PY):
 	@printf '  creating the update tooling virtualenv  ·  %s\n' '$(CDK_OTA_VENV)'
 	@python3 -m venv '$(CDK_OTA_VENV)'
 	@'$(CDK_OTA_VENV)/bin/pip' install --quiet --disable-pip-version-check \
-	  detools cryptography bleak
-	@printf '  ready  ·  detools, cryptography, bleak\n'
+	  detools cryptography bleak pyserial
+	@printf '  ready  ·  detools, cryptography, bleak, pyserial\n'
 
-## dfu-serial: the old serial-recovery upload  ·  kept, but it does not work
+## dfu-serial: MCUboot serial recovery via the Go mcumgr  ·  see CDK-16, unreliable
+##   For the APPLICATION over the same cable, use `make ota-smp OTA_SERIAL=auto`
+##   instead -- that path is new, is not CDK-16, and does not involve mcumgr.
 dfu-serial:
 	@port='$(DFU_PORT)'; \
 	if [ -z "$$port" ]; then port=$$(ls /dev/cu.usbmodem* 2>/dev/null | head -n1); fi; \

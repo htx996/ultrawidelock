@@ -536,6 +536,110 @@ static void stage_with_head(uint8_t *head, const uint8_t *patch, size_t patch_le
 	T_OK("patch", is_ok(rsp, send_data(patch, patch_len, rsp), HEAD_LEN + patch_len));
 }
 
+/* ---- receiver: the port's commit hook -------------------------------------- */
+
+/*
+ * The ESP32 has no bootloader that reads the staging partition, so something
+ * has to run between "these bytes are good" and "reboot" -- otherwise the board
+ * restarts into the image it was already running and reports success. That is
+ * what the hook is for, and these are the three things the ESP port depends on:
+ * that it runs at all, that it sees the flags word, and that refusing actually
+ * refuses.
+ */
+
+static int s_hook_calls;
+static uint16_t s_hook_flags;
+static uint32_t s_hook_patch_len;
+static int s_hook_result;
+
+static int commit_hook(const struct ultrawidelock_dfu_hdr *hdr)
+{
+	s_hook_calls++;
+	s_hook_flags = hdr->flags;
+	s_hook_patch_len = hdr->patch_len;
+	return s_hook_result;
+}
+
+/** Build a preamble with an arbitrary flags word, keeping the CRC honest. */
+static void build_head_flags(uint8_t *head, const uint8_t *patch, uint32_t patch_len,
+			     uint16_t flags)
+{
+	struct ultrawidelock_dfu_hdr hdr;
+
+	build_head(head, patch, patch_len, 0, 0);
+	memcpy(&hdr, head, sizeof(hdr));
+	hdr.flags = flags;
+	hdr.hdr_crc32 = 0;
+	memcpy(head, &hdr, sizeof(hdr));
+	hdr.hdr_crc32 = ultrawidelock_crc32(head, ULTRAWIDELOCK_DFU_HDR_CRC_LEN);
+	memcpy(head, &hdr, sizeof(hdr));
+}
+
+static void test_receiver_commit_hook(void)
+{
+	uint8_t rsp[ULTRAWIDELOCK_DFU_RSP_MAX];
+	uint8_t head[HEAD_LEN];
+	uint8_t patch[64];
+
+	t_group("dfu receiver commit hook");
+
+	fill_pattern(patch, sizeof(patch), 11);
+
+	/* 1. No hook is the default, and the CDK depends on that staying true. */
+	ultrawidelock_dfu_set_commit_cb(NULL);
+	build_head(head, patch, sizeof(patch), 0, 0);
+	s_hook_calls = 0;
+	stage_with_head(head, patch, sizeof(patch), rsp);
+	T_OK("commits with no hook installed",
+	     is_ok(rsp, send_commit(rsp), HEAD_LEN + sizeof(patch)));
+	T_EQ("no hook, no calls", (long)s_hook_calls, 0L);
+
+	/* 2. Installed, it runs once and sees the header it was given. */
+	s_hook_calls = 0;
+	s_hook_result = 0;
+	s_hook_flags = 0xffff;
+	ultrawidelock_dfu_set_commit_cb(commit_hook);
+	build_head_flags(head, patch, sizeof(patch), ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE);
+	stage_with_head(head, patch, sizeof(patch), rsp);
+	T_OK("commits with a hook that accepts",
+	     is_ok(rsp, send_commit(rsp), HEAD_LEN + sizeof(patch)));
+	T_EQ("hook ran exactly once", (long)s_hook_calls, 1L);
+	T_EQ("hook saw the full-image flag", (long)s_hook_flags,
+	     (long)ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE);
+	T_EQ("hook saw the payload length", (long)s_hook_patch_len, (long)sizeof(patch));
+	T_EQ("reboot armed after the hook accepted",
+	     (long)ultrawidelock_osal_host_advance_ms(500), 1L);
+
+	/* 3. A hook that says no. The whole point: the update must NOT be
+	 *    reported as delivered, and the board must NOT reboot -- a reboot
+	 *    here would land on the old image while the host recorded the new
+	 *    one as deployed, and every future delta would be built from the
+	 *    wrong base. */
+	s_hook_calls = 0;
+	s_hook_result = -1;
+	build_head_flags(head, patch, sizeof(patch), ULTRAWIDELOCK_DFU_FLAG_FULL_IMAGE);
+	stage_with_head(head, patch, sizeof(patch), rsp);
+	T_OK("refusing hook fails the commit",
+	     is_err(rsp, send_commit(rsp), ULTRAWIDELOCK_DFU_ERR_FLASH));
+	T_EQ("refusing hook still ran once", (long)s_hook_calls, 1L);
+	T_EQ("no reboot after a refused commit",
+	     (long)ultrawidelock_osal_host_advance_ms(500), 0L);
+
+	/* 4. A delta carries flags == 0, which is how a port tells the two
+	 *    payload kinds apart. */
+	s_hook_calls = 0;
+	s_hook_result = 0;
+	s_hook_flags = 0xffff;
+	build_head(head, patch, sizeof(patch), 0, 0);
+	stage_with_head(head, patch, sizeof(patch), rsp);
+	T_OK("delta commits", is_ok(rsp, send_commit(rsp), HEAD_LEN + sizeof(patch)));
+	T_EQ("hook saw flags clear for a delta", (long)s_hook_flags, 0L);
+	(void)ultrawidelock_osal_host_advance_ms(500);
+
+	/* Leave the receiver as every other suite expects to find it. */
+	ultrawidelock_dfu_set_commit_cb(NULL);
+}
+
 static void test_receiver_integrity(void)
 {
 	uint8_t rsp[ULTRAWIDELOCK_DFU_RSP_MAX];
@@ -1268,6 +1372,7 @@ int main(void)
 	test_receiver_auth();
 	test_receiver_ownership_and_retry();
 	test_receiver_stage();
+	test_receiver_commit_hook();
 	test_receiver_integrity();
 	test_receiver_upload();
 	test_receiver_real_signature();
