@@ -66,6 +66,137 @@ jobs:
           esac
           echo "releasing from tag $REF_NAME"
 
+  # The images the boards in the field are running: the zephyr.signed.hex of
+  # every recent release, fetched here and handed to the CDK build as an
+  # artifact.
+  #
+  # ON THE RUNNER, NOT IN THE CONTAINER, which is the whole reason this is a job
+  # of its own rather than the step it used to be inside dwm3001cdk. `gh` and
+  # `unzip` are preinstalled on the runner IMAGE, not in an arbitrary container,
+  # and the NCS toolchain image ships neither -- so on v0.4.0, the first release
+  # with a prior image to build a delta from, the step died on `gh: command not
+  # found` after that job had already paid for its build. Nothing about this
+  # wants the toolchain: it is an API call, a download and an unzip.
+  #
+  # Cheap, and it runs ahead of the builds it feeds, so the fatal case below
+  # stops the workflow before a tag has a release -- which is what it is for.
+  ota-bases:
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # WHY THE OLD RELEASES ARE NEEDED AT ALL. The DWM3001CDK has a single
+      # MCUboot slot, so an update is a delta against the exact bytes already on
+      # the board -- which means building one requires the image that board is
+      # running. The only copy of that is the zephyr.signed.hex published with
+      # its own release, which is why mk/cdk.mk ships that file in the bundle.
+      #
+      # FIVE RELEASES, not all of them. The fan is one file per prior release
+      # and each has to be built, signed and downloaded by every visitor's
+      # index; unbounded, a project with forty releases spends most of the build
+      # job building deltas from images nobody runs. Someone further back than
+      # five releases uses the J-Link, and the page tells them so by name.
+      #
+      # Never fatal on a MISSING base. A first release has no prior releases,
+      # and an old bundle that predates zephyr.signed.hex simply has no usable
+      # base -- both are correct states that must not fail a release. Boards on
+      # those versions have no over-the-air path, which is the single-slot
+      # design, not a bug.
+      #
+      # FATAL ON A BASE THAT SHOULD BE THERE AND IS NOT, which is a different
+      # thing wearing the same output. Every way this can come up empty used to
+      # print the same reassuring notice, including the ways that are wrong: a
+      # `gh release list` that failed, or a bundle that downloaded and would not
+      # unzip. An empty fan is invisible -- the release publishes, the page
+      # loads, boards in the field are simply told no update applies, and the
+      # next release does not fix it because a delta needs the image the board
+      # is running and this release's own bundle is the only new one.
+      - name: the images every board in the field is running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          priors=0
+          mkdir -p bases
+          # A line per prior release whatever the outcome, so the run says what
+          # it saw. It is also what keeps this artifact from being empty:
+          # upload-artifact publishes nothing for an empty directory, and the
+          # build job's download would then fail on a first release -- the one
+          # case that is entirely legitimate.
+          : > bases/MANIFEST.txt
+
+          # LISTED INTO A VARIABLE FIRST, not straight into the `for`. A command
+          # substitution that fails inside a for-list does not fail the shell --
+          # `set -e` never sees its status -- so an API hiccup here read as a
+          # repository with no releases and the whole fan silently vanished.
+          # Assigned on its own line, its exit status is the statement's.
+          tags="$(gh release list --repo "$REPO" --limit 5 \
+                    --json tagName --jq '.[].tagName')"
+
+          for tag in $tags; do
+            # `[ ... ] && continue` would be a false statement under `set -e`
+            # on every tag that is not this one, i.e. all of them.
+            if [ "$tag" = "$TAG" ]; then continue; fi
+            priors=$((priors + 1))
+            d="$RUNNER_TEMP/prev/$tag"
+            mkdir -p "$d"
+            if ! gh release download "$tag" --repo "$REPO" \
+                   --pattern 'ultrawidelock-dwm3001cdk.zip' --dir "$d" 2>/dev/null; then
+              echo "::notice::$tag has no DWM3001CDK bundle, skipping"
+              echo "$tag  no DWM3001CDK bundle" >> bases/MANIFEST.txt
+              continue
+            fi
+            # A bundle that downloaded and will not unzip is a corrupt asset or
+            # a truncated download, never a normal state -- and swallowing it
+            # would drop exactly one board version out of the fan with nothing
+            # to show for it.
+            if ! unzip -q -o "$d/ultrawidelock-dwm3001cdk.zip" -d "$d"; then
+              echo "::error::$tag's DWM3001CDK bundle downloaded but will not unzip. Boards on $tag would silently get no update from this release. Re-run this job; if it repeats, the published asset is corrupt."
+              exit 1
+            fi
+            hex="$(find "$d" -name zephyr.signed.hex -print -quit)"
+            if [ -z "$hex" ]; then
+              echo "::notice::$tag predates the shipped zephyr.signed.hex -- no delta from it"
+              echo "$tag  predates zephyr.signed.hex" >> bases/MANIFEST.txt
+              continue
+            fi
+            mkdir -p "bases/$tag"
+            cp "$hex" "bases/$tag/zephyr.signed.hex"
+            echo "$tag  zephyr.signed.hex" >> bases/MANIFEST.txt
+          done
+
+          # NO FAILURE when there is nothing to build a delta FROM. The first
+          # release has no prior image by definition, and failing here would
+          # mean the release ships no over-the-air artifact at all. It still has
+          # a whole image, MCUboot's serial recovery still installs it, and
+          # ota-index.py publishes a recovery-only index for exactly this case.
+          # `make ota-fan` handles an empty PREV_HEXES.
+          #
+          # But "there are no prior releases" and "there are prior releases and
+          # none of them yielded a base" are different facts that used to print
+          # the same line. The second is usually legitimate -- every prior
+          # bundle predating the shipped hex -- and stops being legitimate the
+          # moment one of them does ship it, so it says what it saw.
+          found="$(find bases -name zephyr.signed.hex | wc -l | tr -d ' ')"
+          if [ "$found" -eq 0 ] && [ "$priors" -eq 0 ]; then
+            echo "::notice::no prior release to build a delta from; publishing the whole image only"
+          elif [ "$found" -eq 0 ]; then
+            echo "::warning::$priors prior release(s) exist and none yielded a base image, so this release ships NO deltas and every board in the field will be told no update applies. Correct only if every one of them predates the shipped zephyr.signed.hex; check the notices above."
+          fi
+          cat bases/MANIFEST.txt
+      # MANIFEST.txt is always written, so no files here means the step above did
+      # not reach its end -- never a legitimate state.
+      #
+      # The publish job downloads every artifact into dist/, but it names the
+      # ones it packages, so this one rides along unpublished.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ultrawidelock-ota-bases
+          path: bases
+          if-no-files-found: error
+
   # DWM3001CDK: the primary board, and the only signed image here. MCUboot
   # embeds the public half of the signing key permanently and a single-slot
   # bootloader has no second image to fall back to, so the key this job uses
@@ -82,7 +213,7 @@ jobs:
   # `make release` does the rest, and refuses to run at all without a key rather
   # than falling back to a default -- mk/cdk.mk has the two guards.
   dwm3001cdk:
-    needs: guard
+    needs: [guard, ota-bases]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -202,99 +333,24 @@ jobs:
       # The over-the-air fan: one signed delta from every release still in the
       # field to this one, plus the index the browser FOTA page reads.
       #
-      # WHY IT NEEDS THE OLD RELEASES. The DWM3001CDK has a single MCUboot slot,
-      # so an update is a delta against the exact bytes already on the board --
-      # which means building one requires the image that board is running. The
-      # only copy of that is the zephyr.signed.hex published with its own
-      # release, which is why mk/cdk.mk ships that file in the bundle.
-      #
-      # FIVE RELEASES, not all of them. The fan is one file per prior release
-      # and each has to be built, signed and downloaded by every visitor's
-      # index; unbounded, a project with forty releases spends most of this job
-      # building deltas from images nobody runs. Someone further back than five
-      # releases uses the J-Link, and the page tells them so by name.
-      #
-      # Never fatal on a MISSING base. A first release has no prior releases,
-      # and an old bundle that predates zephyr.signed.hex simply has no usable
-      # base -- both are correct states that must not fail a release. Boards on
-      # those versions have no over-the-air path, which is the single-slot
-      # design, not a bug.
-      #
-      # FATAL ON A BASE THAT SHOULD BE THERE AND IS NOT, which is a different
-      # thing wearing the same output. Every way this step can come up empty
-      # used to print the same reassuring notice, including the ways that are
-      # wrong: a `gh release list` that failed, or a bundle that downloaded and
-      # would not unzip. An empty fan is invisible -- the release publishes, the
-      # page loads, boards in the field are simply told no update applies, and
-      # the next release does not fix it because a delta needs the image the
-      # board is running and this release's own bundle is the only new one. So
-      # the transport failures now stop the run, before a tag has a release,
-      # and the legitimately-empty cases keep their notice.
+      # THE BASE IMAGES ARE FETCHED BY THE ota-bases JOB, not here: `gh` and
+      # `unzip` are on the runner image and not in this container, which is what
+      # `gh: command not found` on v0.4.0 was. That job also decides what an
+      # empty set means and says so, so nothing is judged here -- an empty
+      # PREV_HEXES is a legitimate first release and `make ota-fan` handles it.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ultrawidelock-ota-bases
+          path: ota-bases
       - name: over-the-air fan
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          bases=""
-          priors=0
-          mkdir -p "$RUNNER_TEMP/prev"
-
-          # LISTED INTO A VARIABLE FIRST, not straight into the `for`. A command
-          # substitution that fails inside a for-list does not fail the shell --
-          # `set -e` never sees its status -- so an API hiccup here read as a
-          # repository with no releases and the whole fan silently vanished.
-          # Assigned on its own line, its exit status is the statement's.
-          tags="$(gh release list --repo "$REPO" --limit 5 \
-                    --json tagName --jq '.[].tagName')"
-
-          for tag in $tags; do
-            # `[ ... ] && continue` would be a false statement under `set -e`
-            # on every tag that is not this one, i.e. all of them.
-            if [ "$tag" = "$TAG" ]; then continue; fi
-            priors=$((priors + 1))
-            d="$RUNNER_TEMP/prev/$tag"
-            mkdir -p "$d"
-            if ! gh release download "$tag" --repo "$REPO" \
-                   --pattern 'ultrawidelock-dwm3001cdk.zip' --dir "$d" 2>/dev/null; then
-              echo "::notice::$tag has no DWM3001CDK bundle, skipping"
-              continue
-            fi
-            # A bundle that downloaded and will not unzip is a corrupt asset or
-            # a truncated download, never a normal state -- and swallowing it
-            # would drop exactly one board version out of the fan with nothing
-            # to show for it.
-            if ! unzip -q -o "$d/ultrawidelock-dwm3001cdk.zip" -d "$d"; then
-              echo "::error::$tag's DWM3001CDK bundle downloaded but will not unzip. Boards on $tag would silently get no update from this release. Re-run this job; if it repeats, the published asset is corrupt."
-              exit 1
-            fi
-            hex="$(find "$d" -name zephyr.signed.hex -print -quit)"
-            if [ -z "$hex" ]; then
-              echo "::notice::$tag predates the shipped zephyr.signed.hex -- no delta from it"
-              continue
-            fi
-            bases="$bases $hex"
-          done
-
-          # NO EARLY EXIT when there is nothing to build a delta FROM. The
-          # first release has no prior image by definition, and it used to stop
-          # here -- which meant the release shipped no over-the-air artifact at
-          # all. It still has a whole image, MCUboot's serial recovery still
-          # installs it, and ota-index.py publishes a recovery-only index for
-          # exactly this case. `make ota-fan` handles an empty PREV_HEXES.
-          #
-          # But "there are no prior releases" and "there are prior releases and
-          # none of them yielded a base" are different facts that used to print
-          # the same line. The second is usually legitimate -- every prior
-          # bundle predating the shipped hex -- and stops being legitimate the
-          # moment one of them does ship it, so it says what it saw.
-          if [ -z "$bases" ] && [ "$priors" -eq 0 ]; then
-            echo "::notice::no prior release to build a delta from; publishing the whole image only"
-          elif [ -z "$bases" ]; then
-            echo "::warning::$priors prior release(s) exist and none yielded a base image, so this release ships NO deltas and every board in the field will be told no update applies. Correct only if every one of them predates the shipped zephyr.signed.hex; check the notices above."
-          fi
-
+          # Absolute paths, because they are passed through make into
+          # ultrawidelock_patch.py, and sorted so a re-run fans out in the same
+          # order -- each delta is independent of every other.
+          bases="$(find "$PWD/ota-bases" -name zephyr.signed.hex | sort | tr '\n' ' ')"
           make ota-fan \
             RELEASE_KEY="$RUNNER_TEMP/release.pem" \
             CDK_RELEASE_VER="$TAG" \
