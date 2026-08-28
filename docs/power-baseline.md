@@ -390,21 +390,43 @@ went on to rejoin Thread (§1.1 registers, re-read after the flash, unchanged).
 and asserting exactly this: that a cold stop still sleeps, and that a stop after
 a listen sleeps *after* the `forcetrxoff` rather than instead of it.
 
-**NOT VERIFIED, and this is the gap that matters:** that a walk-up still ranges.
-The sleep is proven above; **the wake is not**. `dw3000_hw_wakeup()` has never
-run on hardware before this change, because nothing ever slept the part for it
-to wake. Its first real execution will be the first walk-up after a boot, and it
-needs a phone, an approach and an unlock to happen at all. Until that has been
-seen, treat `CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP=n` as the known-good configuration.
+**VERIFIED end to end: a real iPhone walk-up unlocked the lock**, on a board that
+had slept the DW3110 at boot. From the RTT ring immediately afterwards:
 
-What to watch for on that test, in `make monitor`:
+```
+DIAG ull_setchannel ch=9 dw_state=0x03
+I: credential session created
+I: Sending RangingSessionSetupM1 message
+I: Message RangingSessionSetupM2 received
+I: slot bm peer=0x7c ours=0xff common=0x7c -> bit2 chaps=6 dur=2400 rstu
+I: Sending RangingSessionSetupM3 message
+I: Message RangingSessionSetupM4 received
+I: credential start: sid=0x7575344b ch=9 code=9 slot=2400 blk=192ms spr=12
+I: Pre-POLL accepted: URSK proven on air (sts0 305935ea)
+  ⟐ rx ✓90 ✗22 ⧗0 tx18 · sts●
+```
+
+That is the whole path: the part woke, the PHY was re-applied, the M1 to M4
+setup exchange completed, and the STS was proven on air across 90 good
+receptions. **A chip still in DEEPSLEEP cannot produce any of those lines**, so
+this is the wake working rather than an inference about it.
+
+`dw3000_hw_wakeup()`'s own `WAKEUP CS` line had already scrolled out of the 1 KB
+release RTT ring by the time it was read, because a session is far more verbose
+than the ring is deep. It is not needed: `Pre-POLL accepted` is the stronger
+statement, being the radio doing cryptographic work on air rather than a
+host-side print.
+
+So both halves are proven on this silicon. The switch stays because of what one
+walk-up does **not** sample: a second session after a first, a long idle before
+the first, a cold board, and the two ports this does not cover. If a walk-up
+ever does regress, `make monitor` names it directly, and the fix is
+`CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP=n`:
 
 | Line | Means |
 | --- | --- |
-| `WAKEUP CS` | the wake fired; this is the line that has never appeared before |
-| `WAKEUP: chip never reached IDLE_RC` | the wake failed. Set the option to `n` and say so |
-| a distance in cm, then an unlock | it works end to end |
-| silence where ranging used to start | the part did not come back; option to `n` |
+| `WAKEUP: chip never reached IDLE_RC` | the wake failed its bounded `dwt_checkidlerc()` spin |
+| silence where ranging used to start | the part did not come back at all |
 
 **Also not verified:** that the current actually dropped. That still needs the
 PPK2 procedure in §5.1. The register baseline cannot see it, because the DW3110's
