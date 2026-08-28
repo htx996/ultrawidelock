@@ -4,7 +4,7 @@
 
 **Portable firmware for NFC and UWB smart locks.**
 
-<img src="assets/badges.svg" width="880" alt="v0.3.0 · ISC license · Zephyr, ESP-IDF and FreeRTOS ports · 7,979 host tests"/>
+<img src="assets/badges.svg" width="880" alt="v0.4.0 · ISC license · Zephyr, ESP-IDF and FreeRTOS ports · 9,608 host tests"/>
 
 <img src="assets/divider.svg" width="880" alt=""/>
 
@@ -186,7 +186,7 @@ which is the version esp-matter itself asks for at that revision. `IDF_VER` and
 
 </div>
 
-## New since v0.3.0
+## New in v0.4.0
 
 - **Five-fabric Apple Home plus Home Assistant coexistence** on the
   DWM3001CDK: one committed Thread dataset, provisional commissioning rollback,

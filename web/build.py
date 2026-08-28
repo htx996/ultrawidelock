@@ -177,7 +177,7 @@ def nav(depth: int, current: str = "") -> str:
     home = ' aria-current="page"' if not current else ""
     return (f'<header class="topbar">'
             f'<a class="wordmark" href="{rel}index.html"{home}>UltraWideLock '
-            f'<span class="ver">v0.3.0</span></a>'
+            f'<span class="ver">v0.4.0</span></a>'
             f'<div class="spacer"></div>'
             f'<nav class="navlinks" id="navlinks" aria-label="Main">'
             f'{"".join(links)}</nav>'
@@ -191,7 +191,7 @@ def footer(depth: int) -> str:
     return f"""<footer class="footer">
   <div class="footer-in">
     <div class="footer-col">
-      <a class="wordmark" href="{rel}index.html">UltraWideLock <span class="ver">v0.3.0</span></a>
+      <a class="wordmark" href="{rel}index.html">UltraWideLock <span class="ver">v0.4.0</span></a>
       <p class="fine">Portable firmware for NFC and UWB smart locks, on nRF52833, nRF5340 and ESP32.
       ISC licensed.</p>
     </div>

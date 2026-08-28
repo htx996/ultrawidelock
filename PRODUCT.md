@@ -129,7 +129,7 @@ Content truth the surfaces encode:
 
 ## Brand Commitments
 
-- Name: **UltraWideLock**. Current version line v0.3.0. License is ISC; the
+- Name: **UltraWideLock**. Current version line v0.4.0. License is ISC; the
   vendored Qorvo UWB driver is LicenseRef-QORVO-2, so binaries built with UWB
   support inherit a Qorvo hardware restriction.
 - **Design system ownership changed during init.** `web/assets/design/` was
