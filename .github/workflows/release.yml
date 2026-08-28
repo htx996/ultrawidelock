@@ -557,6 +557,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write # create the release and upload its assets
+      # Starts the pages workflow in `rebuild the site` below, and nothing else.
+      # This is the narrowest scope that can dispatch a workflow; it cannot read
+      # a secret, and the only workflow it is used against is named literally.
+      actions: write
       # Both are required by attest-build-provenance below and by nothing else. id-token mints
       # the short-lived Sigstore identity that binds the signature to this workflow; attestations
       # writes the resulting statement back to the repository. Without them the attest step fails
@@ -682,3 +686,39 @@ jobs:
           gh release create "$TAG" --repo "$REPO" --verify-tag \
             --title "ultrawidelock $TAG" --notes-file "$notes" \
             out/*.zip out/*.bin out/SHA256SUMS.txt
+
+      # THE SITE SERVES THE FIRMWARE, so a release that is not followed by a site
+      # build is only half published. web/build.py stages ota-index.json and the
+      # three merged ESP32 images out of "the latest release", which is the one
+      # the step above just created -- until this runs, the flasher page keeps
+      # offering the PREVIOUS release's updates and reports nothing wrong. A
+      # board updated in that window installs a version that is no longer
+      # current, and the only symptom is a version number nobody is looking at.
+      #
+      # DISPATCHED AGAINST main, NOT TRIGGERED BY THE RELEASE EVENT. A release
+      # event's ref is the tag, and the `github-pages` environment that workflow
+      # must name is restricted to deployments from main, so an event-triggered
+      # run would build the whole site and then be refused at the deploy. The
+      # reasoning is written out at the top of pages.yml.
+      #
+      # Ordered after `create the release` because the site reads that release's
+      # assets. Dispatched with the automatic token, which is documented to
+      # always create a run for workflow_dispatch -- the recursion guard that
+      # blocks push-triggered chains does not apply to it.
+      #
+      # FAILS THE JOB IF THE DISPATCH FAILS, and says what is and is not true so
+      # a red run here is not misread as a failed release. Silence was the whole
+      # bug; a warning nobody reads would be the same bug wearing a colour.
+      - name: rebuild the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh workflow run pages.yml --repo "$REPO" --ref main; then
+            echo "site rebuild dispatched against main; it will pick up $TAG's assets"
+          else
+            echo "::error::$TAG IS PUBLISHED AND ITS ASSETS ARE ATTACHED -- the release itself succeeded. What failed is the site rebuild that was meant to follow it, so the flasher page is still serving the PREVIOUS release's over-the-air updates and will not say so. Start it by hand: Actions -> pages -> Run workflow, with main selected."
+            exit 1
+          fi

@@ -26,8 +26,31 @@
 # looking at. That is a stale-artifact failure with no error anywhere, which is
 # the kind worth removing rather than remembering.
 #
-# `release: published` fires once, on an explicit human act, and never on a
-# push, so neither reason above is weakened. Manual dispatch stays for prose.
+# SO WHY IS THERE NO `release: published` TRIGGER HERE. Because it cannot work,
+# and it fails in the most expensive way available: after the twenty-minute
+# build, at the deploy.
+#
+# A release event carries the TAG as its ref. The `github-pages` environment,
+# which the publish job below must name because that is how deploy-pages works,
+# is restricted to deployments from the branch `main` -- GitHub creates that
+# restriction itself when a repository's Pages source is set to Actions. A run
+# whose ref is refs/tags/vN.N.N is refused by that policy, so the build job
+# would fetch emscripten, compile the twin, download the release assets, render
+# the site, and only then be told the ref may not deploy.
+#
+# Loosening the environment to allow tags would be the wrong repair anyway. The
+# site is built from main's prose, not from the tag's, and a tag is a snapshot
+# of firmware rather than of the site.
+#
+# The release workflow therefore DISPATCHES this one against main once the
+# release exists and its assets are attached -- see `rebuild the site` in
+# release.yml. The automatic GITHUB_TOKEN can do that: workflow_dispatch is one
+# of the two events documented as always creating a run, precisely so a workflow
+# can hand off to another. A dispatched run's ref is main, which the environment
+# allows, and the build reads "the latest release" and finds the one just
+# published.
+#
+# Manual dispatch stays for prose, and is the same entry point.
 #
 # Add `on: push: branches: [main]` later if the manual step becomes tedious.
 # That is a deliberate change, not a default.
@@ -35,8 +58,6 @@ name: pages
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
 
 # Read-only by default; the publish job raises its own scope and nothing else
 # gets write access to anything.
@@ -100,16 +121,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           if ! gh release view --repo "$REPO" >/dev/null 2>&1; then
             echo "::notice::no release published yet -- the flasher page will say it carries no images"
             exit 0
           fi
+
+          # ASK WHAT THE RELEASE ACTUALLY HAS, then insist on getting it.
+          # `gh release download` exits 1 both for an asset that is not there
+          # and for one that is there and would not come down, and those are
+          # opposite facts: the first is a release that shipped no ESP32 images
+          # and the page should say so, the second is a transport failure that
+          # would publish a site whose flash buttons are gone. Listing first is
+          # what separates them.
+          assets="$(gh release view --repo "$REPO" --json assets \
+                      --jq '.assets[].name')"
+
           for chip in esp32s3 esp32c5 esp32c6; do
             name="ultrawidelock-matter-lock-$chip.bin"
             mkdir -p "build/esp32-matter-lock-$chip"
-            gh release download --repo "$REPO" --pattern "$name" \
-              --dir "build/esp32-matter-lock-$chip" --clobber \
-              || echo "::notice::$name is not among the latest release's assets"
+            if ! grep -qx "$name" <<<"$assets"; then
+              echo "::notice::$name is not among the latest release's assets"
+              continue
+            fi
+            if ! gh release download --repo "$REPO" --pattern "$name" \
+                   --dir "build/esp32-matter-lock-$chip" --clobber; then
+              echo "::error::$name is listed on the latest release but would not download. Publishing now would put up a flasher page with no images on it and no sign that anything went wrong. Re-run this workflow."
+              exit 1
+            fi
           done
 
       # The over-the-air updates and the index the FOTA panel looks a board up
@@ -132,14 +171,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           if ! gh release view --repo "$REPO" >/dev/null 2>&1; then
             echo "::notice::no release published yet -- the FOTA panel will say so"
             exit 0
           fi
           mkdir -p build/release
-          if gh release download --repo "$REPO" --pattern 'ultrawidelock-ota.zip' \
-               --dir build/release --clobber 2>/dev/null; then
-            unzip -q -o build/release/ultrawidelock-ota.zip -d build/release
+
+          # Listed first, for the reason given in the step above: an absent
+          # asset and a failed download are opposite facts that this command
+          # reports with the same exit status, and only one of them should
+          # reach the published page.
+          if ! gh release view --repo "$REPO" --json assets --jq '.assets[].name' \
+                 | grep -qx 'ultrawidelock-ota.zip'; then
+            echo "::notice::this release carries no over-the-air updates"
+          else
+            if ! gh release download --repo "$REPO" --pattern 'ultrawidelock-ota.zip' \
+                   --dir build/release --clobber; then
+              echo "::error::ultrawidelock-ota.zip is listed on the latest release but would not download. Publishing now would tell every board in the field that no update applies, and say nothing about why. Re-run this workflow."
+              exit 1
+            fi
+            # A zip that arrived and will not open is a corrupt or truncated
+            # asset, never a normal state, and it fails identically on the page.
+            if ! unzip -q -o build/release/ultrawidelock-ota.zip -d build/release; then
+              echo "::error::ultrawidelock-ota.zip downloaded but will not unzip -- the published asset is corrupt. The FOTA panel would say no updates are published, which is wrong rather than merely empty."
+              exit 1
+            fi
             rm -f build/release/ultrawidelock-ota.zip
             echo "staged $(find build/release/ota -type f | wc -l) over-the-air file(s)"
             # An asset that arrived but carries no index is NOT the same as a
@@ -149,8 +206,6 @@ jobs:
             # here would hide a malformed asset behind an honest-looking page.
             [ -f build/release/ota/ota-index.json ] || \
               echo "::warning::ultrawidelock-ota.zip has no ota/ota-index.json -- the FOTA panel will say no updates are published, which is wrong rather than merely empty"
-          else
-            echo "::notice::this release carries no over-the-air updates"
           fi
 
       # The 3D graph's data is committed (web/graph/files.json); its renderer is
