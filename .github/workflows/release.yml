@@ -389,6 +389,15 @@ jobs:
   esp32-matter-lock:
     needs: guard
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Same reason as the two NCS jobs above: container steps get
+        # `sh -e {0}`, and this job's steps are bash. `set -euo pipefail` is
+        # the one dash refuses outright -- "Illegal option -o pipefail",
+        # exit 2, before it reads line two -- which is how the v0.4.0 release
+        # died on `read the bench-validated toolchain pins`. `. export.sh`
+        # and `make esp-release` want bash for the CDK job's reasons too.
+        shell: bash
     # SIGNS WITH THE PRODUCTION KEY, so it has to ask for the environment that
     # holds it. This job reads secrets.MCUBOOT_RELEASE_KEY in `sign the
     # over-the-air images` and did not declare `environment: release`, and an
