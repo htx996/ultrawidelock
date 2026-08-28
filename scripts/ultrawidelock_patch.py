@@ -136,9 +136,27 @@ def image_sha(path):
     die(f"{path} has no SHA-256 TLV")
 
 
-def die(msg):
+# A DELTA THAT DOES NOT FIT IS A FACT ABOUT TWO IMAGES, not a broken tool, and
+# the caller has to be able to tell those apart by status alone.
+#
+# `make ota-fan` builds one delta per release still in the field. Two images
+# that differ by more than the 24 KB staging area is the single-slot design
+# showing through: boards on that version have no over-the-air path, the index
+# simply does not list their hash, and the page already tells them so and offers
+# the whole-image reinstall instead. Failing there would take the entire release
+# down -- bundles, recovery image and every delta that DID fit -- over one pair
+# of images that were never going to work.
+#
+# Every other failure in this script means the release tooling is wrong and must
+# stop the release. The message is the same either way; only the status differs.
+# mk/cdk.mk's ota-fan loop is the one caller that reads it.
+EXIT_PATCH_TOO_BIG = 3
+
+
+def die(msg, code=1):
     """Exit the process with the formatted error message prefixed by ultrawidelock_patch."""
-    sys.exit(f"ultrawidelock_patch: {msg}")
+    print(f"ultrawidelock_patch: {msg}", file=sys.stderr)
+    sys.exit(code)
 
 
 def partition(build_dir, name):
@@ -317,7 +335,8 @@ def build(args):
             f"({staging_size} B less the two control pages).\n"
             f"  The two images differ too much for one delta. Either grow "
             f"patch_staging in apps/dwm3001cdk-lock/pm_static.yml, which moves the flash map "
-            f"and so cannot be done over the air, or ship the intermediate build."
+            f"and so cannot be done over the air, or ship the intermediate build.",
+            code=EXIT_PATCH_TOO_BIG,
         )
 
     body = struct.pack(

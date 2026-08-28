@@ -933,13 +933,31 @@ ota-fan: $(CDK_OTA_PY)
 	@test -n '$(RELEASE_KEY)' || { printf '  RELEASE_KEY is not set.\n' >&2; exit 1; }
 	@rm -rf '$(CDK_OTA_DIR)/dwm3001cdk'
 	@mkdir -p '$(CDK_OTA_DIR)/dwm3001cdk'
+	@# EXIT 3 IS "these two images differ too much for one delta", and it is the
+	@# one failure here that must not end the release. It is a fact about a pair
+	@# of images, not a broken build: boards on that version get no entry in the
+	@# index, the page tells them so by name and offers the whole-image reinstall,
+	@# and every other delta, the recovery image and all three bundles are still
+	@# worth publishing. Failing the job would throw all of that away -- after the
+	@# build and the signing -- over a pair that was never going to work.
+	@# scripts/ultrawidelock_patch.py's EXIT_PATCH_TOO_BIG is the other half of
+	@# this number. Any other status is the tooling being wrong, and still stops.
 	@to='$(CDK_RELEASE_BUILD)/$(CDK_IMAGE)/zephyr/zephyr.signed.hex'; \
+	 rm -f '$(CDK_OTA_DIR)/skipped-bases.txt'; \
 	 for prev in $(PREV_HEXES); do \
 	   test -f "$$prev" || { printf '  no such image: %s\n' "$$prev" >&2; exit 1; }; \
 	   printf '  delta from %s\n' "$$prev"; \
-	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py build \
-	     --from "$$prev" --to "$$to" --build-dir '$(CDK_RELEASE_BUILD)' \
-	     --key '$(abspath $(RELEASE_KEY))' --out '$(CDK_OTA_DIR)/fan.wdfu' || exit 1; \
+	   if $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py build \
+	        --from "$$prev" --to "$$to" --build-dir '$(CDK_RELEASE_BUILD)' \
+	        --key '$(abspath $(RELEASE_KEY))' --out '$(CDK_OTA_DIR)/fan.wdfu'; then \
+	     :; \
+	   else \
+	     rc=$$?; \
+	     [ $$rc -eq 3 ] || exit $$rc; \
+	     printf '  SKIPPED    %s\n' "$$prev"; \
+	     printf '%s\n' "$$prev" >> '$(CDK_OTA_DIR)/skipped-bases.txt'; \
+	     continue; \
+	   fi; \
 	   $(CDK_OTA_PY) $(REPO_ROOT)/scripts/ultrawidelock_patch.py wrap \
 	     '$(CDK_OTA_DIR)/fan.wdfu' --version '$(FOTA_VERSION)' \
 	     --out-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
@@ -954,6 +972,20 @@ ota-fan: $(CDK_OTA_PY)
 	  --out '$(CDK_OTA_DIR)/ota-index.json' \
 	  --cdk-dir '$(CDK_OTA_DIR)/dwm3001cdk' \
 	  --version "$$CDK_RELEASE_VER"
+	@# LAST, not beside the skip, because a line printed in the middle of a fan
+	@# scrolls past and the release still looks clean. What was skipped decides
+	@# whether anyone has to be told to plug a cable in.
+	@if [ -s '$(CDK_OTA_DIR)/skipped-bases.txt' ]; then \
+	  printf '\n  %s base image(s) got NO delta:\n' \
+	    "$$(wc -l < '$(CDK_OTA_DIR)/skipped-bases.txt' | tr -d ' ')"; \
+	  sed 's/^/    /' '$(CDK_OTA_DIR)/skipped-bases.txt'; \
+	  printf '  Boards running those images have no over-the-air path from this\n'; \
+	  printf '  release. The page reads the index, finds no entry for their hash\n'; \
+	  printf '  and sends them to "Reinstall over USB", which needs no probe.\n'; \
+	  printf '  To give them one, ship an intermediate build or grow patch_staging\n'; \
+	  printf '  in apps/dwm3001cdk-lock/pm_static.yml -- which moves the flash map,\n'; \
+	  printf '  so it cannot be done over the air either.\n\n'; \
+	fi
 
 ## ota-local: stage the CURRENT build as an index the page can serve  ·  DEV ONLY
 ##   Needs `make fota` first. Then `make docs-serve` and open /flash/index.html.
