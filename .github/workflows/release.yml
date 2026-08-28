@@ -214,10 +214,22 @@ jobs:
       # building deltas from images nobody runs. Someone further back than five
       # releases uses the J-Link, and the page tells them so by name.
       #
-      # Never fatal. A first release has no prior releases, and an old bundle
-      # that predates zephyr.signed.hex simply has no usable base -- both are
-      # correct states that must not fail a release. Boards on those versions
-      # have no over-the-air path, which is the single-slot design, not a bug.
+      # Never fatal on a MISSING base. A first release has no prior releases,
+      # and an old bundle that predates zephyr.signed.hex simply has no usable
+      # base -- both are correct states that must not fail a release. Boards on
+      # those versions have no over-the-air path, which is the single-slot
+      # design, not a bug.
+      #
+      # FATAL ON A BASE THAT SHOULD BE THERE AND IS NOT, which is a different
+      # thing wearing the same output. Every way this step can come up empty
+      # used to print the same reassuring notice, including the ways that are
+      # wrong: a `gh release list` that failed, or a bundle that downloaded and
+      # would not unzip. An empty fan is invisible -- the release publishes, the
+      # page loads, boards in the field are simply told no update applies, and
+      # the next release does not fix it because a delta needs the image the
+      # board is running and this release's own bundle is the only new one. So
+      # the transport failures now stop the run, before a tag has a release,
+      # and the legitimately-empty cases keep their notice.
       - name: over-the-air fan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -226,12 +238,22 @@ jobs:
         run: |
           set -euo pipefail
           bases=""
+          priors=0
           mkdir -p "$RUNNER_TEMP/prev"
-          for tag in $(gh release list --repo "$REPO" --limit 5 \
-                         --json tagName --jq '.[].tagName'); do
+
+          # LISTED INTO A VARIABLE FIRST, not straight into the `for`. A command
+          # substitution that fails inside a for-list does not fail the shell --
+          # `set -e` never sees its status -- so an API hiccup here read as a
+          # repository with no releases and the whole fan silently vanished.
+          # Assigned on its own line, its exit status is the statement's.
+          tags="$(gh release list --repo "$REPO" --limit 5 \
+                    --json tagName --jq '.[].tagName')"
+
+          for tag in $tags; do
             # `[ ... ] && continue` would be a false statement under `set -e`
             # on every tag that is not this one, i.e. all of them.
             if [ "$tag" = "$TAG" ]; then continue; fi
+            priors=$((priors + 1))
             d="$RUNNER_TEMP/prev/$tag"
             mkdir -p "$d"
             if ! gh release download "$tag" --repo "$REPO" \
@@ -239,7 +261,14 @@ jobs:
               echo "::notice::$tag has no DWM3001CDK bundle, skipping"
               continue
             fi
-            unzip -q -o "$d/ultrawidelock-dwm3001cdk.zip" -d "$d"
+            # A bundle that downloaded and will not unzip is a corrupt asset or
+            # a truncated download, never a normal state -- and swallowing it
+            # would drop exactly one board version out of the fan with nothing
+            # to show for it.
+            if ! unzip -q -o "$d/ultrawidelock-dwm3001cdk.zip" -d "$d"; then
+              echo "::error::$tag's DWM3001CDK bundle downloaded but will not unzip. Boards on $tag would silently get no update from this release. Re-run this job; if it repeats, the published asset is corrupt."
+              exit 1
+            fi
             hex="$(find "$d" -name zephyr.signed.hex -print -quit)"
             if [ -z "$hex" ]; then
               echo "::notice::$tag predates the shipped zephyr.signed.hex -- no delta from it"
@@ -254,8 +283,16 @@ jobs:
           # all. It still has a whole image, MCUboot's serial recovery still
           # installs it, and ota-index.py publishes a recovery-only index for
           # exactly this case. `make ota-fan` handles an empty PREV_HEXES.
-          if [ -z "$bases" ]; then
+          #
+          # But "there are no prior releases" and "there are prior releases and
+          # none of them yielded a base" are different facts that used to print
+          # the same line. The second is usually legitimate -- every prior
+          # bundle predating the shipped hex -- and stops being legitimate the
+          # moment one of them does ship it, so it says what it saw.
+          if [ -z "$bases" ] && [ "$priors" -eq 0 ]; then
             echo "::notice::no prior release to build a delta from; publishing the whole image only"
+          elif [ -z "$bases" ]; then
+            echo "::warning::$priors prior release(s) exist and none yielded a base image, so this release ships NO deltas and every board in the field will be told no update applies. Correct only if every one of them predates the shipped zephyr.signed.hex; check the notices above."
           fi
 
           make ota-fan \
@@ -497,7 +534,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$KEY" ]; then
-            echo "::error::MCUBOOT_RELEASE_KEY is empty."
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment, then re-run this workflow from the same tag."
             exit 1
           fi
           umask 077
