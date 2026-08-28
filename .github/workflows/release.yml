@@ -571,14 +571,46 @@ jobs:
             echo "::warning::esp-matter setup failed once -- retrying from scratch"
             setup
           }
+      # BEFORE THE BUILD, not merely before the signing step below, which is
+      # what `the update-signing key is missing` on v0.4.0 was. This image
+      # compiles in the PUBLIC half of the update key at configure time
+      # (ports/esp32/components/ultrawidelock_dfu/CMakeLists.txt reads SIGN_KEY
+      # from the environment and fails without it), so the build needs the
+      # release key exactly as much as the signing does -- and it has to be the
+      # same key, or a published image verifies updates against a key nothing
+      # signs with. ci.yml generates a throwaway one with `make dfu-key` for
+      # this reason; here it must be the real one.
+      #
+      # umask first so the file is never briefly world-readable, and through the
+      # environment rather than inline interpolation so the key cannot reach a
+      # command line, a process list or a log. The runner is ephemeral, so the
+      # file dies with it. Written once for both steps, as in the dwm3001cdk job.
+      - name: write the signing key
+        env:
+          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment (not a repository secret)."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/release.pem"
       - name: build every chip and bundle
         # One target for three builds and the packaging, so what CI publishes
         # is what `make esp-release` puts in build/release/ on a bench machine.
         # Each chip still gets its own build directory and sdkconfig, because
         # set-target wipes both and the S3 image is the hardware-validated one.
+        #
+        # SIGN_KEY on the command line and NOT in `env:`, because the whole job
+        # would then see it: `make esp-ota` below refuses a RELEASE_KEY that
+        # resolves to SIGN_KEY (mk/esp32.mk:342), which is the guard that keeps
+        # a per-clone dev key out of a release, and a job-wide SIGN_KEY would
+        # make that guard fire on the real key instead.
         env:
           ESP_RELEASE_VER: ${{ github.ref_name }}
-        run: make esp-release IDF_EXPORT="$IDF_PATH/export.sh"
+        run: |
+          make esp-release IDF_EXPORT="$IDF_PATH/export.sh" \
+            SIGN_KEY="$RUNNER_TEMP/release.pem"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ultrawidelock-esp32-matter-lock
@@ -592,18 +624,16 @@ jobs:
       # signs is door_lock.bin -- the application alone -- and not the merged
       # image `esp-release` just built, which starts with the bootloader at 0x0
       # and is what a cable writes.
+      #
+      # The key is the one `write the signing key` above put on disk, which is
+      # also the key whose public half the images being signed here were built
+      # with. It used to be written a second time in this step, out of the same
+      # secret, and two copies of that is one place for them to drift.
       - name: sign the over-the-air images
         env:
           ESP_RELEASE_VER: ${{ github.ref_name }}
-          KEY: ${{ secrets.MCUBOOT_RELEASE_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "$KEY" ]; then
-            echo "::error::MCUBOOT_RELEASE_KEY is empty. Add it as an environment secret on the 'release' environment, then re-run this workflow from the same tag."
-            exit 1
-          fi
-          umask 077
-          printf '%s\n' "$KEY" > "$RUNNER_TEMP/release.pem"
           make esp-ota RELEASE_KEY="$RUNNER_TEMP/release.pem"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
