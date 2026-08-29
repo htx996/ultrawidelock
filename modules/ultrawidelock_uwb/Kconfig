@@ -8,6 +8,28 @@ config ULTRAWIDELOCK_UWB
 	help
 	  Compile the minimal DW3110 (DWM3000EVB) bring-up driver (uwb_min.c).
 
+config ULTRAWIDELOCK_UWB_LEDS
+	bool "Let the DW3110 drive its own RX/TX LEDs"
+	depends on ULTRAWIDELOCK_UWB
+	default y
+	help
+	  dwt_setleds(DWT_LEDS_ENABLE) points the DW3110's GPIO2 and GPIO3 at its
+	  internal RXLED and TXLED functions, so the radio blinks its own activity
+	  without any host involvement. Useful on a bench, where it is the only
+	  signal that the radio is doing anything at all.
+
+	  It is NOT the four board LEDs on the nRF52833 -- those are
+	  CONFIG_ULTRAWIDELOCK_STATUS_LED and a different chip entirely. Turning that
+	  one off leaves this one running, which is confusing exactly once.
+
+	  Two costs on a battery, and the second is the one that is easy to miss:
+	  the LED current itself, and the clocks the feature needs. Enabling it sets
+	  CLK_CTRL_GPIO_DCLK_EN and CLK_CTRL_LP_CLK_EN inside the DW3110, so the
+	  part runs a de-bounce clock and its low-power oscillator for no reason
+	  other than blinking.
+
+	  Default y so a bench board is unchanged. overlay-battery.conf turns it off.
+
 config ULTRAWIDELOCK_UWB_DEEPSLEEP
 	bool "Sleep the DW3110 when no ranging session is up"
 	depends on ULTRAWIDELOCK_UWB

@@ -167,8 +167,25 @@ static int uwb_radio_ensure_init(void)
 	 * re-run SAR. */
 	dwt_configuresleep(DWT_CONFIG | DWT_GOTOIDLE | DWT_RUNSAR, DWT_WAKE_CSN | DWT_SLP_EN);
 
-	/* INIT_BLINK | ENABLE: flash both LEDs once at setup to verify the LED lines. */
+	/* INIT_BLINK | ENABLE: flash both LEDs once at setup to verify the LED lines.
+	 *
+	 * DISABLE costs more than it looks like it saves, which is why it is a
+	 * config and not a deletion. ENABLE does not merely point GPIO2/GPIO3 at
+	 * the RXLED/TXLED functions: it also sets CLK_CTRL_GPIO_DCLK_EN and
+	 * CLK_CTRL_LP_CLK_EN, so the DW3110 runs a de-bounce clock and its
+	 * low-power oscillator for the sole purpose of blinking. On a mains bench
+	 * board that is the only outward sign the radio is alive and worth every
+	 * microamp; on a battery it is two clocks and an LED bought with nothing.
+	 *
+	 * These are the RADIO's LEDs, not the board's four on the nRF52833 --
+	 * CONFIG_ULTRAWIDELOCK_STATUS_LED governs those, on a different chip. Turning
+	 * that one off and expecting this one to follow is a mistake worth
+	 * spending three lines to prevent. */
+#if defined(CONFIG_ULTRAWIDELOCK_UWB_LEDS)
 	dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
+#else
+	dwt_setleds(DWT_LEDS_DISABLE);
+#endif
 
 	/* Wire the chip's IRQ line into Zephyr's GPIO framework so RX/TX events reach our
 	 * callbacks. */

@@ -66,6 +66,10 @@ enum { DWT_SUCCESS = 0, DWT_ERROR = -1 };
 #define DWT_GOTOIDLE        0x0100
 #define DWT_WAKE_CSN        0x8
 #define DWT_SLP_EN          0x1
+/* Values from the vendor header (deca_device_api.h). DISABLE is 0 and is the
+ * one CONFIG_ULTRAWIDELOCK_UWB_LEDS=n passes; it was missing here, so a battery
+ * build compiled for the target and failed only in the host suite. */
+#define DWT_LEDS_DISABLE    0x00
 #define DWT_LEDS_ENABLE     0x01
 #define DWT_LEDS_INIT_BLINK 0x02
 
