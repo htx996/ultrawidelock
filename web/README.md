@@ -6,7 +6,7 @@ The site, the browser flasher, the digital twin, and the subsystem graph.
 python3 web/build.py --check      # build web/dist/, fail on any dead link
 ```
 
-Stdlib Python only. No node, no bundler, nothing to install.
+Stdlib Python only.
 
 | Path | What it is |
 |---|---|
@@ -20,8 +20,8 @@ Stdlib Python only. No node, no bundler, nothing to install.
 
 ## The shell
 
-Every page's `<head>`, topbar and footer come from `build.py`, not from the page
-source. Pages opt in with markers the build substitutes:
+Every page's `<head>`, topbar and footer come from `build.py`. Pages opt in with
+markers the build substitutes:
 
 | Marker | Gets |
 |---|---|
@@ -31,10 +31,9 @@ source. Pages opt in with markers the build substitutes:
 | `@@FOOTER@@` | the footer, and the deferred `site.js` |
 | `@@SITEJS@@` | just the script, for full-viewport pages that have no footer |
 
-Links are relative and the depth is computed per page, so the site works
-unchanged at a domain root or under a project subpath. The Graph link is emitted
-only when the graph was actually built; the link gate excuses that path, so
-nothing else would catch a nav item that 404s.
+Link depth is computed per page, so the site works unchanged at a domain root or
+under a project subpath. The Graph link is emitted only when the graph was built;
+the link gate excuses that path, so nothing else catches a nav item that 404s.
 
 ## Gates
 
@@ -53,7 +52,7 @@ value has moved off it. **Do not reformat those tables.**
 
 ## The graph's data
 
-Three data sources; which ones you have decide which version of the page you get.
+Three data sources decide which version of the page is built.
 
 | Source | Size | In git | Gives you |
 |---|---|---|---|
@@ -64,29 +63,28 @@ Three data sources; which ones you have decide which version of the page you get
 `graphify update .` writes the big one: 7,969 nodes and 18,457 edges, which this
 page reduces to 393 files with their symbols and 703 links, or to 17 subsystems
 and 49 edges. The repository carries both reductions and leaves the 11 MB where
-graphify put it, which is what makes the published site the flyable page.
+graphify put it.
 
-Refreshing the distillates is `make docs-graph-refresh`, a deliberate step and
-never a side effect of a build: its first line is the commit the graph was
-extracted at, so a build that rewrote it would dirty every worktree with
-graphify data and conflict between any two branches that had built. Run it, read
-the diff, commit it on its own. Both files are sorted and one entry per line, so
-a reviewer can see that a subsystem gained four files.
+`make docs-graph-refresh` rewrites the distillates, and is a deliberate step
+rather than a side effect of a build: its first line is the commit the graph was
+extracted at, so a build that rewrote it would dirty every worktree with graphify
+data and conflict between any two branches that had built. Run it, read the diff,
+commit it on its own. Both files are sorted, one entry per line, so the diff is
+reviewable.
 
-The 3D page still needs a renderer that is fetched, not committed:
-`make docs-graph3d` locally, one step in `.github/workflows/pages.yml` for the
-deploy. Without it the flat page builds, which is a fallback and not a degraded
-mode.
+The 3D renderer is fetched rather than committed: `make docs-graph3d` locally,
+one step in `.github/workflows/pages.yml` for the deploy. The flat page builds
+without it.
 
 ## Two rules
 
 **Nothing generated is committed.** `dist/` is gitignored, and the fix for a
-stale site is to build it again. Same reason `twin.js` is not in the tree: it is
-36 KB of minified emscripten on one line, built from `twin/twin_glue.c` when
-emscripten is present, and the twin page says so plainly when it is not.
+stale site is to build it again. `twin.js` follows the same rule: 36 KB of
+minified emscripten on one line, built from `twin/twin_glue.c` when emscripten is
+present, and the twin page says so when it is not.
 
 **Nothing outside this repository.** Everything the site needs is in this
-directory, so a fresh clone and CI build the same thing a contributor does.
+directory, so a fresh clone and CI build what a contributor builds.
 
 ## Design system
 
@@ -96,10 +94,10 @@ that holds AA. Token and class names are unchanged from that source, so it can
 be re-vendored by copying files over.
 
 Two signals, not one accent. Mint is the first path: direct, line-of-sight,
-trusted. Amber is the late path: obstructed, or a relay's added delay. That is
-the classifier the firmware ships, so the pair means the same thing on the
-landing hero, in the twin and in the guides. The aliases are `--path-first` and
-`--path-late` in `tokens/colors.css`.
+trusted. Amber is the late path: obstructed, or a relay's added delay. That is the
+classifier the firmware ships, so the pair means the same thing on the landing
+hero, in the twin and in the guides. `--path-first` and `--path-late` in
+`tokens/colors.css`.
 
 Fonts are self-hosted WOFF2, declared by `tokens/typography.css`. The one
 external subresource on the whole site is `esp-web-tools` on the flasher page,

@@ -13,8 +13,8 @@ A port translates a platform API into a contract declared by a portable module,
 then returns control to the shared implementation. Product policy and protocol
 behavior do not belong here.
 
-The host OSAL backend is under `tests/host/port/`, because it also serves as the
-test fake.
+The host OSAL backend is under `tests/host/port/`: it also serves as the test
+fake.
 
 [`PORTING.md`](../PORTING.md) has the five-seam chipset contract and the
 integration flow.

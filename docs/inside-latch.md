@@ -1,9 +1,9 @@
 # Inside latch: never a passive unlock from inside, on two BLE dongles
 
 The DWM3001CDK must never passively unlock while the credentialed phone is
-inside the door. The design meets that with the hardware already on the bench
--- the lock plus two nRF52840 BLE witness dongles -- wirelessly: no Raspberry
-Pi, no J-Link held open, no USB host in steady state, no new sensor types.
+inside the door. The design meets that wirelessly with the hardware already on
+the bench, the lock plus two nRF52840 BLE witness dongles: no Raspberry Pi, no
+J-Link held open, no USB host in steady state, no new sensor types.
 
 > Convention (matches `approach-direction.md`): **VERIFIED** = confirmed
 > against this tree or on silicon; **MEASURED** = a dated bench observation
@@ -13,7 +13,7 @@ Pi, no J-Link held open, no USB host in steady state, no new sensor types.
 
 Two consequences of the goal:
 
-- Failing to unlock outside is not a defect. The user retries, taps NFC, or
+- Failing to unlock outside is not a defect: the user retries, taps NFC, or
   uses the app. No inside-safety is traded for outside-availability.
 - Losing evidence must not unlock. Dead dongle, dropped mesh, reboot,
   corrupt storage: each must leave the lock refusing to open from inside.
@@ -32,24 +32,24 @@ The three candidate routes from the task brief, against the owner constraint
 | C: hybrid (latch + live classification at crossings) | **chosen, with BLE in place of UWB** | the latch is the veto authority; the BLE differential is consulted only at the one moment it is reliable |
 
 Route C, with one structural change to how the witnesses are used. Not a
-continuous classifier -- the 2026-08-11 bench notes in `ultrawidelock_side.c`
+continuous classifier: the 2026-08-11 bench notes in `ultrawidelock_side.c`
 record why that fails (49% of windows in the dead band at the door plane, 37
-refusals against 2 grants on one walk) -- but a **walk-up notary**: consulted
+refusals against 2 grants on one walk). Instead a **walk-up notary**, consulted
 only to CLEAR the inside veto during a live approach, at 3-8 m out where the
 differential is unambiguous, the cleared state then persisting through the dead
 band as state rather than an expiring reading. That retires the
 `outside_hold_ms` hack rather than tuning it.
 
-Answers to the brief's three explicit questions:
+Answers to the brief's three questions:
 
 1. **Devices beyond the lock:** two nRF52840 dongles (~$10 class), one
    inside, one outside, each on a USB charger. The threshold role remains in
    the firmware but is optional. No Pi, no UWB satellite, no door sensor.
-2. **Wireless:** yes. Reports ride Thread (the lock already runs standalone
+2. **Wireless:** yes. Reports ride Thread (the lock runs standalone
    OpenThread as a Matter MTD); one-time enrollment rides BLE. No probe, no
    USB data connection, ever.
 3. **What removes per-session learning and the address handshake:** the lock
-   stops trying to identify the phone at all. The witnesses report keyed-hash
+   stops trying to identify the phone. The witnesses report keyed-hash
    tuples for the loudest advertisers they hear, under a group key the lock
    does not hold, and the lock picks the one label whose RSSI rises at the
    outside witness while its authenticated UWB range falls (section 5).
@@ -61,18 +61,15 @@ Answers to the brief's three explicit questions:
 
 ## 2. Architecture: two layers with different failure semantics
 
-The two layers fail in opposite directions, and the safe layer is the
-authority.
-
-**Layer 1 -- the latch (authority).** Per-credential persistent state on the
+**Layer 1, the latch (authority).** Per-credential persistent state on the
 lock. Its resting state is INSIDE. It needs no RF evidence to hold, so
 evidence loss cannot move it. While it holds, passive unlock is vetoed
-unconditionally at the same call site the SIDE gate uses today
+unconditionally at the same call site the SIDE gate uses
 (`main.c`, UNLOCK_PREDICT / UNLOCK_THRESHOLD); deliberate paths (NFC
 Express, Home commands, mechanical) never enter that call site and stay
 ungated.
 
-**Layer 2 -- the witnesses (clear evidence).** Consulted only during a live
+**Layer 2, the witnesses (clear evidence).** Consulted only during a live
 credential session, only to clear the veto for that one approach. Absence of
 witness evidence means the clear does not happen; it never means anything
 else. A dead dongle degrades the product to "NFC-only lock", never to
@@ -105,7 +102,7 @@ struct latch_rec {
 ```
 
 Persisted via the settings subsystem (already in the lock image for Matter
-fabric storage -- VERIFIED, `test_matter_fab_settings.c` and `settingsfake`
+fabric storage: VERIFIED, `test_matter_fab_settings.c` and `settingsfake`
 exist). Written on change only; a few writes per day, so flash wear is not a
 factor.
 
@@ -118,9 +115,9 @@ factor.
    says.
 2. **The same grant sets `crossing_opportunity = true`, for every credential
    including the one that just unlocked.** The lock cannot tell an entry from
-   an exit -- the same tap serves both -- so a door opening is a crossing
-   chance for everyone who was near it, and the dwell rather than the flag is
-   what stops a walk-in from clearing the latch it just set. If stage P7
+   an exit, since the same tap serves both, so a door opening is a crossing
+   chance for everyone who was near it, and the dwell, not the flag, stops a
+   walk-in from clearing the latch it just set. If stage P7
    measures out, a sensed LIS2DH12 door swing is a second such event; it
    carries no identity, so it sets every credential's flag too.
 
@@ -135,17 +132,16 @@ factor.
 
 ### 3.3 The clear: five conditions, all in one approach
 
-Passive unlock for credential C is permitted only when every one of these
-holds:
+Passive unlock for credential C is permitted only when all of these hold:
 
 1. A live credential session exists and the lock holds C's current peer
-   address (in RAM only -- section 7).
-2. `C.crossing_opportunity == true` -- there has been a door-crossing
+   address (in RAM only, section 7).
+2. `C.crossing_opportunity == true`: there has been a door-crossing
    opportunity since C was last confirmed inside. With two or more credentials
    this is independent evidence: a phone that never left cannot be freed by RF
    alone, because somebody else has to have opened the door. With ONE credential
    it reduces to "this lock has been opened at least once", which every lock in
-   service satisfies, and the discrimination rests entirely on the dwell in 1
+   service satisfies, and the discrimination rests on the dwell in 1
    and the window run in 4. Size those accordingly.
 3. Witness reports echo the current challenge nonce, their counters are
    monotonic per (witness, boot_id), and their age is inside the staleness
@@ -155,7 +151,7 @@ holds:
    from beyond a minimum distance (default 3 m). The existing
    `ultrawidelock_side` classifier and temporal filter compute this;
    the latch consumes only decisions that `ultrawidelock_side_may_passive_unlock`
-   already accepts.
+   accepts.
 5. The grant then fires, and event 1 immediately re-latches INSIDE.
 
 Failure of any condition leaves the veto standing. NFC, app, and mechanical
@@ -169,7 +165,7 @@ deliberate unlock re-seeds the record and restores normal walk-up behaviour.
   event): the opportunity from the last grant still stands, so the walk-up
   turns on the dwell and the window run like any other. Before the 2026-08-20
   correction this case was vetoed until an NFC tap. P7's accelerometer is
-  correspondingly less load-bearing now: it would restore opportunity as
+  less load-bearing now: it would restore opportunity as
   *independent* evidence for the single-credential case, not unstick a door
   that would otherwise stay shut.
 - **Multi-credential, one leaves and one stays:** latches are per
@@ -261,7 +257,7 @@ Rules the lock enforces (all lock-side; witnesses hold no authority):
 
 1. CCM must verify under that witness's key, or the datagram never existed.
 2. `ctr` must be strictly monotonic per (witness, boot_id). A new `boot_id`
-   resets the counter and is accepted -- a witness reboot costs at most a
+   resets the counter and is accepted: a witness reboot costs at most a
    brief veto, never a lockout.
 3. Age since arrival must be inside the staleness bound
    (`ultrawidelock_satellite`'s rule; default 1500 ms).
@@ -278,10 +274,10 @@ Rules the lock enforces (all lock-side; witnesses hold no authority):
 Identity: there is none. The witness computes `hash24 =
 trunc24(hash(group_key, AdvA))` for the loudest K advertisers, under a key the
 WITNESSES share and the lock does not, so the same advertiser carries the same
-label at both witnesses, which is what lets inside be compared against outside,
-while staying opaque to the lock and to the air.
+label at both witnesses, letting inside be compared against outside while
+staying opaque to the lock and to the air.
 
-The lock does not match that label against anything. It cannot. The phone is
+The lock does not match that label against anything, and cannot. The phone is
 the central, so the address the lock holds from the credential connection is
 an InitA generated for the initiating role, while the witnesses hear
 advertising sets with their own address state and rotation timers. The Core
@@ -310,22 +306,22 @@ PROV <role> <link-key-hex32> <group-key-hex32> <dataset-hex>
 SHOW | WIPE | HELP        (make witness-prov-help prints the full form)
 ```
 
-- **role** — `inside`, `outside` or `threshold`. A mounting fact, declared
+- **role**: `inside`, `outside` or `threshold`. A mounting fact, declared
   once. Not a build flag, so all dongles run one image and moving one from
   inside to outside is a re-provision, not a reflash.
-- **link key** — 16 bytes, DIFFERENT per dongle. Seals that witness's reports;
+- **link key**: 16 bytes, DIFFERENT per dongle. Seals that witness's reports;
   the lock holds the same bytes at
   `ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role`.
-- **group key** — 16 bytes, THE SAME on every dongle and deliberately NOT on
+- **group key**: 16 bytes, THE SAME on every dongle and deliberately NOT on
   the lock. It labels advertisers so inside can be compared against outside
   (section 5) while the labels stay opaque to the lock.
-- **dataset** — the Thread active operational dataset TLVs. Take them from the
-  lock, already on the network: build it with
+- **dataset**: the Thread active operational dataset TLVs. Take them from the
+  lock, already on the network: build with
   `overlays/thread-dataset-dump.conf` appended to the whole default `CDK_CONF`
   list (its header says why the whole list), flash, and press SW2. The dump is
   on the commissioning-window path, not the attach path, so it prints when the
   window opens. The alternative, `ot-ctl dataset active -x`, needs a node with a
-  CLI, which an Apple border router does not give you.
+  CLI, which an Apple border router does not provide.
 
 All four persist through the witness's numeric key-value seam. It cold-boots
 into scanning, joining and reporting, and holds that for weeks with nothing
@@ -339,7 +335,7 @@ The lock has to be told the same link keys, and it cannot be told them on the
 image that uses them: `overlay-latch.conf` is layered on `overlay-thread.conf`,
 which sets `CONFIG_SHELL=n` because reader plus console plus Thread overruns
 this part's RAM by 1,752 B (`apps/dwm3001cdk-lock/Kconfig`). The image that
-runs the latch has no console at all.
+runs the latch has no console.
 
 So enrollment happens on the reader image, which does have one, and the record
 survives the reflash:
@@ -353,14 +349,14 @@ ultrawidelock witkey outside  <link-key-hex32>
 make build LATCH=1 && make flash LATCH=1      # NOT flash-erase
 ```
 
-`flash` without `--erase` is what preserves the settings partition at 0x7E000,
-the same property the reader identity already depends on (`pm_static.yml`).
+`flash` without `--erase` preserves the settings partition at 0x7E000, the same
+property the reader identity depends on (`pm_static.yml`).
 `flash-erase` takes the witness keys with everything else, and the lock comes
 back accepting no report from any witness.
 
 Like the dongle's console, `witkey` prints no key material back. It refuses an
-all-zero key, which is what both an uninitialised buffer and a mistyped
-`openssl rand` produce. A key that does not match its dongle is not silent: no
+all-zero key, produced by both an uninitialised buffer and a mistyped
+`openssl rand`. A key that does not match its dongle is not silent: no
 enrolled key opens the datagram, and `witness_link.c` says so on the log, rate
 limited to once per 10 s.
 
@@ -368,18 +364,18 @@ limited to once per 10 s.
 with `CONFIG_BT_OBSERVER=n` and `CONFIG_BT_CENTRAL=n`: it advertises and
 accepts a connection, and that is all its BLE stack does. Wireless enrollment
 needs the lock to scan for a dongle or connect to one, so it means adding a BLE
-role to the stack that carries the credential -- the most security-sensitive
-surface on the device -- to save a one-time step performed while the dongle is
+role to the stack that carries the credential, the most security-sensitive
+surface on the device, to save a one-time step performed while the dongle is
 in your hand, plugged into the machine that just flashed it. Bad in the
 direction that matters, and it does not touch the requirement that STEADY STATE
-be wireless, which it is.
+be wireless.
 
 ## 7. Privacy
 
 - The credential peer address exists in lock RAM for the life of the
-  session, exactly as it already must for the connection itself. It is
+  session, as it must for the connection itself. It is
   never logged (the `SIDE_PEER_EMIT` bench logger stays default n and off
-  in this design), never persisted, never transmitted -- the lock sends
+  in this design), never persisted, never transmitted: the lock sends
   nonces, not addresses.
 - Witnesses transmit 24-bit keyed truncations. Without the per-witness
   link key an observer cannot map them to addresses, and the address a
@@ -430,12 +426,12 @@ dongle, a weaker discriminator, deliberately not designed here.
   one.
 - **`ultrawidelock_fusion_may_predict()`** stays out of the new path. Its
   fail-open-on-UNKNOWN polarity is documented and intentional for the
-  legacy ANCHOR=1 availability goal, and is exactly wrong for this one.
+  legacy ANCHOR=1 availability goal, and wrong for this one.
   VERIFIED: it is unreachable in a SIDE=1 build (`main.c` guards it with
   `!IS_ENABLED(CONFIG_ULTRAWIDELOCK_SIDE_GATE)`).
 
 The existing `ultrawidelock_side` classifier, temporal filter, decision log
-and `ultrawidelock_satellite` staleness rule are all kept and reused as-is.
+and `ultrawidelock_satellite` staleness rule are kept and reused as-is.
 
 ---
 
@@ -458,7 +454,7 @@ ULTRAWIDELOCK_WITNESS_STALE_MS       int, default 1500
 `overlay-latch.conf` sets `ULTRAWIDELOCK_ANCHOR=y` and
 `ULTRAWIDELOCK_SIDE_GATE=y` (the latch consumes the side filter's
 decisions) plus the three new bools; `SIDE_FEED_RTT` and `SIDE_PEER_EMIT`
-stay off -- no probe, no address logging.
+stay off: no probe, no address logging.
 
 Size, MEASURED 2026-08-20 on this tree. The earlier estimate of ~7 KB flash /
 ~1.1 KB RAM held.
@@ -473,7 +469,7 @@ Size, MEASURED 2026-08-20 on this tree. The earlier estimate of ~7 KB flash /
 The `RELEASE=1` row is from 2026-08-19 and predates the 128 B the
 no-key-opened warning added; the two dev rows are current.
 
-The delta is not the interesting number; the residue is. On the dev config
+The residue matters more than the delta. On the dev config
 LATCH=1 leaves 8,992 B free, not a budget anything else can be added to. On
 the shipping configuration it leaves 27,128 B, which is workable. The
 asymmetry is the logging the dev config carries, and it means the enrollment
@@ -483,8 +479,8 @@ will look affordable and not be.
 Default build unchanged, VERIFIED 2026-08-20: commit 588459f5 and this
 branch's HEAD both produce a 417,684 B loadable image differing in exactly 8
 bytes, all inside OpenThread's version string (`Aug 19 2026 05:14:11` against
-`Aug 20 2026 14:27:53` -- the build date rolled between the two comparisons,
-so more digits differ than the 4 measured on 2026-08-19). text, data and bss
+`Aug 20 2026 14:27:53`). The build date rolled between the two comparisons,
+so more digits differ than the 4 measured on 2026-08-19. text, data and bss
 are identical to the byte, and every allocated section matches in size and
 placement.
 
@@ -497,7 +493,7 @@ then hardware. P0 needs the bench; P2-P4 do not depend on its numbers and
 can run in parallel. Each stage carries its pass/fail check; a stage failing
 twice after fixes stops downstream work per the working rules.
 
-**P0 -- multiprotocol spike (plan invalidator, hardware).**
+**P0: multiprotocol spike (plan invalidator, hardware).**
 Build the existing ble-witness with an added OpenThread SED overlay on an
 nRF52840 dongle; attach to a bench Thread network; measure filtered adv
 packets per 2 s window at 2 m from an iPhone, while attached.
@@ -505,10 +501,10 @@ Pass: >= 3 packets/window sustained. Fail: the witness link moves to a
 design review (BLE transport reconsidered) before any integration work.
 Also re-verifies the section 8 advertising assumption on current iOS.
 
-**P1 -- this document.** Done when it answers every question in the task
+**P1: this document.** Done when it answers every question in the task
 brief and the safety table enumerates every loss case.
 
-**P2 -- WV2 codec, platform-free.**
+**P2: WV2 codec, platform-free.**
 `modules/ultrawidelock_anchor/{include/ultrawidelock_witness_msg.h,src/ultrawidelock_witness_msg.c}`:
 encode/decode + validation, no crypto (sealing stays with PSA at the call
 site), following the `ultrawidelock_uwb_msg` builder/parser split. Host
@@ -517,7 +513,7 @@ tests `tests/host/test_ultrawidelock_witness_msg.c`, registered in
 Pass: `make check` green; round-trip, truncation, and malformed-input
 cases covered.
 
-**P3 -- latch module, platform-free.**
+**P3: latch module, platform-free.**
 `modules/ultrawidelock_anchor/{include/ultrawidelock_latch.h,src/ultrawidelock_latch.c}`:
 the section 3 state machine over caller-owned structs, integer-only,
 serialize/deserialize with CRC. Host tests
@@ -528,12 +524,12 @@ regression rejected, silence never clears, grant re-latches.
 Pass: `make check` green; every safety-table row that is host-testable has
 a named test.
 
-**P4 -- side-filter replay evidence.**
+**P4: side-filter replay evidence.**
 Extend `test_ultrawidelock_side_replay.c`-style traces with a synthetic
 walk-up and a through-door misread trace; assert the latch clears on the
 first and refuses the second. Pass: `make check` green.
 
-**P5 -- lock integration behind LATCH=1.**
+**P5: lock integration behind LATCH=1.**
 `apps/dwm3001cdk-lock/src/witness_link.c` (otUdpSocket, nonce epochs, CCM
 via PSA, pairing, feeds `ultrawidelock_side_filter_feed`), latch persistence
 via settings, peer-address capture at CoC open without logging, the veto at
@@ -543,19 +539,19 @@ Pass: default `make build` byte-identical to baseline;
 `make cdk-size CDK_SIZE_REPORTS=0 CDK_BUILD=build/cdk-latch` reports the
 delta against the section 10 budget.
 
-**P5a -- lock-side enrollment. BUILT.**
+**P5a: lock-side enrollment. BUILT.**
 `ultrawidelock witkey <role> <hex32>` on the reader image writes
 `ULTRAWIDELOCK_KV_KEY_LINK_WITNESS_KEY_BASE + role`; the record survives the
 reflash to the Thread image because `make flash` does not erase. Restoring it
 exposed a separate defect: commit 4bdfd44a had replaced `prov_shell.c`'s line
 in `apps/dwm3001cdk-lock/CMakeLists.txt` with the `side_feed.c` one instead of
-adding it, so the provisioning console -- `prov`, `import`, `export`, `erase`
--- had been absent from every build since 2026-08-11 while the file and its
+adding it, so the provisioning console (`prov`, `import`, `export`, `erase`)
+had been absent from every build since 2026-08-11 while the file and its
 comment stayed in the tree. Both fixed here.
 Pass: `make reader` links and `cmd_witkey` is in its map (VERIFIED); the lock
 image is unchanged (VERIFIED, section 10). NOT exercised on hardware.
 
-**P6 -- witness firmware v2. BUILT.**
+**P6: witness firmware v2. BUILT.**
 `examples/zephyr/ble-witness/` is one image for every mounting position: it
 labels every advertiser under the group key, ranks them with the shared
 accumulator, seals a WV2 window under its link key and sends it over Thread as
@@ -563,20 +559,19 @@ a sleepy end device. `LEARN`, `ADDR`, the per-role build flag and the UART
 summary line are gone, and it shares the lock's codec. Builds at 285,576 B
 flash / 96,360 B RAM on the nRF52840, 27.56% and 36.76% of the part.
 Pass: two dongles, flashed identically, provisioned with different roles, each
-cold-boots to solid-LED and reports with no host attached. NOT YET RUN -- it
+cold-boots to solid-LED and reports with no host attached. NOT YET RUN: it
 needs the hardware, the same session as P0.
 
-**P7 -- optional accel opportunity source.**
+**P7: optional accel opportunity source.**
 A bench capture deciding whether LIS2DH12 door-swing transients are detectable
 at low mg (UNMEASURED; the SLAM Kconfig proves the IRQ wiring exists). If not,
 the accel opportunity source is dropped and the NFC-after-mechanical-exit tax
 in section 3.4 stands.
-Wireless enrollment is NOT in this stage any more; see section 6 for what
-replaced it and why.
+Wireless enrollment is no longer in this stage; see section 6.
 Pass: 20 normal door swings all detected, 0 false events overnight; otherwise
 record the negative result and drop the feature.
 
-**P8 -- bench soak and margin sizing.**
+**P8: bench soak and margin sizing.**
 Scripted walk-ups from outside; resident-phone weekend soak inside with
 daily door traffic by a second credential. Size the outside margin and N
 from the recorded traces; write the measured numbers back into the module
@@ -585,9 +580,9 @@ Pass: zero passive unlocks with the phone inside across the soak; walk-up
 grant rate reported honestly, whatever it is (a low rate is a tuning item,
 not a safety failure).
 
-**P9 -- size report + doc closure.**
+**P9: size report + doc closure.**
 Measured flash/RAM delta for LATCH=1 against the committed baseline; update
-this document's section 10 with measured numbers; note the RTT feed's
+section 10 with measured numbers; note the RTT feed's
 demotion in its Kconfig help. Updating `SIDE_GATE.md`'s operator flow is a
 repo-stance change and is routed to the main session rather than done
 unilaterally here.

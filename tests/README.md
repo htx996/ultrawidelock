@@ -25,8 +25,8 @@ change you made.
 | `make regress` | the NCS toolchain, `./workspace`, a signing key | the above, plus the network and emscripten suites, every DWM3001CDK configuration and the size gate | ~15 min |
 | `make regress-hil` | a reader on its probe and the DK as the phone | the above, plus the walk-up loop on air | ~25 min |
 
-CI runs the first tier only, and says why in `.github/workflows/ci.yml`: the NCS
-toolchain and its multi-GB workspace are more than a hosted runner should carry.
+CI runs the first tier only (`.github/workflows/ci.yml`): the NCS toolchain and
+its multi-GB workspace are more than a hosted runner should carry.
 `make regress` is the pre-push gate for anything reaching Kconfig, devicetree, a
 linker script or flash fit. `make regress-hil` writes
 `build/regress-hil/<timestamp>/verdict.txt`, mapping each stage to its row in
@@ -56,16 +56,14 @@ Both entries are recorded; the shipping one is primary. `fw-regress` ends with
 behind HEAD and says so loudly past `CDK_SIZE_AGE_WARN` (25). It warns rather
 than fails, because a feature branch is legitimately ahead of the baseline.
 
-`patchdrift` is registered but outside the default set, running from
-`make regress` instead: it fetches from public GitHub, so it cannot be in a set
-that has to pass offline. The `twin` suite is in the default set and needs the
-emscripten SDK, which it skips loudly for rather than passing quietly.
+`patchdrift` runs from `make regress` rather than the default set: it fetches
+from public GitHub, and the default set has to pass offline. The `twin` suite is
+in the default set and skips loudly without the emscripten SDK.
 
-A stage whose compile fails fails the run. Worth stating because it was not
-always true: stages run in parallel, and one invoked as `"$fn" || rc=$?` loses
-`errexit` to bash's condition context, so a failed compile fell through and ran
-the *previous* binary. Each stage now runs in its own `(set -e; ...)` subshell
-whose real status `wait` reports.
+A stage whose compile fails fails the run. Stages run in parallel, and one
+invoked as `"$fn" || rc=$?` loses `errexit` to bash's condition context, so a
+failed compile once fell through and ran the *previous* binary. Each stage now
+runs in its own `(set -e; ...)` subshell whose real status `wait` reports.
 
 ## Static analysis
 
@@ -78,10 +76,9 @@ Four passes read the portable tree, each catching what the others cannot.
 | `make cbmc` | CBMC | the wire parsers exhaustively, within bounds | minutes |
 | `make sca` | Clang Static Analyzer | values followed across functions and branches | seconds |
 
-`make lint` runs inside `make check` and CI. `make sca` does not, because
-CodeChecker is a Python package rather than a one-line install and requiring it
-would fail a clean checkout for an unrelated reason. Run it before a release, or
-when touching parsing and session code:
+`make lint` runs inside `make check` and CI. `make sca` does not: CodeChecker is
+a Python package rather than a one-line install. Run it before a release, or when
+touching parsing and session code:
 
 ```sh
 python3 -m venv .venv-sca
@@ -89,7 +86,7 @@ python3 -m venv .venv-sca
 CODECHECKER=.venv-sca/bin/CodeChecker make sca
 ```
 
-Both gates cover `modules/` and `include/` only: `ports/` and `apps/` cannot be
-parsed without Zephyr and ESP-IDF expanding their macros, so pointing either
-tool at them reports missing SDK headers rather than defects. Each takes a
-`--self-test` flag that plants a bug of the class it exists to catch.
+Both gates cover `modules/` and `include/` only: `ports/` and `apps/` need Zephyr
+and ESP-IDF to expand their macros, so either tool aimed at them reports missing
+SDK headers rather than defects. Each takes a `--self-test` flag that plants a bug
+of the class it exists to catch.

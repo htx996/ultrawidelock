@@ -1,8 +1,7 @@
 # Release bundle support
 
-Documentation templates and flash helpers packaged with published firmware.
-Source material for `make release`, `make nrf-release` and `make esp-release`,
-not a build-output directory.
+Documentation templates and flash helpers packaged with published firmware,
+consumed by `make release`, `make nrf-release` and `make esp-release`.
 
 Each board directory holds:
 

@@ -1,10 +1,9 @@
 # Portable modules
 
-The shared implementation. The purity gate keeps it free of OS dependencies,
-ratcheting a small explicit set of legacy adapters. Backends live in `ports/`.
-`ultrawidelock_` is the namespace prefix on module directories, `ULTRAWIDELOCK_*`
-Kconfig symbols and Zephyr module names, so nothing collides with Zephyr, NCS or
-ESP-IDF.
+The shared implementation; backends live in `ports/`. The purity gate keeps it
+free of OS dependencies, ratcheting a small explicit set of legacy adapters.
+`ultrawidelock_` prefixes module directories, `ULTRAWIDELOCK_*` Kconfig symbols
+and Zephyr module names, so nothing collides with Zephyr, NCS or ESP-IDF.
 
 | Module | Responsibility |
 |---|---|

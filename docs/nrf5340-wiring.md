@@ -6,9 +6,9 @@ Every pin and connection on the nRF bench stack. Bring-up is
 ## Source of truth
 
 [`../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay`](../apps/nrf5340dk-lock/overlays/dw3000-nfc.overlay)
-is authoritative: the build compiles it and it cannot drift. This page adds what
-a devicetree cannot carry, being Arduino header positions, far-end pin names,
-power rails and stack order. **If the two disagree, the overlay wins.**
+is authoritative: the build compiles it and it cannot drift. What a devicetree
+cannot carry is here: Arduino header positions, far-end pin names, power rails
+and stack order. **If the two disagree, the overlay wins.**
 
 Resolved from the generated `build/matter-aliro-door-lock-app/zephyr/zephyr.dts`:
 
@@ -33,21 +33,21 @@ DWM3000EVB (DW3110)             UWB radio, SPIM4 @ 8 MHz, seated on the DK
 nRF5340 DK
 ```
 
-The two proto shields are a patch panel. Nothing crosses between them except the jumpers
-you fit, power included. That is the point: the DWM3000EVB occupies the native Arduino
-SPI positions D10 to D13, so the NFC board cannot also use them and its signals are
-re-routed to A2 to A5 on the way up.
+The two proto shields are a patch panel: nothing crosses between them except the jumpers
+you fit, power included. The DWM3000EVB occupies the native Arduino SPI positions D10 to
+D13, so the NFC board cannot also use them and its signals are re-routed to A2 to A5 on
+the way up.
 
-The EVB also acts as the spacer that lifts everything above it clear of the DK's P5 and
-P20 connectors. The vendor documents contact with those connectors as a cause of NFC
-driver initialization failures.
+The EVB also spaces everything above it clear of the DK's P5 and P20 connectors. The
+vendor documents contact with those connectors as a cause of NFC driver initialization
+failures.
 
 ## Every pin and every connection
 
-Read each row left to right as the signal's path up the stack. The DWM Arduino pin is the
-DK's own header position, carried up through the seated EVB onto the lower proto shield.
-The step from the DWM Arduino pin to the X-NUCLEO Arduino pin is a jumper between the two
-proto shields. A dash means the signal stops there.
+Each row reads left to right as the signal's path up the stack. The DWM Arduino pin is the
+DK's own header position, carried through the seated EVB onto the lower proto shield. The
+step from there to the X-NUCLEO Arduino pin is a jumper between the two proto shields. A
+dash means the signal stops there.
 
 | nRF pin | DWM3000EVB | DWM Arduino pin | X-NUCLEO Arduino pin | X-NUCLEO NFC12A1 |
 |---|---|---|---|---|
@@ -77,37 +77,36 @@ proto shields. A dash means the signal stops there.
 | rail | pass through | **5V** | **5V** | VBUS |
 | rail | pass through | **GND** | **GND** | ground |
 
-Nine rows carry a bold pair. Those pairs are the nine jumpers, and nothing else on the
-stack is wired by hand. Rows where the DWM3000EVB column names a function are the DW3000's
-own seven signals, taken at the EVB and never carried further up.
+Nine rows carry a bold pair: those are the nine jumpers, and nothing else on the stack is
+wired by hand. Rows where the DWM3000EVB column names a function are the DW3000's own
+seven signals, taken at the EVB and never carried further up.
 
-Pins reserved by the SoC even though nothing on this stack uses them: P1.00 and P1.01 are
+Pins reserved by the SoC though nothing on this stack uses them: P1.00 and P1.01 are
 UART1 RX and TX, P1.02 and P1.03 are I2C1 SDA and SCL. Do not borrow D0, D1, D14 or D15.
-Genuinely free: A0, A1, D2, D3, D4.
+Free: A0, A1, D2, D3, D4.
 
-Two things this table exists to stop:
+Two mistakes to avoid:
 
 * **The four SPI jumpers cross headers.** The DWM side is analog (A2 to A5), the X-NUCLEO
   side is digital (D13, D11, D12, D10). A jumper that looks symmetrical is wrong.
 * **The three power jumpers are not optional.** The proto shields pass no power through on
   their own.
 
-The RESET jumper, DWM D5 to X-NUCLEO D8, is the one value here not taken from either the
-overlay or a vendor wiring table. The vendor tables omit reset entirely, and `reset-gpios`
+The RESET jumper, DWM D5 to X-NUCLEO D8, is the one value not taken from the overlay or a
+vendor wiring table. The vendor tables omit reset, and `reset-gpios`
 is optional in the `x-nucleo-nfc` binding. D8 on the NFC side is derived from the add-on's
 own seated overlay, where reset sits on P1.10, which is D8. Confirm against the board
 pinout before trusting it.
 
-Off-header pins, listed so they are never mistaken for spares: UART0 console on P0.19 to
-P0.22, LED1 PWM on P0.28, external QSPI flash on P0.13 to P0.18.
+Off-header pins, not spares: UART0 console on P0.19 to P0.22, LED1 PWM on P0.28,
+external QSPI flash on P0.13 to P0.18.
 
 ## Before powering
 
 * 3.3 V only, never 5 V on the DW3000, and share a common ground with the DK.
 * Set the DWM3000EVB power-select jumper before anything else. The wrong position makes
-  SPI fail silently, with no device ID and a responder that never listens. This has cost
-  multiple days of debugging on this project. Use the 3.3 V source and read the
-  silkscreen next to the jumper block.
+  SPI fail silently, with no device ID and a responder that never listens. Use the 3.3 V
+  source and read the silkscreen next to the jumper block.
 
 ## Failure signatures
 

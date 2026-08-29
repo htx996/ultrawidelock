@@ -1,13 +1,12 @@
 # Contributing
 
-Thanks for looking at UltraWideLock. This file is the short version of what a
-change needs to be mergeable. The architecture rules it references live in
-[`AGENTS.md`](AGENTS.md), and the board and chipset workflow lives in
+What a change needs to be mergeable. The architecture contract is in
+[`AGENTS.md`](AGENTS.md); the board and chipset workflow is in
 [`PORTING.md`](PORTING.md).
 
 ## What you need
 
-Nothing beyond a C compiler and `python3` is required to run the host suites:
+The host suites need a C compiler and `python3`:
 
 ```sh
 make check
@@ -15,15 +14,13 @@ make check
 
 Run `make tools` to see every host tool, which targets each one gates, and what
 is already installed on your machine. `llvm-cov` and `cbmc` gate `make coverage`
-and `make cbmc`. `cppcheck` is worth installing even though it is optional: the
-`lint` suite inside `make check` skips loudly without it and CI runs it anyway,
-so a missing local copy means finding out on the pull request instead. Zephyr
-builds additionally need nRF Util, which installs the NCS toolchain and which
-`make bootstrap` offers to install for you; ESP32 builds need an installed
-ESP-IDF and, for the Matter lock, esp-matter.
+and `make cbmc`. `cppcheck` is optional but worth installing: `lint` skips loudly without it, and
+CI runs it anyway. Zephyr builds need nRF Util, which installs the NCS toolchain
+and which `make bootstrap` offers to install; ESP32 builds need ESP-IDF and, for
+the Matter lock, esp-matter.
 
-Target builds are not required to contribute. A change confined to `modules/`
-or `tests/` is fully verifiable with the host suites alone.
+A change confined to `modules/` or `tests/` is fully verifiable with the host
+suites alone.
 
 ## Before you open a pull request
 
@@ -35,42 +32,32 @@ bash tests/tooling/port_purity_check.sh --self-test
 make check
 ```
 
-If you touched a port or an application, also build the target it affects:
+After touching a port or an application, build the target it affects:
 `make build`, `make nrf-build`, or `make esp-build APP=... TARGET=...`. ESP port
 integration has `bash tests/ports/esp32/verify_port.sh`; the Zephyr port checks
-under `tests/ports/zephyr/` are already part of `make check`. Say in the pull request
-which of these you actually ran, and on what hardware if any.
+under `tests/ports/zephyr/` are already part of `make check`. Say in the pull
+request which of these you ran, and on what hardware if any.
 
 ## Architecture rules
 
-These are enforced by the purity gates, not just by review:
+The five numbered rules are in [`AGENTS.md`](AGENTS.md#architecture-contract),
+and the purity gates enforce them.
 
-1. `modules/` names no operating system. Public headers in `include/`, private
-   headers and implementation in `src/`.
-2. `ports/zephyr/` names only Zephyr; `ports/esp32/` names only ESP-IDF.
-3. A source must not include another module's `src/`, and build files must not
-   propagate a module `src/` include directory.
-4. Shared sources go in exactly one role manifest under `modules/*/roles/`. Do
-   not duplicate source lists in a consuming build file.
-5. Do not create a chipset-named top-level port when the chipset still uses a
-   supported framework. Extend the framework port, keep board policy in the
-   application.
-
-Do not edit `modules/ultrawidelock_dw3000/dwt_uwb_driver/` or
-`modules/ultrawidelock_dfu/src/detools/`. Those are vendored.
+> [!WARNING]
+> Do not edit `modules/ultrawidelock_dw3000/dwt_uwb_driver/` or
+> `modules/ultrawidelock_dfu/src/detools/`. Those are vendored.
 
 ## Change discipline
 
 - Keep the diff to what the change needs. No drive-by reformatting.
 - Do not weaken a test, a purity rule, or a ratchet allowlist to get a pass. A
-  stale allowlist entry is a failure, and it should be removed by the change
-  that made it unnecessary.
-- Never commit private information, credentials, machine-local paths, or
-  personal identity into files, output, or commit messages. Captures (`.pcap`,
-  `.frc`, bench logs) are gitignored for this reason; a `.frc` in particular
-  carries live key material.
-- Changing `VERSION` requires proving both source-tree and installed
-  consumption with `make sdk-check`.
+  stale allowlist entry is a failure, and the change that made it unnecessary
+  should remove it.
+- Never commit private information, credentials, machine-local paths, or personal
+  identity into files, output, or commit messages. Captures (`.pcap`, `.frc`,
+  bench logs) are gitignored for this reason; a `.frc` carries live key material.
+- Changing `VERSION` requires proving both source-tree and installed consumption
+  with `make sdk-check`.
 
 ## Reporting bugs
 

@@ -1,7 +1,7 @@
 # Zephyr anchor example
 
-A two-anchor double-sided two-way-ranging bench, separate from the lock
-applications and changing nothing about what either board boots as a lock.
+A two-anchor double-sided two-way-ranging bench, independent of the lock
+applications.
 
 Build one role at a time:
 

@@ -4,14 +4,18 @@ Standalone FreeRTOS backends for the DWM3001CDK. Shared protocol code selects
 them with `ULTRAWIDELOCK_PORT_FREERTOS` and must not include Nordic, Qorvo or
 FreeRTOS headers directly.
 
+## Backends
+
+### Core
+
 - `include/ultrawidelock_freertos_platform.h` defines the BSP-owned clock, cycle-counter,
   busy-wait, flash, and logging hooks. Flash is BSP-owned because MPSL has to
   arbitrate the NVMC stall against radio timeslots.
 - `osal/osal_freertos.c` implements deferred work, delayable work, semaphores,
   init hooks, and static-stack threads using only FreeRTOS APIs.
-- `thread/openthread_freertos.c` owns one upstream OpenThread instance on a
-  static task, serializes public API access with a recursive mutex, and provides
-  task and ISR wake paths for tasklets, alarms, and radio work.
+
+### Radio and Bluetooth
+
 - `ble/nimble_sdc_transport.c` implements the static FreeRTOS receive task,
   controller serialization, NimBLE buffer ownership, ACL flattening, and MPSL
   task/ISR wake contract for the SoftDevice Controller HCI boundary.
@@ -46,6 +50,12 @@ FreeRTOS headers directly.
   compiled or linked, and the vendor file is never patched, so re-pinning it is
   a plain re-fetch. `ble/hci_dispatcher_freertos.c` adapts it to the port's
   radio contract.
+- `radio/nrf_802154_irq_freertos.c` maps the driver's IRQ abstraction to CMSIS
+  NVIC; `nrf_802154_misc_freertos.c` supplies entropy-seeded random and
+  die-temperature callouts.
+
+### 802.15.4 timers
+
 - `radio/nrf_802154_clock_freertos.c` implements the 802.15.4 clock platform on
   top of MPSL, which owns the CLOCK peripheral. It uses the source-selecting
   MPSL API because the pinned MPSL deprecates the older one. The low-frequency
@@ -71,11 +81,16 @@ FreeRTOS headers directly.
 - The high-precision timer platform on TIMER1 is Nordic's own
   `nrf_802154_hp_timer.c`, pinned in `platform.lock.yml` and compiled from the
   vendor tree unmodified. Unlike the low-power timer it depends on nothing but
-  nrfx and the Nordic HAL, so it needs no compatibility layer and is used rather
-  than reimplemented.
+  nrfx and the Nordic HAL, so it needs no compatibility layer.
+
+### Thread
+
+- `thread/openthread_freertos.c` owns one upstream OpenThread instance on a
+  static task, serializes public API access with a recursive mutex, and provides
+  task and ISR wake paths for tasklets, alarms, and radio work.
 - `thread/ot_compat/` and `thread/ot_kernel_freertos.c` carry Nordic's own
   OpenThread radio platform, `radio_nrf5.c`, which is the whole otPlatRadio
-  implementation. It is pinned and compiled unmodified rather than rewritten:
+  implementation. It is pinned and compiled unmodified:
   its Zephyr surface is one semaphore, one intrusive queue, an atomic bit
   array, four byte-order helpers, the logging macros and the assertions, and
   every one of those is implemented here over FreeRTOS. The semaphore picks its
@@ -98,11 +113,10 @@ FreeRTOS headers directly.
   records the expiry and wakes the OpenThread task, and the stack's own
   callback runs from that task under the API lock. A deadline already past is
   recorded rather than scheduled, and the flag is cleared before the callback so
-  a re-arm from inside it is not swallowed. The microsecond alarm is absent on
-  purpose: it exists only under
+  a re-arm from inside it is not swallowed. The microsecond alarm exists only under
   `OPENTHREAD_CONFIG_PLATFORM_USEC_TIMER_ENABLE`, which this product leaves at
-  upstream's default of zero, and `make freertos-radio-source-check` fails if
-  that default ever changes.
+  upstream's default of zero; `make freertos-radio-source-check` fails if that
+  changes.
 - `thread/ot_misc_freertos.c` is entropy, reset, and assertions. The reset
   reason is latched at the first call and RESETREAS cleared, because that
   register accumulates bits across resets and a reader that leaves it alone
@@ -110,6 +124,9 @@ FreeRTOS headers directly.
   set, the most specific one is reported. Resetting into the bootloader is
   refused rather than turned into an ordinary reboot, because the DFU backend
   has not defined a boot-mode signal yet.
+
+### Storage
+
 - `storage/kv_flash_freertos.c` is the persistent key-value store the reader's
   provisioning blob and OpenThread's settings both need. It is an append-only
   log over two 8 KB logical pages, each spanning two physical erase pages, so a
@@ -137,9 +154,9 @@ FreeRTOS headers directly.
   A static assert holds `ULTRAWIDELOCK_PROV_BLOB_MAX` (700 bytes at
   `ULTRAWIDELOCK_TRUST_MAX` 6) inside one record, so raising the anchor limit fails the
   build rather than the first provisioning write.
-- `radio/nrf_802154_irq_freertos.c` maps the driver's IRQ abstraction to CMSIS
-  NVIC; `nrf_802154_misc_freertos.c` supplies entropy-seeded random and
-  die-temperature callouts.
+
+### Board services
+
 - `board/time_freertos.c` supplies the three time hooks, from two sources on
   purpose. `ultrawidelock_freertos_uptime_us` must never step backwards over the life of
   the product, so it is the FreeRTOS tick count extended past its 32-bit wrap,
@@ -193,7 +210,7 @@ FreeRTOS headers directly.
   drop a BLE connection. A blocked or cancelled request is retried rather than
   failed, because abandoning the work would leave a partially erased page that
   reads as neither the old contents nor the new. Two things differ from Nordic's
-  own Zephyr driver deliberately: that driver gives a kernel semaphore from
+  own Zephyr driver: that driver gives a kernel semaphore from
   inside the timeslot callback, which this port does not, because the callback
   runs at interrupt priority zero and FreeRTOS forbids its API above
   `configMAX_SYSCALL_INTERRUPT_PRIORITY`; the callback here touches only NVMC
@@ -228,6 +245,9 @@ FreeRTOS headers directly.
   fault has stopped answering, while one that reboots can be opened.
   `ULTRAWIDELOCK_FREERTOS_FATAL_HALT` stops instead, for bench builds. The reset
   shows in RESETREAS as SOFTWARE, which `otPlatGetResetReason` reports.
+
+### Crypto
+
 - `crypto/` selects and starts the crypto provider: Mbed TLS 3.6.6, built
   standalone from its own CMake with the PSA core on. The provider is chosen for
   what already compiles against it rather than for speed:
@@ -265,12 +285,17 @@ FreeRTOS headers directly.
   recognises. That last row earned itself immediately by catching
   `PSA_WANT_GENERATE_RANDOM`, which is Nordic's Kconfig and not an Mbed TLS
   option, copied in from the oracle's list where it would have been silent.
+
+### Frozen contracts
+
 - `peripherals.yml` freezes RTC, TIMER, EGU, vector and clock ownership before
   the first target link.
 - `platform.lock.yml` pins the Qorvo base and the exact OpenThread, nrfxlib, SDC
   opcode-dispatcher, Nordic HAL, Mbed TLS and NimBLE revisions.
 - `make freertos-port-test` runs this backend against a recording FreeRTOS
   double.
+
+### Heap and stacks
 
 Every kernel object this port owns is static, but the build is not heap-free:
 Apache NimBLE's FreeRTOS porting layer creates its own objects dynamically. One 32-entry event queue, the host, HCI and GAP
@@ -279,8 +304,7 @@ per callout. Patching the vendor tree is not an option, so the board build must
 set `configSUPPORT_DYNAMIC_ALLOCATION=1` and `configUSE_TIMERS=1` and provide a
 heap. Those allocations happen once inside `nimble_port_init()` and are never
 freed, so the heap is a fixed startup cost, not runtime fragmentation. `make freertos-ble-source-check` asserts the allocation sites so
-a NimBLE bump that adds more has to be re-costed. The exact heap size is a
-first-link measurement and is not yet established.
+a NimBLE bump that adds more has to be re-costed. The heap size is a first-link measurement.
 
 The dispatch task defaults to a 4096-byte stack at
 `tskIDLE_PRIORITY + 2`; a board build may override `ULTRAWIDELOCK_FREERTOS_OSAL_STACK_BYTES`,

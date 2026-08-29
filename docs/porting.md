@@ -1,31 +1,29 @@
 # Porting to a new chipset
 
-How the UWB engine moves to a new chipset, what it costs, and how to prove a port did not
-change the code the validated target runs.
+How the UWB engine moves to a new chipset, what it costs, and how to prove a port
+did not change the validated target's code.
 
 The primary target is the DWM3001CDK on NCS v3.3.0
 ([`apps/dwm3001cdk-lock`](../apps/dwm3001cdk-lock)): reader, Matter node and
 Thread MTD in one nRF52833 image, hardware-validated to an approach unlock and a
 live Apple Home tile. The nRF5340 DK
-([`apps/nrf5340dk-lock/`](../apps/nrf5340dk-lock/)) is the NFC target and the one
-this chapter's regression check uses, because it carries the largest build; its
-Nordic-binary path is hardware-validated end to end, and the source-stack default
-has a firmware CI build and protocol host tests but awaits the full phone
-checklist. A third port, ESP32-S3 on ESP-IDF, is
-[`ports/esp32/`](../ports/esp32/).
+([`apps/nrf5340dk-lock/`](../apps/nrf5340dk-lock/)) is the NFC target and carries
+the largest build, so the regression check below uses it; its Nordic-binary path
+is hardware-validated end to end, while the source-stack default has a firmware
+CI build and protocol host tests but awaits the full phone checklist. A third
+port is ESP32-S3 on ESP-IDF, [`ports/esp32/`](../ports/esp32/).
 
-This covers the UWB/RTOS seam. A complete Matter/credential lock must also meet
-the cross-port five-fabric, Thread-dataset, selective-removal, SRP and
-last-fabric cleanup rules in
-[`PORTING.md`](../PORTING.md#matterhome-key-multi-admin-contract), which are
-externally visible contracts even when an ESP32 or nRF5340 delegates to CHIP.
+A complete Matter/credential lock must also meet the cross-port five-fabric,
+Thread-dataset, selective-removal, SRP and last-fabric cleanup rules in
+[`PORTING.md`](../PORTING.md#matterhome-key-multi-admin-contract), externally
+visible contracts even when an ESP32 or nRF5340 delegates to CHIP.
 
 ## 1. The contract
 
-Everything the ranging engine needs from a platform is the two headers in
+The ranging engine's whole platform requirement is two headers in
 [`modules/ultrawidelock_port/include/`](../modules/ultrawidelock_port/include/):
 
-- **[`ultrawidelock_port.h`](../modules/ultrawidelock_port/include/ultrawidelock_port.h)** — eight functions plus one mutex:
+- **[`ultrawidelock_port.h`](../modules/ultrawidelock_port/include/ultrawidelock_port.h)**, eight functions plus one mutex:
 
   | Function | Meaning |
   |---|---|
@@ -37,27 +35,27 @@ Everything the ranging engine needs from a platform is the two headers in
   | `ultrawidelock_cycle_get_32` | free-running counter, RX-arm latency probe |
   | `ultrawidelock_mutex_init/lock/unlock` | blocking mutex (credential reader trust store; three lines per backend) |
 
-- **[`ultrawidelock_log.h`](../modules/ultrawidelock_port/include/ultrawidelock_log.h)** — `LOG_ERR/WRN/INF/DBG`, the
+- **[`ultrawidelock_log.h`](../modules/ultrawidelock_port/include/ultrawidelock_log.h)**: `LOG_ERR/WRN/INF/DBG`, the
   hexdump variants, `LOG_MODULE_REGISTER/DECLARE`, and `ultrawidelock_printf`.
 
 Both select a backend from `__ZEPHYR__`, `ESP_PLATFORM`, or `ULTRAWIDELOCK_PORT_HOST`, and `#error`
-if none is defined rather than guessing. Two further headers in
+if none is defined. Two further headers in
 `modules/ultrawidelock_uwb/src/facade/`, `ultrawidelock_bytes.h` (endian-neutral load/store) and `ultrawidelock_util.h`
-(`MIN`/`MAX`/`ARRAY_SIZE`/`IS_ENABLED`), are pure code with no platform content at all;
-they are shared by every target including Zephyr.
+(`MIN`/`MAX`/`ARRAY_SIZE`/`IS_ENABLED`), are pure code with no platform content,
+shared by every target including Zephyr.
 
-**Deliberately not in the contract:** work queues, timers and init hooks. Those
+**Deliberately not in the contract:** work queues, timers and init hooks. They
 appear only in `uwb_rxdiag.c`, `uwb_selftest.c`, `ultrawidelock_logfmt.c`,
-`ultrawidelock_logquiet.c` and `ultrawidelock_shell.c`, which are Zephyr-only and
-in no port's source list. The `k_work` / `k_sem` / `k_poll` surface in
-`dw3000_spi.c` and `dw3000_hw.c` is excluded too, because every port supplies its
-own backend for those two files. Adding any of it would multiply the port surface
-for code that never runs on the ranging path.
+`ultrawidelock_logquiet.c` and `ultrawidelock_shell.c`, all Zephyr-only and in no
+port's source list. The `k_work` / `k_sem` / `k_poll` surface in `dw3000_spi.c`
+and `dw3000_hw.c` is excluded too: every port supplies its own backend for those
+two files. Adding any of it would multiply the port surface for code that never
+runs on the ranging path.
 
 ## 2. What a port costs
 
 The cost axis is the **RTOS**, not the chipset. Under Zephyr the SPI and GPIO layers are
-devicetree-abstracted, so a new Zephyr-supported SoC needs no C at all.
+devicetree-abstracted, so a new Zephyr-supported SoC needs no C.
 
 | Tier | Work | Targets | Effort |
 |---|---|---|---|
@@ -65,58 +63,56 @@ devicetree-abstracted, so a new Zephyr-supported SoC needs no C at all.
 | **1. New RTOS** | A branch in `ultrawidelock_port.h` + `ultrawidelock_log.h` (about 55 lines), plus a DW3000 SPI/GPIO/IRQ backend (about 350 lines) | ESP-IDF (**done**), Pico SDK (RP2350), STM32Cube + FreeRTOS, bare metal | 2 to 4 days |
 | **2. New UWB silicon** | A new driver under the `ultrawidelock_uwb_facade.h` seam. Not a port. | Anything that is not DW3xxx | Weeks, gated on driver availability |
 
-Effort figures other than ESP-IDF are estimates from the measured line counts, not from
-completed ports.
+Effort figures other than ESP-IDF are estimates from line counts, not completed ports.
 
-**Scope of the Tier 0 claim.** It applies to the **UWB engine module**, which is
-SoC-neutral apart from one guarded block, the nRF5340 HFCLK boost in
+**Scope of the Tier 0 claim.** It applies to the **UWB engine module**,
+SoC-neutral apart from one guarded block: the nRF5340 HFCLK boost in
 `ultrawidelock_uwb_facade.c`. It does **not** cover the full Matter door-lock
 product: `scripts/nrf5340dk-build.sh` pins `nrf5340dk/nrf5340/cpuapp` and drives
 a sysbuild with a separate `ipc_radio` network-core image, so moving the whole
 application to a single-core part such as nRF52840 is a sysbuild and
-Matter-transport exercise well beyond a devicetree overlay. Porting the engine is
-cheap; porting the product is not.
+Matter-transport exercise well beyond a devicetree overlay.
 
-The ESP-IDF port's entire target-specific surface for the ranging engine is
+The ESP-IDF port's target-specific surface for the ranging engine is
 `ports/esp32/components/ultrawidelock_uwb/port/`: `dw3000_spi.c` (169),
 `dw3000_hw.c` (180) and `ultrawidelock_wrap_stubs.c` (21), with no Zephyr
 compatibility layer.
 
 **Beyond the engine.** A complete lock also needs the credential-auth reader from
-`modules/ultrawidelock_cred`, which brings two more per-platform seams, both small
-and both with ESP-IDF worked examples:
+`modules/ultrawidelock_cred`: two more per-platform seams, both small, both with
+ESP-IDF worked examples:
 
 - a **BLE transport** implementing [`ultrawidelock_ble.h`](../modules/ultrawidelock_cred/include/ultrawidelock_ble.h)
   (the NimBLE backend is `ports/esp32/components/ultrawidelock_ble/ultrawidelock_ble_esp32.c`);
 - a **storage backend** for the `ultrawidelock_prov` trust store (the NVS one is
   `ports/esp32/components/ultrawidelock_reader/ultrawidelock_prov_nvs.c`).
 
-Portable crypto calls `ultrawidelock_prim.h`. Target builds bind that contract
-once to `ultrawidelock_prim_psa.c`, over the framework's PSA implementation;
-host tests bind it to a deterministic double. Modules do not call the framework
-provider directly.
+Portable crypto calls `ultrawidelock_prim.h`. Target builds bind it once to
+`ultrawidelock_prim_psa.c` over the framework's PSA implementation; host tests
+bind it to a deterministic double. Modules do not call the framework provider
+directly.
 
 ## 3. Build tiers
 
-- **Full Aliro UWB** — `CONFIG_ULTRAWIDELOCK_UWB=y`, `ULTRAWIDELOCK_UWB_RESPONDER=y`, `ULTRAWIDELOCK_CRED=y`.
-- **Bring-up only** — `CONFIG_ULTRAWIDELOCK_UWB=y` alone compiles just `uwb_min.c`.
-- **No UWB (NFC-only)** — `CONFIG_ULTRAWIDELOCK_UWB=n`. The whole module is wrapped in
+- **Full Aliro UWB**: `CONFIG_ULTRAWIDELOCK_UWB=y`, `ULTRAWIDELOCK_UWB_RESPONDER=y`, `ULTRAWIDELOCK_CRED=y`.
+- **Bring-up only**: `CONFIG_ULTRAWIDELOCK_UWB=y` alone compiles just `uwb_min.c`.
+- **No UWB (NFC-only)**: `CONFIG_ULTRAWIDELOCK_UWB=n`. The whole module is wrapped in
   `if(CONFIG_ULTRAWIDELOCK_UWB)` and contributes nothing; every external call site in
   `integrations/nrfconnect-door-lock/patches/custom_impl-uwb.patch` is `#ifdef CONFIG_ULTRAWIDELOCK_CRED`, so the build
   links clean with no UWB silicon present.
 
   Aliro makes NFC mandatory and BLE and UWB optional, so an NFC-only lock is a
-  legitimate certified device and this tier drops the DWM3000EVB from the bill of
-  materials. It uses none of the ranging engine: the NFC path needs the
-  credential-auth layer, not `modules/ultrawidelock_uwb`.
+  legitimate certified device, and this tier drops the DWM3000EVB from the bill
+  of materials. The NFC path needs the credential-auth layer, not
+  `modules/ultrawidelock_uwb`.
 
 ### Crypto seam
 
-`ccc_kdf.h` needs one AES-ECB primitive. `ccc_crypto_prim.c` is the thin adapter
-from that existing CCC contract to `ultrawidelock_aes_ecb_encrypt()`, including
-both 128-bit and 256-bit keys. Every target links exactly one primitive provider;
-there is no UWB-specific crypto-backend selector. Zephyr uses nrf_security or
-Mbed TLS PSA, and ESP-IDF and FreeRTOS use their Mbed TLS PSA providers.
+`ccc_kdf.h` needs one AES-ECB primitive. `ccc_crypto_prim.c` adapts that CCC
+contract to `ultrawidelock_aes_ecb_encrypt()`, including both 128-bit and
+256-bit keys. Every target links exactly one primitive provider, with no
+UWB-specific crypto-backend selector. Zephyr uses nrf_security or Mbed TLS PSA,
+and ESP-IDF and FreeRTOS use their Mbed TLS PSA providers.
 
 ### SoC-specific seams
 
@@ -142,14 +138,13 @@ Below the `CONFIG_ULTRAWIDELOCK_CRED` tier there is no engine to reach and each 
 plain decadriver call. The ESP32 port omits `uwb_rxdiag.c`, which is `k_work`-based, and
 supplies the last two from `port/ultrawidelock_seam_stubs.c`.
 
-This replaced a `-Wl,--wrap=dwt_*` link-time interposer, which matters for a port:
-the seam is plain C, needs no linker feature, and a non-GNU toolchain is no longer
-a porting problem. What the linker guaranteed structurally is now enforced by
-`make seam` (the `uwb-seam` gate in `make check`), which scans tracked sources for
-a call reaching past the seam and carries a `--self-test` proving it can fail.
-Keep that mechanical: a site that bypasses the seam is silent on the bench,
-because the radio still arms and ranging still runs, and only the unlock never
-happens.
+This replaced a `-Wl,--wrap=dwt_*` link-time interposer: the seam is plain C,
+needs no linker feature, and a non-GNU toolchain is no longer a porting problem.
+`make seam` (the `uwb-seam` gate in `make check`) now enforces
+what the linker guaranteed structurally: it scans tracked sources for a call
+reaching past the seam and carries a `--self-test` proving it can fail. Keep that
+mechanical: a site that bypasses the seam is silent on the bench, because the
+radio still arms and ranging still runs, and only the unlock never happens.
 
 ## 4. Verifying a port did not change the validated target
 
@@ -193,8 +188,8 @@ replaces them.
 
 Blocked on driver availability, not on engineering:
 
-- **NXP SR150** — NDA/production access only.
-- **QM33 / QM35 as UWB silicon** — the public `qm35-sdk` on GitLab is clonable without an
+- **NXP SR150**: NDA/production access only.
+- **QM33 / QM35 as UWB silicon**: the public `qm35-sdk` on GitLab is clonable without an
   NDA, but it ships FiRa ranging and 360° AoA and does not mention Aliro. The Nordic and
   Qorvo Aliro reference application is distributed to "early technology adopters" on
   request; the terms are not public. Whether the public SDK exposes the STS key injection

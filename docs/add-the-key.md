@@ -1,20 +1,17 @@
 # Add the key
 
-Flashing a board is half the job. The image carries no credential: Apple Home
-mints the Aliro key during Matter commissioning, and until then the lock is a
-radio with nothing to say. Commissioning, for every target, from setup code to
-first walk-up.
+The image carries no credential. Apple Home mints the Aliro key during Matter
+commissioning, and until then the lock is a radio with nothing to say.
+Commissioning, for every target, from setup code to first walk-up.
 
-The browser flasher covers the same ground for an ESP32. Come here for the other
-targets, for what a healthy pairing looks like, and for what to do when one does
-not finish.
+The browser flasher covers the same ground for an ESP32.
 
 ## Before you start
 
 - An iPhone with a UWB chip. iOS 26 is the validated floor.
-- A home hub: a HomePod or an Apple TV. Matter accessories are commissioned through it,
-  and without one Home will not finish.
-- The network the target actually joins:
+- A home hub, a HomePod or an Apple TV: Matter accessories commission through it, and
+  without one Home will not finish.
+- The network the target joins:
 
 | Target | Joins | Also needs |
 |---|---|---|
@@ -22,9 +19,8 @@ not finish.
 | nRF5340 DK | Thread | The same |
 | ESP32-S3, C5, C6 | Wi-Fi | A 2.4 GHz network; there is no Improv step, the join happens inside commissioning |
 
-`make reader` on the DWM3001CDK is the exception to this whole page: no Matter
-node, so nothing commissions it and nothing mints a key. Its credential is
-imported over USB instead. See
+`make reader` on the DWM3001CDK is the exception: no Matter node, so nothing
+commissions it and nothing mints a key. Its credential is imported over USB. See
 [`../apps/dwm3001cdk-lock/README.md`](../apps/dwm3001cdk-lock/README.md).
 
 ## 1. Get the setup code
@@ -35,64 +31,61 @@ imported over USB instead. See
 | nRF5340 DK | `make nrf-pairing-code`, which `make nrf-term` runs before it attaches |
 | ESP32-S3, C5, C6 | Printed on the console at every boot; `codes` at the `matter>` prompt reprints the QR URL and the manual pairing code. The browser flasher page shows the same QR |
 
-On the DWM3001CDK the build prints the line Home is about to ask for:
+On the DWM3001CDK the build prints the line Home asks for:
 
 ```
   setup code  3650-503-5696   ·  discriminator 0x0F00, verifier checked
 ```
 
-**Nothing on that board can print that number**, and that is the protocol working rather
-than a missing feature. A Matter device stores the SPAKE2+ *verifier*, never the passcode,
-and a verifier cannot be run backwards. So the code is derived on the host from the
-`.config` the build just produced, and `verifier checked` means
+**Nothing on that board can print that number.** A Matter device stores the SPAKE2+
+*verifier*, never the passcode, and a verifier cannot be run backwards. The code is
+derived on the host from the `.config` the build produced; `verifier checked` means
 `scripts/spake2p_verifier.py --from-config` re-derived the verifier and compared it to the
-one compiled in. Whatever your own build printed is the authoritative number; a code from
-someone else's tree fails at Pake3 looking exactly like a typo.
+one compiled in. Your own build's number is the authoritative one; a code from another
+tree fails at Pake3 looking like a typo.
 
-On the ESP32 the board is the authority instead. If the flasher page and the console ever
-disagree, the console is right.
+On the ESP32 the board is the authority: if the flasher page and the console disagree, the
+console is right.
 
 ## 2. Add it in Apple Home
 
 Home app, add accessory.
 
 - **With a QR code** (ESP32): scan it with the iPhone you want to carry the key.
-- **With digits only** (DWM3001CDK, and any time scanning is awkward): **More options…**
-  then **Enter Code**, and type the 11 digits.
+- **With digits only** (DWM3001CDK, or when scanning is awkward): **More options…**,
+  **Enter Code**, then type the 11 digits.
 
 Keep the phone next to the board. Commissioning starts over BLE and only then joins Thread
-or Wi-Fi, so distance at this stage costs the whole attempt. Expect a minute or two.
+or Wi-Fi, so distance costs the whole attempt. Expect a minute or two.
 
 ## 3. Accept the uncertified-accessory warning
 
-Home warns that this is an uncertified accessory. Add it anyway.
+Home warns that the accessory is uncertified. Add it anyway.
 
-The warning is correct and it is not going away: the images use CHIP's test vendor ID
+The warning is correct and permanent: the images use CHIP's test vendor ID
 (`0xFFF1`) and test discriminator (`0xF00`), because a real product needs an allocated
-vendor ID and this project has none. The ESP32 images go further and carry Matter's test
-setup parameters outright, which is why every board flashed from the browser page has the
-same pairing code.
+vendor ID and this project has none. The ESP32 images also carry Matter's test setup
+parameters outright, so every board flashed from the browser page has the same pairing
+code.
 
 The DWM3001CDK build no longer uses CHIP's published test passcode: it carries this
-project's own, generated at 20,000 PBKDF2 iterations rather than the 1,000 floor. That
-removes the case where a stranger commissions the lock knowing nothing but the SDK. It is
-still **one pairing for every board built from this tree**, so if the lock guards anything
-you care about, generate your own passcode and rebuild before commissioning. This is
-evaluation firmware either way.
+project's own, generated at 20,000 PBKDF2 iterations rather than the 1,000 floor, so a
+stranger cannot commission the lock knowing only the SDK. It is still **one pairing for
+every board built from this tree**: generate your own passcode and rebuild before
+commissioning anything that matters. This is evaluation firmware either way.
 
 ## 4. Wait for the Home Key
 
-There is no separate step for the key and no button to press. Once commissioning
-completes, Home recognises the accessory as a Door Lock advertising Aliro support and
-provisions the credential into Wallet on its own, over the Matter session it just
-established.
+There is no separate step and no button to press. Once commissioning completes, Home
+recognises the accessory as a Door Lock advertising Aliro support and provisions the
+credential into Wallet over the Matter session it just established.
 
-Give it a moment after the tile appears, then check Wallet for a key card naming the lock.
-Only after that is there anything for a walk-up to authenticate against.
+After the tile appears, check Wallet for a key card naming the lock. Until it is there, a
+walk-up has nothing to authenticate against.
 
 ## 5. Share it with Home Assistant
 
-For a DWM3001CDK, first make Home Assistant use the Apple Thread network. In the
+For a DWM3001CDK, put Home Assistant on the Apple Thread network first. In the
 iOS Companion app, open **Settings > Devices & services > Thread > Configure**,
 send the phone's credentials to Home Assistant, refresh, and make the Apple
 network preferred. If Home Assistant runs an OpenThread Border Router, join it
@@ -101,9 +94,9 @@ to that network rather than creating a second dataset.
 Then open **Settings > Matter > Add device**, answer **Yes, it's already in
 use**, select Apple Home, and follow the sharing dialog. This commissions an
 additional Matter fabric; it does not replace the Apple fabrics or Home Key.
-The exact prerequisites, recovery paths, and five-fabric behavior are in the
+Prerequisites, recovery paths, and five-fabric behavior are in the
 [DWM3001CDK multi-admin guide](../apps/dwm3001cdk-lock/README.md#apple-home-plus-home-assistant).
-Home Assistant maintains the current UI paths in its
+Home Assistant maintains the UI paths in its
 [Matter](https://www.home-assistant.io/integrations/matter/) and
 [Thread](https://www.home-assistant.io/integrations/thread/) documentation.
 
@@ -148,14 +141,13 @@ per-target checklists are in [hardware-validation.md](hardware-validation.md).
 | An upgrade from v0.3 lost Matter and Home Key | Expected once for the `mf2` clean break and settings-partition move. Remove the old controller records and pair the current image again |
 | An ordinary reflash lost everything | Not expected. `make flash` preserves current settings; `make flash-erase`, SW2 factory reset, the v0.3 schema transition, or the fabric-label record growth above intentionally clear them |
 
-Deeper symptom tables, grouped by target: [troubleshooting.md](troubleshooting.md). The
-DWM3001CDK's commissioning traps, each with the symptom that exposed it:
-[dwm3001cdk-surgery.md](dwm3001cdk-surgery.md). The ESP32's:
+Symptom tables by target: [troubleshooting.md](troubleshooting.md). The DWM3001CDK's
+commissioning traps: [dwm3001cdk-surgery.md](dwm3001cdk-surgery.md). The ESP32's:
 [esp32-gotchas.md](esp32-gotchas.md).
 
 ## After the key is in
 
-- Prove the unlock properly: [hardware-validation.md](hardware-validation.md).
+- Prove the unlock: [hardware-validation.md](hardware-validation.md).
 - Build options and the runtime consoles: [configuring.md](configuring.md).
-- What actually happens on air between the phone and the reader:
+- What happens on air between the phone and the reader:
   [protocol-research.md](protocol-research.md).

@@ -9,7 +9,7 @@ repository as source we own and change directly.
 | Upstream repository | `https://github.com/nrfconnect/ncs-door-lock-and-access-control` |
 | Upstream path | `applications/matter-aliro-door-lock-app` |
 | Revision | `a5ad7fde1041d81690710a949c98eda1985fee0b` |
-| License | `LicenseRef-Nordic-5-Clause` — see `THIRD_PARTY_NOTICES` |
+| License | `LicenseRef-Nordic-5-Clause`: see `THIRD_PARTY_NOTICES` |
 
 The revision is not repeated here as a separate fact: it is the `PIN` in
 `scripts/bootstrap.sh`, and `scripts/app-upstream-diff.sh` reads it from there.

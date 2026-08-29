@@ -1,10 +1,8 @@
 # DWM3001CDK Lock, FreeRTOS
 
-The Zephyr-free port of `apps/dwm3001cdk-lock`. The Zephyr application remains
-the behavioural and hardware-in-loop oracle throughout the migration.
-
-FreeRTOS OSAL, radio, Thread, credential, UWB and the optional portable Matter
-graph live in `ports/freertos-nrf52833`. Host gate:
+The Zephyr-free port of `apps/dwm3001cdk-lock`. FreeRTOS OSAL, radio, Thread,
+credential, UWB and the optional portable Matter graph live in
+`ports/freertos-nrf52833`. Host gate:
 
 ```sh
 make freertos-port-test
@@ -25,10 +23,9 @@ make freertos-build FREERTOS_MATTER=ON \
 
 The Matter variant shares the portable commissioning, five-fabric, Thread
 staging, selective rollback/removal, SRP and `mf2` record code with the Zephyr
-image, over a settings backend with the same transaction semantics on a
-different on-flash log format. Behaviour and power-cut cases are host-tested;
-Apple Home plus Home Assistant is **not** hardware-validated here, so the Zephyr
-application remains the product and the oracle.
+image, over a settings backend with the same transaction semantics on a different
+on-flash log format. Behaviour and power-cut cases are host-tested. The Zephyr
+application remains the hardware-validated product and the behavioural oracle.
 
 512 KB flash and 128 KB RAM still bind. The Zephyr oracle uses 120,740 B of RAM
 and leaves 10,332 B. Measure the FreeRTOS Matter ELF independently rather than

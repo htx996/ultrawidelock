@@ -2,8 +2,8 @@
 
 The client half of `docs/matter-binding.md` has never exchanged a packet with a
 real device: every gate it passes is the code agreeing with itself, down to a
-loopback test running this node's initiator against its own responder. This is
-the procedure for finding out whether a Nuki, an Aqara or an ESP32 accepts it.
+loopback test running this node's initiator against its own responder. This
+procedure finds out whether a Nuki, an Aqara or an ESP32 accepts it.
 
 > **It has since been run, and it works.** 2026-08-22: a walk-up at the CDK
 > opens `apps/nrf5340dk-lock` over Thread, and stepping away closes both. It
@@ -17,10 +17,10 @@ the procedure for finding out whether a Nuki, an Aqara or an ESP32 accepts it.
 > follows still applies to a peer that is NOT `apps/nrf5340dk-lock` -- a Nuki
 > or an Aqara has met none of this.
 
-**Expect it to fail the first time** against an untested peer. The value of the
-run is which quarter of the path it stops in, not whether a door opens.
+**Expect it to fail the first time** against an untested peer. The run measures
+which quarter of the path it stops in, not whether a door opens.
 
-## What you need to physically have
+## Required hardware
 
 | | | Why |
 |---|---|---|
@@ -29,36 +29,35 @@ run is which quarter of the path it stops in, not whether a door opens.
 | 1x Thread Border Router | an Apple TV, a HomePod, or an OTBR | **mandatory.** This node runs no SRP server, so nothing resolves without one |
 | a second controller | Home Assistant, or `chip-tool` | Apple Home alone cannot do this |
 
-**The peer has to be a Thread node.** The client resolves out of the Thread
+**The peer must be a Thread node.** The client resolves out of the Thread
 network's SRP registrations (`_matter._tcp.default.service.arpa.`, in
-`ports/zephyr/matter/matter_dns_port.c`), and a Wi-Fi Matter device advertises
-over mDNS and never appears there. `matter_thread_resolve()` is the only way in.
+`ports/zephyr/matter/matter_dns_port.c`); a Wi-Fi Matter device advertises over
+mDNS and never appears there. `matter_thread_resolve()` is the only way in.
 
-That rules out an ESP32-S3, which has no 802.15.4 radio. It also catches
+That rules out an ESP32-S3, which has no 802.15.4 radio, and
 `apps/esp32-matter-lock` on every target including the C6: nothing in this repo
 sets `CONFIG_ENABLE_MATTER_OVER_THREAD` or `CONFIG_OPENTHREAD_ENABLED`, so it
-builds as a Wi-Fi node unless you turn Thread on and confirm it in
+builds as a Wi-Fi node unless Thread is enabled and confirmed in
 `build/esp32-matter-lock-<target>/sdkconfig`.
 
-`apps/nrf5340dk-lock` is Matter over Thread already. Build it plain: `HA=1`
-layers the LockOperation credential overlay for the automation path and has
-nothing to do with a binding. It does not demand a PIN either
+`apps/nrf5340dk-lock` is already Matter over Thread. Build it plain: `HA=1`
+layers the LockOperation credential overlay for the automation path and is
+unrelated to a binding. It demands no PIN
 (`mRequirePINForRemoteOperation{ false }`), so a first run can leave the vendor
 PIN attribute alone. Its devicetree always layers `dw3000-nfc.overlay`, so with
 no DWM3000EVB expect `ultrawidelock_uwb_adapter_create_reader failed` in its
-log; `make nrf-term` printing a pairing code is the check that it came up.
+log; `make nrf-term` printing a pairing code confirms it came up.
 
 `make nrf-build` refuses with `integration patch set changed or HA mode differs`
 when the west workspace carries a different patch set than this tree expects.
-Checkouts no longer share one workspace by accident: `make ws-link` names the
-tree after the patch set in it, so a branch with its own patches links its own
-tree (`make ws-store` lists them). The refusal remains for the workspace
-`ULTRAWIDELOCK_WS=<path>` names directly, outside the store and still one tree
-with one patch state.
+`make ws-link` names each tree after the patch set in it, so a branch with its
+own patches links its own tree (`make ws-store` lists them). The refusal remains
+for the workspace `ULTRAWIDELOCK_WS=<path>` names directly: outside the store,
+still one tree with one patch state.
 
-Prefer any in-repo peer to a commercial lock on the first run: a Nuki gives a
+Prefer an in-repo peer to a commercial lock on the first run: a Nuki gives a
 silent drop with no way to tell a rejection from a lost packet, while a board
-you built can be instrumented at both ends at once.
+you built can be instrumented at both ends.
 
 ## Stage 0: build and flash
 
@@ -77,10 +76,10 @@ Two profiles carry the client; for bringup use the first:
 | `make build CLIENT=1` | DBG | 1,385 B | the bench. Reads back why a bound lock did or did not open. |
 | `make build CLIENT=1 RELEASE=1 SMP=1` | ERR (global level 1) | 8,288 B | what ships. mcumgr, DFU, signed. |
 
-The debug profile only fits because `overlay-client-debug.conf` applies
+The debug profile fits only because `overlay-client-debug.conf` applies
 automatically to `CLIENT=1` without `RELEASE=1`: it silences the credential, DFU
 and radio log modules and drops the DFU receiver. Read that file before adding
-to it -- setting a log symbol that does not exist aborts the CMake configure.
+to it: setting a log symbol that does not exist aborts the CMake configure.
 
 Neither profile has much room. If either stops linking or signing, that is the
 size gate, not a broken tree: run `make cdk-size` and read the
@@ -88,7 +87,7 @@ size gate, not a broken tree: run `make cdk-size` and read the
 
 For a signed image, `make release RELEASE_KEY=<path> CLIENT=1`. Leave
 `make monitor` running for the whole session; the RTT log is the only
-diagnostic there is.
+diagnostic.
 
 ## Stage 1: get both devices onto one fabric
 
@@ -99,25 +98,25 @@ diagnostic there is.
 
 If step 3 fails, check in this order:
 
-- Is the firmware newer than 2026-08-07? Older builds cannot be added to any
-  non-Apple controller at all, and fail exactly as "pairing failed". See
+- Firmware newer than 2026-08-07. Older builds cannot be added to any non-Apple
+  controller and fail exactly as "pairing failed". See
   `docs/troubleshooting.md`.
-- Are both devices on **one** Thread network rather than two? This is the most
+- Both devices on **one** Thread network rather than two. This is the most
   common cause of a lock that pairs and then goes missing.
-- Is the border router actually reachable?
+- The border router reachable.
 
 Home Assistant is needed because **Apple Home will not write a binding**. It is
-used once, at setup, and is not in the unlock path afterwards.
+used once, at setup, and is not in the unlock path.
 
 ## Stage 2: prove the peer before involving this node
 
-**Do not skip this.** Debugging two unknowns at once is how a day disappears.
+**Do not skip this.** Do not debug two unknowns at once.
 
 1. From Home Assistant or `chip-tool`, invoke `UnlockDoor` on the peer lock
-   directly. If the door does not open, stop: nothing after this point would
-   mean anything.
-2. Note the CDK's **operational node id on the Home Assistant fabric**, needed
-   in the next stage and the value most often got wrong.
+   directly. If the door does not open, stop: nothing after this point means
+   anything.
+2. Note the CDK's **operational node id on the Home Assistant fabric**: needed
+   next, and the value most often got wrong.
 
 ## Stage 3: write the two attributes
 
@@ -128,21 +127,20 @@ used once, at setup, and is not in the unlock path afterwards.
 3. **If the peer wants a PIN:** write it to the vendor PIN attribute on the CDK.
    It is write-only and never reads back.
 
-`scripts/bind-helper.py` does both ends through `chip-tool`; the commands are in
-`docs/matter-binding.md`. Read the binding back before continuing.
+`scripts/bind-helper.py` does both ends through `chip-tool`; the commands, the
+attribute paths and the tag-keyed structures are in `docs/matter-binding.md`.
+Read the binding back before continuing.
 
-**You do not need `chip-tool` for this.** The 2026-08-22 bring-up wrote both
-attributes through Home Assistant's Matter server websocket
-(`ws://<ha-host>:5580/ws`, no token). Prefer it: a binding is fabric-scoped, so
-whichever administrator writes it owns the fabric the CASE session runs on
-forever, and a `chip-tool` fabric's keys live in a directory on a laptop that
-takes the binding with it when deleted.
+**`chip-tool` is not required.** The 2026-08-22 bring-up wrote both attributes
+through Home Assistant's Matter server websocket (`ws://<ha-host>:5580/ws`, no
+token). Prefer it: a binding is fabric-scoped, so whichever administrator writes
+it owns the fabric the CASE session runs on forever, and a `chip-tool` fabric's
+keys live in a laptop directory that takes the binding with it when deleted.
 
-The attribute paths and tag-keyed structures are in `docs/matter-binding.md`.
-The rule that matters: an ACL write REPLACES that fabric's entries, so read the
-list, keep the administrator's own entry, append yours, and write the set back.
+An ACL write REPLACES that fabric's entries: read the list, keep the
+administrator's own entry, append yours, and write the set back.
 
-What it looked like when it worked, on this bench:
+A successful bench write:
 
 ```
 CDK  1/30/0  ->  [{1:7, 3:1, 4:257, 254:3}]              binding to node 7
@@ -152,8 +150,8 @@ DK   0/31/0  ->  [ ... {1:5,2:2,3:[112233],254:3},       HA's admin, KEPT
 
 ## Stage 4: the run
 
-Walk up with an enrolled phone. **Once.** A second attempt overlaps the first
-one's backoff and makes the log ambiguous.
+Walk up with an enrolled phone. **Once.** A second attempt overlaps the first's
+backoff and makes the log ambiguous.
 
 The CDK prints a line at each step, so where the log stops is the diagnosis:
 
@@ -175,8 +173,8 @@ The CDK prints a line at each step, so where the log stops is the diagnosis:
 | `LockDoor out` / `the bound lock LOCKED` | the departure propagated too | nothing. Both doors are shut |
 
 A chain failure is `MATTER_E_TYPE` (-6) and an identity mismatch is
-`MATTER_E_ACCESS` (-9). They were both -9 until 2026-08-22, which cost an
-evening reading a chain fault as the wrong node answering.
+`MATTER_E_ACCESS` (-9). Both were -9 until 2026-08-22, so a chain fault read as
+the wrong node answering.
 
 ## What is most likely to be wrong
 
@@ -184,12 +182,9 @@ Ranked, and what is left has never been exercised.
 
 ### 1. No peer but `apps/nrf5340dk-lock` has ever answered
 
-The CASE initiator has now had cryptographically valid Sigma2 messages put in
-front of it by CHIP, and the whole path from a walk-up to a bolt moving works
-against this repo's own DK. A Nuki or an Aqara has never seen a byte of it.
-Every one of the five faults below was a place this code agreed with ITSELF and
-disagreed with the wider world; a second peer implementation is the only thing
-that finds the next.
+CHIP has put cryptographically valid Sigma2 messages in front of the CASE
+initiator, but only from this repo's own DK. A second peer implementation is the
+only thing that finds the next fault.
 
 **Signature:** anything, on a peer that is not the DK.
 
@@ -197,41 +192,41 @@ that finds the next.
 
 `matter_thread_resolve()` refuses a second query while one is outstanding, and
 nothing in the client can cancel one. An attempt that times out after
-`MATTER_CLIENT_STEP_MS` can leave a query behind that stops the NEXT attempt
-from starting, for a duration that is OpenThread's business and cannot be pinned
-down off hardware.
+`MATTER_CLIENT_STEP_MS` can leave a query behind that blocks the NEXT attempt,
+for a duration that is OpenThread's business and cannot be pinned down off
+hardware.
 
-**Signature:** the first walk-up produces `resolving`, and a second a few
-seconds later produces nothing at all -- no log line, no datagram. It comes back
-on its own once the query completes.
+**Signature:** the first walk-up produces `resolving`, a second a few seconds
+later produces nothing: no log line, no datagram. It recovers once the query
+completes.
 
-**Covered by a test** (`a query still outstanding blocks the next attempt`);
-what is unknown is the duration on a real mesh.
+**Covered by a test** (`a query still outstanding blocks the next attempt`); the
+duration on a real mesh is unknown.
 
-### 3. The Sigma1 source node id -- checked, and NOT a blocker
+### 3. The Sigma1 source node id: checked, and NOT a blocker
 
 This node puts its **operational** node id in the message header's source field
-rather than a random ephemeral one, a real deviation from CHIP that does not
-survive a check against CHIP's source as a failure mode:
+rather than a random ephemeral one. The deviation from CHIP is real but is not a
+failure mode:
 
 - CHIP generates its ephemeral initiator node id as a random 64-bit value
   **constrained to the operational node id range**
   (`SessionManager::CreateUnauthenticatedSession`), so the value this node sends
-  is indistinguishable in form from the value CHIP sends.
+  is indistinguishable in form from CHIP's.
 - The responder uses it as an opaque key to find or allocate an unauthenticated
   session (`SessionManager::OnMessageReceived` -> `FindOrAllocateResponder`) and
-  validates nothing about it beyond its presence.
+  validates nothing beyond its presence.
 
 The cost is **privacy**: the value is stable rather than per-session, so a
 passive Thread observer can link every handshake this node makes to one
 identity. Worth fixing; not worth suspecting on the bench.
 
-### 4. Retransmission -- now implemented for the handshake
+### 4. Retransmission: now implemented for the handshake
 
 A dropped Sigma1 or Sigma3 is resent on an MRP timer rather than costing the
 whole `MATTER_CLIENT_STEP_MS`. The first resend lands at roughly four times
-`MATTER_MRP_IDLE_INTERVAL_MS`, because the deadline carries MRP's margin and
-backoff multipliers.
+`MATTER_MRP_IDLE_INTERVAL_MS`: the deadline carries MRP's margin and backoff
+multipliers.
 
 The **interaction** past the session is still not covered: those messages are
 sealed by `matter_exchange`, whose counters `matter_client.c` does not own.
@@ -243,32 +238,32 @@ from `resolving` rather than resuming the invoke.
 ## What went wrong the first time
 
 Five faults, in the order they surfaced on 2026-08-22. Each hid the next. All
-five passed every host gate, because a test that signs its own certificates and
-encodes its own messages agrees with a verifier that makes the same mistake.
+five passed every host gate: a test that signs its own certificates and encodes
+its own messages agrees with a verifier that makes the same mistake.
 
 **1. A chunked list write was refused whole.** Matter writes a list as
 replace-all followed by one `AppendItem` per member, so ONE attribute arrives as
 several data blocks. This node counted blocks, called anything past the first a
 batch and answered `RESOURCE_EXHAUSTED` without applying any of it, so Home
-Assistant could not write the binding, or any other list attribute including an
+Assistant could not write the binding or any other list attribute, including an
 ACL. Blocks naming one attribute are now coalesced before the cluster sees them.
 
-*Signature:* a write that returns status 137 with the attribute unchanged, and
-a `write:` line in the log whose byte count is 3 -- the empty replace-all being
-the only block parsed.
+*Signature:* a write that returns status 137 with the attribute unchanged, and a
+`write:` line in the log whose byte count is 3, the empty replace-all being the
+only block parsed.
 
 **2. DNS-SD found the service and not the address.**
 `otDnsClientResolveService()` reports an address only when the server volunteers
 one in the Additional Data section of the SRV answer. This border router does
-not. Now uses `otDnsClientResolveServiceAndHostAddress()`, which sends the
+not. It now uses `otDnsClientResolveServiceAndHostAddress()`, which sends the
 follow-up AAAA query.
 
 *Signature:* `bound peer has a service but no address yet`.
 
 **3. Certificates were verified over the wrong bytes.** A Matter certificate is
 TLV, but the signature it carries is the X.509 one over the DER-encoded
-`TBSCertificate`. This node hashed the TLV span, which can verify only a
-certificate signed the same wrong way -- and the test fixture signed its
+`TBSCertificate`. This node hashed the TLV span, which verifies only a
+certificate signed the same wrong way, and the test fixture signed its
 certificates exactly that way, so 8,000 green assertions said nothing. The
 responder does not walk chains, so this code ran only on the client path, which
 had never met a peer. The converter is now pinned to CHIP's own output for a
@@ -276,13 +271,13 @@ reference certificate, compared by SHA-256.
 
 *Signature:* every real certificate rejected, reported as an identity mismatch
 because `cert_verify()` returned `MATTER_E_ACCESS` for a signature failure. That
-conflation is fixed too; see the note under the Stage 4 table.
+conflation is fixed too.
 
 **4. The MRP ack did not ride the invoke.** Framing refused to piggyback a
 pending acknowledgement on any exchange this node had opened. Right for a NEW
-exchange, wrong for the second message of one -- and CHIP does not merely wait
-for the ack it is owed, it DROPS the request. The `UnlockDoor` after a
-`TimedRequest` was discarded every time.
+exchange, wrong for the second message of one: CHIP does not wait for the ack it
+is owed, it DROPS the request. The `UnlockDoor` after a `TimedRequest` was
+discarded every time.
 
 *Signature:* `the bound lock stopped answering mid-unlock`, and on a CHIP peer,
 `Dropping message without piggyback ack when we are waiting for an ack`.
@@ -290,11 +285,11 @@ for the ack it is owed, it DROPS the request. The `UnlockDoor` after a
 **5. Only the unlock was ever forwarded.** The bound lock opened and never
 closed. `matter_client_want()` now takes the bolt's STATE rather than signalling
 an event, and the client reconciles what is wanted against what the peer last
-accepted -- forwarding both edges would not have been enough, because the state
-machine clears its pending want when an invoke completes, so a relock arriving
-during an unlock was swallowed.
+accepted. Forwarding both edges would not have sufficed: the state machine
+clears its pending want when an invoke completes, so a relock arriving during an
+unlock was swallowed.
 
-*Signature:* the peer stays unlocked after you walk away.
+*Signature:* the peer stays unlocked after a walk-away.
 
 ## Faults already fixed, and their signatures
 
@@ -307,7 +302,7 @@ acknowledged. This node acknowledges once, so a lost acknowledgement used to
 leave the retransmission unroutable: the handshake flag had already cleared, and
 a Secure Channel message that is neither Sigma1 nor Sigma3 falls into the
 unsecured drop. The handshake exchange now lingers for `CLIENT_HS_LINGER_MS`
-after it succeeds and answers a repeat with another acknowledgement.
+after success and answers a repeat with another acknowledgement.
 
 **Signature if it returns:** `CASE ESTABLISHED` here, the peer still
 retransmitting, and the invoke failing against a session the peer is tearing
@@ -316,16 +311,16 @@ down. Intermittent, so it presents as "works sometimes".
 ### A fabric pointer outliving its fabric
 
 `s_fabric` points into the fabric table, and a RemoveFabric that zeroes the slot
-left it addressing valid memory describing nothing. The Sigma1 path tested it
-for NULL, which a cleared slot is not.
+left it addressing valid memory describing nothing. The Sigma1 path tested for
+NULL, which a cleared slot is not.
 
-It is tested for liveness now -- a fresh lookup by index, the slot still
-committed, AND the fabric id unchanged -- and an attempt whose administrator has
-gone is dropped rather than signed with a zeroed key. The fabric id matters
-because a slot is an array position: an administrator removed and another
-commissioned into it gives back the same pointer with the same index, describing
-somebody else. The check is also made on the inbound path, which runs from the
-receive callback, ahead of the poll that would notice.
+It is tested for liveness now: a fresh lookup by index, the slot still
+committed, and the fabric id unchanged. An attempt whose administrator has gone
+is dropped rather than signed with a zeroed key. The fabric id matters because a
+slot is an array position: an administrator removed and another commissioned
+into it returns the same pointer at the same index, describing somebody else.
+The check also runs on the inbound path, from the receive callback, ahead of the
+poll that would notice.
 
 **Signature if it returns:** only after removing an administrator without
 rebooting. A Sigma1 refused by everything, with the log naming a fabric that is
@@ -338,28 +333,28 @@ behalf of an administrator that was removed.
 nobody. Nothing cleared the client's handshake flag, so an abandoned attempt
 kept its ephemeral private key and transcript in RAM indefinitely, kept its
 exchange id claimed against every inbound unsecured message, and would open a
-Sigma2 that arrived long afterwards as though somebody were still waiting.
+Sigma2 arriving long afterwards as though somebody were still waiting.
 
 **Signature if it returns:** `CASE ESTABLISHED` appearing with no walk-up behind
-it, minutes after a failed attempt. Also a Sigma1 addressed to THIS node being
-silently dropped, because the client is still claiming an exchange id it should
-have released.
+it, minutes after a failed attempt. Also a Sigma1 addressed to THIS node
+silently dropped, because the client still claims an exchange id it should have
+released.
 
 ### The retransmit timer dropped by any inbound message
 
 The retransmission deadline was folded into the timer in the poll only, while
 two other paths re-arm the same timer when a datagram arrives. Any inbound
 message that did not acknowledge the outstanding one re-armed from the schedule
-alone and silently cancelled the pending resend.
+alone, silently cancelling the pending resend.
 
 **Signature if it returns:** resends that happen when the peer is silent and
 stop the moment it says anything at all.
 
 ### `matter_client_init()` that did not initialise
 
-Init set up the lock and the pointers and left the session, handshake and
+Init set up the lock and the pointers but left the session, handshake and
 handshake-linger state as the previous run had them. Harmless on target, where
-it runs once, and fatal to reasoning about the file's starting state.
+it runs once; fatal to reasoning about the file's starting state.
 
 ## What to capture
 

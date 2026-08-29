@@ -25,9 +25,8 @@ Vendor `0x1349` is Apple (`CHIPVendorIdentifiers.hpp:46`), so the cluster is
 
 ## 2. The descriptor
 
-**VERIFIED** on silicon (the control renders and its selection round-trips with
-exactly these values) and against the type tables in `chip-types.xml` and
-`attribute-metadata.h`.
+**VERIFIED** on silicon with exactly these values, and against the type tables in
+`chip-types.xml` and `attribute-metadata.h`.
 
 Cluster `0x1349FC03`, mask `0x40` (server), on the **door lock endpoint**, the same
 endpoint as the Door Lock cluster, not endpoint 0. Three attributes, 7 bytes:
@@ -42,15 +41,14 @@ Type codes per `chip-types.xml` lines 28/30/33; mask bits per
 `attribute-metadata.h:110,112` (`MATTER_ATTRIBUTE_FLAG_WRITABLE` = `0x01`,
 `..._NONVOLATILE` = `0x02`).
 
-Two things are easy to get wrong:
+Two easy mistakes:
 
-- The direction attribute is a **bitmap8**, not `int8u`. An unsigned integer is the
-  wrong type code (`0x20` instead of `0x18`).
+- The direction attribute is a **bitmap8**, not `int8u`: type code `0x18`, not `0x20`.
 - The default **7** is `0b111`, all three directions permitted, matching Home's
   "unlock when you approach from any direction". Which single bit means Left versus
   Right is **still unknown**, and nothing in the port depends on it.
 
-## 3. The expensive one: missing global attributes fail silently, then loudly
+## 3. Missing global attributes fail silently, then loudly
 
 **VERIFIED, cost three pairing cycles.**
 
@@ -59,10 +57,10 @@ Two things are easy to get wrong:
 the SDK adds them explicitly (any file under `data_model/generated/clusters/`).
 
 Declaring the cluster with only the direction attribute produces one that cannot
-answer `ClusterRevision`. The failure does not look like a failure:
+answer `ClusterRevision`:
 
-1. Home runs a **complete** commissioning — PASE, attestation, CSR request, AddNOC,
-   `CommissioningComplete` — on two fabrics
+1. Home runs a **complete** commissioning (PASE, attestation, CSR request, AddNOC,
+   `CommissioningComplete`) on two fabrics
 2. Roughly 0.5 s later it sends `RemoveFabric` for its own fabric
 3. The UI says **"Unable to Add Accessory"**
 
@@ -90,12 +88,12 @@ cluster::global::attribute::create_cluster_revision(c, 1);
 
 **VERIFIED.** A controller reads the endpoint's cluster list once, at
 commissioning, and caches it. Adding a cluster to an already-paired device changes
-nothing visible, however many times the app is restarted. Any newly declared
-cluster requires **removing the accessory and adding it again**.
+nothing, however many times the app is restarted. Any newly declared cluster
+requires **removing the accessory and adding it again**.
 
 ## 5. Removal and re-pairing traps
 
-Three separate ways to end up unable to re-add a device, all seen on the bench:
+Three ways to end up unable to re-add a device, all seen on the bench:
 
 **5.1 Removing while the device is unreachable.** Removing an accessory sends
 `RemoveFabric` *to the device*. If it is offline, the controller removes it locally
@@ -106,18 +104,18 @@ Disabling BLE advertisement` and cannot be discovered.
 fabrics. Removing the accessory in the app clears one; the device stays commissioned on
 the other, so it still will not advertise.
 
-For this ESP32-specific path, the fallback is a device-side factory reset, which clears
-every fabric at once: `matter> factoryreset`. If the console is unresponsive, erase only
-the `nvs` partition rather than the whole flash, so `esp_secure_cert` and `fctry` survive.
-The portable DWM3001CDK stack now supports authenticated, durable, per-fabric removal;
-use a surviving controller's **Manage fabrics** action there and reserve SW2 factory
-reset for a node no administrator can reach.
+On ESP32 the fallback is a device-side factory reset, which clears every fabric at once:
+`matter> factoryreset`. If the console is unresponsive, erase only the `nvs` partition
+rather than the whole flash, so `esp_secure_cert` and `fctry` survive. The DWM3001CDK
+stack supports authenticated, durable, per-fabric removal; use a surviving controller's
+**Manage fabrics** action there and reserve SW2 factory reset for a node no administrator
+can reach.
 
-**5.3 Trust-store exhaustion.** Tangential but it will bite during repeated pairing
-cycles. A Matter factory reset does not touch the reader's own provisioning namespace,
-and nothing evicts superseded credentials, so each re-pair burns a slot. Once the store
-is at `ULTRAWIDELOCK_TRUST_MAX`, the reader verifies the phone's signature and *then* rejects the
-credential:
+**5.3 Trust-store exhaustion.** Tangential, but it bites during repeated pairing cycles.
+A Matter factory reset does not touch the reader's own provisioning namespace, and
+nothing evicts superseded credentials, so each re-pair burns a slot. Once the store is at
+`ULTRAWIDELOCK_TRUST_MAX`, the reader verifies the phone's signature and *then* rejects
+the credential:
 
 ```
 device signature OK
@@ -125,7 +123,7 @@ credential key NOT trusted (not in trust store); rejecting
 ```
 
 `ultrawidelock trust` reports `FAILED (trust store full or NVS error)`, which covers three
-distinct causes and does not say which. Run `ultrawidelock prov` to see the true count, and
+causes and does not say which. Run `ultrawidelock prov` for the true count and
 `ultrawidelock clear` to empty the store.
 
 ## 6. Red herring: cluster `0x1349FC00`
@@ -133,11 +131,11 @@ distinct causes and does not say which. Run `ultrawidelock prov` to see the true
 **VERIFIED as a dead end.** During commissioning, Home reads
 `clusterId 0x1349FC00, attributeId 0x0001` and the device answers `err = 5c3`.
 
-This looks like a promising lead and is not one. This port renders the Approach Direction
-control while still answering `UNSUPPORTED_CLUSTER` for `0x1349FC00`, so that cluster
-cannot be what gates the control. Do not spend build cycles guessing at its datatype.
+This port renders the Approach Direction control while still answering
+`UNSUPPORTED_CLUSTER` for `0x1349FC00`, so that cluster does not gate the control. Do not
+spend build cycles guessing at its datatype.
 
-## 7. Decoding the error codes in these logs
+## 7. Error codes in these logs
 
 Interaction Model status codes appear in device logs as `err = 0x500 + status`:
 
@@ -147,18 +145,18 @@ Interaction Model status codes appear in device logs as `err = 0x500 + status`:
 | `586` | `0x86` | `UNSUPPORTED_ATTRIBUTE` |
 
 Per `src/protocols/interaction_model/StatusCodeList.h`. `UNSUPPORTED_CLUSTER` on a
-manufacturer cluster during commissioning is normal probing and is not by itself a
-problem — the device answers the same way for optional standard clusters it does not
-implement, such as ICD Management (`0x0046`).
+manufacturer cluster during commissioning is normal probing, not a problem: the device
+answers the same way for optional standard clusters it does not implement, such as ICD
+Management (`0x0046`).
 
 ## 8. The control is cosmetic on single-antenna hardware
 
-**VERIFIED.** Nothing gates an unlock on the stored value. Measuring which direction a
-phone approaches from requires angle of arrival, which needs a dual-antenna UWB part.
-The DW3110 used on the DWM3000EVB has a single antenna and cannot produce it.
+**VERIFIED.** Nothing gates an unlock on the stored value. Measuring approach direction
+requires angle of arrival, which needs a dual-antenna UWB part; the DW3110 on the
+DWM3000EVB has a single antenna and cannot produce it.
 
-The attribute is stored, reported, and round-trips correctly to the app. The behaviour
-behind it is not implemented, and on this hardware cannot be.
+The attribute is stored, reported, and round-trips to the app. The behaviour behind it is
+not implemented, and on this hardware cannot be.
 
 ## 9. Port coverage
 
@@ -167,18 +165,16 @@ behind it is not implemented, and on this hardware cannot be.
 | `apps/esp32-matter-lock` | **implemented**: runtime `cluster::create()` in `app_main.cpp` |
 | nRF5340 door lock app | **implemented**: static tables in `integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/src/matter/zap_uwb/` |
 
-The two ports build their data models differently. The ESP32 port constructs endpoints at
-runtime, so the cluster is a few lines of C++. The nRF app's is a set of static tables
-compiled into the image.
+The ESP32 port constructs endpoints at runtime, so the cluster is a few lines of C++. The
+nRF app's data model is static tables compiled into the image.
 
 ### 9.1 The nRF data model is not regenerated at build time
 
-**VERIFIED.** It is tempting to assume the `.zap` file is the source of truth and edit it.
-It is not, on this build. `ncs_configure_data_model` passes `BYPASS_IDL` to
-`chip_configure_data_model`, which takes the branch that *skips* the `chip_zapgen` target
-entirely and instead adds the checked-in `zap-generated/` directory as an include path.
-`endpoint_config.h` appears nowhere in `build.ninja` as a build rule. Editing `lock.zap`
-alone changes nothing in the image.
+**VERIFIED.** The `.zap` file is not the source of truth on this build.
+`ncs_configure_data_model` passes `BYPASS_IDL` to `chip_configure_data_model`, which takes
+the branch that *skips* the `chip_zapgen` target and instead adds the checked-in
+`zap-generated/` directory as an include path. `endpoint_config.h` appears nowhere in
+`build.ninja` as a build rule. Editing `lock.zap` alone changes nothing in the image.
 
 The variant in use is selected by `src/matter/CMakeLists.txt`: with
 `CONFIG_NCS_SAMPLE_MATTER_ZAP_FILE_PATH` unset and `CONFIG_DOOR_LOCK_BLE_UWB=y`, that is
@@ -204,26 +200,25 @@ Two structural rules make the edit an append rather than a renumbering:
   new attributes are RAM-backed, so the cluster adds 1 + 4 + 2 = 7 bytes, and both the
   endpoint row and `ATTRIBUTE_MAX_SIZE` grow by 7.
 
-These are checkable rather than guessable: every counter can be re-derived from the tables
-in the same file, which is the cheapest way to catch an arithmetic slip before a build.
+Every counter can be re-derived from the tables in the same file, which catches an
+arithmetic slip before a build.
 
-One thing this path does get for free: `FeatureMap` and `ClusterRevision` are written out
-per cluster like any other attribute, so §3 — the trap that cost the most time on the
-other port — cannot occur here as an omission by a helper.
+This path gets one thing free: `FeatureMap` and `ClusterRevision` are written out per
+cluster like any other attribute, so §3 cannot occur here as an omission by a helper.
 
 ### 9.3 It used to collide with the opt-in Home Assistant data model
 
-The Home Assistant variant adds a third endpoint and so bumps the **same** counter
-lines. While both were patches into the fetched application, two of them could not
-both change `GENERATED_ATTRIBUTE_COUNT 205` in either order, and the stack had to be
+The Home Assistant variant adds a third endpoint and bumps the **same** counter
+lines. While both were patches into the fetched application, two could not both
+change `GENERATED_ATTRIBUTE_COUNT 205` in either order, so the stack had to be
 cumulative: Approach Direction applied first, the HA patches cut against a tree that
 already had it, and `tests/tooling/patch_drift_check.sh` held the ordering.
 
 Neither is a patch now. Both data models are complete files in
-`integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/src/matter/` -- `zap_uwb` and `zap_uwb_ha` --
-and `CONFIG_ULTRAWIDELOCK_HA` picks one. Each carries its own counters, so there is
-no composition left to break; what remains is the ordinary duty to regenerate both
-when the data model changes.
+`integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/src/matter/`, `zap_uwb` and
+`zap_uwb_ha`, and `CONFIG_ULTRAWIDELOCK_HA` picks one. Each carries its own counters, so
+there is no composition left to break; both must be regenerated when the data model
+changes.
 
 That `HA=1` patch stack is unrelated to Matter multi-admin sharing on the
 DWM3001CDK. The DWM image needs no Home Assistant build variant.

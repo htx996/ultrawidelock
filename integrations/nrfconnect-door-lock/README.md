@@ -13,12 +13,11 @@ The add-on, NCS, Zephyr and Matter are fetched and pinned by `make bootstrap`
 into the machine's workspace store (`scripts/lib/ws.sh`), and every checkout on
 the same patch set links to one tree.
 
-There were fifteen patches. Eleven changed the application and became
-`matter-aliro-door-lock-app/`, because a patch cannot be read, edited or opened
-in an editor, only applied; `UPSTREAM.md` has the reasoning. The Home Assistant
-data model came with them: `HA=1` now sets `CONFIG_ULTRAWIDELOCK_HA`, which
-selects `src/matter/zap_uwb_ha` in place of `src/matter/zap_uwb`, where it used
-to be two patches that had to be applied in one order and no other.
+Eleven of the original fifteen patches changed the application and became
+`matter-aliro-door-lock-app/`; the reasoning is in
+[`UPSTREAM.md`](matter-aliro-door-lock-app/UPSTREAM.md). The Home Assistant data
+model came with them: `HA=1` sets `CONFIG_ULTRAWIDELOCK_HA`, which selects
+`src/matter/zap_uwb_ha` in place of `src/matter/zap_uwb`.
 
 `bootstrap.sh` resets the fetched trees to their pinned revisions before applying
 what is left, and records a fingerprint of the patch contents. The product build

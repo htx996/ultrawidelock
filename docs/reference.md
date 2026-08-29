@@ -1,9 +1,8 @@
 # Reference
 
-The exact shape of something is in the header that declares it. There is no
-generated API tree in this repository: the declarations carry their own
-per-field comments, and a second rendering of them is one more thing that can
-fall behind the code.
+The exact shape of something is in the header that declares it. This repository
+has no generated API tree: the declarations carry per-field comments, and a
+second rendering of them is one more thing that can fall behind the code.
 
 ## Start at the umbrella
 
@@ -11,7 +10,7 @@ fall behind the code.
 #include <ultrawidelock/ultrawidelock.h>   // every public declaration
 ```
 
-Or include only the role you are:
+Or include a single role:
 
 | Header | For |
 |---|---|
@@ -24,11 +23,11 @@ Or include only the role you are:
 `modules/*/include/` is internal by construction, and a port that reaches for
 it fails `make purity`.
 
-## Where the protocol actually lives
+## Where the protocol lives
 
-Most of this codebase's protocol is preprocessor constants rather than
-functions: attribute IDs, frame lengths, key-block offsets, bitmask layouts.
-Read them where they are defined.
+Most of the protocol is preprocessor constants rather than functions: attribute
+IDs, frame lengths, key-block offsets, bitmask layouts. Read them where they are
+defined.
 
 | Looking for | Look in |
 |---|---|
@@ -44,9 +43,20 @@ Ports add their own surfaces under `ports/<port>/`: the ESP32 tree carries
 `ultrawidelock_satlink` and the target-specific board-pin API as ESP-IDF
 components.
 
-## Reference or architecture?
+## The CMake package
 
-The two questions have different answers, and neither replaces the other.
+```sh
+cmake -S . -B build/sdk -DCMAKE_INSTALL_PREFIX="$PWD/build/sdk-install"
+cmake --build build/sdk
+cmake --install build/sdk
+```
+
+Exports `UltraWideLock::headers` and `UltraWideLock::tlv`; the version comes from
+the root `VERSION`. `add_subdirectory` also works, and `make sdk-check` verifies
+both paths against [`examples/cmake/consumer/`](../examples/cmake/consumer/).
+Full firmware is consumed through the Zephyr module or the ESP-IDF components.
+
+## Where to look
 
 | Question | Where to look |
 |---|---|

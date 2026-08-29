@@ -5,10 +5,10 @@ Patches for the workspace that **no firmware build applies**. Nothing in
 workspace store's entry name is not computed from it: what is here changes a
 developer command on this machine, never a byte of the image.
 
-That is why the directory exists separately. The patches in `../patches/` are
-part of what the image *is*, so a workspace carrying a different set of them
-gets its own entry in the store. Folding a hand-applied ZAP script fix into that
-set would split the store for no reason.
+The patches in `../patches/` are part of what the image *is*, so a workspace
+carrying a different set of them gets its own entry in the store. Folding a
+hand-applied ZAP script fix into that set would split the store for no reason,
+which is why this directory is separate.
 
 ## `zap-tooling.patch`
 

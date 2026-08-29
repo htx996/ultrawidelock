@@ -5,10 +5,10 @@ access-control application as the product shell.
 
 That application lives in
 [`integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/`](../../integrations/nrfconnect-door-lock/matter-aliro-door-lock-app/):
-Nordic's, at a pinned revision, carried here as source we change directly.
-Everything it builds against -- the add-on's Aliro subsystem, NCS, Zephyr,
-Matter -- is still fetched into the ignored `workspace/` link, and the four
-patches that still go into that tree are alongside it in
+Nordic's, at a pinned revision, carried here as source that is edited directly.
+Everything it builds against (the add-on's Aliro subsystem, NCS, Zephyr, Matter)
+is fetched into the ignored `workspace/` link, and the four patches that go into
+that tree sit alongside it in
 [`integrations/nrfconnect-door-lock/`](../../integrations/nrfconnect-door-lock/).
 
 This directory owns the build launcher and product overlays, and no sources.
@@ -37,6 +37,6 @@ commissioning and credential storage.
 ## Contents
 
 - `scripts/nrf5340dk-build.sh` resolves the fetched workspace, build options
-  and product checks. It lives with the other build programs in `scripts/`.
+  and product checks.
 - `overlays/` holds product-owned Kconfig, devicetree, partition and sysbuild
   inputs.

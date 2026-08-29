@@ -26,8 +26,8 @@ Evidence labels:
 
 ## Bottom line
 
-A paired CryptoTokenKit smart-card identity cannot provide truly PINless
-LoginWindow or screen unlock through Apple's native smart-card mechanism.
+A paired CryptoTokenKit smart-card identity cannot provide PINless LoginWindow
+or screen unlock through Apple's native smart-card mechanism.
 
 A `TKTokenOperationConstraint` value of boolean `true` makes the private-key
 operation available without token authentication, but does not remove the login
@@ -62,7 +62,7 @@ Separate architectures, not interchangeable authentication factors:
 | Touch ID | Data Protection keys remain wrapped by a key held by the Touch ID subsystem in the Secure Enclave, and a successful match releases the unwrap key. | No public third-party biometric hook for LoginWindow. |
 | Apple Watch Auto Unlock | A previously armed 32-byte secret unwraps a record containing the passcode-derived key. | No public third-party Auto Unlock API was found. The shipping implementation uses private entitlements. |
 
-Two authorization rights are easy to confuse:
+Two easily confused authorization rights:
 
 - `system.login.screensaver` resolves to `use-login-window-ui`.
 - `system.login.screensaver.unlock` contains the single mechanism
@@ -133,7 +133,7 @@ screensaver-unlock rule.
   CryptoTokenKit.bundle/Contents/MacOS/CryptoTokenKit
 ```
 
-Three of its unified-log messages describe the path this report depends on:
+Three of its unified-log messages mark the path:
 
 ```text
 TKAuthMechanismLogin invoked
@@ -230,7 +230,7 @@ Source:
   signature and therefore gate the final unlock.
 - **LIKELY, verify before using:** When an extension uses boolean `true`
   constraints and does not implement `beginAuthForOperation`, the typed value
-  is probably serving only as a LoginWindow and authorization-context gate.
+  probably serves only as a LoginWindow and authorization-context gate.
 - **I don't know:** a private macOS path might still send a PIV `VERIFY` APDU
   outside the documented extension delegate flow. The fastest check is a
   payload-redacted APDU trace during one correct-PIN unlock.
@@ -335,10 +335,9 @@ A slot 9A marker with no preceding `VERIFY` marker proves the typed value was
 only a UI or authorization-context gate for that transaction. A passive USB
 protocol analyzer gives the same evidence without changing firmware.
 
-This run settles two independent questions:
-
-- whether LoginWindow or the token path sends PIV `VERIFY`; and
-- whether a successful screen unlock also leaves the login keychain unlocked.
+The run settles two questions: whether LoginWindow or the token path sends PIV
+`VERIFY`, and whether a successful screen unlock also leaves the login keychain
+unlocked.
 
 ## Alternatives
 

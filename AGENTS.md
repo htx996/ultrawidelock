@@ -33,14 +33,14 @@ generated or vendored bulk, not prose.
 
 The application-facing C headers are `<ultrawidelock/reader.h>`,
 `<ultrawidelock/device.h>`, `<ultrawidelock/uwb.h>`, and `<ultrawidelock/tlv.h>`. The
-all-in-one `<ultrawidelock/ultrawidelock.h>` is for package consumers that intentionally
-want every declaration. The chipset contract is `<ultrawidelock/ultrawidelock_hal.h>`. The
-HAL names five seams: DW3000 GPIO/IRQ, DW3000 SPI, BLE GATT/L2CAP, BLE central,
-and credential storage.
+umbrella `<ultrawidelock/ultrawidelock.h>` is for package consumers wanting every
+declaration. The chipset contract is `<ultrawidelock/ultrawidelock_hal.h>`, which
+names five seams: DW3000 GPIO/IRQ, DW3000 SPI, BLE GATT/L2CAP, BLE central, and
+credential storage.
 
 Canonical declarations live in the owning module's `include/ultrawidelock/`
-directory. All production and test code uses the namespaced form. The SDK gate
-rejects reintroducing the removed flat role-header names.
+directory, and all production and test code uses the namespaced form. The SDK
+gate rejects flat role-header names.
 
 `VERSION` is the SDK version source. While the SDK is pre-1.0, the generated
 CMake package accepts only the same minor series. After changing it, prove both
@@ -80,6 +80,5 @@ Target builds are `make build`, `make nrf-build`, `make anchor-pair`,
 `bash tests/ports/esp32/verify_port.sh`. The two Zephyr port checks,
 `tests/ports/zephyr/matter_srp_lifecycle_check.sh` and
 `tests/ports/zephyr/ble_link_liveness_check.sh`, are run by `make check` itself.
-`make hitl` runs the attached-reader
-and nRF5340 DK end-to-end flow. Hardware tests remain separate from host and
-compile checks.
+`make hitl` runs the attached-reader and nRF5340 DK end-to-end flow. Hardware
+tests remain separate from host and compile checks.

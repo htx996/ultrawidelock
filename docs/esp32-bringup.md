@@ -32,8 +32,8 @@ before soldering.
 GPIO 4, 5, 6 and 10-13 are clear of the S3's octal PSRAM pins. SPI2 routes
 through the GPIO matrix, so the bus can be remapped in `board_pins.h`.
 
-Why the C5 data pins differ: on the C5 the S3's GPIO11/12 are the UART0 console and
-GPIO13 is USB-Serial-JTAG; GPIO8/9/23 also avoid the strapping pins (2/7/25/27/28,
+Why the C5 data pins differ: on the C5, GPIO11/12 are the UART0 console and
+GPIO13 is USB-Serial-JTAG; GPIO8/9/23 avoid the strapping pins (2/7/25/27/28,
 plus 3/26 per the DevKitC-1 guide) and the GPIO27 RGB LED. The C5 build targets the
 4 MB flash floor of the WROOM-1 family (`partitions_4mb.csv`); if your module has
 more, raise `CONFIG_ESPTOOLPY_FLASHSIZE` in `sdkconfig.defaults.esp32c5`.
@@ -84,8 +84,8 @@ raw `DEV_ID` line at boot: IDs ending `...02`/`...12` use the current profile,
 ### Check the EVB power-select jumper first
 
 Correct wiring is not enough. With the jumper on the wrong source, SPI fails
-silently: no valid device ID, a responder that never listens, and it looks
-exactly like a software fault. This cost days of debugging once.
+silently: no valid device ID, a responder that never listens, and it looks like
+a software fault.
 
 ## 2. Build and flash
 
@@ -102,7 +102,19 @@ expected at `~/esp/esp-idf`; override with `IDF_EXPORT=`. The port is
 auto-detected and SEGGER/J-Link ports refused; `make ports` lists what is
 attached and how each is classified.
 
-## 3. What good output looks like
+### Toolchain
+
+```sh
+make esp-bootstrap APP=reader     # ESP-IDF only, about 5 GB
+make esp-bootstrap                # ESP-IDF + esp-matter, about 20 GB and an hour
+```
+
+Neither is pinned by the build. Both default under `$HOME/esp`, overridden with
+`IDF_EXPORT` and `ESP_MATTER_PATH`; an existing install keeps working. From
+nothing, `esp-bootstrap` installs what the bench builds against: ESP-IDF v5.5.4
+and esp-matter `93b1680`. `IDF_VER` and `ESP_MATTER_REV` choose others.
+
+## 3. Expected output
 
 The bench app brings the radio up, binds a canned URSK, and starts the CCC DS-TWR
 responder:

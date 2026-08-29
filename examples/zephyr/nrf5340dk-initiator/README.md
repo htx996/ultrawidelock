@@ -1,8 +1,8 @@
 # nRF5340 DK initiator example
 
-The credential user-device role on an nRF5340 DK: scans for a reader,
-negotiates the BLE transport, drives the initiator-side UWB exchange. A bench
-peer, not a lock.
+The credential user-device role on an nRF5340 DK, as a bench peer: it scans for
+a reader, negotiates the BLE transport, and drives the initiator-side UWB
+exchange.
 
 Prepare the NCS workspace and build:
 
@@ -17,5 +17,5 @@ Flash both application and network cores with:
 make nrf-init-flash
 ```
 
-Output lands in `build/nrf5340dk-initiator/`, from the same portable UWB
-modules and Zephyr port the products use.
+Output lands in `build/nrf5340dk-initiator/`, built from the same portable UWB
+modules and Zephyr port as the products.

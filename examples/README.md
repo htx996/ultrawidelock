@@ -1,7 +1,7 @@
 # Examples
 
-Independently buildable firmware demonstrating one role or bench setup. Same
-`modules/` and `ports/` as the products, but not products themselves.
+Independently buildable firmware demonstrating one role or bench setup, built
+from the same `modules/` and `ports/` as the products under `apps/`.
 
 | Example | Purpose | Build command |
 |---|---|---|
@@ -12,6 +12,3 @@ Independently buildable firmware demonstrating one role or bench setup. Same
 | [`esp32/initiator/`](esp32/initiator/) | ESP32-S3 BLE initiator peer | `make esp-build APP=initiator TARGET=esp32s3` |
 | [`esp32/satellite/`](esp32/satellite/) | Second-anchor responder on the ESP32 tier | `make esp-build APP=satellite` |
 | [`cmake/consumer/`](cmake/consumer/) | Installed C API and TLV package consumer | `make sdk-check` |
-
-Framework names appear here because each example is tied to one integration
-path. Complete products stay under `apps/`.

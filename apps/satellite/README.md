@@ -1,4 +1,4 @@
-# Satellite — the second UWB anchor
+# Satellite: the second UWB anchor
 
 One half of the two-anchor inside/outside product; the lock
 (`apps/dwm3001cdk-lock`, built with `make anchorlink`) is the other. It runs the
@@ -6,28 +6,26 @@ CRED-tier CCC ranging engine without BLE credential auth, joins the phone's own
 session as responder 1 in the slot the phone reserves when the lock advertises a
 2-responder round, and measures its own DS-TWR distance to the phone.
 
-Two distances to one phone from the same block is what makes a side decision
-possible: the lock pairs its measurement with this one and asks which side of
-the anchor pair's frontier the phone is on. Design and receipts:
-`docs/second-anchor.md`.
+Two distances to one phone from the same block make a side decision possible:
+the lock pairs its measurement with this one and asks which side of the anchor
+pair's frontier the phone is on. Design, stage status and receipts:
+[`docs/second-anchor.md`](../../docs/second-anchor.md).
 
-Developed on the nRF5340 DK + DWM3000EVB. `SAT_BOARD=decawave_dwm3001cdk`
-builds the same image for a second DWM3001CDK (stage E): 272,160 B flash
-(52.73%) and 108,032 B RAM (82.42%) with Thread, recorded in
-`size-baseline-decawave_dwm3001cdk-thread.json`. Not yet flown; the second board
-is not on the bench.
+Developed on the nRF5340 DK + DWM3000EVB. `SAT_BOARD=decawave_dwm3001cdk` builds
+the same image for a second DWM3001CDK (stage E): 272,160 B flash (52.73%) and
+108,032 B RAM (82.42%) with Thread, recorded in
+`size-baseline-decawave_dwm3001cdk-thread.json`.
 
 ## The link to the lock
 
-Ranges reach the lock as **sealed datagrams over Thread UDP** — AES-CCM under a
+Ranges reach the lock as **sealed datagrams over Thread UDP**: AES-CCM under a
 shared 16-byte key, 13-byte nonce, 8-byte tag, on
-`CONFIG_ULTRAWIDELOCK_WITNESS_PORT`. `src/anchor_link.c` holds it and is
-compiled only under `CONFIG_OPENTHREAD`, which `overlay-thread.conf` supplies
-and `mk/satellite.mk` layers only for `SAT_THREAD=1`.
+`CONFIG_ULTRAWIDELOCK_WITNESS_PORT`. `src/anchor_link.c` holds it and compiles
+only under `CONFIG_OPENTHREAD`, which `overlay-thread.conf` supplies and
+`mk/satellite.mk` layers for `SAT_THREAD=1`.
 
-No cable in the steady state and no per-session step: the sealed link carries
-the handoff itself. USB is used once, at install, to type in the key and the
-Thread dataset.
+The sealed link carries the handoff itself. USB is used once, at install, to
+type in the key and the Thread dataset.
 
 ## Build and flash
 
@@ -35,7 +33,7 @@ Thread dataset.
     make sat-flash
 
 `SAT_THREAD` is opt-in so the ranging arm margin measured without OpenThread
-stays buildable as the baseline to judge the Thread build against.
+stays buildable as the baseline the Thread build is judged against.
 
 ## Provision, once per board
 
@@ -67,9 +65,9 @@ The dataset comes off the lock: build it with
 | `sat link` | sealed-link status |
 | `sat stop` | stop ranging, quiesce the radio |
 
-## Known limit
-
-A stock iPhone reports `nresp=1` no matter who answers in slot 3, so the
-stage-B pass criterion is unreachable as written; the satellite itself joins,
-decodes and transmits correctly. `docs/second-anchor.md` stage B has the
-receipts, stage B' has where this goes next.
+> [!NOTE]
+> A stock iPhone reports `nresp=1` no matter who answers in slot 3, so the
+> stage-B pass criterion is unreachable as written. The satellite itself joins,
+> decodes and transmits correctly.
+> [`docs/second-anchor.md`](../../docs/second-anchor.md) stage B has the receipts,
+> stage B' has where this goes next.

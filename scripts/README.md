@@ -20,17 +20,15 @@ passing its flags through `HITL_ARGS`.
 
 `lib/ui.sh` is sourced, not run: the progress display behind Make targets that
 take minutes. On a terminal it draws a step counter, percentage, bar and elapsed
-time; in a pipe, a file or CI it prints one line per step and no escape
-sequences, with the wrapped command's output untouched either way.
-`ULTRAWIDELOCK_UI=0` forces the plain form, `1` the drawn one, and
-`scripts/lib/ui.sh --self-test` checks it against a terminal missing colour,
-UTF-8, width or `$TERM`.
+time; in a pipe, a file or CI it prints one line per step and no escape sequences.
+The wrapped command's output is untouched either way. `ULTRAWIDELOCK_UI=0` forces
+the plain form, `1` the drawn one, and `scripts/lib/ui.sh --self-test` checks it
+against a terminal missing colour, UTF-8, width or `$TERM`.
 
 `bootstrap.sh` (NCS) and `esp-bootstrap.sh` (ESP-IDF and esp-matter) both source
-`lib/setup.sh`, which owns the phase output, the `die` format, the traps that
-keep an interrupt legible and a `set -e` abort nonzero, `ask`/`SETUP_AUTO`, the
-per-host package hints and the disk and network checks. Neither knows anything
-about the other's SDK.
+`lib/setup.sh`, which owns the phase output, the `die` format, the traps that keep
+an interrupt legible and a `set -e` abort nonzero, `ask`/`SETUP_AUTO`, the per-host
+package hints and the disk and network checks.
 
 ## Workspaces
 
@@ -44,12 +42,12 @@ another, which is how to reach a worktree whose branch predates the script.
 it.
 
 `ws-link.sh --print` names the entry a checkout resolves to and changes nothing.
-It needs no workspace, toolchain or network, since the name is a function of the
-pin, the NCS version and the patch files. That makes it the cache key for a build
-runner: restore the store entry under that name, `make ws-link`, and a build that
-would have refetched for an hour starts immediately. Restoring by the fetch-key
-prefix alone is also safe, because the restored tree keeps its own name and
-`ws-link` clones and re-patches it into the right one.
+The name is a function of the pin, the NCS version and the patch files, so it needs
+no workspace, toolchain or network. That makes it the cache key for a build runner:
+restore the store entry under that name, `make ws-link`, and a build that would have
+refetched for an hour starts immediately. Restoring by the fetch-key prefix alone is
+also safe: the restored tree keeps its own name, and `ws-link` clones and re-patches
+it into the right one.
 
 `app-upstream-diff.sh` says how our copy of the door-lock application differs
 from Nordic's, by fetching just that path at the pin and diffing. It reports
@@ -68,10 +66,9 @@ mixed host and firmware pair fails loudly.
 an earlier BLE session still holds the claim. It clears on disconnect or when the
 update window closes. It is not a signature or corruption failure.
 
-`cdk-dfu.sh` does not reset the board over SWD; the bootloader no longer waits
-for mcumgr on every boot. Its operator step is a **>= 5 s SW2 hold while the
-application is running**, which requests MCUboot serial recovery and warm-reboots
-into it. Its fourth argument, the chip name, is vestigial.
+`cdk-dfu.sh` takes one operator step: a **>= 5 s SW2 hold while the application
+is running**, which requests MCUboot serial recovery and warm-reboots into it. Its
+fourth argument, the chip name, is vestigial.
 
 `ultrawidelock_smp.py --serial PORT` speaks the same mcumgr conversation down
 `uart0` instead of over the radio. Everything above the transport is one code
@@ -97,8 +94,8 @@ asking:
 | MCUboot | after a >= 5 s SW2 hold, or when no valid image exists | a **whole** signed image | `--chunk 128` |
 
 MCUboot's is the only path on this board needing no starting image, which is what
-lets it rescue a board whose application does not boot. It is also
-[CDK-16](../docs/hardware-validation.md), open: it completed one upload in August
-2026 and has not reproduced. `ultrawidelock_smp.py --serial` is a second,
-independent host implementation of that protocol, so trying it is worth doing for
-what it can rule out.
+lets it rescue a board whose application does not boot. `ultrawidelock_smp.py
+--serial` is proven against it: entered over SWD with `make ota-recovery` on
+2026-08-27, MCUboot accepted a full 406,524 B image and the board booted it.
+[CDK-16](../docs/hardware-validation.md) now covers only the SW2 entry and the Go
+`mcumgr` client.

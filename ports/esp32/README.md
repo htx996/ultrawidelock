@@ -12,9 +12,8 @@ dependency list names. Each component carries `idf_component.yml`.
 - `ultrawidelock_crypto`, `ultrawidelock_device`, provider selection and role
   assembly.
 - `ultrawidelock_satlink`, the sealed satellite link over an ESP-NOW carrier.
-- `ultrawidelock_anchor`, two-anchor geometry and fusion. It translates nothing:
-  the module needs no framework, so the component is only the role manifests
-  wrapped for ESP-IDF. No app names it yet.
+- `ultrawidelock_anchor`, two-anchor geometry and fusion. The module needs no
+  framework, so the component is the role manifests wrapped for ESP-IDF.
 - `piv_ccid`, the optional USB PIV interface.
 
 Portable protocol behavior belongs in `modules/`.

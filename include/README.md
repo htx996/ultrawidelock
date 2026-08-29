@@ -11,9 +11,8 @@ declarations stay with their implementation owners:
 | `<ultrawidelock/uwb.h>` | `modules/ultrawidelock_uwb/include/ultrawidelock/uwb.h` |
 | `<ultrawidelock/ultrawidelock_hal.h>` | `modules/ultrawidelock_port/include/ultrawidelock/ultrawidelock_hal.h` |
 
-Source builds and installed packages therefore share one `<ultrawidelock/...>`
-spelling. The former flat role headers were removed, and the SDK test rejects
-their reintroduction.
+Source builds and installed packages share one `<ultrawidelock/...>` spelling;
+the SDK test rejects flat role headers.
 
 The package installs these entry points plus only the lower-level headers they
 include. `make sdk-check` ratchets that exact set: adding or removing a package

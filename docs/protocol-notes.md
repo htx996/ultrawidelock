@@ -1,8 +1,8 @@
 # Time synchronization
 
 How the reader obtains wall-clock time, how that meets Aliro's time-based
-credential checks, and the fixes this repo carries. The on-air protocol itself
-is [`protocol-research.md`](protocol-research.md).
+credential checks, and the fixes this repo carries. The on-air protocol is
+[`protocol-research.md`](protocol-research.md).
 
 File references use paths inside the fetched workspace (`workspace/`); upstream
 line numbers are as of the pins in `west.yml` / `bootstrap.sh`.
@@ -15,18 +15,17 @@ line numbers are as of the pins in `west.yml` / `bootstrap.sh`.
   stores an offset against the monotonic clock (`gBootRealTime`,
   `modules/lib/matter/src/platform/Zephyr/SystemTimeSupport.cpp`). Any reset,
   warm or cold, erases it.
-- The only things that set it are the Matter Time Synchronization cluster's
+- Only two things set it: the Matter Time Synchronization cluster's
   `SetUTCTime` command and a configured trusted time source. **Apple Home sends
   `SetUTCTime` exactly once, at commissioning** (observed in a re-pair capture,
   2026-07-17). It configures no `TrustedTimeSource` and no `DefaultNTP`, so the
   clock is never set again. The device emits `TimeFailure` at every boot.
 - Matter's **Last Known Good Time (LKGT)** is persisted in the fabric table, but
-  it is only written at NOC install (certificate notBefore) and inside the
-  cluster's `UpdateUTCTime`
+  written only at NOC install (certificate notBefore) and inside the cluster's
+  `UpdateUTCTime`
   (`src/app/clusters/time-synchronization-server/time-synchronization-cluster.cpp:132`).
-  Nothing refreshes it periodically, so it stays frozen at the commissioning
-  timestamp, which lands roughly 30 s **before** the first Access Document is
-  minted.
+  Nothing refreshes it, so it stays frozen at the commissioning timestamp,
+  roughly 30 s **before** the first Access Document is minted.
 - The Nordic add-on's `GetCurrentTime()`
   (`subsys/aliro/time_utils/src/time_utils_chip.cpp`) returns the wall clock
   when valid and otherwise **silently substitutes LKGT**, turning "time unknown"
@@ -50,7 +49,7 @@ Failure chain after any reboot, without the fixes below:
    (`Current time is outside the Access Document validity period`).
 4. Step-up fails closed, permanently, until the lock is re-commissioned.
 
-### Fixes carried by this repo (in our copy of the door-lock application)
+### Fixes carried by this repo's door-lock application
 
 - **Document time ratchet** (`CONFIG_DOOR_LOCK_TIME_CONCEPT_RATCHET`,
   default y): when a signature-verified document's `validFrom` lies ahead of
@@ -69,9 +68,8 @@ Failure chain after any reboot, without the fixes below:
   time must not be persisted into that path.
 - **Interplay**: persist alone fixes the common case (reboot after long
   uptime); the ratchet alone covers documents minted while the lock was
-  powered off. Each covers exactly the other's blind spot. Because of persist,
-  a ratchet advance now survives reboot; this is documented in the ratchet
-  Kconfig help.
+  powered off. Because of persist, a ratchet advance survives reboot, as the
+  ratchet Kconfig help states.
 
 ### Interaction: the BLE advertisement's Dynamic Tag (found on bench, 2026-07-17)
 
@@ -81,28 +79,28 @@ CONFIG_DOOR_LOCK_ULTRAWIDELOCK_BLE_SERVICE_DYNAMIC_TAG_EXPIRY_DURATION_S` (defau
 `PrepareAdvertisingDataLocked`), and "expiry unavailable" when it is not.
 iPhones accept the unavailable form but silently ignore an advertisement whose
 expiry lies in their past. A clock that is valid but *behind* real time by
-more than the window therefore kills unlock-on-approach for every phone, while
-NFC and Matter keep working. Both of this repo's time fixes create exactly
-that state (the restored clock understates real time by the accumulated
-power-off duration; a ratcheted clock understates it by the presented
-document's age), so `apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf` disabled the Dynamic
-Tag while no real time source existed. With the Matter-timesync seeding merged
-(the clock steps up on sync) the overlay is back to `=y`, bench-gated on the
-seeded clock. Stock firmware never hits this: its clock
-is either fresh (before the first reboot) or invalid (after), never
-valid-but-stale. The ESP32 port derives the same tag from its live clock
-(SNTP-fed; `ultrawidelock_ble.c` + `ultrawidelock_advtag.c`), re-derives at half the 900 s
-window, immediately on a time step, and falls back to the "expiry unavailable"
-form whenever the clock is not yet valid.
+more than the window kills unlock-on-approach for every phone, while NFC and
+Matter keep working. Both time fixes above create that state (the restored
+clock understates real time by the accumulated power-off duration; a ratcheted
+clock understates it by the presented document's age), so
+`apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf` disabled the Dynamic Tag
+while no real time source existed. With the Matter-timesync seeding merged (the
+clock steps up on sync) the overlay is back to `=y`, bench-gated on the seeded
+clock. Stock firmware never hits this: its clock is either fresh (before the
+first reboot) or invalid (after), never valid-but-stale. The ESP32 port derives
+the same tag from its live clock (SNTP-fed; `ultrawidelock_ble.c` +
+`ultrawidelock_advtag.c`), re-derives at half the 900 s window, immediately on a
+time step, and falls back to the "expiry unavailable" form when the clock is not
+yet valid.
 
 ### Deferred: network time (SNTP / DefaultNTP)
 
 Real network time is the only fix that makes expiry and schedule enforcement
 accurate, but plain SNTP is unauthenticated: the only input to the trust chain
 an attacker on the home network or DNS path could control (backward spoof:
-unlock denial; forward spoof: weakened not-before without issuer keys). It also
-needs the border router to offer a routable path (IPv6 NTP or NAT64/DNS64) and
-must be strictly fail-open for offline homes. If built later: clamp to
+unlock denial; forward spoof: weakened not-before without issuer keys). It needs
+the border router to offer a routable path (IPv6 NTP or NAT64/DNS64) and must be
+fail-open for offline homes. If built later: clamp to
 never-before-firmware-build-time, cap backward steps, run async with backoff,
 and rank it below `SetUTCTime`.
 
@@ -117,5 +115,5 @@ and rank it below `SetUTCTime`.
 
 The temporary DBG overlay lines in `apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf`
 (`DOOR_LOCK_APP_LOG_LEVEL_DBG`, `DOOR_LOCK_ULTRAWIDELOCK_TIME_UTILS_LOG_LEVEL_DBG`)
-surface the decisive `Current time / validFrom / validUntil` values during
-these tests and should be reverted afterwards.
+surface the `Current time / validFrom / validUntil` values during these tests
+and should be reverted afterwards.
