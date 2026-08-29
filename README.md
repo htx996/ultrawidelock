@@ -15,6 +15,8 @@ NFC and UWB on real hardware. One portable core behind five HAL seams drives
 four lock applications, a second UWB anchor and standalone reader, initiator,
 anchor and witness examples, across Zephyr, ESP-IDF and FreeRTOS.
 
+<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
+
 ## Features
 
 | Feature | Description | Command |
@@ -50,6 +52,8 @@ cd ultrawidelock
 make check
 ```
 
+<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
+
 Bare targets build for the Qorvo DWM3001CDK.
 
 ```sh
@@ -71,11 +75,7 @@ Thread border router: [add the key](docs/add-the-key.md).
 
 <div align="center">
 
-<img src="assets/flow.svg" width="880" alt="An iPhone or Apple Watch presents a Wallet home key over BLE; AUTH0, AUTH1 and EXCHANGE derive the URSK; the key ladder seeds an STS session for DS-TWR ranging; range consistency gates the unlock; lock state is reported to Apple Home over Thread"/>
-
-<img src="assets/hero.gif" width="880" alt="A Wallet home key unlocking the lock on approach, recorded on real hardware"/>
-
-<sub>A Wallet home key, on approach, recorded on hardware.</sub>
+<img src="assets/flow.svg" width="880" alt="An iPhone or Apple Watch presents a Wallet home key over BLE; AUTH0, AUTH1 and EXCHANGE derive the URSK; the key ladder seeds an STS session for DS-TWR ranging; a trusted range gates the unlock; lock state is reported to Apple Home over Thread"/>
 
 <img src="assets/divider.svg" width="880" alt=""/>
 
@@ -98,6 +98,8 @@ make freertos-build && make freertos-flash           # the Zephyr-free port
 make sat-build && make sat-flash                     # the satellite
 make hitl                                            # unattended end-to-end bench
 ```
+
+<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
 
 | Example | Role | Build |
 |---|---|---|
@@ -145,6 +147,8 @@ checked before the first byte is written and again by the bootloader.
 The CDK also reinstalls whole over that cable through MCUboot serial recovery,
 which runs from the bootloader alone.
 
+<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
+
 ```sh
 make fota                   # CDK: one file a phone can install
 make fota-done              # after every phone push, to record what the board runs
@@ -183,6 +187,8 @@ make ci                     # every pull-request gate, in CI's order
 make regress                # everything a machine can check without a board
 make regress-hil            # and then on air, against a live reader
 ```
+
+<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
 
 | Gate | Enforces |
 |---|---|
@@ -260,7 +266,17 @@ ultrawidelock/
 └── release/        templates and scripts for release bundles
 ```
 
-<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
+<div align="center">
+
+<img src="assets/divider.svg" width="880" alt=""/>
+
+<img src="assets/hero.gif" width="880" alt="A Wallet home key unlocking the lock on approach, recorded on real hardware"/>
+
+<sub>A Wallet home key, on approach, recorded on hardware.</sub>
+
+<img src="assets/divider.svg" width="880" alt=""/>
+
+</div>
 
 ## FAQ
 
@@ -289,6 +305,8 @@ the lock again, and Home Assistant has to be shared again afterward.
 
 **Can one lock open another?** Yes. `make build CLIENT=1` compiles the Matter
 client role, which opens a bound lock over CASE through the Binding cluster.
+
+<div align="center"><img src="assets/divider.svg" width="880" alt=""/></div>
 
 > [!WARNING]
 > These are bench defaults. Do not secure valuables with them, and never lock
