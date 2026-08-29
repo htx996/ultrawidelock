@@ -529,3 +529,38 @@ Any "HFXO running 100%" figure from an earlier run of this script should be read
 as "HFCLK was on", which is not a finding. The one-shot `HFCLKSTAT` values quoted
 in §1 are unaffected: those show the full register, and `0x00010001` really does
 mean the crystal was up.
+
+### 7.3 One red LED on this board is not ours, and proving it took four steps
+
+With `CONFIG_ULTRAWIDELOCK_STATUS_LED=n` and `CONFIG_ULTRAWIDELOCK_UWB_LEDS=n`, a red
+LED stays lit. It is **hardware**, reachable by no firmware on the module, and
+the elimination is worth recording because "turn the LEDs off" is otherwise an
+untestable instruction.
+
+1. **The nRF52833 is not driving it.** All four board LEDs sit on P0 (D9 green
+   P0.04, D12 red P0.14, D11 red P0.22, D10 blue P0.05, all active low). On the
+   running board `P0.DIR = 0x00080108`, which makes only P0.03, P0.08 and P0.19
+   outputs, and `PIN_CNF` for every LED pin reads `0x00000002` — the nRF52 reset
+   value, meaning untouched.
+2. **The DW3110 is not driving it.** `dwt_setleds(DWT_LEDS_DISABLE)` is not a
+   passive "do not enable": `ull_setleds()`'s else branch clears the `GPIO_MODE`
+   MSGP2/MSGP3 bits and the `LED_CTRL` blink-enable, so the radio's LED outputs
+   are actively torn down.
+3. **The pin mapping is right**, checked rather than trusted. Driving P0.14 and
+   P0.22 low over SWD (`OUTCLR` then `DIRSET` at `0x5000050c` / `0x50000518`) lit
+   **two more** reds, for three total.
+4. **A reset removed exactly the two.** The forced writes went away, `P0.DIR`
+   returned to `0x00080108` and both `PIN_CNF` to `0x02`, and one red remained.
+
+So the persistent one is a third LED: a power indicator or the J-Link OB's own
+status light. Both live on the debugger half of the board.
+
+**This is a measurement fact, not a curiosity.** It is on the same rail as the
+J-Link OB, so it is part of the 10-20 mA that makes a stock CDK unable to show
+anything useful about battery life (§5.1 step 1). It disappears with the
+debugger rail, not with a Kconfig.
+
+If the board has a jumper on a current-measurement header, pulling it and
+clipping a PPK2 across the two pins is the non-destructive form of "cut the
+rail" and is the preferred route. The designators are in Qorvo's DWM3001CDK user
+guide; this repo does not carry the schematic and should not guess at them.
