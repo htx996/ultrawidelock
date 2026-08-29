@@ -452,3 +452,80 @@ and the two ports this does not cover. If a walk-up ever does regress,
 **Also not verified:** that the current actually dropped. That still needs the
 PPK2 procedure in §5.1. The register baseline cannot see it, because the DW3110's
 state lives behind SPI where SWD cannot reach (§5.2).
+
+---
+
+## 7. The battery build, measured
+
+**MEASURED 2026-08-29T17:07Z**, same board, `make build BATTERY=1 RELEASE=1 SMP=1`
+then `make flash`. Compare against §1.
+
+| | Default | `BATTERY=1` |
+| --- | --- | --- |
+| `RADIO.STATE == 3` (802.15.4 RX) | **20/20 samples** | **0/20 samples** |
+| `HFCLKSTAT` source | XTAL (HFXO up) | **RC (HFXO down)** |
+| `dw3000_asleep` | 1 | 1 |
+| `s_adv_running` | n/a | 1 |
+| `s_adv_slow_live` | n/a | 0 for 30 s, then **1** |
+
+The first two rows are the whole point. The 802.15.4 receiver went from
+continuously on to never observed on, and the HFXO followed it down: the crystal
+was being held by the permanent receive, exactly as expected, and nothing else
+was holding it.
+
+**That falsifies a claim made in §2.2.** The old text said an nRF52 legacy UART
+is "the classic HFCLK pin" and that UART0's cost was merely *masked* by the
+radio. UART0 is still `ENABLE = 4` in this build and the HFXO is now down, so on
+this Zephyr version UART0 does **not** hold the crystal. Its remaining cost is
+the peripheral's own, which is smaller than the section implied.
+
+### 7.1 A bug this found, which is why it was flashed and not just built
+
+The first battery flash logged, on every boot:
+
+```
+E: adv start rc=-22
+E: ultrawidelock_reader_start rc=-22
+```
+
+`-EINVAL`, and the board never advertised: an invisible lock, the exact failure
+`prj.conf` warns about. The cause was in the new code and worth recording
+because it is a language trap, not a Bluetooth one.
+
+`BT_LE_ADV_CONN_FAST_1` expands to `BT_LE_ADV_PARAM()`, which is a **compound
+literal**: `((const struct bt_le_adv_param[]){ ... })`. C gives a compound
+literal static storage duration only at **file scope**. Inside a function body
+it is automatic, so a helper that selects a rate and *returns* the macro hands
+back a pointer into a dead stack frame. Zephyr read garbage intervals and
+rejected them.
+
+Using the macro directly at a call site, which this file did for years, is
+completely fine: the literal outlives the enclosing block, and the block
+contains the call. It only breaks when a helper returns it, and selecting
+between two rates is exactly what wants a helper. The fix is to name both
+parameter sets as file-scope statics, which sidesteps the question entirely.
+
+Two things make this worth a section rather than a line:
+
+1. **The default build had the same bug** and would have shipped it. It was
+   compiled and passed every host suite; nothing catches a dangling pointer into
+   a Zephyr struct except running it.
+2. **The size gate looked like it was reassuring.** The broken default build
+   measured 406,176 B against 407,576 B for the good one, and that 1,400 B drop
+   was read here as harmless LTO reshuffling. It was not: LTO had folded away
+   code the dangling pointer made unreachable. A size that moves for a reason
+   nobody can name is a finding, not noise.
+
+### 7.2 A correction to this document's own tooling
+
+`scripts/power-baseline.sh` sampled `HFCLKSTAT` bit 16 and printed it as
+"HFXO running". Bit 16 is `STATE`, which only says HFCLK is running at all, and
+HFCLK is always running when the CPU is awake enough to answer a debug read. It
+reported ~100% on every board and meant nothing. The bit that costs money is
+bit 0, `SRC`, which says whether the **crystal** is up rather than the free
+internal RC. The script now samples bit 0 and labels it `HFXO (crystal)`.
+
+Any "HFXO running 100%" figure from an earlier run of this script should be read
+as "HFCLK was on", which is not a finding. The one-shot `HFCLKSTAT` values quoted
+in §1 are unaffected: those show the full register, and `0x00010001` really does
+mean the crystal was up.

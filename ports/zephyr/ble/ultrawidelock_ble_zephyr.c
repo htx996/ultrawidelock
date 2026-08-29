@@ -699,6 +699,27 @@ static inline void adv_schedule_rate_drop(void) { }
 static inline void adv_stop_for_rate_change(void) { }
 #endif
 
+/* BOTH RATES ARE FILE-SCOPE STATICS, AND THAT IS LOAD-BEARING, NOT STYLE.
+ *
+ * BT_LE_ADV_CONN_FAST_1 expands to BT_LE_ADV_PARAM(), which is a compound
+ * literal: `((const struct bt_le_adv_param[]){ ... })`. C gives a compound
+ * literal static storage duration ONLY at file scope; inside a function body it
+ * is automatic, so returning it from a helper hands back a pointer into a dead
+ * stack frame. Zephyr then reads garbage intervals and bt_le_adv_start() fails
+ * -EINVAL, which on this board means the lock never advertises and is simply
+ * invisible.
+ *
+ * Using the macro directly at a call site is fine and is what this file did for
+ * years -- the literal outlives the enclosing block, which contains the call.
+ * It only breaks when a helper returns it, which is exactly what selecting
+ * between two rates wants to do. Naming both here sidesteps the whole question.
+ *
+ * MEASURED: the version of this that returned the macro from adv_param_for()
+ * logged `adv start rc=-22` on the first boot after flashing.
+ */
+static const struct bt_le_adv_param s_adv_param_fast = BT_LE_ADV_PARAM_INIT(
+	BT_LE_ADV_OPT_CONN, BT_GAP_ADV_FAST_INT_MIN_1, BT_GAP_ADV_FAST_INT_MAX_1, NULL);
+
 /** The parameter set for a rate. Fast is the GAP T_GAP(adv_fast_interval1)
  * pair this file has always used; slow is the GAP recommended slow pair, so
  * neither number is invented here. */
@@ -711,7 +732,7 @@ static const struct bt_le_adv_param *adv_param_for(bool slow)
 #else
 	ARG_UNUSED(slow);
 #endif
-	return BT_LE_ADV_CONN_FAST_1;
+	return &s_adv_param_fast;
 }
 
 /** Record the rate the live set is ACTUALLY running at, which is not the same

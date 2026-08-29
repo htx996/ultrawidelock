@@ -75,8 +75,9 @@ LF=$(rd 0x40000418)
 LFSRC=$(rd 0x40000518)
 case $(( 0x$HF & 1 )) in 0) HFS='RC (64 MHz internal)' ;; *) HFS='XTAL (HFXO)' ;; esac
 case $(( 0x$LF & 3 )) in 0) LFS='RC' ;; 1) LFS='XTAL (LFXO)' ;; *) LFS='Synth' ;; esac
-printf '  HFCLKSTAT      0x%s   src=%-22s running=%s\n' "$HF" "$HFS" "$(bit "$HF" 16)"
-printf '  LFCLKSTAT      0x%s   src=%-22s running=%s\n' "$LF" "$LFS" "$(bit "$LF" 16)"
+printf '  HFCLKSTAT      0x%s   src=%-22s clk_on=%s\n' "$HF" "$HFS" "$(bit "$HF" 16)"
+printf '  LFCLKSTAT      0x%s   src=%-22s clk_on=%s\n' "$LF" "$LFS" "$(bit "$LF" 16)"
+printf '                                (src is the one that costs: HFXO up vs the free RC)\n'
 printf '  LFCLKSRC       0x%s   (requested source; must agree with LFCLKSTAT)\n' "$LFSRC"
 
 # ---- the regulator --------------------------------------------------------
@@ -156,11 +157,17 @@ while [ "$i" -lt "$SAMPLES" ]; do
 	h=$(rd 0x4000040c)
 	# STATE 3 is RX. 2 is RXIDLE (ramped up, not receiving), 0 is DISABLED.
 	[ "$(( 0x$s ))" -eq 3 ] && rx=$(( rx + 1 ))
-	[ "$(bit "$h" 16)" -eq 1 ] && hf=$(( hf + 1 ))
+	# BIT 0, THE SOURCE, NOT BIT 16. Bit 16 only says HFCLK is running, and
+	# HFCLK is always running when the CPU is awake enough to answer a debug
+	# read -- sampling it reports ~100% on any board and means nothing. The
+	# expensive thing is the CRYSTAL, and src=1 is the only bit that says it
+	# is up. Getting this wrong once already produced a confident wrong
+	# reading of a board that was behaving correctly.
+	[ "$(bit "$h" 0)" -eq 1 ] && hf=$(( hf + 1 ))
 	i=$(( i + 1 ))
 done
 printf '  RADIO in RX    %d/%d samples  = %d%% duty\n' "$rx" "$SAMPLES" $(( rx * 100 / SAMPLES ))
-printf '  HFXO running   %d/%d samples  = %d%% duty\n' "$hf" "$SAMPLES" $(( hf * 100 / SAMPLES ))
+printf '  HFXO (crystal) %d/%d samples  = %d%% duty\n' "$hf" "$SAMPLES" $(( hf * 100 / SAMPLES ))
 
 # ---- what is flashed ------------------------------------------------------
 #
