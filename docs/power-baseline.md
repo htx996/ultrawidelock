@@ -417,10 +417,31 @@ than the ring is deep. It is not needed: `Pre-POLL accepted` is the stronger
 statement, being the radio doing cryptographic work on air rather than a
 host-side print.
 
-So both halves are proven on this silicon. The switch stays because of what one
-walk-up does **not** sample: a second session after a first, a long idle before
-the first, a cold board, and the two ports this does not cover. If a walk-up
-ever does regress, `make monitor` names it directly, and the fix is
+**And it goes back down afterwards**, which is the case that recurs every day and
+is not proven by the walk-up alone. The driver's own state is in RAM, so SWD can
+read it directly without halting anything. Taken with the board idle after the
+unlock above:
+
+```sh
+# addresses from `arm-zephyr-eabi-nm zephyr.elf`, they move on every build
+probe-rs read b8 0x20010d68 1   # dw3000_asleep  -> 01
+probe-rs read b8 0x20010d6a 1   # g_radio_ready  -> 01
+probe-rs read b8 0x20010e8d 1   # g_listen_gate  -> 00
+```
+
+`g_radio_ready = 1` rules out the trivial reading: this is not a part that was
+never brought up, it is one that ran a full credential session and was put back
+down when `ccc_prepoll_stop()` closed the listener. **The whole cycle is
+verified: sleep at boot, wake on approach, range, unlock, sleep again.**
+
+This is the cheapest check in this document and it generalises. Any `static
+bool` in a driver is readable over SWD on a running target, which is often a
+better answer than adding a log line and reflashing.
+
+So all of it is proven on this silicon. The switch stays because of what one
+walk-up does **not** sample: a long idle before the first session, a cold board,
+and the two ports this does not cover. If a walk-up ever does regress,
+`make monitor` names it directly, and the fix is
 `CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP=n`:
 
 | Line | Means |
