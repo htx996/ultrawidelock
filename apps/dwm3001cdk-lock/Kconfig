@@ -176,6 +176,42 @@ config ULTRAWIDELOCK_APPROACH_NEAR_DWELL
 	  experiment and is rejected by the DWM build unless BENCH and strict STS
 	  are both enabled.
 
+config ULTRAWIDELOCK_BLE_ADV_SLOW
+	bool "Fall back to slow BLE advertising when nobody has been near"
+	default n
+	help
+	  Advertise at the GAP fast rate (30-60 ms) for a window after boot and
+	  after every disconnect, then fall back to the GAP recommended slow rate
+	  (1.0-1.2 s) until something happens again.
+
+	  This is a battery lever and it is a large one. Continuous 30-60 ms
+	  connectable advertising is estimated at 220-670 uA, against 10-30 uA at
+	  the slow rate -- most of a 5,000 mAh six-month budget, spent on being
+	  findable at a door nobody is standing at. See docs/power-baseline.md.
+
+	  THE COST IS FIRST-DISCOVERY LATENCY. A phone approaching a lock that has
+	  been idle meets the slow rate, so it is found in about 1-3 s rather than
+	  well under 1 s. Repeat approaches are fast, because a disconnect reopens
+	  the window. The real fix is a wake trigger rather than a faster default;
+	  the LIS2DH12 on the module runs at ~2 uA and handle-touch is a real
+	  signal, but nothing wires it to this yet.
+
+	  Default n: a mains-powered board should not pay for a battery it does not
+	  have. overlay-battery.conf turns it on.
+
+config ULTRAWIDELOCK_BLE_ADV_FAST_WINDOW_S
+	int "Seconds of fast advertising after boot or a disconnect"
+	default 30
+	depends on ULTRAWIDELOCK_BLE_ADV_SLOW
+	help
+	  How long the fast rate persists once something has happened. Long enough
+	  that a phone that just disconnected can reconnect without waiting on the
+	  slow rate, short enough that an abandoned board settles quickly.
+
+	  Every second here costs roughly the difference between the two rates, so
+	  a window of 30 s entered a few times a day is noise, while a window of an
+	  hour is most of the saving handed back.
+
 config ULTRAWIDELOCK_STATUS_LED
 	bool "Report the board's state on the four LEDs"
 	default y

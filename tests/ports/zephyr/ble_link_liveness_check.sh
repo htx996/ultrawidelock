@@ -31,7 +31,30 @@ need 'K_WORK_DELAYABLE_DEFINE\(s_advertising_work' "$backend"
 need 'ULTRAWIDELOCK_ADV_RETRY_MAX_MS' "$backend"
 need '\.le_data_len_updated = on_le_data_len_updated' "$backend"
 need '\.le_phy_updated = on_le_phy_updated' "$backend"
-reject 'bt_le_adv_stop' "$backend"
+# bt_le_adv_stop was rejected outright, and the invariant behind that is kept:
+# a PAYLOAD refresh must never stop the set. The dynamic tag rotates roughly
+# every nine minutes and a stop/start there would blink the board out of
+# existence while somebody could be walking up to it, so advertising_apply()
+# updates payloads in place (the bt_le_adv_update_data need() above).
+#
+# What is now allowed is exactly one call, for a RATE change, which Zephyr's
+# legacy advertising API cannot do any other way -- update_data changes bytes,
+# not timing. It is fenced three ways and all three are checked below: at most
+# one occurrence, only alongside the rate-change predicate, and only inside the
+# CONFIG_ULTRAWIDELOCK_BLE_ADV_SLOW guard so a default build cannot reach it.
+# Count CALLS, not mentions: the block comment above that call explains why it
+# is the only one, and naming the symbol there must not trip its own guard.
+# Continuation lines of a block comment start with '*', so drop those.
+adv_stop_calls=$(grep -n 'bt_le_adv_stop' "$backend" | grep -cvE ':[[:space:]]*\*' || true)
+if (( adv_stop_calls > 1 )); then
+	echo "bt_le_adv_stop called more than once in ${backend#"$repo_root"/};" \
+	     "only the advertising rate change may stop the set" >&2
+	exit 1
+fi
+if (( adv_stop_calls > 0 )); then
+	need 'adv_rate_change_due' "$backend"
+	need 'defined\(CONFIG_ULTRAWIDELOCK_BLE_ADV_SLOW\)' "$backend"
+fi
 reject '\(time_t\)\(UINT32_MAX' "$backend"
 if (( $(grep -Ec '\(uint64_t\)now <= UINT32_MAX - ULTRAWIDELOCK_ADV_TAG_VALID_S' \
 	"$backend") != 2 )); then

@@ -199,7 +199,10 @@ CDK_LTO  := $(filter-out 0 n no off N NO OFF,$(if $(LTO_SET),$(LTO),1))
 # rather than a budget. Ordered after overlay-client.conf so it is trimming a
 # configuration that already exists.
 CDK_CLIENT_DEBUG := $(if $(CLIENT),$(if $(RELEASE),,;overlay-client-debug.conf))
-CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(CLIENT),;overlay-client.conf)$(CDK_CLIENT_DEBUG)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)$(if $(LATCH),;overlay-latch.conf)
+# BATTERY=1 goes LAST of the feature overlays so its Thread and BLE levers win
+# over anything overlay-thread.conf set: it is the only overlay whose job is to
+# take latency back out, so anything it does not mention must survive it.
+CDK_CONF := overlay-thread.conf$(if $(RELEASE),;overlay-release.conf)$(if $(SMP),;overlay-smp.conf)$(if $(CDK_LTO),;overlay-lto.conf)$(if $(CLIENT),;overlay-client.conf)$(CDK_CLIENT_DEBUG)$(if $(OTLOG),;overlay-otlog.conf)$(if $(ANCHOR),;overlay-anchor.conf)$(if $(SIDE),;overlay-side.conf)$(if $(LATCH),;overlay-latch.conf)$(if $(BATTERY),;overlay-battery.conf)
 
 # The lock half of the two-anchor product (`make anchorlink`). Spelled out
 # rather than layered onto CDK_CONF because two of these are not the caller's
