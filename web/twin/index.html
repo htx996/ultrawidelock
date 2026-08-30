@@ -1535,9 +1535,9 @@ resize();
 buildTrustPips(3); /* placeholder until the firmware reports its real K */
 if (typeof createTwin === "undefined"){
   const el = $("selftest");
-  el.textContent = "firmware self-test: twin.js missing — run `make twin-wasm`";
+  el.textContent = "firmware self-test: twin.js missing. Install emscripten, then `make docs`";
   el.className = "fail";
-  log("bad", "twin.js not found — the firmware cannot boot");
+  log("bad", "twin.js not found: the firmware cannot boot, so nothing will unlock");
 } else {
   selfTest();
   bootFirmware(fwPrint).then(fw => {

@@ -109,7 +109,7 @@ length-checks those where they are written.
 One row above is a subtree with no keys listed under it, deliberately. The
 `uwl` subtree belongs to `ultrawidelock_kv.h`, which addresses records by a
 `uint16_t` rather than by a name and lets each backend derive the storage name
-from the number — `uwl/%04x` under Zephyr settings, namespace `uwl` with key
+from the number: `uwl/%04x` under Zephyr settings, namespace `uwl` with key
 `%04x` under NVS. Eight characters and four, for every key in the 16-bit space,
 so neither cap can be reached by any caller and there is nothing per-record to
 list here or to keep in step. A record added through that seam takes an id from
@@ -126,15 +126,15 @@ a provisioned board wrote -- which is why they go one at a time and not at once.
 
 Where the caps come from, and why they differ:
 
-- **esp32** — `NVS_NS_NAME_MAX_SIZE - 1` and `NVS_KEY_NAME_MAX_SIZE - 1`, both 15,
+- **esp32**: `NVS_NS_NAME_MAX_SIZE - 1` and `NVS_KEY_NAME_MAX_SIZE - 1`, both 15,
   from ESP-IDF's `nvs.h`. Each name still in the table is also `_Static_assert`ed
   against the cap where it is defined, so a bench build fails before the flash
   does. A record on the seam needs no assertion: `%04x` is four characters
   whatever the caller passes.
-- **zephyr** — `SETTINGS_MAX_NAME_LEN`, `8 * SETTINGS_MAX_DIR_DEPTH` = 64, from
+- **zephyr**: `SETTINGS_MAX_NAME_LEN`, `8 * SETTINGS_MAX_DIR_DEPTH` = 64, from
   `zephyr/include/zephyr/settings/settings.h`, with at most 8 `/`-separated
   levels. Roomy enough that no name here is close to it.
-- **freertos-nrf52833** — no row, because that port has no name to cap. Records
+- **freertos-nrf52833**: no row, because that port has no name to cap. Records
   are numeric ids (`ULTRAWIDELOCK_KV_KEY_CRED_PROV` = `0x0001u`) in the windows
   `modules/ultrawidelock_port/include/ultrawidelock_kv.h` reserves; this port
   reached that design first and the seam was derived from it.
@@ -174,7 +174,7 @@ The two `dw3000_*` seams above cover a new board carrying a DW3000-family
 chip. A different chipset replaces the engine, not the seams. The contract is
 `<ultrawidelock/uwb.h>`: bind a URSK, start and stop a credential session from the
 negotiated parameters, report ranges with integrity evidence. Everything above
-that header is chip-agnostic and reused as is — the FiRa session state, DS-TWR
+that header is chip-agnostic and reused as is: the FiRa session state, DS-TWR
 math, CCC key schedule and MAC framing, the credential M1-M4 adapter, and the apps.
 
 What a new chipset supplies:

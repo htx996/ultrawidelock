@@ -1,17 +1,17 @@
 # Bench runbook: does the inside veto work?
 
-One session, one afternoon. Two lock flashes, two dongle flashes, no Raspberry
-Pi, no probe on the dongles, nothing wired to the door.
+Two lock flashes, two dongle flashes, one afternoon. No Raspberry Pi, no probe
+on the dongles, nothing wired to the door.
 
-The question this answers, and the only one: **with the phone inside, does the
-lock stay shut, and with the phone outside, does it open fast enough to be
-worth having?** Everything else is tuning.
+The only question: **with the phone inside, does the lock stay shut, and with
+the phone outside, does it open fast enough to be worth having?** Everything
+else is tuning.
 
-Design and rationale live in `docs/inside-latch.md`. This file is the recipe.
+Design and rationale: `docs/inside-latch.md`.
 
 ---
 
-## What you need
+## Requirements
 
 | | |
 |---|---|
@@ -21,15 +21,15 @@ Design and rationale live in `docs/inside-latch.md`. This file is the recipe.
 | J-Link | for the lock only, to flash it and to read its log |
 | A door | with the lock at it. Bench table first, door second |
 
-Your Thread network needs a router. The lock is a MED and both dongles are
-SEDs -- all children, none of them can form a network. A HomePod or Apple TV
-is doing this job already if the lock is commissioned.
+The Thread network needs a router. The lock is a MED and both dongles are SEDs,
+all children; none can form a network. If the lock is commissioned, a HomePod or
+Apple TV is already doing this.
 
 ---
 
 ## 1. Enroll the witness keys on the lock
 
-Generate two link keys and keep them where you can paste them:
+Generate the keys:
 
 ```
 openssl rand -hex 16     # -> the INSIDE dongle's link key
@@ -37,15 +37,15 @@ openssl rand -hex 16     # -> the OUTSIDE dongle's link key
 openssl rand -hex 16     # -> the group key, SAME on both dongles, NOT on the lock
 ```
 
-The lock image is a Thread build with `CONFIG_SHELL=n`, so it cannot be told
-these itself. Use the reader image, which has a console:
+The lock image is a Thread build with `CONFIG_SHELL=n` and cannot be told these
+itself. Use the reader image, which has a console:
 
 ```
 make reader
 make flash CDK_BUILD=build/cdk-reader
 ```
 
-Hold **SW2 through reset**. The board comes up with its radios down and a USB
+Hold **SW2 through reset**: the board comes up with its radios down and a USB
 CDC console. Then:
 
 ```
@@ -54,7 +54,7 @@ ultrawidelock witkey outside <outside link key>
 ```
 
 Both should answer `stored the ... witness link key`. The keys are in the
-settings partition now, and the next flash keeps them.
+settings partition and survive the next flash.
 
 ## 2. Flash the lock image and take the Thread dataset off it
 
@@ -66,14 +66,13 @@ make build LATCH=1 CDK_BUILD=build/cdk-latch \
 make flash CDK_BUILD=build/cdk-latch          # NOT flash-erase
 ```
 
-`flash-erase` would take the keys you just stored, along with the credential
-and the Matter fabric. Never use it here.
+`flash-erase` would take the stored keys, the credential and the Matter fabric.
+Never use it here.
 
-Nothing to press. The bench build retries the dump from its main loop until a
-dataset exists, so it prints itself a second or two after the node attaches.
-No controller involved, which matters: the commissioning window was the only
-trigger until 2026-08-20, and it needs a controller that is talking to you --
-exactly what you do not have when the dataset is what you are missing.
+Nothing to press: the bench build retries the dump from its main loop until a
+dataset exists, printing a second or two after the node attaches. No controller
+is involved, which matters: until 2026-08-20 the commissioning window was the
+only trigger, and it needs a controller already connected.
 
 **Do not hold SW2 through reset on this image.** There is no provisioning
 console here, so that gesture is a factory reset: credential and Matter fabric
@@ -87,10 +86,10 @@ The log prints the dataset between two markers:
 ---- END THREAD DATASET ----
 ```
 
-Join those lines into one string. Watch the log with `make monitor`.
+Join those lines into one string; watch the log with `make monitor`.
 
-That overlay prints your Thread network key on every window open. It is a
-bench build. Do not leave it on the door.
+That overlay prints the Thread network key on every window open. It is a bench
+build: do not leave it on the door.
 
 ## 3. Flash and provision the dongles
 
@@ -98,27 +97,24 @@ bench build. Do not leave it on the door.
 make witness-build
 ```
 
-Put a dongle in bootloader mode -- press its RESET button until the LED pulses
-red -- then:
+Put a dongle in bootloader mode, pressing RESET until the LED pulses red, then:
 
 ```
 make witness-flash WITNESS_PORT_DEV=$(ls /dev/tty.usbmodem*)
 ```
 
-It re-enumerates as a serial console. Open it (`screen /dev/tty.usbmodem* 115200`)
-and provision:
+Open the serial console it re-enumerates as
+(`screen /dev/tty.usbmodem* 115200`) and provision:
 
 ```
 PROV inside <inside link key> <group key> <dataset hex>
 SHOW
 ```
 
-Repeat for the second dongle with `outside` and its own link key. Same group
-key, same dataset, both times.
+Repeat for the second dongle with `outside` and its own link key, same group key
+and dataset both times. `make witness-prov-help` reprints this flow.
 
-`make witness-prov-help` prints this whole flow if you lose it.
-
-## 4. Link check, on a table, before anything goes near the door
+## 4. Link check on a table, before the door
 
 Both dongles powered, 3 m apart, phone in the middle, lock nearby. `make monitor`.
 
@@ -136,44 +132,42 @@ witness datagram no enrolled key opened (N B); check the link keys match
 
 That warning means a key differs between a dongle and the lock. Retype it.
 
-LED on each dongle: **solid** = attached and reporting. Slow blink = provisioned
-but not attached (dataset wrong, or no router in reach). Fast blink = not
-provisioned.
+Dongle LED: **solid** = attached and reporting; slow blink = provisioned but not
+attached (dataset wrong, or no router in reach); fast blink = not provisioned.
 
-> **This step is the plan invalidator.** If reports do not arrive, stop. It
-> means BLE scanning and Thread cannot share the radio on this part, and no
-> result from step 6 means anything. Say so and come back to the design.
+> **This step is the plan invalidator.** If reports do not arrive, stop: BLE
+> scanning and Thread cannot share the radio on this part, and no result from
+> step 6 means anything. Say so and come back to the design.
 
 ## 5. Mount
 
-Inside dongle on the inside wall, outside dongle on the outside wall, both near
-the door, both mains powered. Roughly symmetric about the door; the design reads
-the *difference* between them, so a lopsided mounting biases every window.
+Inside dongle on the inside wall, outside on the outside wall, both near the
+door, both mains powered, roughly symmetric about it. The design reads the
+*difference* between them, so a lopsided mounting biases every window.
 
 ## 6. The two tests
 
-Watch `make monitor` throughout. Twenty runs each, alternating, and write down
-what happened.
+Watch `make monitor` throughout. Twenty runs each, alternating; record every
+outcome.
 
-**Test A -- inside. This is the one that matters.**
-Phone in your pocket, start 5 m inside, walk to the door, stand at it 30 s,
-walk away.
+**Test A, inside. The one that matters.**
+Phone pocketed, start 5 m inside, walk to the door, stand at it 30 s, walk away.
 
 > **Pass: zero unlocks. One unlock is a failure of the whole spike.**
 
-**Two different refusal lines, and which one you see matters.**
+**Two refusal lines, and which one appears matters.**
 
 ```
 passive unlock withheld: side=<n> conf=<n> flags=0x<nn>    <- the side gate
 passive unlock withheld: inside latch (why=0x<nn>)         <- the latch
 ```
 
-The side gate runs first and `break`s, so the latch line only appears once the
-witnesses have produced a confident OUTSIDE decision. During Test A you should
-mostly see the side-gate line: the witnesses are saying INSIDE or nothing, and
-the classifier never hands the latch a decision to veto. Seeing the latch line
-during Test A means the side gate was convinced you were outside and the latch
-caught it -- a much narrower escape, and worth writing down.
+The side gate runs first and `break`s, so the latch line appears only once the
+witnesses have produced a confident OUTSIDE decision. Test A should mostly show
+the side-gate line: the witnesses say INSIDE or nothing, and the classifier never
+hands the latch a decision to veto. A latch line during Test A means the side
+gate was convinced the phone was outside and the latch caught it, a much
+narrower escape. Record it.
 
 Side-gate flags:
 
@@ -191,7 +185,7 @@ Side-gate flags:
 `side=0 conf=0 flags=0x80` with no dongles powered is the correct resting
 refusal, MEASURED 2026-08-20 on a walk-up that ranged to 0 cm.
 
-**Test B -- outside.**
+**Test B, outside.**
 Start 8 m outside, walk to the door at normal pace.
 
 > **Pass is a number, not a verdict:** record the grant rate and roughly where
@@ -202,7 +196,7 @@ Test A has 20 clean runs.
 
 ## Reading `why=`
 
-The bitmask says which condition refused. Several bits can be set at once.
+The bitmask says which conditions refused; several can be set at once.
 
 | bit | name | means |
 |---|---|---|
@@ -214,31 +208,31 @@ The bitmask says which condition refused. Several bits can be set at once.
 | `0x20` | STALE | the agreeing windows aged out (10 s) |
 
 `why=0x10` during Test A is the healthy case: the lock has a session, believes
-the phone could be either side, and the witnesses are simply not saying
-OUTSIDE. That is the discrimination working.
+the phone could be either side, and the witnesses are not saying OUTSIDE. That
+is the discrimination working.
 
 `why=0x04` on every approach from both sides means no grant has been recorded
-since boot -- tap NFC once and it goes away.
+since boot; one NFC tap clears it.
 
 `why=0x08` for a minute after every unlock is the entry dwell, working.
 
-## How fast can Test B be?
+## Test B's floor
 
-Floor is about **6 s of agreeing evidence**: three windows at
+About **6 s of agreeing evidence**: three windows at
 `CONFIG_WITNESS_WINDOW_MS=2000`. Only the first must be at 3 m or more; the run
-then goes stale if 10 s pass without another OUTSIDE window. At walking pace
-from 8 m you have around 6.7 s, so a grant should land about as you arrive --
-if the outside dongle hears the phone from 8 m.
+then goes stale if 10 s pass without another OUTSIDE window. Walking pace from
+8 m gives around 6.7 s, so a grant should land on arrival, provided the outside
+dongle hears the phone from 8 m.
 
-If you are standing at the door waiting, the knobs, in the order to try them:
+If the grant lands late, the knobs, in order:
 
 1. Move the outside dongle to where it hears the phone sooner.
 2. `CONFIG_ULTRAWIDELOCK_LATCH_CLEAR_WINDOWS=2` (`overlay-latch.conf`).
-3. `CONFIG_WITNESS_WINDOW_MS=1500` -- but check packets per window first; below
+3. `CONFIG_WITNESS_WINDOW_MS=1500`, but check packets per window first: below
    about 3 the means are noise.
 
-Do not touch `CLEAR_MIN_MM`. It is what keeps a run from starting at the door,
-where the differential's sign is worth least.
+Do not touch `CLEAR_MIN_MM`. It keeps a run from starting at the door, where the
+differential's sign is worth least.
 
 ## Stop conditions
 

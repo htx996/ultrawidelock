@@ -1,15 +1,12 @@
 # Zephyr port
 
-This directory is the Zephyr backend for UltraWideLock. `zephyr/module.yml` exposes
-the directory as one Zephyr module, with `CMakeLists.txt` and `Kconfig` selecting
-the required backend sources.
+`zephyr/module.yml` exposes this directory as one Zephyr module; `CMakeLists.txt`
+and `Kconfig` select the backend sources. Applications add it through
+`ZEPHYR_EXTRA_MODULES`.
 
-Backend groups are organized by platform service:
+- `osal/`, `log/`, `store/` implement system contracts.
+- `ble/`, `matter/`, `nfc/` connect protocol transports.
+- `dw3000/`, `uwb/`, `drivers/` connect hardware.
+- `dfu/`, `shell/` connect Zephyr subsystems to portable features.
 
-- `osal/`, `log/`, and `store/` implement system contracts.
-- `ble/`, `matter/`, and `nfc/` connect protocol transports.
-- `dw3000/`, `uwb/`, and `drivers/` connect hardware.
-- `dfu/` and `shell/` connect Zephyr subsystems to portable features.
-
-Zephyr applications add this directory through `ZEPHYR_EXTRA_MODULES`. Reusable
-protocol logic belongs in `modules/`, not in this tree.
+Reusable protocol logic belongs in `modules/`.
