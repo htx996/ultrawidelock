@@ -564,3 +564,91 @@ If the board has a jumper on a current-measurement header, pulling it and
 clipping a PPK2 across the two pins is the non-destructive form of "cut the
 rail" and is the preferred route. The designators are in Qorvo's DWM3001CDK user
 guide; this repo does not carry the schematic and should not guess at them.
+
+---
+
+## 8. Before and after
+
+The summary this document was missing. Two columns, and only the first is solid.
+
+### 8.1 What changed, MEASURED on the board
+
+Register reads over SWD, before and after `make build BATTERY=1`. No estimates
+in this table.
+
+| | Before | After |
+| --- | --- | --- |
+| DW3110 state | never slept; `dwt_entersleep` had **zero call sites** | `dw3000_asleep = 1` |
+| 802.15.4 RX duty | `RADIO.STATE == 3` on **20/20** samples | **0/20** samples |
+| HFXO | `HFCLKSTAT` src = XTAL, crystal up | src = **RC**, crystal down, 0-5% |
+| BLE advertising | 30-60 ms, continuous, forever | 30-60 ms for 30 s, then 1.0-1.2 s |
+| nRF LEDs | heartbeat blip every 2 s while **locked** | dark while locked, work item stops |
+| DW3110 LEDs | enabled, plus two internal clocks | disabled |
+| Walk-up unlock | works | works |
+| Home-app tile lock/unlock | works | works |
+
+The last two rows matter as much as the others: every lever here was confirmed
+against a real iPhone and a real Home app before this table was written.
+
+### 8.2 Current budget, PREDICTED
+
+DW3110 from the [DW3000 Datasheet](https://www.mouser.com/pdfDocs/DW3000DataSheet5.pdf)
+v1.3 Figures 26 and 28 at 3.0 V. nRF52833 from the
+[Product Specification](https://media.distrelec.com/Web/Downloads/_m/an/NRF52833-QIAA-R7_eng_man.pdf)
+v1.6 §6.18.16 with DC/DC at 3 V.
+
+**The advertising and polling figures are estimates, not published numbers**,
+and they are the first things a meter should attack. They assume 10-30 µC per
+3-channel connectable advertising event and 13-14 µC per Thread data poll,
+including ramp-up. If those are wrong, rows 2 and 3 move.
+
+| Term | Before | After | Where the number comes from |
+| --- | --- | --- | --- |
+| DW3110 idle | **18 mA** | **0.00026 mA** | IDLE_PLL vs DEEPSLEEP, datasheet |
+| nRF 802.15.4 RX | **4.6-6.5 mA** | **~0.030 mA** | 100% duty vs a poll every 500 ms |
+| BLE advertising | **0.22-0.67 mA** | **~0.020 mA** | ~45 ms vs ~1.1 s mean interval |
+| nRF LEDs | **~0.166 mA** | **~0.010 mA** | 6.25% heartbeat duty vs unlocked-only |
+| UART0 | sub-mA | unchanged | kept: it is the serial DFU transport (§2.2) |
+| Board overhead | **unquantified** | **unchanged** | J-Link OB, regulator, power LED |
+| **Quantified total** | **~24.1 mA** | **~0.060 mA** | |
+
+About **400x** on the terms this firmware controls.
+
+The nRF52833 spec publishes no IEEE 802.15.4 RX row at all; 4.6 mA is
+`IRX,1M,DCDC`, used as a floor, and the true figure is likely nearer 6.5 mA.
+
+**Cross-check against the field.** Reviewers reported 2-3 days on a 2,000 mAh
+pack, which back-solves to 28-42 mA. The "before" column totals 24.1 mA, leaving
+4-18 mA unaccounted, which is the right size for a J-Link OB and its power LED.
+Two independent methods agreeing is worth more than either alone, and it is also
+what makes the IDLE_PLL reading of the DW3110 more credible than IDLE_RC (§7).
+
+### 8.3 What that buys on 5,000 mAh
+
+Derated to **3,500 mAh usable**: 85% to cutoff, then 15% for six months of
+self-discharge and cold. Six months of that is 4,380 hours, so the budget is
+**799 µA**.
+
+| Board | Before | After |
+| --- | --- | --- |
+| Stock DWM3001CDK, debugger and power LED live (~15 mA) | 39 mA, **3.7 days** | 15 mA, **9.7 days** |
+| Custom board, or the debugger rail broken (~35 µA) | 24.1 mA, **6.1 days** | **95 µA, past six months with ~8x margin** |
+
+Only the bottom-right cell meets the target, and the difference between the two
+rows is not firmware. It is whether a debugger is soldered to the same rail.
+
+Beyond roughly a year the arithmetic stops meaning anything: Li-ion
+self-discharge at 2-3% per month becomes the limit before the load does. Six
+months is comfortably safe; quoting four years from this table would be fiction.
+
+### 8.4 The one number that decides it
+
+Everything above is firm except **board overhead**, and it is the pivot: 15 mA
+of debugger versus 35 µA of regulator is the difference between missing the
+target by 20x and clearing it by 8x. No Kconfig reaches it and no calculation
+here can supply it.
+
+It needs either a meter in series at the board's current-measurement header
+(§5.1, and the identification procedure that has to come first), or a board
+built from the DWM3001C module with no J-Link on it. Until one of those exists,
+treat §8.3 as two hypotheses rather than a result.
