@@ -37,7 +37,7 @@ struct drvfake_state {
 	uint8_t leds_mode;
 	uint32_t devid; /* dwt_readdevid */
 	uint8_t spi_devid[4]; /* bytes served by dw3000_spi_read (raw DEV_ID poll) */
-	unsigned hw_init_calls, hw_reset_calls, hw_irq_calls;
+	unsigned hw_init_calls, hw_reset_calls, hw_irq_calls, hw_wakeup_calls;
 	unsigned spi_wakeup_calls, spi_read_calls;
 
 	/* ── SYS_STATUS sequencing: served in order, last value repeats ── */

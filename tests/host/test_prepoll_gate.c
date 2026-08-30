@@ -30,6 +30,13 @@ void test_prepoll_gate(void)
 	ccc_prepoll_stop();
 	T_EQ("stop.cold.no_trxoff", ultrawidelock_host_rx.forcetrxoff_calls, 0);
 	T_EQ("stop.cold.no_rxenable", ultrawidelock_host_rx.rxenable_calls, 0);
+	/* A cold stop is a no-op ON THE BUS, not a no-op entirely: it must still
+	 * ask for the sleep. ultrawidelock_ranging_init() probes the radio at boot and
+	 * stops without ever listening, and that path is precisely how a board
+	 * that no phone had come near still rested in IDLE_PLL at 18 mA from
+	 * power-on. uwb_min_sleep() makes its own unprobed check, so the
+	 * no-SPI-when-cold guarantee the two assertions above encode is kept. */
+	T_EQ("stop.cold.sleeps", ultrawidelock_host_rx.sleep_calls, 1);
 
 	t_group("listen arms RX and installs the self-rearm callbacks");
 	ultrawidelock_host_rx_reset();
@@ -55,6 +62,8 @@ void test_prepoll_gate(void)
 	before = ultrawidelock_host_rx.forcetrxoff_calls; /* listen()'s own trxoff is already in */
 	ccc_prepoll_stop();
 	T_EQ("stop.trxoff", ultrawidelock_host_rx.forcetrxoff_calls, before + 1);
+	/* And the part goes down after the RX is killed, not instead of it. */
+	T_EQ("stop.sleeps", ultrawidelock_host_rx.sleep_calls, 1);
 	before = ultrawidelock_host_rx.rxenable_calls;
 	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, 0u);
 	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, DWT_INT_RXFCG_BIT_MASK |

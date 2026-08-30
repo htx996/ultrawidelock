@@ -586,6 +586,175 @@ static void advertising_payload_build(struct advertising_payload *payload)
 #endif
 }
 
+/* ---- two-rate advertising -------------------------------------------------
+ *
+ * Fast (30-60 ms) for a window after boot and after every disconnect, then the
+ * GAP recommended slow pair (1.0-1.2 s) until something happens again.
+ *
+ * WHY, IN CURRENT. Continuous connectable advertising at 30-60 ms is estimated
+ * at 220-670 uA. At the slow rate the same estimate is 10-30 uA. On the
+ * 5,000 mAh six-month budget in overlay-battery.conf that is most of the
+ * allowance, spent on being findable at a door nobody is standing at.
+ *
+ * WHY A WINDOW AND NOT A CONSTANT. A flat slow interval regresses three things
+ * at once -- walk-up detection, Matter commissioning discovery, and the Web
+ * Bluetooth chooser that prj.conf already warns reads an unadvertised board as
+ * INVISIBLE. The window keeps all three fast exactly when they are being used:
+ * a phone that just disconnected reconnects against the fast rate, and a board
+ * that nobody has touched settles.
+ *
+ * THE COST, NAMED. First discovery on a board that has been idle takes ~1-3 s
+ * instead of well under 1 s. There is no way around that with advertising alone;
+ * it wants a wake trigger, and the LIS2DH12 already on the module is the
+ * obvious one. Not wired here.
+ */
+#if defined(CONFIG_ULTRAWIDELOCK_BLE_ADV_SLOW)
+#define ADV_FAST_WINDOW_MS ((int64_t)CONFIG_ULTRAWIDELOCK_BLE_ADV_FAST_WINDOW_S * MSEC_PER_SEC)
+
+/* Uptime starts at 0, so initialising to the window length IS the boot window;
+ * no init hook needed and no way to forget to call one. */
+static int64_t s_adv_fast_until_ms = ADV_FAST_WINDOW_MS;
+/* The rate the RUNNING set was started with, which is not the same question as
+ * the rate we now want. Comparing the two is what detects a pending change. */
+static bool s_adv_slow_live;
+
+static const struct bt_le_adv_param s_adv_param_slow = BT_LE_ADV_PARAM_INIT(
+	BT_LE_ADV_OPT_CONN, BT_GAP_ADV_SLOW_INT_MIN, BT_GAP_ADV_SLOW_INT_MAX, NULL);
+
+static bool adv_want_slow(void)
+{
+	return k_uptime_get() >= s_adv_fast_until_ms;
+}
+
+/** Reopen the fast window. Called wherever a human has just demonstrably been
+ * present, which today means a disconnect. */
+static void adv_go_fast(void)
+{
+	s_adv_fast_until_ms = k_uptime_get() + ADV_FAST_WINDOW_MS;
+}
+
+/** True when the live set is running at the wrong rate. The work function has
+ * to consult this as well as the dirty flag: on an idle board nothing else
+ * would ever wake it to drop from fast to slow. */
+static bool adv_rate_change_due(void)
+{
+	return atomic_get(&s_adv_running) != 0 && adv_want_slow() != s_adv_slow_live;
+}
+
+/** Come back when the fast window closes, so the rate actually drops.
+ *
+ * Without this the board would sit at the fast rate until something else
+ * happened to wake the work item, which on an idle lock is the whole point at
+ * which nothing happens. The 60 s clock poll is not a substitute: it only runs
+ * for a reader payload, and it would leave up to a minute of fast advertising
+ * after every window. */
+static void adv_schedule_rate_drop(void)
+{
+	int64_t left;
+
+	if (adv_want_slow()) {
+		return; /* already slow, or about to be by the pass that got here */
+	}
+	left = s_adv_fast_until_ms - k_uptime_get();
+	/* +1 so the wake lands after the boundary rather than exactly on it, and
+	 * a floor of 1 ms so a window that closed mid-pass still reschedules
+	 * rather than passing K_MSEC(0) and spinning the workqueue. */
+	(void)k_work_reschedule(&s_advertising_work, K_MSEC(left > 0 ? (uint32_t)left + 1u : 1u));
+}
+
+/**
+ * THE ONLY bt_le_adv_stop() IN THIS FILE, and it exists behind this Kconfig so
+ * a default build cannot reach it even as dead code.
+ *
+ * tests/ports/zephyr/ble_link_liveness_check.sh used to reject the symbol
+ * outright. The invariant it protects is real and is NOT weakened here: a
+ * PAYLOAD refresh must never stop the set, because the dynamic tag rotates
+ * roughly every nine minutes and a stop/start would blink the board out of
+ * existence while somebody could be walking up to it. advertising_apply()
+ * still updates payloads in place, and still never stops for one.
+ *
+ * A RATE change is a different event, and Zephyr's legacy advertising API
+ * offers no way to move the interval without a restart -- bt_le_adv_update_data
+ * changes bytes, not timing, and the extended-advertising path would have to
+ * stop the set to update params anyway. So the gap is unavoidable, and it is
+ * cheap exactly where it lands:
+ *
+ *   fast -> slow   30 s after the last human contact. Nobody is at the door.
+ *   slow -> fast   we are racing to become MORE findable, so a sub-millisecond
+ *                  gap on the way there is strictly an improvement.
+ */
+static void adv_stop_for_rate_change(void)
+{
+	if (!adv_rate_change_due()) {
+		return;
+	}
+	(void)bt_le_adv_stop();
+	atomic_set(&s_adv_running, 0);
+}
+#else
+static inline bool adv_want_slow(void) { return false; }
+static inline void adv_go_fast(void) { }
+static inline bool adv_rate_change_due(void) { return false; }
+static inline void adv_schedule_rate_drop(void) { }
+static inline void adv_stop_for_rate_change(void) { }
+#endif
+
+/* BOTH RATES ARE FILE-SCOPE STATICS, AND THAT IS LOAD-BEARING, NOT STYLE.
+ *
+ * BT_LE_ADV_CONN_FAST_1 expands to BT_LE_ADV_PARAM(), which is a compound
+ * literal: `((const struct bt_le_adv_param[]){ ... })`. C gives a compound
+ * literal static storage duration ONLY at file scope; inside a function body it
+ * is automatic, so returning it from a helper hands back a pointer into a dead
+ * stack frame. Zephyr then reads garbage intervals and bt_le_adv_start() fails
+ * -EINVAL, which on this board means the lock never advertises and is simply
+ * invisible.
+ *
+ * Using the macro directly at a call site is fine and is what this file did for
+ * years -- the literal outlives the enclosing block, which contains the call.
+ * It only breaks when a helper returns it, which is exactly what selecting
+ * between two rates wants to do. Naming both here sidesteps the whole question.
+ *
+ * MEASURED: the version of this that returned the macro from adv_param_for()
+ * logged `adv start rc=-22` on the first boot after flashing.
+ */
+static const struct bt_le_adv_param s_adv_param_fast = BT_LE_ADV_PARAM_INIT(
+	BT_LE_ADV_OPT_CONN, BT_GAP_ADV_FAST_INT_MIN_1, BT_GAP_ADV_FAST_INT_MAX_1, NULL);
+
+/** The parameter set for a rate. Fast is the GAP T_GAP(adv_fast_interval1)
+ * pair this file has always used; slow is the GAP recommended slow pair, so
+ * neither number is invented here. */
+static const struct bt_le_adv_param *adv_param_for(bool slow)
+{
+#if defined(CONFIG_ULTRAWIDELOCK_BLE_ADV_SLOW)
+	if (slow) {
+		return &s_adv_param_slow;
+	}
+#else
+	ARG_UNUSED(slow);
+#endif
+	return &s_adv_param_fast;
+}
+
+/** Record the rate the live set is ACTUALLY running at, which is not the same
+ * as the rate we asked for. */
+static void adv_rate_record(bool slow, bool updated)
+{
+#if defined(CONFIG_ULTRAWIDELOCK_BLE_ADV_SLOW)
+	/* Only a start we performed ourselves sets it. Reaching here via the
+	 * -EALREADY branch means we refreshed the payload of a set that was
+	 * already up, and that set's interval is whatever the previous start
+	 * chose -- so s_adv_slow_live is still correct and must not be clobbered.
+	 * Claiming `slow` there would leave adv_rate_change_due() permanently
+	 * true and stop/start the radio on every single pass. */
+	if (!updated) {
+		s_adv_slow_live = slow;
+	}
+#else
+	ARG_UNUSED(slow);
+	ARG_UNUSED(updated);
+#endif
+}
+
 /** Apply a payload to the legacy advertising set. When the set is active,
  * update it in place so a tag rotation never creates a stop/start discovery
  * gap. If our state is stale, Zephyr's -EINVAL/-EAGAIN and -EALREADY results
@@ -602,6 +771,10 @@ static int advertising_apply(struct advertising_result *result)
 
 	advertising_payload_build(&payload);
 
+	/* A running set's interval is fixed once started, so a rate change has to
+	 * go through a stop. Payload refreshes below still never do. */
+	adv_stop_for_rate_change();
+
 	if (atomic_get(&s_adv_running) != 0) {
 		rc = bt_le_adv_update_data(payload.ad, payload.ad_len, SMP_SD, SMP_SD_LEN);
 		if (rc == 0) {
@@ -614,7 +787,9 @@ static int advertising_apply(struct advertising_result *result)
 	}
 
 	if (atomic_get(&s_adv_running) == 0) {
-		rc = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, payload.ad, payload.ad_len, SMP_SD,
+		bool slow = adv_want_slow();
+
+		rc = bt_le_adv_start(adv_param_for(slow), payload.ad, payload.ad_len, SMP_SD,
 				     SMP_SD_LEN);
 		if (rc == -EALREADY) {
 			/* The set is active even though the connection callback made our
@@ -626,6 +801,7 @@ static int advertising_apply(struct advertising_result *result)
 			return rc;
 		}
 		atomic_set(&s_adv_running, 1);
+		adv_rate_record(slow, updated);
 	}
 
 	*result = payload.result;
@@ -708,6 +884,7 @@ static void advertising_success_record(const struct advertising_result *result)
 		(void)k_work_reschedule(&s_advertising_work,
 					K_SECONDS(ULTRAWIDELOCK_ADV_CLOCK_POLL_S));
 	}
+	adv_schedule_rate_drop();
 }
 
 /** Refresh or resume advertising with one bounded, non-blocking apply attempt
@@ -725,7 +902,11 @@ static void advertising_work_fn(struct k_work *w)
 		LOG_INF("advertising refresh deferred until disconnect");
 		return;
 	}
-	if (atomic_get(&s_adv_dirty) == 0 && !advertising_refresh_due()) {
+	/* adv_rate_change_due() has to be in this test, not just the dirty flag:
+	 * on an idle board the payload never changes, so nothing else would ever
+	 * wake this function to drop the rate from fast to slow. */
+	if (atomic_get(&s_adv_dirty) == 0 && !advertising_refresh_due() &&
+	    !adv_rate_change_due()) {
 		if (s_applied_as_reader) {
 			(void)k_work_reschedule(&s_advertising_work,
 						K_SECONDS(ULTRAWIDELOCK_ADV_CLOCK_POLL_S));
@@ -855,6 +1036,11 @@ static void on_disconnected(struct bt_conn *conn, uint8_t reason)
 			(unsigned int)(k_uptime_get_32() - s_estab_first_ms));
 		s_estab_fails = 0u;
 	}
+	/* Somebody was demonstrably here a moment ago, so reopen the fast window:
+	 * a phone that drops the link and comes straight back must not have to
+	 * rediscover the board at the slow rate. A failed establish counts too --
+	 * that is a peer that tried and is very likely still standing there. */
+	adv_go_fast();
 	LOG_INF("BLE disconnected (0x%02x); re-advertising", reason);
 	(void)k_work_reschedule(&s_advertising_work,
 				reason == BT_HCI_ERR_CONN_FAIL_TO_ESTAB

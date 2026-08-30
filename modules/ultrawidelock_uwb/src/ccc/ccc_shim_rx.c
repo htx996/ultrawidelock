@@ -2124,12 +2124,23 @@ void ccc_prepoll_stop(void)
 	 * prewarm time, never on the M4 critical path. RAM-only, so it is safe
 	 * even when the early-return below skips the SPI work. */
 	g_phy_valid = false;
-	if (!g_listen_gate) {
-		return; /* never started or already stopped — the driver may be unprobed, so no SPI
-			 */
+	if (g_listen_gate) {
+		g_listen_gate = false; /* order matters: close the gate, then kill RX */
+		dwt_forcetrxoff();
 	}
-	g_listen_gate = false; /* order matters: close the gate, then kill RX */
-	dwt_forcetrxoff();
+	/* Then put the part down, and do it whether or not a listener was up.
+	 *
+	 * The early return this replaced covered "never started or already
+	 * stopped -- the driver may be unprobed, so no SPI", and that case is the
+	 * one that mattered most: ultrawidelock_ranging_init() probes the radio at boot
+	 * and stops without ever listening, so a board that no phone had come
+	 * near still sat in IDLE_PLL at 18 mA from power-on. That was the largest
+	 * single term on the board and it was being paid by every board, always.
+	 *
+	 * The no-SPI-when-unprobed guarantee has not been dropped, only moved:
+	 * uwb_min_sleep() checks the radio is initialised before it touches the
+	 * bus, which is the same test the early return was making. */
+	uwb_min_sleep();
 }
 
 bool ccc_prepoll_listening(void)

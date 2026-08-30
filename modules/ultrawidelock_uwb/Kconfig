@@ -8,6 +8,52 @@ config ULTRAWIDELOCK_UWB
 	help
 	  Compile the minimal DW3110 (DWM3000EVB) bring-up driver (uwb_min.c).
 
+config ULTRAWIDELOCK_UWB_LEDS
+	bool "Let the DW3110 drive its own RX/TX LEDs"
+	depends on ULTRAWIDELOCK_UWB
+	default y
+	help
+	  dwt_setleds(DWT_LEDS_ENABLE) points the DW3110's GPIO2 and GPIO3 at its
+	  internal RXLED and TXLED functions, so the radio blinks its own activity
+	  without any host involvement. Useful on a bench, where it is the only
+	  signal that the radio is doing anything at all.
+
+	  It is NOT the four board LEDs on the nRF52833 -- those are
+	  CONFIG_ULTRAWIDELOCK_STATUS_LED and a different chip entirely. Turning that
+	  one off leaves this one running, which is confusing exactly once.
+
+	  Two costs on a battery, and the second is the one that is easy to miss:
+	  the LED current itself, and the clocks the feature needs. Enabling it sets
+	  CLK_CTRL_GPIO_DCLK_EN and CLK_CTRL_LP_CLK_EN inside the DW3110, so the
+	  part runs a de-bounce clock and its low-power oscillator for no reason
+	  other than blinking.
+
+	  Default y so a bench board is unchanged. overlay-battery.conf turns it off.
+
+config ULTRAWIDELOCK_UWB_DEEPSLEEP
+	bool "Sleep the DW3110 when no ranging session is up"
+	depends on ULTRAWIDELOCK_UWB
+	default y
+	help
+	  Call dwt_entersleep() from ccc_prepoll_stop(), so the part rests in
+	  DEEPSLEEP instead of IDLE_PLL whenever no session is listening.
+
+	  MEASURED, from the DW3000 datasheet's own current profiles at 3.0 V
+	  (v1.3, Figures 26 and 28): IDLE_PLL is 18 mA and DEEPSLEEP is 260 nA.
+	  Until this option existed nothing ever called dwt_entersleep(), so a
+	  board paid the 18 mA from boot onward whether or not a phone had ever
+	  come near it. See docs/power-baseline.md.
+
+	  The wake costs nothing that a user can see. It is a chip-select toggle
+	  plus about 1 ms to IDLE_RC, and ranging only ever starts after the BLE
+	  authentication completes, which is tens of ms.
+
+	  Turn this off if a walk-up regresses: it is the one lever here that
+	  changes what the radio hardware is doing between sessions.
+
+	  Zephyr only. The ESP32 and FreeRTOS ports share this file but do not
+	  define the symbol, so they are unchanged until it is measured on them.
+
 config ULTRAWIDELOCK_UWB_RESPONDER
 	bool "UltraWideLock DS-TWR responder"
 	depends on ULTRAWIDELOCK_UWB
