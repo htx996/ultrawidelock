@@ -1,9 +1,8 @@
 # External integrations
 
-`integrations/` contains tracked adaptations for upstream projects that are not
-stored in this repository. Portable UltraWideLock code remains in `modules/`, and
-the fetched upstream trees remain under the ignored `workspace/` directory.
+Tracked adaptations for upstream projects not stored here. The fetched upstream
+trees stay under the ignored `workspace/`.
 
 | Integration | Purpose |
 |---|---|
-| [`nrfconnect-door-lock/`](nrfconnect-door-lock/) | Apply UltraWideLock seams and product behavior to Nordic's door-lock application |
+| [`nrfconnect-door-lock/`](nrfconnect-door-lock/) | apply UltraWideLock seams and product behavior to Nordic's door-lock application |

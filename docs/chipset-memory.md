@@ -1,12 +1,12 @@
 # Memory usage
 
-Scope: the nRF5340 DK image only. The DWM3001CDK image (`apps/dwm3001cdk-lock/pm_static.yml`) and the
-ESP32-S3 apps (`apps/*/partitions.csv`) have their own budgets and partition
-layouts and are not measured here.
+These figures cover the nRF5340 DK image only. The DWM3001CDK image
+(`apps/dwm3001cdk-lock/pm_static.yml`) and the ESP32-S3 apps
+(`apps/*/partitions.csv`) have their own budgets and are not measured here.
 
-Snapshot measured 2026-07-19 from the build artifacts of 2026-07-17 19:55 in `build/`
-(repo HEAD `56df8df` at measurement time). `apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf` and several
-`modules/ultrawidelock_uwb` sources are newer than these artifacts, so expect small shifts on the next
+Measured 2026-07-19 from build artifacts of 2026-07-17 19:55 (repo HEAD
+`56df8df`). `apps/nrf5340dk-lock/overlays/ultrawidelock-cred.conf` and several
+`modules/ultrawidelock_uwb` sources are newer, so expect small shifts on the next
 `make nrf-build`.
 ## Hardware budgets
 
@@ -20,9 +20,9 @@ nRF5340 (app core + net core) plus the DK's on-board MX25R64 QSPI NOR.
 | Net-core RAM (`sram1`) | 64 KiB | 64 KiB | the IPC buffer lives in app-core RAM, not here |
 | External QSPI (MX25R64) | 8 MiB | 8 MiB | 128 KiB `external_nvs` active; 7.875 MiB `external_flash` has no consumer |
 
-The IPC region is carved from app-core RAM because that is the only RAM both cores can
-address: the net-core devicetree maps both `memory@20000000` and `memory@21000000`, while the
-app-core devicetree maps only its own `memory@20000000`. Both images include
+The IPC region is carved from app-core RAM because that is the only RAM both cores
+address: the net-core devicetree maps `memory@20000000` and `memory@21000000`, the
+app-core devicetree only its own `memory@20000000`. Both images include
 `nrf5340_shared_sram_partition.dtsi` and agree on the same 64 KiB window.
 
 ## Usage summary
@@ -34,7 +34,7 @@ app-core devicetree maps only its own `memory@20000000`. Both images include
 | Net-core flash (`ipc_radio`) | 256 KiB | 171.2 KiB (175,280 B) | 84.8 KiB | 66.9% |
 | Net-core RAM | 64 KiB | 56.1 KiB (57,468 B) | 7.9 KiB | 87.7% |
 
-Tightest budget: net-core RAM, 7.9 KiB free. That is where growth hits first.
+Tightest budget: net-core RAM, 7.9 KiB free. Growth hits there first.
 
 RAM composition (KiB):
 
@@ -86,10 +86,10 @@ From the ELF symbol table (accounts for 343,770 of 343,836 B).
 
 Heaps total 120 KiB, 26.8% of app RAM: 96 kernel + 16 CHIP + 8 mbedTLS. Matter/CHIP
 allocations bypass the kernel pool (`CONFIG_CHIP_MALLOC_SYS_HEAP_OVERRIDE=y`).
-`CONFIG_SYS_HEAP_RUNTIME_STATS=y` is already compiled in, but no shell command exposes it
-(`CONFIG_KERNEL_SHELL` unset), so there is no live readout today.
+`CONFIG_SYS_HEAP_RUNTIME_STATS=y` is compiled in, but no shell command exposes it
+(`CONFIG_KERNEL_SHELL` unset), so there is no live readout.
 
-The UWB engine is not a RAM factor: `ultrawidelock_uwb` + `deps/dw3000` together hold about 3.8 KiB.
+The UWB engine is not a RAM factor: `ultrawidelock_uwb` + `deps/dw3000` hold about 3.8 KiB.
 
 ## Largest RAM objects, net core
 
@@ -104,17 +104,17 @@ The UWB engine is not a RAM factor: `ultrawidelock_uwb` + `deps/dw3000` together
 
 ## Size-relevant configuration as built
 
-- `CONFIG_SIZE_OPTIMIZATIONS=y` (-Os). `CONFIG_SIZE_OPTIMIZATIONS_AGGRESSIVE` (-Oz) exists
-  and is off. `LTO` exists in this Zephyr and is off.
+- `CONFIG_SIZE_OPTIMIZATIONS=y` (-Os). `CONFIG_SIZE_OPTIMIZATIONS_AGGRESSIVE` (-Oz) and
+  `LTO` exist in this Zephyr and are off.
 - `CONFIG_DOOR_LOCK_RELEASE` unset: links the debug rather than the release variant of the
   Nordic Aliro library (~566 KB archive vs ~449 KB release; archive size, not linked size).
 - App shell on (`CONFIG_SHELL=y`, serial). App logging on, deferred, default level 0,
-  16 KiB buffer. Net-core logging fully off.
+  16 KiB buffer. Net-core logging off.
 - `CONFIG_ASSERT=y` on both cores (app strips condition/message strings, net is verbose).
 - BLE: `CONFIG_BT_MAX_CONN=5` on both cores; ACL TX/RX 271 B; EVT RX count 10.
-- Net core already hand-trimmed by `apps/nrf5340dk-lock/overlays/ipc_radio.conf` (verified applied
+- Net core hand-trimmed by `apps/nrf5340dk-lock/overlays/ipc_radio.conf` (verified applied
   in the generated `.config`): Coded PHY off, 802.15.4 RX buffers 20 to 8, pending-child
-  tables 1+1 (MTD-SED). The usage numbers above are after this trim.
+  tables 1+1 (MTD-SED). The numbers above are after this trim.
 
 ## Method
 
@@ -125,9 +125,8 @@ The UWB engine is not a RAM factor: `ultrawidelock_uwb` + `deps/dw3000` together
   sections (within 53 B and 5 B).
 - Per-object RAM attribution from the ELF symbol table; file provenance for static objects
   from `STT_FILE` markers.
-- Per-archive flash attribution from the linker map was attempted and did not validate
-  against the totals; it is deliberately omitted. Treat any per-library flash-size claim as
-  unmeasured.
+- Per-archive flash attribution from the linker map did not validate against the totals
+  and is deliberately omitted. Treat any per-library flash-size claim as unmeasured.
 
 To refresh after a rebuild: re-derive from `build/matter-aliro-door-lock-app/zephyr/zephyr.elf`,
 `build/ipc_radio/zephyr/zephyr.elf`, and `build/partitions.yml`.

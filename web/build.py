@@ -507,7 +507,13 @@ DOC_GROUPS = (
     ("Protocol", ("protocol-notes", "protocol-research", "range-integrity",
                   "approach-direction", "uwb-mac-login",
                   "matter-door-lock-events", "matter-binding",
-                  "bodycal-falsification")),
+                  "matter-binding-bench", "bodycal-falsification")),
+    # Inside versus outside is a subject, not a board and not the protocol:
+    # the design, the ranging route that replaces it, and the two runbooks
+    # that prove either one on a bench. Filed under Protocol they read as
+    # wire format, which is the one thing they are not.
+    ("Side of the door", ("inside-latch", "second-anchor",
+                          "bench-inside-outside")),
     ("Reference", ("reference",)),
 )
 
@@ -531,7 +537,14 @@ def _summary_of(md: Path) -> str:
             continue
         for follow in body[i + 1:]:
             text = follow.strip()
-            if not text or text.startswith(("#", "|", "```", ">", "-", "*")):
+            # Skip structure, not emphasis. "*" and "-" were skipped as list
+            # markers, which also threw away a paragraph opening in bold: a
+            # guide that leads with "**Status: shipped.** ..." lost that
+            # sentence and had the fragment after it printed as its summary.
+            # A list marker is the character followed by a space.
+            if not text or text.startswith(("#", "|", "```", ">")):
+                continue
+            if re.match(r"^([-*+]\s|\d+\.\s)", text):
                 continue
             text = re.sub(r"[`*\[\]]", "", text)
             text = re.sub(r"\(([^)]*)\)", "", text)

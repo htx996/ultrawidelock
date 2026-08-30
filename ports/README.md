@@ -1,20 +1,20 @@
 # Platform ports
 
-`ports/` contains the thin platform backends used by the portable modules.
-Each port may name exactly one operating system or framework.
+Thin platform backends. Each port may name exactly one operating system or
+framework.
 
 | Port | Integration model |
 |---|---|
-| [`zephyr/`](zephyr/) | One Zephyr module providing Bluetooth, DFU, device, storage, shell, and OSAL backends |
+| [`zephyr/`](zephyr/) | one Zephyr module providing Bluetooth, DFU, device, storage, shell, and OSAL backends |
 | [`esp32/`](esp32/) | ESP-IDF components selected through component dependencies |
-| [`freertos-nrf52833/`](freertos-nrf52833/) | Standalone DWM3001CDK port using the Qorvo board/UWB base and a custom upstream OpenThread radio integration |
+| [`freertos-nrf52833/`](freertos-nrf52833/) | standalone DWM3001CDK port on the Qorvo board/UWB base, with a custom upstream OpenThread radio integration |
 
-Product policy and portable protocol behavior do not belong here. A port should
-translate a platform API into a contract declared by a portable module, then
-return control to the shared implementation.
+A port translates a platform API into a contract declared by a portable module,
+then returns control to the shared implementation. Product policy and protocol
+behavior do not belong here.
 
-The host OSAL backend is under `tests/host/port/` because it also serves as the
-test fake.
+The host OSAL backend is under `tests/host/port/`: it also serves as the test
+fake.
 
-Use [`PORTING.md`](../PORTING.md) for the exact five-seam chipset contract and
-the supported-framework integration flow.
+[`PORTING.md`](../PORTING.md) has the five-seam chipset contract and the
+integration flow.

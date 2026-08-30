@@ -1,7 +1,7 @@
 # Installed C API
 
-`include/ultrawidelock/ultrawidelock.h` is the all-in-one package umbrella. The real
-role declarations stay with their portable implementation owners:
+`include/ultrawidelock/ultrawidelock.h` is the package umbrella. The role
+declarations stay with their implementation owners:
 
 | Include | Canonical source |
 |---|---|
@@ -11,12 +11,11 @@ role declarations stay with their portable implementation owners:
 | `<ultrawidelock/uwb.h>` | `modules/ultrawidelock_uwb/include/ultrawidelock/uwb.h` |
 | `<ultrawidelock/ultrawidelock_hal.h>` | `modules/ultrawidelock_port/include/ultrawidelock/ultrawidelock_hal.h` |
 
-This keeps module ownership intact while giving source builds and installed
-packages the same `<ultrawidelock/...>` include spelling. The former flat role
-headers were removed, and the SDK test rejects their reintroduction.
+Source builds and installed packages share one `<ultrawidelock/...>` spelling;
+the SDK test rejects flat role headers.
 
 The package installs these entry points plus only the lower-level headers they
-include. That exact installed set is ratcheted by `make sdk-check`; adding or
-removing a package header requires an explicit package and test update.
+include. `make sdk-check` ratchets that exact set: adding or removing a package
+header requires an explicit package and test update.
 
-Implementation remains in `modules/*/src/`; this directory stays headers-only.
+Headers only. Implementation stays in `modules/*/src/`.

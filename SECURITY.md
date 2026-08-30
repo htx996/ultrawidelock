@@ -43,10 +43,10 @@ Out of scope here, because the code is not ours to fix. Please report these
 upstream, though we are glad to know about them:
 
 - The vendored Qorvo UWB driver under
-  `modules/ultrawidelock_dw3000/dwt_uwb_driver/` — report to Qorvo.
+  `modules/ultrawidelock_dw3000/dwt_uwb_driver/`: report to Qorvo.
 - `modules/ultrawidelock_dfu/src/detools/` and its bundled heatshrink.
 - nRF Connect SDK, Zephyr, ESP-IDF, esp-matter, OpenThread, Mbed TLS, and
-  NimBLE — report to their respective projects.
+  NimBLE: report to their respective projects.
 - Findings that require a debugger on an unprotected part. Production images
   are expected to set access-port protection; `scripts/check-approtect.sh`
   exists for exactly that check.

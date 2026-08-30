@@ -2,9 +2,8 @@
 
 ## Scope and evidence
 
-This report records a read-only investigation of smart-card and proximity
-screen unlock on macOS 26.4.1, build 25E253, using the macOS 26.4 SDK. It
-combines:
+Read-only investigation of smart-card and proximity screen unlock on macOS
+26.4.1, build 25E253, with the macOS 26.4 SDK. Evidence:
 
 - public Apple documentation and SDK header contracts;
 - a read-only inspection of the macOS authorization database;
@@ -15,11 +14,7 @@ combines:
 - a controlled test with a paired CryptoTokenKit identity whose signing
   operation was gated by a fresh UWB proximity proof.
 
-No account names, token identifiers, certificate hashes, device serials,
-credentials, local paths, or network details are included.
-
-Build-specific implementation details may change in later macOS releases. This
-report uses four evidence labels:
+Evidence labels:
 
 - **VERIFIED (documentation):** stated by a public Apple source or SDK
   contract.
@@ -31,23 +26,15 @@ report uses four evidence labels:
 
 ## Bottom line
 
-On the tested macOS build, a paired CryptoTokenKit smart-card identity cannot
-provide truly PINless LoginWindow or screen unlock through Apple's native
-smart-card mechanism.
+A paired CryptoTokenKit smart-card identity cannot provide PINless LoginWindow
+or screen unlock through Apple's native smart-card mechanism.
 
 A `TKTokenOperationConstraint` value of boolean `true` makes the private-key
-operation itself available without token authentication. It does not remove
-the login mechanism's separate requirement for a credential value in the
-authorization context.
-
-The verified blocker is a nonempty authorization-context gate above the key
-operation, not an authorization decision made by the token. Constraint tuning,
-key attributes, and provider activation operate below that gate. Successful
-token-login data being written back to the same context supports a
-credential-material explanation, but does not by itself prove the context
-value's downstream purpose.
-
-The effective flow is:
+operation available without token authentication, but does not remove the login
+mechanism's separate requirement for a credential value in the authorization
+context. The verified blocker is that nonempty authorization-context gate, not
+an authorization decision made by the token. Constraint tuning, key attributes,
+and provider activation operate below the gate.
 
 ```text
 nonempty LoginWindow credential submission
@@ -61,18 +48,12 @@ token slot 9A signature request
 fresh UWB proof and private-key operation
 ```
 
-The UWB transaction beginning only after credential submission is therefore
-consistent with a gate above the token operation. Changing the key constraint
-or `isSuitableForLogin` cannot remove that gate.
-
-Apple Watch Auto Unlock proves that macOS can perform a PINless proximity
-unlock, but it uses a separate Apple-controlled protocol and private system
-capabilities. It does not make the CryptoTokenKit login path extensible.
+The UWB transaction begins only after credential submission. Changing the key
+constraint or `isSuitableForLogin` cannot remove that gate.
 
 ## Distinct unlock paths
 
-Treat these as separate architectures, not interchangeable authentication
-factors:
+Separate architectures, not interchangeable authentication factors:
 
 | Path | Credential-material model | Public third-party integration |
 |---|---|---|
@@ -81,15 +62,11 @@ factors:
 | Touch ID | Data Protection keys remain wrapped by a key held by the Touch ID subsystem in the Secure Enclave, and a successful match releases the unwrap key. | No public third-party biometric hook for LoginWindow. |
 | Apple Watch Auto Unlock | A previously armed 32-byte secret unwraps a record containing the passcode-derived key. | No public third-party Auto Unlock API was found. The shipping implementation uses private entitlements. |
 
-Two authorization rights are easy to confuse:
+Two easily confused authorization rights:
 
 - `system.login.screensaver` resolves to `use-login-window-ui`.
 - `system.login.screensaver.unlock` contains the single mechanism
   `CryptoTokenKit:login` and identifies itself as the screensaver-unlock rule.
-
-The tested design is on the smart-card path while seeking the no-typing
-behavior of Auto Unlock. Those paths do not share an entry point, mechanism, or
-public extension surface.
 
 Source:
 
@@ -99,35 +76,35 @@ Source:
 
 `TKTokenOperationConstraint` describes authentication for one operation on one
 token object. Apple documents boolean `true` as allowing that operation without
-authentication. The macOS 26.4 SDK states the same in:
+authentication; the macOS 26.4 SDK states the same:
 
 ```text
 $(xcrun --show-sdk-path)/
   System/Library/Frameworks/CryptoTokenKit.framework/Headers/TKToken.h:73
 ```
 
-The adjacent `beginAuthForOperation` delegate method is the documented way for
-an extension to establish token authentication. A smart-card extension can
-return `TKTokenSmartCardPINAuthOperation` to request a PIN and optionally supply
-a PIV `VERIFY` APDU template. See:
+`beginAuthForOperation` is the documented way for an extension to establish
+token authentication. A smart-card extension can return
+`TKTokenSmartCardPINAuthOperation` to request a PIN and optionally supply a PIV
+`VERIFY` APDU template:
 
 ```text
 CryptoTokenKit.framework/Headers/TKToken.h:152
 CryptoTokenKit.framework/Headers/TKSmartCardToken.h:16
 ```
 
-`TKTokenKeychainKey.isSuitableForLogin` only indicates that a key is eligible
-for system login. Its SDK declaration does not promise control over
-LoginWindow's user interface or authorization context:
+`TKTokenKeychainKey.isSuitableForLogin` only marks a key eligible for system
+login. Its declaration promises no control over LoginWindow's user interface or
+authorization context:
 
 ```text
 CryptoTokenKit.framework/Headers/TKTokenKeychainItem.h:116
 ```
 
-Apple's published model for smart-card login is two-factor authentication:
-possession of the token plus knowledge of its password or PIN. Apple also
-documents slot 9A for login authentication and slot 9D for the key agreement
-used to wrap or unwrap the login keychain secret.
+Apple's published model for smart-card login is two-factor: possession of the
+token plus knowledge of its password or PIN. Apple documents slot 9A for login
+authentication and slot 9D for the key agreement that wraps or unwraps the
+login keychain secret.
 
 Sources:
 
@@ -139,9 +116,8 @@ Sources:
 
 ### Authorization database
 
-On build 25E253, a read-only query of
-`system.login.screensaver.unlock` returned an `evaluate-mechanisms` rule with
-one mechanism:
+On build 25E253, a read-only query of `system.login.screensaver.unlock`
+returned an `evaluate-mechanisms` rule with one mechanism:
 
 ```text
 CryptoTokenKit:login
@@ -152,15 +128,12 @@ screensaver-unlock rule.
 
 ### CryptoTokenKit authorization mechanism
 
-The mechanism is implemented by:
-
 ```text
 /System/Library/CoreServices/SecurityAgentPlugins/
   CryptoTokenKit.bundle/Contents/MacOS/CryptoTokenKit
 ```
 
-The mechanism reports its own progress to the unified log. Three of its
-messages describe the path this report depends on:
+Three of its unified-log messages mark the path:
 
 ```text
 TKAuthMechanismLogin invoked
@@ -168,18 +141,16 @@ PIN not found in authorization context
 Token login data set to the authorization context
 ```
 
-The first marks entry. The second is what a PINless attempt produces, when the
-authorization-context key `password` carries no value. The third appears only
-on success, when token login data is written back under that same key. The
-companion `loginwindow` plug-in reports `Attempt to authenticate with a blank
-password`, consistent with the UI refusing an empty submission. The predicate in
-[Smallest safe experiment](#smallest-safe-experiment) captures the three
-CryptoTokenKit messages; the `loginwindow` one needs a wider sender filter.
+The first marks entry. The second is what a PINless attempt produces, with the
+authorization-context key `password` empty. The third appears only on success,
+when token login data is written back under that key. The companion
+`loginwindow` plug-in reports `Attempt to authenticate with a blank password`.
+The predicate in [Smallest safe experiment](#smallest-safe-experiment) captures
+the three CryptoTokenKit messages; the `loginwindow` one needs a wider filter.
 
-That sequence establishes that `TKAuthMechanismLogin` requires the
-authorization-context value in order to process the token identity. It does
-not establish that the submitted characters are sent to the smart card or
-validated as its PIN.
+The sequence establishes that `TKAuthMechanismLogin` requires the
+authorization-context value to process the token identity, not that the
+submitted characters reach the smart card or are validated as its PIN.
 
 ## Credential material, not just an authorization verdict
 
@@ -188,28 +159,24 @@ Two independently observed designs point to a credential-material requirement:
 1. **VERIFIED (observation):** after successful token login,
    `TKAuthMechanismLogin` reports writing token login data back under the
    authorization-context key `password`.
-2. **VERIFIED (documentation):** Apple Watch Auto Unlock does not merely return
-   an approval. The Mac generates a random 32-byte unlock secret, sends it
-   through a Secure-Enclave-to-Secure-Enclave Station-to-Station tunnel, and
-   uses it to wrap the passcode-derived key during a normal unlock. A later
-   proximity transaction returns that secret so the Mac can decrypt the unlock
-   record.
+2. **VERIFIED (documentation):** Apple Watch Auto Unlock returns credential
+   material. The Mac generates a random 32-byte unlock secret, sends it through
+   a Secure-Enclave-to-Secure-Enclave Station-to-Station tunnel, and wraps the
+   passcode-derived key with it during a normal unlock. A later proximity
+   transaction returns that secret so the Mac can decrypt the unlock record.
 
-**LIKELY, verify before using:** the `password` context slot is acting as a
-transport for material needed by the login session, not merely as a boolean
-"authorized" result. This would explain both the pre-token nonempty-value check
-and the successful token-login write-back.
+**LIKELY, verify before using:** the `password` context slot transports material
+needed by the login session, not merely a boolean "authorized" result. That
+explains both the pre-token nonempty check and the token-login write-back.
 
-Apple's documented use of PIV slot 9D for login-keychain wrapping and
-unwrapping is consistent with this model. It also makes a key-management slot
-load-bearing even when slot 9A is the authentication identity.
+Apple's documented use of PIV slot 9D for login-keychain wrapping is consistent
+with this model, and makes a key-management slot load-bearing even when slot 9A
+is the authentication identity.
 
-This model makes a falsifiable prediction: if a future experiment satisfies
-only the nonempty context gate but supplies no valid token login material, the
-screen and login keychain may not reach the same state. A
-screen-unlocked-but-keychain-locked result would support the model. A fully
-unlocked keychain would require checking whether another mechanism supplied the
-material.
+Falsifiable prediction: if an experiment satisfies only the nonempty context
+gate with no valid token login material, the screen and login keychain may not
+reach the same state. Screen-unlocked-but-keychain-locked supports the model; a
+fully unlocked keychain means checking whether another mechanism supplied it.
 
 Do not use `security show-keychain-info` for this test. Its manual page says it
 shows keychain settings, not current lock state. The read-only status API is
@@ -221,8 +188,8 @@ Security.framework/Headers/SecKeychain.h:50
 Security.framework/Headers/SecKeychain.h:456
 ```
 
-The API is deprecated but remains available on macOS 26. A minimal read-only
-probe is:
+The API is deprecated but remains available on macOS 26. Read-only probe, to
+run only after the test unlock has completed:
 
 ```sh
 /usr/bin/swift -suppress-warnings - <<'SWIFT'
@@ -249,16 +216,11 @@ if result != errSecSuccess {
 SWIFT
 ```
 
-Run the probe only after the test unlock has completed. It reads status and
-does not unlock, lock, or change keychain settings.
-
 Source:
 
 - [SecKeychainGetStatus](https://developer.apple.com/documentation/security/seckeychaingetstatus%28_%3A_%3A%29)
 
 ## What boolean `true` does and does not do
-
-The evidence supports these conclusions:
 
 - **VERIFIED (documentation):** Boolean `true` removes authentication from the
   selected token operation.
@@ -268,7 +230,7 @@ The evidence supports these conclusions:
   signature and therefore gate the final unlock.
 - **LIKELY, verify before using:** When an extension uses boolean `true`
   constraints and does not implement `beginAuthForOperation`, the typed value
-  is probably serving only as a LoginWindow and authorization-context gate.
+  probably serves only as a LoginWindow and authorization-context gate.
 - **I don't know:** a private macOS path might still send a PIV `VERIFY` APDU
   outside the documented extension delegate flow. The fastest check is a
   payload-redacted APDU trace during one correct-PIN unlock.
@@ -278,7 +240,7 @@ can consume a persistent retry attempt and eventually block the credential.
 
 ## Why Auto Unlock does not provide a public workaround
 
-Apple documents a materially different proximity-unlock protocol:
+Apple documents a different proximity-unlock protocol:
 
 - all automatic-unlock cases use a mutually authenticated
   Station-to-Station tunnel with long-term keys and per-request ephemeral keys;
@@ -288,9 +250,6 @@ Apple documents a materially different proximity-unlock protocol:
   policy checks pass; and
 - a Mac must first be unlocked through another method after the Watch is placed
   on wrist and unlocked, because the unlock record must be armed.
-
-That is credential-material recovery, not a CryptoTokenKit signature followed
-by an authorization verdict.
 
 Read-only inspection of `/usr/libexec/sharingd` on build 25E253 found
 `SFAutoUnlockDevice`, Auto Unlock session classes, AWDL ranging markers, and
@@ -308,10 +267,9 @@ com.apple.private.nearbyinteraction.privileged
 **VERIFIED (observation):** Apple's proximity implementation runs in a platform
 binary with private authorization, messaging, and ranging capabilities.
 
-**LIKELY, verify before using:** Auto Unlock submits successful proximity
-authentication to the login system through an Apple-private route rather than
-traversing `CryptoTokenKit:login`. No public entitlement or extension point
-corresponding to these capabilities was found.
+**LIKELY, verify before using:** Auto Unlock submits proximity authentication
+to the login system by an Apple-private route, not `CryptoTokenKit:login`. No
+public entitlement or extension point matching these capabilities was found.
 
 The public Nearby Interaction surface is not a substitute. The macOS 26.4 SDK
 marks `NISession` unavailable on macOS:
@@ -320,12 +278,11 @@ marks `NISession` unavailable on macOS:
 NearbyInteraction.framework/Headers/NISession.h:30
 ```
 
-The project's 802.15.4z UWB STS ranging and Apple's disclosed BLE plus
-peer-to-peer Wi-Fi distance check are also not directly comparable from public
-evidence. The former exposes an explicit secure-ranging primitive; Apple
-documents a cryptographic STS tunnel and a distance policy but not enough PHY
-detail to rank relay resistance. Do not claim one is stronger without a relay
-experiment and sufficient implementation detail for both.
+The project's 802.15.4z UWB STS ranging and Apple's BLE plus peer-to-peer Wi-Fi
+distance check are not comparable from public evidence: the former exposes an
+explicit secure-ranging primitive, while Apple documents an STS tunnel and a
+distance policy but not enough PHY detail to rank relay resistance. Do not claim
+one is stronger without a relay experiment and implementation detail for both.
 
 Source:
 
@@ -347,9 +304,6 @@ sudo /usr/bin/log stream \
   --level debug \
   --predicate "$PREDICATE"
 ```
-
-The predicate selects fixed diagnostic messages. It does not request PIN
-contents or variable token identifiers.
 
 Then:
 
@@ -377,14 +331,13 @@ timestamps. Never log APDU payloads. The distinguishing commands are:
 00 87 11 9A    P-256 GENERAL AUTHENTICATE with slot 9A
 ```
 
-A slot 9A marker with no preceding `VERIFY` marker proves that the typed value
-was only a UI or authorization-context gate for that transaction. A passive USB
-protocol analyzer can provide the same evidence without changing firmware.
+A slot 9A marker with no preceding `VERIFY` marker proves the typed value was
+only a UI or authorization-context gate for that transaction. A passive USB
+protocol analyzer gives the same evidence without changing firmware.
 
-This single run settles two independent questions:
-
-- whether LoginWindow or the token path sends PIV `VERIFY`; and
-- whether a successful screen unlock also leaves the login keychain unlocked.
+The run settles two questions: whether LoginWindow or the token path sends PIV
+`VERIFY`, and whether a successful screen unlock also leaves the login keychain
+unlocked.
 
 ## Alternatives
 
@@ -416,11 +369,8 @@ The Connectivity Standards Alliance released Aliro 1.0 on February 26, 2026,
 and lists Apple's platforms as certified for Aliro 1.0 on March 4, 2026. The
 published material describes mobile credentials for physical access points,
 with NFC, BLE, and BLE plus UWB transports. It does not advertise a macOS
-desktop-login profile.
-
-That absence is not proof that a future profile is impossible. It means Aliro
-1.0 is a useful standards and vendor-engagement path, not a current macOS login
-API.
+desktop-login profile. That absence does not rule out a future profile, but
+makes Aliro 1.0 a standards and vendor-engagement path, not a macOS login API.
 
 Sources:
 
@@ -442,9 +392,9 @@ Sources:
 5. Treat composite HID as a disposable no-typing demonstration, and Platform
    SSO as a separate managed-enterprise architecture.
 
-An authorization plug-in is justified only if the research objective explicitly
-changes from integrating with macOS smart-card login to replacing part of the
-macOS authorization stack.
+An authorization plug-in is justified only if the objective changes from
+integrating with macOS smart-card login to replacing part of the macOS
+authorization stack.
 
 ## Remaining unknowns
 
@@ -463,7 +413,6 @@ macOS authorization stack.
 
 The authorization rules, log messages, `sharingd` markers, and code-signature
 entitlements above were verified on macOS 26.4.1 build 25E253 with the macOS
-26.4 SDK. Recheck them after every macOS update. The conclusion about boolean
-constraints follows the public SDK contract, while the exact
-`TKAuthMechanismLogin` and Auto Unlock behavior is build-specific and
-undocumented, so treat it as observation of one build rather than a contract.
+26.4 SDK. Recheck after every macOS update. The boolean-constraint conclusion
+follows the public SDK contract; `TKAuthMechanismLogin` and Auto Unlock
+behavior is build-specific, so treat it as observation of one build.

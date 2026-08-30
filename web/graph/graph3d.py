@@ -37,6 +37,13 @@ from pathlib import Path
 
 CORE_TOP = ("modules", "ports", "apps")
 VENDORED = ("dwt_uwb_driver", "detools")
+# graphify extracts prose as well as code, one node per Markdown heading, typed
+# "document". A subsystem graph has no use for them, and they break it: group_of
+# takes the first two path components, so apps/README.md is its own group rather
+# than a file inside one, and three of those pushed the group count past the
+# palette. Filtered here rather than in group_of, because a README is not a node
+# on this page under any grouping.
+NOT_CODE = (".md", ".txt", ".rst", ".json", ".yml", ".yaml", ".csv")
 LIB = "3d-force-graph.min.js"
 REPO = "https://github.com/ultrawidelock/ultrawidelock/blob/main/"
 
@@ -115,6 +122,8 @@ def blurb_for(path: Path) -> str:
 
 def keep(source_file: str) -> bool:
     if not source_file or source_file.split("/")[0] not in CORE_TOP:
+        return False
+    if source_file.endswith(NOT_CODE):
         return False
     return not any(v in source_file.split("/") for v in VENDORED)
 
