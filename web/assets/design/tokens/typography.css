@@ -1,21 +1,12 @@
-/* UltraWideLock tokens — typography. Space Grotesk (UI/prose) + JetBrains Mono
-   (identifiers, numerals, wordmark).
+/* UltraWideLock tokens — typography. The platform's own UI face for prose and
+   display, so on the Apple devices this firmware pairs with the page is set in
+   SF Pro and matches the Wallet sheet the key lives in. JetBrains Mono is the
+   fallback for identifiers, numerals and code wherever the system has no
+   monospace worth using.
 
-   Self-hosted, not Google Fonts. The @import that used to sit here told a
-   third party the IP address of every visitor to a privacy-focused lock
-   project's site, on every page view, and made the page depend on a host we
-   do not control. Each file is the latin subset of the upstream variable
-   font, so one file covers every weight the system asks for: 56 KB in total
-   against 192 KB for the seven static cuts.
-
-   SIL Open Font License 1.1. See fonts/LICENSE. */
-@font-face{
-  font-family:'Space Grotesk';
-  font-style:normal;
-  font-weight:300 700;
-  font-display:swap;
-  src:url('fonts/space-grotesk.woff2') format('woff2');
-}
+   Self-hosted, not Google Fonts: a third party would otherwise learn the IP
+   address of every visitor on every page view. The file is the latin subset
+   of the upstream variable font. SIL Open Font License 1.1, see fonts/LICENSE. */
 @font-face{
   font-family:'JetBrains Mono';
   font-style:normal;
@@ -25,8 +16,9 @@
 }
 
 :root{
-  --font-sans:"Space Grotesk","Helvetica Neue",Helvetica,"Segoe UI",system-ui,sans-serif;
-  --font-mono:"JetBrains Mono",ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",
+    Roboto,"Helvetica Neue",Helvetica,system-ui,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",Menlo,Consolas,monospace;
 
   --fs-100:0.6875rem;  /* micro labels, table eyebrows */
   --fs-200:0.75rem;    /* kbd, pills, captions */
@@ -36,23 +28,24 @@
   --fs-600:1.125rem;   /* lede */
   --fs-700:1.375rem;   /* h3 */
   --fs-800:1.75rem;    /* h2 */
-  --fs-900:2.375rem;   /* h1 */
-  --fs-1000:3.25rem;   /* landing display */
-  --fs-1100:4.25rem;   /* hero display, wide only */
+  --fs-900:2.5rem;     /* h1 */
+  --fs-1000:3.25rem;   /* section display */
+  --fs-1100:5.25rem;   /* hero display, wide only */
 
-  --lh-tight:1.06;
-  --lh-snug:1.24;
+  --lh-tight:1.04;
+  --lh-snug:1.2;
   --lh-normal:1.5;
-  --lh-copy:1.68;
+  --lh-copy:1.65;
   --lh-code:1.6;
 
   --fw-regular:400;
   --fw-medium:500;
+  --fw-semibold:600;
   --fw-bold:700;
 
-  --tr-display:-0.024em;
-  --tr-heading:-0.014em;
-  --tr-body:-0.006em;
+  --tr-display:-0.035em;
+  --tr-heading:-0.022em;
+  --tr-body:-0.011em;
   --tr-mono:0;
-  --tr-caps:0.09em;
+  --tr-caps:0.12em;
 }

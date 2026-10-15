@@ -16,8 +16,8 @@
  * before this file arrives, the hero is a diagram rather than a broken widget.
  *
  * The travelling pulses are CSS animations on transform, so they run on the
- * compositor and this file does no per-frame work at all. JavaScript only
- * runs when the reader moves something.
+ * compositor. JavaScript only runs when the reader moves something, plus one
+ * short walk-up of the lock above the instrument when the page opens.
  */
 (function () {
   "use strict";
@@ -236,148 +236,178 @@
       el.relayBtn.textContent = relayOn ? "Relay armed" : "Arm a relay";
       el.relayBtn.classList.toggle("btn-warn", relayOn);
       draw();
+      /* On a narrow screen the instrument scrolls inside its own frame, so
+         bring the measured end into view: the relay's push is the point,
+         and it should be seen rather than sit past the edge. */
+      if (frame.scrollWidth > frame.clientWidth + 1) {
+        var k = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+        var end = relayOn ? Math.min(mToX(xToM(+slider.value) + RELAY_ADD_M), MAX_X)
+                          : LOCK_X;
+        /* Just past the end, and never further than the lock unless the
+           end cannot otherwise be shown: the measurement needs its origin. */
+        frame.scrollTo({
+          left: Math.max(0, (end + 24) * k - frame.clientWidth),
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? "auto" : "smooth"
+        });
+      }
     });
   }
+
+  /* The frame fades its right edge while there is more instrument past it. */
+  var frame = svg.parentNode;
+  function edge() {
+    frame.classList.toggle("more",
+      frame.scrollLeft + frame.clientWidth < frame.scrollWidth - 4);
+  }
+  frame.addEventListener("scroll", edge, { passive: true });
+  window.addEventListener("resize", edge);
 
   /* ---- first paint ----------------------------------------------------- */
   /* Start just inside the bound: the opening state should be the one the
      product is for, not an error condition. */
   slider.value = mToX(0.82);
   draw();
+  edge();
   svg.classList.add("live");
 
-  /* ---- glass field ----------------------------------------------------- */
-  /* Decorative ranging rings are active only while the hero is visible.
-     The live SVG remains the semantic and interactive representation. */
-  var canvas = document.getElementById("uwb-field");
-  var hero = document.querySelector(".hero");
-  var lock = svg.querySelector(".hs-lock");
-  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var finePointer = window.matchMedia("(pointer: fine)").matches;
+  /* ---- the bar ------------------------------------------------------- */
+  /* Part of the opening frame until the reader leaves it. */
   var nav = document.querySelector(".topbar");
-
   function materializeNav() {
-    if (nav) nav.classList.toggle("is-scrolled", window.scrollY > 24);
+    if (nav) nav.classList.toggle("is-scrolled", window.scrollY > 12);
   }
   window.addEventListener("scroll", materializeNav, { passive: true });
   materializeNav();
 
-  if (finePointer && !reduced) {
-    var panels = document.querySelectorAll(".glass-panel, #main > .page, .cardgrid .card");
-    var pointerX = 0, pointerY = 0, pointerQueued = false;
-    window.addEventListener("pointermove", function (event) {
-      pointerX = event.clientX;
-      pointerY = event.clientY;
-      if (pointerQueued) return;
-      pointerQueued = true;
-      window.requestAnimationFrame(function () {
-        pointerQueued = false;
-        for (var p = 0; p < panels.length; p++) {
-          var rect = panels[p].getBoundingClientRect();
-          if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
-          panels[p].style.setProperty("--gx",
-            ((pointerX - rect.left) / rect.width * 100).toFixed(1) + "%");
-          panels[p].style.setProperty("--gy",
-            ((pointerY - rect.top) / rect.height * 100).toFixed(1) + "%");
-        }
-      });
-    }, { passive: true });
+  /* ---- the orb --------------------------------------------------------- */
+  /* The walk-up in one object. On a device with a fine pointer the cursor is
+     the phone: the rings come in as it nears, and the lock opens once the
+     distance it stands for crosses the firmware's own unlock bound (BOUND_M,
+     from the FW table above), holds, then re-locks after it leaves. Touch
+     devices get a timed walk-up instead; reduced motion gets a still lock.
+     CSS derives every visual from two things written here: --prox and
+     data-phase. */
+  var orb = document.getElementById("orb");
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!orb) return;
+
+  var orbLabel = document.getElementById("orb-label");
+  var orbRead = document.getElementById("orb-read");
+  var FAR_M = 4.20;            /* where a walk-up starts                     */
+  var DETECT_M = 4.0;          /* the rings respond inside this              */
+  var NEAR_M = 0.82;           /* where a walk-up ends: the scope's opening  */
+  var RELOCK_MS = 350;         /* grace after the pointer leaves the bound   */
+  var phase = "locked";
+
+  function setOrb(p) {
+    if (p === phase) return;
+    phase = p;
+    orb.setAttribute("data-phase", p);
+    var name = p === "unlocked" ? "Unlocked" : p === "ranging" ? "Ranging" : "Locked";
+    orbLabel.textContent = name;
+    orb.setAttribute("aria-label", "Lock status: " + name.toLowerCase());
+  }
+  function setProx(v) { orb.style.setProperty("--prox", v.toFixed(3)); }
+  function setRead(m) { orbRead.textContent = fmt(m, 2) + " m"; }
+  function proxOf(m) {
+    return Math.max(0, Math.min(1, (DETECT_M - m) / (DETECT_M - BOUND_M)));
   }
 
-  if (canvas && hero && lock && !reduced) {
-    var ctx = canvas.getContext("2d");
-    var fieldW = 0, fieldH = 0, fieldDpr = 1;
-    var fieldVisible = true, fieldFrame = 0, fieldLast = 0, fieldSpawn = 0;
-    var rings = [], flashes = [];
+  setRead(FAR_M);
+  if (reduced) return;
 
-    function fieldColour(alpha) {
-      var value = window.getComputedStyle(document.documentElement)
-        .getPropertyValue("--accent").trim();
-      var match = /^#([0-9a-f]{6})$/i.exec(value);
-      if (!match) return "rgba(46,230,184," + alpha + ")";
-      var number = parseInt(match[1], 16);
-      return "rgba(" + (number >> 16) + "," + ((number >> 8) & 255) + "," +
-        (number & 255) + "," + alpha + ")";
-    }
-
-    function resizeField() {
-      fieldDpr = Math.min(window.devicePixelRatio || 1, 1.75);
-      fieldW = window.innerWidth;
-      fieldH = window.innerHeight;
-      canvas.width = Math.round(fieldW * fieldDpr);
-      canvas.height = Math.round(fieldH * fieldDpr);
-      canvas.style.width = fieldW + "px";
-      canvas.style.height = fieldH + "px";
-      ctx.setTransform(fieldDpr, 0, 0, fieldDpr, 0, 0);
-    }
-
-    function fieldOrigin() {
-      var rect = lock.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    }
-
-    function fieldLoop(now) {
-      fieldFrame = 0;
-      if (!fieldVisible || document.hidden) return;
-      var dt = Math.min(34, now - (fieldLast || now));
-      fieldLast = now;
-      var origin = fieldOrigin();
-      var maxRadius = Math.hypot(fieldW, fieldH) * .78;
-      if (now - fieldSpawn > 1450) {
-        rings.push({ radius: 28 });
-        fieldSpawn = now;
-      }
-      ctx.clearRect(0, 0, fieldW, fieldH);
-      rings = rings.filter(function (ring) {
-        ring.radius += dt * .055;
-        var alpha = Math.max(0, 1 - ring.radius / maxRadius) * .13;
-        if (alpha < .004) return false;
-        ctx.beginPath();
-        ctx.arc(origin.x, origin.y, ring.radius, 0, Math.PI * 2);
-        ctx.strokeStyle = fieldColour(alpha);
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        return true;
-      });
-      flashes = flashes.filter(function (flash) {
-        flash.radius += dt * .42;
-        flash.alpha *= Math.pow(.92, dt / 16.7);
-        if (flash.alpha < .008) return false;
-        ctx.beginPath();
-        ctx.arc(origin.x, origin.y, flash.radius, 0, Math.PI * 2);
-        ctx.strokeStyle = fieldColour(flash.alpha);
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        return true;
-      });
-      fieldFrame = window.requestAnimationFrame(fieldLoop);
-    }
-
-    function startField() {
-      if (!fieldVisible || document.hidden || fieldFrame) return;
-      fieldLast = 0;
-      fieldFrame = window.requestAnimationFrame(fieldLoop);
-    }
-
-    if ("IntersectionObserver" in window) {
-      new IntersectionObserver(function (entries) {
-        fieldVisible = entries[0].isIntersecting;
-        if (fieldVisible) startField();
-      }, { rootMargin: "15% 0px" }).observe(hero);
-    }
-    document.addEventListener("visibilitychange", startField);
-    window.addEventListener("resize", function () { resizeField(); startField(); });
-    new MutationObserver(function () { startField(); })
-      .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-
-    var oldMarkState = markState;
-    markState = function (state) {
-      var wasGrant = lastState === "grant";
-      oldMarkState(state);
-      if (state === "grant" && !wasGrant) flashes.push({ radius: 30, alpha: .48 });
+  /* A walk-up from FAR_M to NEAR_M on an ease-out, as a person slows at a
+     door. Unlocks at the bound crossing, not at the end: the bound is the
+     decision, not the doorstep. Calls done() once settled. */
+  var walkFrame = 0;
+  function walk(ms, done) {
+    var t0 = 0;
+    setOrb("ranging");
+    var step = function (now) {
+      if (!t0) t0 = now;
+      var t = Math.min(1, (now - t0) / ms);
+      var m = FAR_M + (NEAR_M - FAR_M) * (1 - Math.pow(1 - t, 3));
+      setRead(m);
+      setProx(proxOf(m));
+      if (m <= BOUND_M) setOrb("unlocked");
+      if (t < 1) walkFrame = requestAnimationFrame(step);
+      else if (done) done();
     };
-
-    resizeField();
-    startField();
+    walkFrame = requestAnimationFrame(step);
   }
+  function rest() { setOrb("locked"); setProx(0); setRead(FAR_M); }
+
+  var finePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+  if (!finePointer) {
+    /* Touch: a gentle loop while the orb is on screen. */
+    var loopTimer = 0, onScreen = true;
+    var cycle = function () {
+      if (!onScreen) return;
+      walk(2200, function () { loopTimer = setTimeout(function () {
+        rest(); loopTimer = setTimeout(cycle, 2000); }, 2600); });
+    };
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (e) {
+        var was = onScreen;
+        onScreen = e[0].isIntersecting;
+        if (onScreen && !was) cycle();
+        if (!onScreen) { clearTimeout(loopTimer); cancelAnimationFrame(walkFrame); rest(); }
+      }).observe(orb);
+    }
+    loopTimer = setTimeout(cycle, 900);
+    return;
+  }
+
+  /* Fine pointer: one walk-up on arrival so the moment is seen without being
+     discovered, cancelled the instant the pointer moves. */
+  var introTimers = [];
+  var intro = true;
+  introTimers.push(setTimeout(function () {
+    walk(1600, function () {
+      introTimers.push(setTimeout(function () { if (intro) rest(); }, 1300));
+    });
+  }, 650));
+
+  /* Pointer distance from the orb's centre, in orb half-widths, mapped onto
+     metres so the orb's edge sits just inside the bound and the outer ring
+     just outside it. */
+  var px = -1e6, py = -1e6, raf = 0, relock = 0;
+  function metresAt() {
+    var r = orb.getBoundingClientRect();
+    var half = r.width / 2 || 1;
+    var d = Math.hypot(px - (r.left + half), py - (r.top + r.height / 2)) / half;
+    return Math.max(0.10, Math.min(9.99, (d - 0.62) * 1.7));
+  }
+  function apply() {
+    raf = 0;
+    var m = metresAt();
+    setProx(proxOf(m));
+    setRead(Math.min(m, 9.99));
+    if (m <= BOUND_M) {
+      clearTimeout(relock); relock = 0;
+      setOrb("unlocked");
+    } else if (phase === "unlocked") {
+      if (!relock) relock = setTimeout(function () {
+        relock = 0;
+        setOrb(metresAt() < DETECT_M ? "ranging" : "locked");
+      }, RELOCK_MS);
+    } else {
+      setOrb(m < DETECT_M ? "ranging" : "locked");
+    }
+  }
+  function track(x, y) {
+    if (intro) {
+      intro = false;
+      introTimers.forEach(clearTimeout);
+      cancelAnimationFrame(walkFrame);
+    }
+    px = x; py = y;
+    if (!raf) raf = requestAnimationFrame(apply);
+  }
+  window.addEventListener("pointermove", function (e) { track(e.clientX, e.clientY); },
+                          { passive: true });
+  document.addEventListener("pointerleave", function () { track(-1e6, -1e6); });
+  window.addEventListener("blur", function () { track(-1e6, -1e6); });
 })();

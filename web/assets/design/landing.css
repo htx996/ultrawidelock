@@ -2,147 +2,234 @@
    UltraWideLock — landing.css
    The landing page only. Requires the tokens and components.css.
 
-   A marketing page with one instrument in it. The hero opens with a claim and
-   then the measurement that backs it: a live ranging round computed from the
-   firmware's own constants. Everything after the hero is short, and the
-   reference material that used to follow it lives in docs/specification.md.
+   One claim, told the way the product feels: a lock that ranges you as you
+   approach and opens at the bound. Then the proof (a live DS-TWR round
+   computed from the firmware's own constants), the three facts behind it,
+   the browser on-ramps, the boards, and a terminal band to get started.
 
-   Nothing here invents a colour; the two signals are --path-first (direct,
-   trusted) and --path-late (obstructed, or carrying a relay's delay), which
-   is the same distinction the shipped classifier makes.
+   Colour has two jobs and no third. --path-first (the mint) is a trusted
+   measurement and an open lock; --path-late (amber) is a relay's added delay.
+   Everything else is neutral ground, so the signal always reads as signal.
    ========================================================================= */
 
-/* ---------------------------------------------------------- the field ---- */
-/* The light field is the physical layer: hero.js draws ranging rings on a
-   fixed canvas behind the page while the hero is on screen. Glass surfaces
-   reveal it; code, readouts and captures stay opaque enough to read. */
-:root{
-  --glass-fill:color-mix(in srgb,var(--surface) 70%,transparent);
-  --glass-fill-strong:color-mix(in srgb,var(--surface) 84%,transparent);
-  --glass-spec:color-mix(in srgb,var(--strong) 20%,transparent);
-  --glass-glow:color-mix(in srgb,var(--accent) 4%,transparent);
-  --glass-blur:24px;
+.landing-page{overflow-x:clip}
+.landing-page #main{position:relative}
+
+/* ------------------------------------------------------------ the bar ---- */
+/* Part of the opening frame until the reader leaves it, then vibrancy. Its
+   content edge lines up with the page column rather than the viewport. */
+.landing-page .topbar{position:fixed;inset:0 0 auto;
+  padding-inline:max(var(--sp-6),calc((100% - var(--page-max)) / 2 + var(--sp-8)));
+  background:transparent;border-bottom-color:transparent;
+  -webkit-backdrop-filter:none;backdrop-filter:none;
+  transition:background var(--dur-4) var(--ease-out),
+    border-color var(--dur-4) var(--ease-out),
+    -webkit-backdrop-filter var(--dur-4) var(--ease-out),
+    backdrop-filter var(--dur-4) var(--ease-out)}
+.landing-page .topbar.is-scrolled{
+  background:color-mix(in srgb,var(--surface) 72%,transparent);
+  border-bottom-color:var(--hairline);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  backdrop-filter:saturate(180%) blur(20px)}
+
+/* ------------------------------------------------------- atmosphere ------ */
+/* Two lights behind the page, drifting on their own clocks: the signal and a
+   cool sky. Translate only; scaling a blurred layer re-rasterises the blur
+   every frame. Feathered top and bottom so they never end on a hard line. */
+.aurora{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;
+  -webkit-mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 78%,transparent);
+  mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 78%,transparent)}
+.blob{position:absolute;aspect-ratio:1;border-radius:50%;filter:blur(48px);
+  will-change:transform;animation:uwl-drift 16s ease-in-out infinite}
+@keyframes uwl-drift{
+  0%,100%{transform:translate3d(0,0,0)} 50%{transform:translate3d(4%,-3%,0)}}
+
+/* --------------------------------------------------------------- hero ---- */
+.hero{position:relative;isolation:isolate;overflow:hidden;
+  min-height:100svh;display:flex;flex-direction:column;justify-content:center;
+  padding:calc(var(--topbar-h) + var(--sp-8)) var(--sp-5) var(--sp-20);
+  text-align:center}
+.hero .blob-a{left:4%;top:10%;width:min(44vw,34rem);background:var(--glow-b)}
+.hero .blob-b{right:4%;bottom:6%;width:min(40vw,30rem);background:var(--glow-a);
+  animation-delay:-6s}
+.hero-in{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center}
+
+.hero-pill{display:inline-flex;align-items:center;gap:var(--sp-2);
+  margin-bottom:var(--sp-8);padding:.38rem .9rem;
+  border:var(--border);border-radius:var(--r-pill);
+  background:color-mix(in srgb,var(--surface) 70%,transparent);
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  font-size:.735rem;font-weight:var(--fw-medium);color:var(--muted)}
+.hero-pill i{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+
+.hero h1{margin:var(--sp-10) 0 0;max-width:15ch;
+  font-size:clamp(2.75rem,8vw,5.25rem);line-height:1.02;letter-spacing:-.04em;
+  font-weight:var(--fw-bold);color:var(--strong);text-wrap:balance}
+.hero h1 .lit{color:var(--accent)}
+.hero .lede{margin:var(--sp-6) auto 0;max-width:38ch;
+  font-size:clamp(1.06rem,2.1vw,1.3rem);line-height:1.45;color:var(--muted);
+  text-wrap:balance}
+.hero .cta{margin-top:var(--sp-8);justify-content:center;gap:var(--sp-3) var(--sp-6)}
+.hero .link-arrow{color:var(--strong)}
+.hero-fine{margin:var(--sp-10) 0 0;font-size:.735rem;font-weight:var(--fw-medium);
+  letter-spacing:.01em;color:var(--faint)}
+
+.cue{position:absolute;left:50%;bottom:var(--sp-6);z-index:1;
+  display:grid;place-items:center;width:2.2rem;height:2.2rem;margin-left:-1.1rem;
+  color:var(--faint);border-radius:var(--r-pill);
+  transition:color var(--dur-2) var(--ease-out)}
+.cue:hover{color:var(--strong)}
+.cue svg{width:1.4rem;height:1.4rem;fill:none;stroke:currentColor;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round;animation:uwl-bob 1.8s ease-in-out infinite}
+@keyframes uwl-bob{0%,100%{transform:translateY(0);opacity:.5}50%{transform:translateY(6px);opacity:1}}
+
+/* ---------------------------------------------------------------- orb ---- */
+/* The lock, ranging. hero.js writes --prox (0 far, 1 at the bound) and
+   data-phase; everything visual is derived from those two here. The colour
+   is mixed continuously from neutral toward the first-path mint as the
+   phone closes, and becomes the mint outright the moment it is granted. */
+.orb{--prox:0;--orb-idle:var(--muted);
+  --orb:color-mix(in oklab,var(--accent) calc(var(--prox) * 100%),var(--orb-idle));
+  position:relative;display:grid;place-items:center;
+  width:min(74vw,21rem,34svh);aspect-ratio:1;
+  animation:uwl-float 7s ease-in-out infinite}
+.orb[data-phase="unlocked"]{--orb:var(--accent)}
+.orb > *{grid-area:1/1}
+@keyframes uwl-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+
+.orb-glow{width:100%;height:100%;border-radius:50%;
+  background:radial-gradient(circle at 50% 45%,var(--orb),transparent 62%);
+  filter:blur(44px);opacity:calc(.16 + var(--prox) * .42);
+  transition:opacity var(--dur-3) var(--ease-out)}
+.orb-ring{width:78%;aspect-ratio:1;border-radius:50%;
+  border:var(--bw-1) solid var(--orb);
+  animation:uwl-ring 2.2s var(--ease-out-expo) infinite backwards}
+.orb > .orb-ring:nth-child(3){animation-delay:.7s}
+.orb > .orb-ring:nth-child(4){animation-delay:1.4s}
+/* Denser, faster waves whose strength is the wrapper's opacity, so they come
+   in as the phone nears without restarting the loop every frame. */
+.orb-near{display:grid;width:78%;aspect-ratio:1;opacity:calc(var(--prox) * .9)}
+.orb-near .orb-ring{width:100%;animation-duration:1.4s}
+.orb > .orb-near:nth-child(6) .orb-ring{animation-delay:.6s}
+@keyframes uwl-ring{0%{transform:scale(.55);opacity:0}18%{opacity:.7}
+  100%{transform:scale(1.9);opacity:0}}
+.orb-rest{width:88%;aspect-ratio:1;border-radius:50%;
+  border:var(--bw-1) solid color-mix(in srgb,var(--orb) 24%,transparent)}
+
+.orb-body{position:relative;display:grid;place-items:center;
+  width:58%;aspect-ratio:1;border-radius:30%;
+  background:color-mix(in srgb,var(--raise) 86%,transparent);
+  border:var(--bw-1) solid color-mix(in srgb,var(--orb) 40%,transparent);
+  box-shadow:0 30px 80px -30px var(--orb),inset 0 1px 0 rgba(255,255,255,.18);
+  -webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}
+.orb-lock{width:31%;height:auto;color:var(--orb)}
+.orb-lock .shut,.orb-lock .open{transition:opacity var(--dur-3) var(--ease-out-expo)}
+.orb-lock .open{opacity:0}
+.orb[data-phase="unlocked"] .orb-lock .shut{opacity:0}
+.orb[data-phase="unlocked"] .orb-lock .open{opacity:1}
+.orb[data-phase="unlocked"] .orb-body{animation:uwl-grant var(--dur-5) var(--ease-spring)}
+@keyframes uwl-grant{from{transform:scale(1.06)}to{transform:scale(1)}}
+
+.orb-status{align-self:end;transform:translateY(35%);
+  display:inline-flex;align-items:center;gap:var(--sp-2);
+  padding:.38rem .9rem;border:var(--border);border-radius:var(--r-pill);
+  background:color-mix(in srgb,var(--surface) 86%,transparent);
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  box-shadow:var(--shadow-1);
+  font-size:.735rem;font-weight:var(--fw-medium);white-space:nowrap}
+.orb-status i{width:7px;height:7px;border-radius:50%;background:var(--orb)}
+.orb-status b{font-weight:var(--fw-medium);color:var(--strong)}
+.orb-status .sep{color:var(--faint)}
+#orb-read{min-width:3.4em;text-align:left;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+
+/* A laptop screen keeps the whole opening, call to action included, above
+   the fold: the claim steps down a size and the scroll cue, which would sit
+   on top of the buttons, steps out. */
+@media (max-height:62rem) and (min-width:44.01rem){
+  .hero h1{font-size:clamp(2.75rem,7vw,4.6rem)}
+  .cue{display:none}
 }
 
-.landing-page{position:relative;isolation:isolate;overflow-x:hidden}
-.landing-page #main,.landing-page .footer{position:relative;z-index:2}
-.landing-page .footer{margin-top:0;background:var(--surface)}
+/* The opening: the orb and the claim paint at once (they are what the page
+   is), and the supporting lines rise in behind them. */
+@media (prefers-reduced-motion:no-preference){
+  @keyframes uwl-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  .booted .hero-pill,.booted .hero .lede,.booted .hero .cta,
+  .booted .hero-fine,.booted .cue{animation:uwl-rise .8s var(--ease-out-expo) both}
+  .booted .hero-pill{animation-delay:.05s}
+  .booted .hero .lede{animation-delay:.14s}
+  .booted .hero .cta{animation-delay:.22s}
+  .booted .hero-fine{animation-delay:.32s}
+  .booted .cue{animation-delay:.6s}
+}
 
-.uwb-field,.uwb-vignette{position:fixed;inset:0;pointer-events:none}
-.uwb-field{z-index:0;width:100vw;height:100vh;max-width:none}
-.uwb-vignette{z-index:1;background:
-  radial-gradient(80% 58% at 50% 5%,transparent 45%,color-mix(in srgb,var(--ground) 32%,transparent) 100%),
-  linear-gradient(to bottom,transparent 62%,var(--ground) 100%)}
-
-/* Every glass surface on the page: the instrument, the code blocks, the
-   pillars and the board tiles. hero.js writes --gx/--gy from the pointer so
-   the highlight follows the reader across each panel. */
-.landing-page .glass-panel{
-  background:
-    radial-gradient(720px circle at var(--gx,50%) var(--gy,-20%),var(--glass-glow),transparent 64%),
-    var(--glass-fill);
-  border:var(--bw-1) solid var(--hairline);border-top-color:var(--glass-spec);
-  box-shadow:var(--shadow-inset),var(--shadow-3);
-  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(145%);
-  backdrop-filter:blur(var(--glass-blur)) saturate(145%)}
-
-/* The landing nav begins as part of the field, then gains material once the
-   reader leaves the opening frame. Other pages keep the shared solid bar. */
-.landing-page .topbar{position:fixed;inset:0 0 auto;z-index:var(--z-header);
-  background:transparent;border-bottom-color:transparent;
-  transition:height var(--dur-3) var(--ease-out),
-    background var(--dur-3) var(--ease-out),
-    border-color var(--dur-3) var(--ease-out),
-    box-shadow var(--dur-3) var(--ease-out),
-    backdrop-filter var(--dur-3) var(--ease-out)}
-.landing-page .topbar.is-scrolled{
-  background:color-mix(in srgb,var(--surface) 70%,transparent);
-  border-bottom-color:var(--hairline);box-shadow:var(--shadow-2);
-  -webkit-backdrop-filter:blur(18px) saturate(145%);
-  backdrop-filter:blur(18px) saturate(145%)}
-
-/* --------------------------------------------------------------- hero ----- */
-/* Centred: one claim, one paragraph, the buttons, and the instrument under
-   them. The two blurred discs are the only colour that is not a token used
-   as ink -- the first-path tint high and right, the late-path tint low and
-   left, so the page is lit by the same two signals the scope draws. */
-/* overflow-x:clip, not hidden: the two discs below hang past the viewport
-   edge, and hidden on the body still lets a programmatic or momentum scroll
-   drift sideways into them. clip refuses the scroll without making the hero
-   a scroll container, so the sticky and fixed chrome is unaffected. */
-.hero{position:relative;overflow-x:clip;
-  padding:clamp(6.5rem,14vh,9.5rem) 0 clamp(3rem,7vh,5rem)}
-.hero::before,.hero::after{content:"";position:absolute;pointer-events:none;
-  border-radius:50%;filter:blur(2px);z-index:0}
-.hero::before{width:min(40rem,74vw);aspect-ratio:1;top:-4rem;right:-14rem;
-  background:radial-gradient(circle,var(--accent-tint),transparent 68%)}
-.hero::after{width:min(28rem,62vw);aspect-ratio:1;top:30rem;left:-12rem;
-  background:radial-gradient(circle,var(--path-late-tint),transparent 70%)}
-
-.hero-copy{position:relative;z-index:2;max-width:56rem;margin:0 auto;
-  padding:0 var(--sp-6) clamp(2.6rem,6vh,4.2rem);
-  display:flex;flex-direction:column;align-items:center;text-align:center;
-  gap:0}
-.hero .eyebrow{margin-bottom:var(--sp-6)}
-.hero h1{margin:0 0 var(--sp-6);
-  font-size:clamp(3.15rem,8.2vw,7rem);line-height:.94;letter-spacing:-.048em;
+/* ------------------------------------------------------------ sections --- */
+.sec{position:relative;padding:clamp(5rem,11vw,8.5rem) 0}
+.sec-in{position:relative;z-index:1;max-width:var(--page-max);margin:0 auto;
+  padding:0 var(--sp-8)}
+.sec-h{max-width:46rem;margin:0 0 clamp(2.5rem,5vw,4rem)}
+.sec-h.center{margin-inline:auto;text-align:center}
+.sec-h h2,.feature h2,.closer h2{margin:0;
+  font-size:clamp(2.1rem,5vw,3.4rem);line-height:1.05;letter-spacing:-.035em;
   font-weight:var(--fw-bold);color:var(--strong);text-wrap:balance}
-/* The glow under the claim reads as light on the dark theme and as a smudge
-   behind black type on the light one, so it is dark-only. */
-:root[data-theme="dark"] .hero h1{
-  filter:drop-shadow(0 18px 34px color-mix(in srgb,var(--accent) 14%,transparent))}
-/* The claim's second line is lit in the first-path colour: it is the part
-   the measurement proves. background-clip keeps it one run of type. */
-.hero h1 .lit{color:var(--accent);
-  background:linear-gradient(112deg,var(--accent-ink) 0%,var(--accent) 46%,
-    var(--accent-hover) 82%,var(--strong) 100%);
-  background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.hero .lede{margin:0 0 var(--sp-8);max-width:38rem;
-  font-size:clamp(1.05rem,1.35vw,1.25rem);line-height:var(--lh-normal);
+.sec-h .lede{margin:var(--sp-5) 0 0;max-width:40rem;
+  font-size:clamp(1.04rem,1.7vw,1.2rem);line-height:1.55;color:var(--muted);
   text-wrap:pretty}
-.hero .cta{justify-content:center;gap:var(--sp-3)}
-.landing-page .cta .btn{border-radius:var(--r-pill);padding-inline:var(--sp-6)}
+.sec-h.center .lede{margin-inline:auto;text-wrap:balance}
 
-/* -------------------------------------------------------------- scope ----- */
-/* The instrument. A glass panel set into the page rather than a picture
-   placed on it. */
-.scope-band{position:relative;z-index:2;padding:0 var(--sp-6)}
-.scope-in{max-width:var(--page-max);margin:0 auto;overflow:hidden;
-  padding:clamp(1rem,3vw,2rem);border-radius:calc(var(--r-xl) + var(--sp-1))}
-/* --muted, not --faint, for every label in this band. The band's surface is
-   --scope, and --faint measures 4.22:1 there on the light theme against the
-   4.5 small text needs; --muted is 5.53:1. The SVG labels below already
-   carried this fix -- these are the HTML ones beside them. */
-.scope-head{display:flex;align-items:center;gap:var(--sp-3);
-  margin-bottom:var(--sp-4);
-  font-family:var(--font-mono);font-size:var(--fs-100);
-  text-transform:uppercase;letter-spacing:var(--tr-caps);color:var(--muted)}
+/* An arrowed link: the arrow leans toward where it goes. */
+.link-arrow{display:inline-flex;align-items:center;gap:.4em;
+  font-weight:var(--fw-medium);color:var(--accent-ink);text-decoration:none}
+.link-arrow:hover{color:var(--accent-hover)}
+.hero .link-arrow:hover{color:var(--strong)}
+.link-arrow .arr{width:1em;height:1em;flex:none;fill:none;stroke:currentColor;
+  stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;
+  transition:transform var(--dur-3) var(--ease-spring)}
+.link-arrow:hover .arr,a:hover > .link-arrow .arr{transform:translateX(3px)}
+
+/* -------------------------------------------------------------- scope ---- */
+/* The instrument, set into a panel. Wider than any column of text on the
+   page, because it is drawn to scale and the scale is the point. */
+.scope-in{position:relative;max-width:64rem;margin:0 auto;
+  padding:clamp(1.1rem,3vw,2.2rem);
+  border:var(--border-hair);border-radius:var(--r-xl);background:var(--panel)}
+.scope-head{display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-4);
+  font-size:var(--fs-200);font-weight:var(--fw-medium);color:var(--muted)}
 .scope-head .sp{flex:1}
-.scope-live{display:inline-flex;align-items:center;gap:var(--sp-2);color:var(--accent-ink);
-  letter-spacing:var(--tr-caps)}
-.scope-live i{width:.42rem;height:.42rem;border-radius:var(--r-pill);background:var(--accent);
-  box-shadow:var(--accent-glow);animation:scope-live 2.2s ease-in-out infinite}
-@keyframes scope-live{50%{opacity:.28}}
+.scope-live{display:inline-flex;align-items:center;gap:var(--sp-2);
+  padding:.12rem .55rem;border-radius:var(--r-pill);
+  background:var(--accent-tint);color:var(--accent-ink)}
+.scope-live i{width:6px;height:6px;border-radius:50%;background:var(--accent);
+  animation:uwl-live 2.2s ease-in-out infinite}
+@keyframes uwl-live{50%{opacity:.25}}
 
-/* The instrument is 3.6:1 and full of 10px type. Squeezed into a phone it
-   becomes an illegible smudge, so below its natural width it keeps a minimum
-   size and the frame scrolls instead. The page itself never scrolls
-   sideways -- only this one element does, inside its own box. */
+/* The instrument is 3.6:1 and full of small type. Squeezed into a phone it
+   becomes illegible, so below its natural width it keeps a minimum size and
+   the frame scrolls instead -- only this element, inside its own box. */
 .scope-frame{overflow-x:auto;overflow-y:hidden;
   scrollbar-width:thin;scrollbar-color:var(--line) transparent;
-  overscroll-behavior-x:contain;
-  padding:var(--sp-3);border:var(--border-hair);border-radius:var(--r-lg);
-  background:color-mix(in srgb,var(--scope) 88%,transparent)}
+  overscroll-behavior-x:contain;margin:0 calc(-1 * var(--sp-2));padding:var(--sp-2)}
 #hero-scope{display:block;width:100%;height:auto;min-width:38rem;
   touch-action:pan-y;cursor:grab;overflow:visible}
 #hero-scope.dragging{cursor:grabbing}
-
-/* Diagram type is in viewBox units, so scaling it up here is what keeps it
-   readable once the frame has shrunk the whole drawing. */
 @media (max-width:56rem){
   .hs-num,.hs-cap,.hs-lane-cap,.hs-bound text,.hs-relay text{font-size:15px}
   .hs-dim-cap{font-size:18px}
 }
+/* A phone: a narrower minimum so the lock and two metres fit the frame at
+   once, type scaled up to match, and the bound's label set to the left of
+   its line so it is whole at rest. */
+@media (max-width:30rem){
+  #hero-scope{min-width:32rem}
+  .hs-num,.hs-cap,.hs-lane-cap,.hs-relay text{font-size:18px}
+  .hs-bound text{font-size:17px;text-anchor:end;transform:translateX(-16px)}
+  .hs-dim-cap{font-size:21px}
+}
+/* While there is more instrument past the right edge, the edge fades, so the
+   frame says it scrolls. hero.js keeps the class honest. */
+.scope-frame.more{-webkit-mask-image:linear-gradient(to right,#000 84%,transparent);
+  mask-image:linear-gradient(to right,#000 84%,transparent)}
 
 /* Trace colour follows the verdict. One attribute on the root drives every
    mark, so the scope can never be half amber and half mint. */
@@ -150,48 +237,30 @@
 #hero-scope[data-state="hold"]{--trace:var(--muted);--trace-line:var(--line-strong)}
 #hero-scope[data-state="relay"]{--trace:var(--path-late);--trace-line:var(--path-late-line)}
 
-.hs-grid line{stroke:var(--scope-grid);stroke-width:1}
 .hs-rule{stroke:var(--scope-axis);stroke-width:1}
 .hs-tick{stroke:var(--line-strong);stroke-width:1}
-/* --muted, not --faint. These name the things in the diagram, so they are
-   labels rather than decoration -- and --faint on the light theme's scope
-   surface measures 4.22:1, which is under the 4.5 small text needs. --muted
-   is 5.53:1 there. */
-.hs-cap{fill:var(--muted);font-family:var(--font-mono);font-size:11px;
-  letter-spacing:.06em;text-transform:uppercase}
+.hs-cap{fill:var(--muted);font-family:var(--font-mono);font-size:11px;letter-spacing:.04em}
 .hs-num{fill:var(--muted);font-family:var(--font-mono);font-size:11px;
   font-variant-numeric:tabular-nums}
-
-/* The unlock bound. Not a gridline: it is the decision, so it is drawn like
-   one and labelled with the constant it comes from. */
 .hs-bound line{stroke:var(--path-first-line);stroke-width:1;stroke-dasharray:3 3}
-.hs-bound text{fill:var(--path-first-ink);font-family:var(--font-mono);
-  font-size:11px;letter-spacing:.06em}
-
-.hs-lock rect{fill:var(--path-first);rx:2}
-.hs-lock .body{fill:var(--raise);stroke:var(--line-strong);stroke-width:1}
+.hs-bound text{fill:var(--path-first-ink);font-family:var(--font-mono);font-size:11px}
+.hs-lock rect{fill:var(--path-first)}
+.hs-lock .body{fill:var(--card);stroke:var(--line-strong);stroke-width:1}
 .hs-phone .body{fill:var(--card);stroke:var(--line-strong);stroke-width:1.5}
-.hs-phone .screen{fill:var(--trace);opacity:.75}
+.hs-phone .screen{fill:var(--trace);opacity:.8}
 .hs-rail{stroke:var(--trace-line);stroke-width:1;stroke-dasharray:2 4}
-
 .hs-dim{stroke:var(--trace);stroke-width:1.5}
 .hs-dim-cap{fill:var(--strong);font-family:var(--font-mono);font-size:13px;
   font-variant-numeric:tabular-nums}
-
-.hs-relay circle{fill:var(--path-late-tint);stroke:var(--path-late);
-  stroke-width:1.5}
+.hs-relay circle{fill:var(--path-late-tint);stroke:var(--path-late);stroke-width:1.5}
 .hs-relay text{fill:var(--path-late);font-family:var(--font-mono);font-size:10px;
   letter-spacing:.06em;text-transform:uppercase}
-
 .hs-lane-line{stroke:var(--scope-axis);stroke-width:1;stroke-dasharray:1 5}
-.hs-lane-cap{fill:var(--muted);font-family:var(--font-mono);font-size:10px;
-  letter-spacing:.08em;text-transform:uppercase}
+.hs-lane-cap{fill:var(--muted);font-family:var(--font-mono);font-size:10px;letter-spacing:.04em}
 .hs-pulse{fill:var(--trace)}
 
 /* Pulses travel the real gap: --travel is set from the phone's position, so
-   the animation is the geometry rather than a loop that happens nearby.
-   Transform-only, so this runs on the compositor and the page does no
-   per-frame JavaScript at all. */
+   the animation is the geometry rather than a loop that happens nearby. */
 #hs-lanes{--travel:300px}
 .hs-p1,.hs-p2,.hs-p3{animation-duration:3.45s;animation-iteration-count:infinite;
   animation-timing-function:linear}
@@ -211,500 +280,367 @@
   68%{opacity:1} 90%{opacity:1}
   92%,100%{transform:translateX(var(--travel));opacity:0}}
 
-/* Reduced motion keeps the instrument and drops the traffic: the three
-   pulses park mid-flight so the diagram still shows what travels where. */
-@media (prefers-reduced-motion:reduce){
-  .hs-p1,.hs-p2,.hs-p3{animation:none;opacity:1;
-    transform:translateX(calc(var(--travel) * .5))}
-}
-
-/* The first-paint sequence is deliberately placed before the grant block.
-   `.booted .scope-verdict` and `.granted .scope-verdict` tie on specificity,
-   so whichever comes last wins the animation property. `.booted` is on <html>
-   for the life of the page; if it came second the stamp would never play. */
-/* ----------------------------------------------------- the first paint --- */
-/* One orchestrated beat, and then silence.
- *
- * The page's whole claim is that it measures, so its arrival is a measurement
- * being taken: the copy lands, the ruler sweeps out from the lock, the metre
- * marks stamp in behind it, the decision line drops, the span is dimensioned,
- * one DS-TWR round leaves, and the readouts settle. After that the hero is
- * exactly the instrument it was before, and nothing here ever runs again.
- *
- * It is animation-delay under one .booted class and nothing else. No
- * observer, no timers, no per-frame JavaScript. .booted is set inline in
- * <head> beside the js flag, before the stylesheet, so no element is ever
- * painted visible and then hidden -- and with scripting off the class never
- * arrives, every rule below is inert, and the static SVG is what it already
- * was: a complete, labelled round.
- *
- * The whole sequence lives inside no-preference rather than being overridden
- * under reduce. The global cap in reset.css shortens durations but does not
- * touch animation-delay, and a delay that survives its own duration is a
- * jump. Under prefers-reduced-motion this sequence simply does not exist.
- *
- * Two constraints the SVG imposes. hero.js positions #hs-phone, #hs-rail and
- * #hs-dim-tick with a transform *attribute*, and a CSS transform beats a
- * presentation attribute, so those three may only fade -- animating transform
- * on them would drag the phone to the origin for the length of the boot.
- * #hs-dim spans its distance with x2 instead, so it is free to scale.
- */
-@media (prefers-reduced-motion:no-preference){
-
-  /* The beat, in one place. Everything below is an offset from these. */
-  .booted .hero{
-    --boot-copy:0ms;       /* the headline lands                          */
-    --boot-scope:440ms;    /* the ruler leaves the lock                   */
-    --boot-tick:620ms;     /* first metre mark, then one every 40ms       */
-    --boot-mark:900ms;     /* the unlock bound drops                      */
-    --boot-strip:1000ms;   /* the stats under the band                    */
-    --boot-read:1080ms;    /* controls, then the readouts settle          */
-    --boot-round:1180ms;   /* one DS-TWR round leaves the lock            */
-  }
-
-  @keyframes uwl-boot-rise{
-    from{opacity:0;transform:translateY(var(--reveal-y))} to{opacity:1;transform:none}}
-  @keyframes uwl-boot-fade{from{opacity:0} to{opacity:1}}
-  @keyframes uwl-boot-sweep{from{transform:scaleX(0)} to{transform:scaleX(1)}}
-  @keyframes uwl-boot-stamp{
-    from{opacity:0;transform:scaleY(0)} to{opacity:1;transform:scaleY(1)}}
-
-  /* ---- the copy. One rise distance and one stagger, the same two the rest
-     of the site reveals with, so the hero does not arrive with its own idea
-     of how far up is. This is the first thing to read --reveal-step. ---- */
-  .booted .hero .eyebrow,.booted .hero h1,
-  .booted .hero .lede,.booted .hero .cta{
-    animation:uwl-boot-rise var(--dur-4) var(--ease-out) both}
-  .booted .hero .eyebrow{animation-delay:var(--boot-copy)}
-  .booted .hero h1{animation-delay:calc(var(--boot-copy) + var(--reveal-step))}
-  .booted .hero .lede{animation-delay:calc(var(--boot-copy) + var(--reveal-step) * 2)}
-  .booted .hero .cta{animation-delay:calc(var(--boot-copy) + var(--reveal-step) * 3)}
-
-  /* ---- the band's own chrome, just ahead of the drawing ---- */
-  .booted .scope-head,.booted .scope-foot{
-    animation:uwl-boot-fade var(--dur-3) var(--ease-out) both;
-    animation-delay:calc(var(--boot-scope) - 60ms)}
-
-  /* ---- the ruler. It leaves the lock because the lock is the origin of the
-     scale; scaling from anywhere else would draw a ruler that does not agree
-     with the numbers under it. --ease-emphatic puts the front of the line
-     most of the way out early, so the marks stamp in behind it. ---- */
-  .booted .hs-rule-g .hs-rule{
-    transform-box:view-box;transform-origin:96px 46px;
-    animation:uwl-boot-sweep var(--dur-4) var(--ease-emphatic) both;
-    animation-delay:var(--boot-scope)}
-
-  .booted .hs-tick line{
-    transform-box:view-box;transform-origin:0 46px;
-    animation:uwl-boot-stamp var(--dur-2) var(--ease-out) both}
-  .booted .hs-tick line:nth-child(1){animation-delay:var(--boot-tick)}
-  .booted .hs-tick line:nth-child(2){animation-delay:calc(var(--boot-tick) + 40ms)}
-  .booted .hs-tick line:nth-child(3){animation-delay:calc(var(--boot-tick) + 80ms)}
-  .booted .hs-tick line:nth-child(4){animation-delay:calc(var(--boot-tick) + 120ms)}
-  .booted .hs-tick line:nth-child(5){animation-delay:calc(var(--boot-tick) + 160ms)}
-  .booted .hs-tick line:nth-child(6){animation-delay:calc(var(--boot-tick) + 200ms)}
-  .booted .hs-tick line:nth-child(7){animation-delay:calc(var(--boot-tick) + 240ms)}
-
-  /* A numeral follows its own mark by 80ms: the mark is made, then it is
-     named. Numerals sit on the whole-metre ticks, which are 1, 3, 5 and 7. */
-  .booted .hs-rule-g .hs-num{
-    animation:uwl-boot-fade var(--dur-2) var(--ease-out) both}
-  .booted .hs-num:nth-of-type(1){animation-delay:calc(var(--boot-tick) + 80ms)}
-  .booted .hs-num:nth-of-type(2){animation-delay:calc(var(--boot-tick) + 160ms)}
-  .booted .hs-num:nth-of-type(3){animation-delay:calc(var(--boot-tick) + 240ms)}
-  .booted .hs-num:nth-of-type(4){animation-delay:calc(var(--boot-tick) + 320ms)}
-
-  /* ---- the two devices. The lock is the origin, so it is there when the
-     ruler leaves it; the phone appears as the sweep reaches it. ---- */
-  .booted .hs-lock{
-    animation:uwl-boot-fade var(--dur-3) var(--ease-out) both;
-    animation-delay:var(--boot-scope)}
-  .booted .hs-phone{                    /* opacity only: JS owns its transform */
-    animation:uwl-boot-fade var(--dur-3) var(--ease-out) both;
-    animation-delay:calc(var(--boot-scope) + 120ms)}
-
-  /* ---- the decision. Drops from the ruler it is measured against, then
-     names the constant it comes from. ---- */
-  .booted .hs-bound line{
-    transform-box:view-box;transform-origin:0 36px;
-    animation:uwl-boot-stamp var(--dur-3) var(--ease-out) both;
-    animation-delay:var(--boot-mark)}
-  .booted .hs-bound text{
-    animation:uwl-boot-fade var(--dur-2) var(--ease-out) both;
-    animation-delay:calc(var(--boot-mark) + 80ms)}
-
-  /* ---- what the lock believes it measured. The span sweeps from the lock
-     like the ruler did, because it is the same measurement stated twice. ---- */
-  .booted #hs-dim{
-    transform-box:view-box;transform-origin:96px 0;
-    animation:uwl-boot-sweep var(--dur-3) var(--ease-emphatic) both;
-    animation-delay:calc(var(--boot-mark) + 100ms)}
-  .booted #hero-scope > line.hs-dim:not([id]),   /* the zero mark at the lock */
-  .booted #hs-dim-tick,.booted .hs-dim-cap{      /* JS owns #hs-dim-tick      */
-    animation:uwl-boot-fade var(--dur-3) var(--ease-out) both;
-    animation-delay:calc(var(--boot-mark) + 100ms)}
-
-  /* ---- the protocol half, then the round itself ---- */
-  .booted #hero-scope > line.hs-rule,.booted #hs-lanes{
-    animation:uwl-boot-fade var(--dur-3) var(--ease-out) both;
-    animation-delay:calc(var(--boot-mark) + 140ms)}
-
-  /* The three lane pulses already loop as the live measurement. All that is
-     added here is one shared delay, which phases their first cycle to arrive
-     as the round this sequence has been building toward instead of being
-     halfway out of the lock while the ruler is still drawing. */
-  .booted .hs-p1,.booted .hs-p2,.booted .hs-p3{animation-delay:var(--boot-round)}
-
-  /* ---- the readouts settle. --ease-spring on the verdict is what the token
-     was declared for: something arriving and coming to rest. ---- */
-  .booted .scope-ctl label,.booted .scope-ctl input[type=range],
-  .booted #hs-relay-btn{
-    animation:uwl-boot-fade var(--dur-3) var(--ease-out) both;
-    animation-delay:var(--boot-read)}
-  .booted .scope-read .r{
-    animation:uwl-boot-rise var(--dur-3) var(--ease-out) both}
-  .booted .scope-read .r:nth-child(1){animation-delay:calc(var(--boot-read) + 40ms)}
-  .booted .scope-read .r:nth-child(2){animation-delay:calc(var(--boot-read) + 80ms)}
-  .booted .scope-read .r:nth-child(3){animation-delay:calc(var(--boot-read) + 120ms)}
-  .booted .scope-verdict{
-    animation:uwl-boot-rise var(--dur-3) var(--ease-spring) both;
-    animation-delay:calc(var(--boot-read) + 200ms)}
-
-  /* ---- and the three figures under the band ---- */
-  .booted .strip .stat-b{
-    animation:uwl-boot-rise var(--dur-4) var(--ease-out) both}
-  .booted .strip .stat-b:nth-child(1){animation-delay:var(--boot-strip)}
-  .booted .strip .stat-b:nth-child(2){
-    animation-delay:calc(var(--boot-strip) + var(--reveal-step))}
-  .booted .strip .stat-b:nth-child(3){
-    animation-delay:calc(var(--boot-strip) + var(--reveal-step) * 2)}
-}
-
-/* ------------------------------------------------------------- the grant -- */
-/* Crossing inside the bound is the one event on this page worth marking, so
-   it is the only thing here that animates on demand. `.granted` is added to
-   .scope-in by hero.js at the crossing and removed at every other state, which
-   is all the JavaScript involved: the three effects below are CSS, on
-   transform and opacity only, so the crossing costs no per-frame work.
-   Nothing loops. "hold" and "relay" get none of it -- being refused is not an
-   occasion. */
-
-/* One ring, off the lock body. It starts at r=12.5 (scale .33 of 38), the
-   body's own half-width, so it leaves the lock rather than appearing around
-   it, and it stops at 38 -- clear of the ruler above and the dimension line
-   below, so it never crosses a mark that means something. non-scaling-stroke
-   keeps it a 1px hairline the whole way out instead of thickening as it
-   grows. */
+/* The grant: crossing inside the bound is the one event here worth marking.
+   hero.js puts .granted on .scope-in at the crossing; the ring, the verdict
+   stamp and the dimension flash are all transform and opacity. */
 .hs-ring{fill:none;stroke:var(--path-first-line);stroke-width:1;opacity:0;
   pointer-events:none;transform-box:view-box;transform-origin:96px 86px}
 .granted .hs-ring{animation:hs-ring var(--dur-5) var(--ease-decel)}
-@keyframes hs-ring{
-  0%{transform:scale(.33);opacity:.85}
-  70%{opacity:.3}
+@keyframes hs-ring{0%{transform:scale(.33);opacity:.85}70%{opacity:.3}
   100%{transform:scale(1);opacity:0}}
-
-/* The verdict arrives and settles. --ease-spring overshoots, so 1.06 -> 1
-   lands slightly under and comes back: a stamp, not a bounce. */
 .granted .scope-verdict{animation:hs-stamp var(--dur-3) var(--ease-spring)}
 @keyframes hs-stamp{from{transform:scale(1.06)}to{transform:scale(1)}}
-
-/* The dimension line ignites. In "grant" the whole dimension is already
-   --path-first, so bringing it up from a quarter opacity flashes it in the
-   first-path colour without a second colour or a paint-property animation.
-
-   #hs-dim is named twice on purpose. The span line carries both the class and
-   the id, and the boot sequence claims it by id (.booted #hs-dim) to scale it
-   from the lock, which outranks any selector that only names the class -- so
-   without the id here the one line the flash is most about would be the only
-   one that never flashed. Naming it ties the specificity at (1,1,0) and this
-   block, being the later one, wins whenever .granted is on. */
 .granted #hs-dim,.granted .hs-dim,.granted .hs-dim-cap{
   animation:hs-dim-flash var(--dur-5) var(--ease-decel)}
 @keyframes hs-dim-flash{0%{opacity:.25} 22%,100%{opacity:1}}
 
-/* Reduced motion keeps the verdict and drops the celebration: the trace, the
-   dimension and the pill still change colour, and nothing moves. */
+/* Reduced motion keeps the instrument and drops the traffic: the pulses
+   park mid-flight so the diagram still shows what travels where. */
 @media (prefers-reduced-motion:reduce){
+  .hs-p1,.hs-p2,.hs-p3{animation:none;opacity:1;
+    transform:translateX(calc(var(--travel) * .5))}
   .granted .hs-ring{display:none}
-  /* #hs-dim again, for the same reason and one more: the rule above now wins
-     at (1,1,0), so cancelling it needs to match that, or asking for less
-     motion would have switched the flash on. */
-  .granted .scope-verdict,
-  .granted #hs-dim,.granted .hs-dim,.granted .hs-dim-cap{animation:none}
+  .granted .scope-verdict,.granted #hs-dim,.granted .hs-dim,.granted .hs-dim-cap{animation:none}
 }
 
-/* ------------------------------------------------------- scope controls -- */
+/* controls */
 .scope-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-4);
-  margin-top:var(--sp-4);padding-top:var(--sp-4);
-  border-top:var(--border-hair)}
-.scope-ctl label{font-family:var(--font-mono);font-size:var(--fs-100);
-  text-transform:uppercase;letter-spacing:var(--tr-caps);color:var(--muted)}
-.scope-ctl input[type=range]{flex:1 1 12rem;min-width:9rem;accent-color:var(--accent)}
+  margin-top:var(--sp-4);padding-top:var(--sp-5);border-top:var(--border-hair)}
+.scope-ctl label{font-size:var(--fs-300);font-weight:var(--fw-medium);color:var(--muted)}
 .btn-warn{border-color:var(--path-late-line);color:var(--path-late);
   background:var(--path-late-tint)}
-.btn-warn:hover{border-color:var(--path-late);background:var(--path-late-tint)}
+.btn-warn:hover{border-color:var(--path-late);color:var(--path-late);
+  background:var(--path-late-tint)}
 
-.scope-read{display:flex;flex-wrap:wrap;gap:var(--sp-6);align-items:baseline;
-  margin-left:auto;font-family:var(--font-mono);
-  font-variant-numeric:tabular-nums}
-.scope-read .r{display:flex;flex-direction:column;gap:2px}
-.scope-read .k{font-size:var(--fs-100);text-transform:uppercase;
-  letter-spacing:var(--tr-caps);color:var(--muted)}
-.scope-read .v{font-size:var(--fs-700);color:var(--strong);line-height:1}
+/* The slider, drawn rather than left to the platform: a capsule track with
+   the travelled part in the trace colour and a raised white thumb. */
+.scope-ctl input[type=range]{flex:1 1 12rem;min-width:9rem;height:1.6rem;margin:0;
+  background:transparent;-webkit-appearance:none;appearance:none;cursor:pointer}
+.scope-ctl input[type=range]::-webkit-slider-runnable-track{height:4px;
+  border-radius:var(--r-pill);background:var(--line-strong)}
+.scope-ctl input[type=range]::-moz-range-track{height:4px;
+  border-radius:var(--r-pill);background:var(--line-strong)}
+.scope-ctl input[type=range]::-moz-range-progress{height:4px;
+  border-radius:var(--r-pill);background:var(--trace,var(--accent))}
+.scope-ctl input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;
+  width:1.25rem;height:1.25rem;margin-top:calc(2px - .625rem);border-radius:50%;
+  background:#fff;border:var(--border);box-shadow:0 2px 8px rgba(0,0,0,.22)}
+.scope-ctl input[type=range]::-moz-range-thumb{width:1.25rem;height:1.25rem;
+  border-radius:50%;background:#fff;border:var(--border);
+  box-shadow:0 2px 8px rgba(0,0,0,.22)}
+
+.scope-read{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:stretch;
+  margin-left:auto;font-variant-numeric:tabular-nums}
+.scope-read .r{display:flex;flex-direction:column;gap:2px;min-width:6.5rem;
+  padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);
+  background:var(--card);border:var(--border-hair)}
+.scope-read .k{font-size:var(--fs-100);font-weight:var(--fw-medium);color:var(--muted);
+  white-space:nowrap}
+.scope-read .v{font-family:var(--font-mono);font-size:var(--fs-700);color:var(--strong);line-height:1.1}
 .scope-read .v small{font-size:var(--fs-200);color:var(--muted);margin-left:.2em}
-/* The verdict pill is the one consumer of --trace outside the SVG, and the
-   variables are declared on #hero-scope, which is its sibling rather than its
-   ancestor -- so the pill was falling back to no border and inherited text.
-   The scope's data-state stays the single driver; :has() just carries it out
-   to the enclosing block. Where :has() is unsupported the pill lands on the
-   same neutral it already had. */
-.scope-in:has(#hero-scope[data-state]){
-  --trace:var(--path-first);--trace-line:var(--path-first-line)}
-.scope-in:has(#hero-scope[data-state="hold"]){
-  --trace:var(--muted);--trace-line:var(--line-strong)}
-.scope-in:has(#hero-scope[data-state="relay"]){
-  --trace:var(--path-late);--trace-line:var(--path-late-line)}
-
-.scope-verdict{display:inline-flex;align-items:center;gap:var(--sp-2);
-  padding:var(--sp-2) var(--sp-4);border-radius:var(--r-pill);
-  border:var(--bw-1) solid var(--trace-line);background:var(--card);
-  color:var(--trace);font-family:var(--font-mono);font-size:var(--fs-300);
-  text-transform:uppercase;letter-spacing:var(--tr-caps);white-space:nowrap}
-.scope-verdict::before{content:"";width:.45rem;height:.45rem;flex:none;
-  border-radius:var(--r-pill);background:currentColor}
-.scope-note{margin:var(--sp-3) 0 0;font-size:var(--fs-200);
-  color:var(--path-late);font-family:var(--font-mono)}
-.scope-foot{margin:var(--sp-3) 0 0;font-size:var(--fs-200);color:var(--muted)}
-
-@media (max-width:56rem){
-  .scope-read{margin-left:0;width:100%;gap:var(--sp-5)}
-  .scope-read .v{font-size:var(--fs-600)}
-}
-
-.landing-page .scope-ctl{border-top-color:var(--hairline)}
-.landing-page .scope-read{gap:var(--sp-2)}
-.landing-page .scope-read .r{min-width:7rem;padding:var(--sp-2) var(--sp-3);
-  border:var(--border-hair);border-radius:var(--r-md);background:var(--scope)}
-.landing-page .scope-verdict{min-height:3.7rem;padding-inline:var(--sp-5);
-  background:var(--scope)}
+/* The verdict pill is outside the SVG that declares --trace, so :has()
+   carries the scope's state out to the enclosing panel. */
+.scope-in:has(#hero-scope[data-state]){--trace:var(--path-first);--trace-line:var(--path-first-line)}
+.scope-in:has(#hero-scope[data-state="hold"]){--trace:var(--muted);--trace-line:var(--line-strong)}
+.scope-in:has(#hero-scope[data-state="relay"]){--trace:var(--path-late);--trace-line:var(--path-late-line)}
+.scope-verdict{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);
+  min-height:3.4rem;padding:0 var(--sp-5);border-radius:var(--r-pill);
+  border:var(--bw-1) solid var(--trace-line);
+  background:color-mix(in srgb,var(--trace) 10%,var(--card));
+  color:var(--trace);font-size:var(--fs-300);font-weight:var(--fw-semibold);white-space:nowrap}
+.scope-verdict::before{content:"";width:.5rem;height:.5rem;flex:none;
+  border-radius:50%;background:currentColor}
+/* --path-first on white is a mark colour, not a text colour: the verdict
+   text takes the ink step so it reads at 4.5:1. */
+.scope-in:has(#hero-scope[data-state="grant"]) .scope-verdict{color:var(--path-first-ink)}
+.scope-note{margin:var(--sp-3) 0 0;font-size:var(--fs-300);font-weight:var(--fw-medium);
+  color:var(--path-late)}
+.scope-foot{max-width:40rem;margin:var(--sp-6) auto 0;text-align:center;
+  font-size:var(--fs-300);color:var(--muted);line-height:var(--lh-normal)}
 .scope-foot a{white-space:nowrap}
 
-/* --------------------------------------------------------- stats strip --- */
-.strip{position:relative;z-index:2;max-width:var(--page-max);margin:0 auto;
-  padding:var(--sp-5) var(--sp-8) 0;
-  display:flex;flex-wrap:wrap;justify-content:center;gap:var(--sp-3)}
-.strip .stat-b{min-width:12rem;padding:var(--sp-3) var(--sp-5);
-  border:var(--border-hair);border-radius:var(--r-pill);
-  background:var(--glass-fill-strong);box-shadow:var(--shadow-inset);
-  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
-.strip .stat-b b{display:block;color:var(--strong);font-size:var(--fs-700)}
-.strip .stat-b span{color:var(--muted);font-size:var(--fs-300)}
+@media (max-width:56rem){
+  .scope-read{margin-left:0;width:100%}
+  .scope-read .r{flex:1 1 calc(33% - var(--sp-2));min-width:0}
+  .scope-read .v{font-size:var(--fs-600)}
+  .scope-verdict{width:100%}
+}
 
-/* ------------------------------------------------------------ sections --- */
-/* Open sections on the field, a hairline between them, and a faint wash of
-   the first-path colour that alternates sides so the page has a rhythm
-   without any section needing a box of its own. */
-.sec{position:relative;overflow-x:clip;padding:clamp(4.5rem,9vw,7.5rem) 0}
-.sec + .sec{border-top:var(--border-hair)}
-.sec::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
-  background:radial-gradient(52% 60% at 12% 0%,var(--accent-tint),transparent 70%);
-  opacity:.55}
-.sec:nth-of-type(even)::before{
-  background:radial-gradient(52% 60% at 88% 0%,var(--accent-tint),transparent 70%)}
-.sec-in{position:relative;z-index:1;max-width:var(--page-max);margin:0 auto;
-  padding:0 var(--sp-8)}
-.sec-h{max-width:46rem;margin:0 0 clamp(2rem,4vw,3.2rem)}
-.sec-h .eyebrow{margin-bottom:var(--sp-4)}
-.sec-h h2{margin:0 0 var(--sp-4);font-size:clamp(2rem,4.2vw,3.4rem);
-  line-height:1.02;letter-spacing:-.035em;color:var(--strong);text-wrap:balance}
-.sec-h .lede{margin:0;text-wrap:pretty}
+/* ----------------------------------------------------------- features ---- */
+/* Editorial pairs: the claim on one side, the thing it is about on the other,
+   swapping sides down the page. */
+.feature{position:relative;padding:clamp(4.5rem,9vw,7rem) 0}
+.feature + .feature::before{content:"";position:absolute;top:0;left:50%;
+  width:min(calc(100% - 2 * var(--sp-8)),calc(var(--page-max) - 2 * var(--sp-8)));
+  height:var(--bw-hair);transform:translateX(-50%);
+  background:linear-gradient(to right,transparent,var(--line) 18%,var(--line) 82%,transparent)}
+.feature-in{max-width:var(--page-max);margin:0 auto;padding:0 var(--sp-8);
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.12fr);
+  gap:clamp(2.5rem,6vw,5.5rem);align-items:center}
+.feature.flip .feature-copy{order:2}
+.feature h2{font-size:clamp(2rem,4.2vw,3.1rem)}
+.feature-copy .lede{margin:var(--sp-5) 0 0;max-width:30rem;
+  font-size:clamp(1.02rem,1.6vw,1.2rem);line-height:1.6;color:var(--muted)}
+.feature-copy .links{display:flex;flex-wrap:wrap;gap:var(--sp-3) var(--sp-8);
+  margin-top:var(--sp-8)}
 
-/* ---------------------------------------------------------- get started -- */
-.start-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(21rem,1fr));
-  gap:var(--sp-5)}
-/* A code block on glass: the wrapper carries the border and the material,
-   so the caption and the pre give up their own. */
-.landing-page .prewrap.glass-panel{margin:0;padding:0;border-radius:var(--r-lg);
-  overflow:hidden}
-.landing-page .prewrap.glass-panel .cap{border:0;border-bottom:var(--border-hair);
-  border-radius:0;background:transparent;padding:var(--sp-3) var(--sp-5)}
-.landing-page .prewrap.glass-panel pre{border:0;border-radius:0;
-  background:transparent;box-shadow:none;padding:var(--sp-5)}
-.cap-r{margin-left:auto}
+.vis{position:relative;overflow:hidden;margin:0;
+  border:var(--border-hair);border-radius:var(--r-xl);background:var(--panel)}
 
-.next{list-style:none;margin:var(--sp-6) 0 0;padding:0;
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:var(--sp-3)}
-.next a{display:flex;flex-direction:column;gap:var(--sp-1);height:100%;
-  padding:var(--sp-4) var(--sp-5);border:var(--border-hair);border-radius:var(--r-lg);
-  background:var(--glass-fill);text-decoration:none;
-  transition:border-color var(--dur-2) var(--ease-out),
-    background var(--dur-2) var(--ease-out),transform var(--dur-2) var(--ease-out)}
-.next a b{color:var(--strong);font-weight:var(--fw-medium)}
-.next a b::after{content:"\2192";margin-left:.4em;color:var(--accent-ink);
-  display:inline-block;transition:transform var(--dur-2) var(--ease-out)}
-.next a span{color:var(--muted);font-size:var(--fs-300);line-height:var(--lh-normal)}
-.next a:hover{border-color:var(--accent-line);background:var(--accent-tint)}
-.next a:hover b::after{transform:translateX(3px)}
+/* verified on the lock: the whole conversation, and where it does not go */
+.vis-verify{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:var(--sp-5);min-height:23rem;padding:clamp(1.6rem,4vw,2.8rem)}
+.vv-cloud{display:flex;flex-direction:column;align-items:center;gap:var(--sp-1);
+  color:var(--faint);font-size:var(--fs-200);font-weight:var(--fw-medium)}
+.vv-cloud svg{width:3.2rem;height:2.2rem;fill:none;stroke:currentColor;stroke-width:1.5;
+  stroke-linecap:round;stroke-linejoin:round}
+.vv-cloud .slash{stroke:var(--muted);stroke-width:1.8}
+.vv-cloud::after{content:"";width:1px;height:1.5rem;margin-top:var(--sp-1);
+  background:repeating-linear-gradient(to bottom,var(--line-strong) 0 3px,transparent 3px 7px)}
+.vv-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
+  gap:var(--sp-3);width:100%;max-width:30rem}
+.vv-node{display:flex;flex-direction:column;align-items:center;text-align:center;
+  min-width:6rem}
+.vv-ico{display:grid;place-items:center;width:4.4rem;height:4.4rem;
+  margin-bottom:var(--sp-3);border-radius:1.25rem;
+  background:var(--card);border:var(--border-hair);box-shadow:var(--shadow-2);
+  color:var(--strong)}
+.vv-ico svg{width:1.75rem;height:1.75rem;fill:none;stroke:currentColor;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.vv-lock .vv-ico{color:var(--accent);border-color:var(--accent-line);
+  box-shadow:0 18px 44px -18px var(--accent),var(--shadow-1)}
+.vv-node b{font-size:var(--fs-400);font-weight:var(--fw-semibold);color:var(--strong)}
+.vv-node span{font-size:var(--fs-200);color:var(--faint)}
+.vv-link{position:relative;align-self:start;height:2px;margin-top:2.2rem;
+  border-radius:var(--r-pill);
+  background:linear-gradient(90deg,var(--line-strong),var(--accent-line))}
+.vv-link span{position:absolute;top:var(--sp-3);left:50%;transform:translateX(-50%);
+  white-space:nowrap;font-family:var(--font-mono);font-size:.7rem;color:var(--muted)}
+.vv-packet{position:absolute;top:50%;left:0;width:.5rem;height:.5rem;margin-top:-.25rem;
+  border-radius:50%;background:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-tint),0 0 14px var(--accent);
+  animation:uwl-packet 2.6s var(--ease-in-out) infinite}
+.vv-packet:nth-child(2){animation-delay:1.3s}
+@keyframes uwl-packet{0%{left:0;opacity:0}12%,88%{opacity:1}100%{left:calc(100% - .5rem);opacity:0}}
+.vv-verdict{display:inline-flex;align-items:center;gap:var(--sp-2);
+  margin-top:var(--sp-2);padding:.45rem 1rem;border-radius:var(--r-pill);
+  border:var(--bw-1) solid var(--accent-line);background:var(--accent-tint);
+  color:var(--accent-ink);font-size:var(--fs-300);font-weight:var(--fw-semibold)}
+.vv-verdict svg{width:1rem;height:1rem;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
 
-/* ------------------------------------------------------------- pillars --- */
-.pillars{list-style:none;margin:0;padding:0;
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr));gap:var(--sp-4)}
-.pillars li{padding:var(--sp-6);border-radius:var(--r-xl);
-  transition:border-color var(--dur-3) var(--ease-out),transform var(--dur-3) var(--ease-out)}
-.pillars li:hover{border-color:var(--accent-line);transform:translateY(-3px)}
-.p-ico{display:grid;place-items:center;width:2.6rem;height:2.6rem;
-  margin-bottom:var(--sp-5);border:var(--border-accent);border-radius:var(--r-md);
-  background:var(--accent-tint);color:var(--accent-ink);
-  box-shadow:0 0 22px -10px var(--accent)}
-.p-ico svg{width:1.4rem;height:1.4rem;display:block}
-.pillars b{display:block;margin-bottom:var(--sp-2);color:var(--strong);
-  font-size:var(--fs-600);letter-spacing:var(--tr-heading);text-wrap:balance}
-.pillars p{margin:0;color:var(--muted);line-height:var(--lh-normal)}
-.pillars em{color:var(--ink);font-style:normal;font-weight:var(--fw-medium)}
-
-/* ---------------------------------------------------------------- flow --- */
-/* The unlock sequence as one line with five stations on it. The line is the
-   content: these are protocol steps in the order they happen. One pulse runs
-   the length of it, the same way a round runs the lanes in the hero. */
-.flow{list-style:none;margin:0 0 var(--sp-8);padding:0;position:relative;
-  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--sp-5)}
-.flow::before{content:"";position:absolute;left:0;right:0;top:1.1rem;height:1px;
-  background:linear-gradient(90deg,var(--accent-line),var(--line) 55%,transparent)}
-.flow::after{content:"";position:absolute;left:0;right:0;top:calc(1.1rem - 1px);
-  height:3px;border-radius:var(--r-pill);
-  background:linear-gradient(90deg,transparent 0 40%,var(--accent) 50%,transparent 60% 100%);
-  background-size:320% 100%;background-position:100% 0;
-  animation:flow-run 5.2s linear infinite}
-@keyframes flow-run{from{background-position:100% 0}to{background-position:0% 0}}
-.flow li{position:relative;padding-top:var(--sp-10)}
-.flow .n{position:absolute;top:0;left:0;display:inline-grid;place-items:center;
-  width:2.2rem;height:2.2rem;border:var(--border-accent);border-radius:var(--r-pill);
-  background:var(--ground);color:var(--accent-ink);
-  font-family:var(--font-mono);font-size:var(--fs-200);font-variant-numeric:tabular-nums;
-  box-shadow:0 0 0 6px var(--ground)}
-.flow b{display:block;margin-bottom:var(--sp-2);color:var(--strong);
-  font-size:var(--fs-600);letter-spacing:var(--tr-heading)}
-.flow li > span:not(.n){display:block;color:var(--muted);font-size:var(--fs-400);
-  line-height:var(--lh-normal);text-wrap:pretty}
-
-/* ------------------------------------------------------------- browser --- */
-.cardgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:var(--sp-4)}
-.cardgrid.duo{grid-template-columns:repeat(auto-fit,minmax(21rem,1fr))}
-.card b.card-t{display:block;color:var(--strong);font-size:var(--fs-700);
-  margin-bottom:var(--sp-2);letter-spacing:var(--tr-heading)}
-.landing-page .cardgrid .card{position:relative;overflow:hidden;padding:var(--sp-8);
-  border-radius:var(--r-xl);
-  background:var(--glass-fill-strong);border-top-color:var(--glass-spec);
-  box-shadow:var(--shadow-inset),var(--shadow-2);
-  transition:transform var(--dur-3) var(--ease-out),border-color var(--dur-3) var(--ease-out),
-    box-shadow var(--dur-3) var(--ease-out)}
-.landing-page .cardgrid .card:hover{transform:translateY(-4px);border-color:var(--accent-line);
-  box-shadow:var(--shadow-inset),var(--shadow-3)}
-.landing-page .card .range-viz{margin-top:var(--sp-6);min-height:9.5rem}
-.flash-demo{display:flex;flex-direction:column;justify-content:center;gap:var(--sp-3);
-  margin-top:var(--sp-6);min-height:9.5rem;padding:var(--sp-6);
-  border:var(--border);border-radius:var(--r-lg);background:var(--scope);
-  box-shadow:var(--shadow-inset)}
-
-/* ------------------------------------------------------------ hardware --- */
-.proof{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);
-  gap:var(--sp-6);align-items:stretch}
-.proof-fig{margin:0}
-.proof-fig img{display:block;width:100%;height:auto;
-  border:var(--border-hair);border-radius:var(--r-xl);box-shadow:var(--shadow-3)}
-/* One capture per theme. data-theme is always set on this page (the template
-   carries it, and the boot script overrides it from storage), so the light
-   image is simply whatever is not dark. */
+/* the captures */
+.vis-shot{padding:clamp(.7rem,1.6vw,1rem)}
+.vis-shot img{width:100%;height:auto;border-radius:calc(var(--r-xl) - .6rem)}
+.vis-shot figcaption{padding:var(--sp-4) var(--sp-3) var(--sp-2);
+  font-size:var(--fs-200);color:var(--faint);line-height:var(--lh-normal)}
+/* One capture per theme. The light one is the default; the dark one shows
+   when the reader chose dark, or chose nothing on a dark-preferring system. */
 .only-dark{display:none}
+.only-light{display:block}
 :root[data-theme="dark"] .only-dark{display:block}
 :root[data-theme="dark"] .only-light{display:none}
-.boards{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--sp-3);
-  height:100%}
-.boards li{padding:var(--sp-5) var(--sp-6);border-radius:var(--r-lg);
-  transition:border-color var(--dur-3) var(--ease-out)}
-.boards li:hover{border-color:var(--accent-line)}
-.boards b{display:block;color:var(--strong);font-size:var(--fs-600);
-  letter-spacing:var(--tr-heading)}
-.boards .chip{display:inline-block;margin:var(--sp-1) 0 var(--sp-3);
-  font-family:var(--font-mono);font-size:var(--fs-200);color:var(--accent-ink);
-  letter-spacing:.04em}
-.boards p{margin:0;color:var(--muted);font-size:var(--fs-400);line-height:var(--lh-normal)}
-/* The way to the rest of the numbers, as the last tile in the column so the
-   list stands as tall as the capture beside it. */
-.boards-more{margin-top:auto}
-.boards-more a{display:flex;flex-direction:column;gap:var(--sp-2);
-  padding:var(--sp-5) var(--sp-6);border:var(--border-hair);border-radius:var(--r-lg);
-  background:var(--accent-tint);text-decoration:none;
-  transition:border-color var(--dur-2) var(--ease-out),background var(--dur-2) var(--ease-out)}
-.boards-more a span{color:var(--muted);font-size:var(--fs-400);line-height:var(--lh-normal)}
-.boards-more a b{color:var(--accent-ink);font-weight:var(--fw-medium)}
-.boards-more a b::after{content:"\2192";margin-left:.4em;display:inline-block;
-  transition:transform var(--dur-2) var(--ease-out)}
-.boards-more a:hover{border-color:var(--accent-line)}
-.boards-more a:hover b::after{transform:translateX(3px)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .only-dark{display:block}
+  :root:not([data-theme="light"]) .only-light{display:none}
+}
 
-/* -------------------------------------------------------------- closer --- */
-.closer{padding-bottom:clamp(5rem,10vw,8rem)}
-.closer .sec-h{max-width:44rem;margin-inline:auto;text-align:center}
-.closer .sec-h .lede{margin-inline:auto}
-.closer .cta{justify-content:center}
-.closer .fine{margin:var(--sp-8) auto 0;max-width:40rem;text-align:center;
+/* the conversation, in the order it happens: the sequence is the content */
+.air{--pad:clamp(1.6rem,4vw,2.6rem);
+  list-style:none;padding:var(--pad);counter-reset:air}
+.air::before{content:"";position:absolute;left:calc(var(--pad) + 1.1rem);
+  top:calc(var(--pad) + 1.1rem);bottom:calc(var(--pad) + 1.1rem);width:1px;
+  background:var(--line)}
+/* One pulse runs the rail top to bottom, the way a round runs the lanes in
+   the instrument. A moving band of gradient, so it needs no rail height. */
+.air::after{content:"";position:absolute;left:calc(var(--pad) + 1.1rem - 1px);
+  top:calc(var(--pad) + 1.1rem);bottom:calc(var(--pad) + 1.1rem);width:3px;
+  border-radius:var(--r-pill);
+  background:linear-gradient(to bottom,transparent 0 42%,var(--accent) 50%,transparent 58% 100%);
+  background-size:100% 340%;animation:uwl-air 4.6s linear infinite}
+@keyframes uwl-air{from{background-position:0 100%}to{background-position:0 0}}
+.air li{position:relative;z-index:1;counter-increment:air;
+  display:grid;grid-template-columns:2.2rem minmax(0,1fr);column-gap:var(--sp-4);
+  padding-bottom:var(--sp-5)}
+.air li:last-child{padding-bottom:0}
+.air li::before{content:counter(air,decimal-leading-zero);grid-row:1 / span 2;
+  display:grid;place-items:center;width:2.2rem;height:2.2rem;border-radius:50%;
+  background:var(--card);border:var(--bw-1) solid var(--accent-line);
+  color:var(--accent-ink);font-family:var(--font-mono);font-size:.7rem;
+  font-variant-numeric:tabular-nums}
+.air b{align-self:center;font-size:var(--fs-500);font-weight:var(--fw-semibold);
+  color:var(--strong);line-height:2.2rem}
+.air span{grid-column:2;font-size:var(--fs-300);color:var(--muted);line-height:var(--lh-normal)}
+
+/* -------------------------------------------------------------- tiles ---- */
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-5)}
+.tile{position:relative;display:flex;flex-direction:column;overflow:hidden;
+  border:var(--border-hair);border-radius:var(--r-xl);background:var(--panel);
+  color:inherit;text-decoration:none;
+  transition:transform var(--dur-6) var(--ease-out-expo),
+    box-shadow var(--dur-6) var(--ease-out-expo),border-color var(--dur-3) var(--ease-out)}
+.tile:hover{color:inherit;transform:translateY(-4px);border-color:var(--line);
+  box-shadow:var(--shadow-3)}
+.tile-copy{padding:clamp(1.6rem,3.5vw,2.5rem) clamp(1.6rem,3.5vw,2.5rem) var(--sp-8)}
+.tile-copy b{display:block;margin:0 0 var(--sp-2);
+  font-size:clamp(1.55rem,2.6vw,2rem);font-weight:var(--fw-bold);letter-spacing:-.03em;
+  color:var(--strong)}
+.tile-copy p{margin:0 0 var(--sp-5);max-width:32rem;color:var(--muted);
+  line-height:var(--lh-normal)}
+/* A product shot that runs off the tile's edge, so the tile reads as a window
+   onto the tool rather than a picture of it. */
+.tile-shot{margin-top:auto;padding-left:clamp(1.6rem,3.5vw,2.5rem)}
+.tile-shot img{display:block;width:124%;max-width:none;height:auto;
+  border:var(--bw-1) solid var(--line);border-right:0;border-bottom:0;
+  border-radius:14px 0 0 0;box-shadow:var(--shadow-3);
+  transition:transform var(--dur-6) var(--ease-out-expo)}
+.tile:hover .tile-shot img{transform:translateY(-6px)}
+.tile-flash{display:flex;flex-direction:column;gap:var(--sp-3);flex:1;
+  min-height:17rem;margin:0 0 0 clamp(1.6rem,3.5vw,2.5rem);
+  padding:var(--sp-8) clamp(1.6rem,3.5vw,2.5rem) var(--sp-10);
+  border:var(--bw-1) solid var(--line);border-right:0;border-bottom:0;
+  border-radius:14px 0 0 0;background:var(--card);box-shadow:var(--shadow-3)}
+.tile-flash .tf-pct{margin-top:auto}
+.tf-chips{display:flex;align-items:center;gap:var(--sp-2)}
+.tf-note{margin-left:auto;font-size:var(--fs-200);color:var(--faint)}
+.tf-chips span{padding:.15rem .6rem;border:var(--border);border-radius:var(--r-pill);
+  font-family:var(--font-mono);font-size:.7rem;color:var(--muted)}
+.tf-chips .on{border-color:var(--accent-line);background:var(--accent-tint);color:var(--accent-ink)}
+.tf-pct{margin-top:var(--sp-2);font-size:clamp(3rem,6vw,4.5rem);font-weight:var(--fw-bold);line-height:1;
+  letter-spacing:-.04em;color:var(--strong);font-variant-numeric:tabular-nums}
+.tf-pct small{font-size:.45em;color:var(--muted);margin-left:.08em}
+.tile.is-in .tile-flash .progress > span{animation:uwl-fill 1.6s var(--ease-out-expo) .5s both}
+@keyframes uwl-fill{from{width:0}}
+
+/* ------------------------------------------------------------- boards ---- */
+.boards{list-style:none;margin:0;padding:0;
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  border-top:var(--border-hair)}
+.boards li{padding:var(--sp-8) var(--sp-8) var(--sp-6) 0}
+.boards li + li{padding-left:var(--sp-8);border-left:var(--border-hair)}
+.boards .chip{display:block;margin-bottom:var(--sp-4);
+  font-family:var(--font-mono);font-size:.72rem;color:var(--muted)}
+.boards b{display:block;margin-bottom:var(--sp-1);
+  font-size:clamp(1.35rem,2.2vw,1.65rem);font-weight:var(--fw-bold);letter-spacing:-.03em;
+  color:var(--strong)}
+.boards p{margin:0;max-width:22rem;color:var(--muted);font-size:var(--fs-400);
+  line-height:var(--lh-normal)}
+.boards-more{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
+  gap:var(--sp-2) var(--sp-6);margin:var(--sp-6) 0 0;padding-top:var(--sp-6);
+  border-top:var(--border-hair);color:var(--muted)}
+
+/* ------------------------------------------------------- the terminal ---- */
+/* Get started is a dark band in both themes, inset from the viewport edge
+   with soft corners: the one place on the page that is a terminal. */
+.band{margin:0 clamp(.5rem,2vw,1.5rem);border-radius:clamp(1.5rem,3vw,2.5rem);
+  overflow:hidden;color:var(--ink);border:var(--bw-1) solid var(--line);
+  background:
+    radial-gradient(60% 55% at 50% 0%,color-mix(in srgb,var(--accent) 13%,transparent),transparent 72%),
+    var(--surface)}
+.band .sec-h h2{color:var(--strong)}
+.start-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-5)}
+.prewrap.term{margin:0;overflow:hidden;border:var(--border);border-radius:var(--r-lg);
+  background:var(--card);box-shadow:var(--shadow-3)}
+.prewrap.term .cap{gap:var(--sp-3);padding:var(--sp-3) var(--sp-5);border:0;
+  border-bottom:var(--border-hair);border-radius:0;background:transparent}
+.prewrap.term pre{border:0;border-radius:0;background:transparent;box-shadow:none;
+  padding:var(--sp-5) var(--sp-5) var(--sp-6)}
+.lights{display:inline-flex;gap:6px}
+.lights i{width:10px;height:10px;border-radius:50%;background:var(--line-strong)}
+.cap-r{margin-left:auto}
+.band code{font-size:.9em}
+
+.next{list-style:none;margin:var(--sp-6) 0 0;padding:0;
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3)}
+.next a{display:flex;flex-direction:column;gap:var(--sp-1);height:100%;
+  padding:var(--sp-5) var(--sp-6);border:var(--border-hair);border-radius:var(--r-lg);
+  background:var(--card);text-decoration:none;
+  transition:border-color var(--dur-3) var(--ease-out),background var(--dur-3) var(--ease-out)}
+.next a b{color:var(--strong);font-weight:var(--fw-semibold)}
+.next a b::after{content:"";display:inline-block;width:.42em;height:.42em;
+  margin-left:.5em;vertical-align:.12em;
+  border-top:1.6px solid var(--accent-ink);border-right:1.6px solid var(--accent-ink);
+  transform:rotate(45deg);transition:transform var(--dur-3) var(--ease-spring)}
+.next a span{color:var(--muted);font-size:var(--fs-300);line-height:var(--lh-normal)}
+.next a:hover{border-color:var(--accent-line);background:var(--raise)}
+.next a:hover b::after{transform:translateX(3px) rotate(45deg)}
+
+/* ------------------------------------------------------------- closer ---- */
+.closer{position:relative;isolation:isolate;overflow:hidden;
+  padding:clamp(6rem,13vw,10rem) var(--sp-5);text-align:center}
+.closer .blob-a{left:16%;top:8%;width:min(42vw,30rem);background:var(--glow-a);opacity:.7}
+.closer .blob-b{right:14%;bottom:4%;width:min(36vw,26rem);background:var(--glow-b);
+  opacity:.55;animation-delay:-7s;animation-duration:20s}
+.closer-in{position:relative;z-index:1;max-width:46rem;margin:0 auto;
+  display:flex;flex-direction:column;align-items:center}
+.closer-mark{position:relative;display:grid;place-items:center;
+  width:7rem;height:7rem;margin-bottom:var(--sp-10)}
+.closer-mark i{position:absolute;inset:0;border-radius:50%;
+  border:var(--bw-1) solid var(--accent);
+  animation:uwl-ring 3.3s var(--ease-out-expo) infinite backwards}
+.closer-mark i:nth-child(2){animation-delay:1.1s}
+.closer-mark i:nth-child(3){animation-delay:2.2s}
+.closer-mark svg{position:relative;width:3.6rem;height:3.6rem;fill:none;
+  stroke:var(--accent);stroke-width:1.8;stroke-linecap:round}
+.closer-mark circle{fill:var(--accent);stroke:none}
+.closer-mark path + path{opacity:.5}
+.closer h2{font-size:clamp(2.4rem,6vw,4.25rem);line-height:1.02;letter-spacing:-.04em}
+.closer h2 .lit{color:var(--accent)}
+.closer .lede{margin:var(--sp-6) auto 0;max-width:36ch;
+  font-size:clamp(1.05rem,2vw,1.25rem);line-height:1.5;color:var(--muted);text-wrap:balance}
+.closer .cta{margin-top:var(--sp-10);justify-content:center;gap:var(--sp-3) var(--sp-5)}
+/* Low, oval ranging waves off the primary action: the same pulse as the
+   lock's, small enough to be an invitation rather than an alarm. */
+.wave-host{position:relative;display:inline-flex}
+.wave{position:absolute;inset:0;border-radius:var(--r-pill);pointer-events:none;
+  border:1.5px solid var(--accent);animation:uwl-wave 2.6s var(--ease-out-expo) infinite}
+.wave:nth-child(2){animation-delay:1.3s}
+@keyframes uwl-wave{0%{transform:scale(1);opacity:0}18%{opacity:.6}
+  100%{transform:scale(1.22,1.7);opacity:0}}
+.closer .fine{margin:var(--sp-12) auto 0;max-width:36rem;
   font-size:var(--fs-200);line-height:var(--lh-normal);color:var(--faint)}
 
 /* ------------------------------------------------------------ fallbacks -- */
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  .landing-page .glass-panel,.landing-page .cardgrid .card,
-  .landing-page .topbar.is-scrolled,.next a{background:var(--surface)}
-}
 @media (prefers-reduced-transparency:reduce){
-  .landing-page .glass-panel,.landing-page .cardgrid .card,
-  .landing-page .topbar.is-scrolled,.strip .stat-b,.next a{
+  .landing-page .topbar.is-scrolled,.hero-pill,.orb-body,.orb-status{
     -webkit-backdrop-filter:none;backdrop-filter:none;background:var(--surface)}
 }
 @media (prefers-reduced-motion:reduce){
-  .uwb-field{display:none}
-  .scope-live i{animation:none}
-  .flow::after{display:none}
-  .pillars li:hover,.landing-page .cardgrid .card:hover{transform:none}
-  .next a:hover b::after{transform:none}
+  .blob,.orb,.cue svg,.scope-live i{animation:none}
+  .orb-ring{animation:none;opacity:.35}
+  .orb-near,.closer-mark i,.wave,.air::after{display:none}
+  .vv-packet{animation:none;left:calc(50% - .25rem)}
+  .vv-packet + .vv-packet{display:none}
+  .tile:hover,.tile:hover .tile-shot img{transform:none}
 }
 
 /* ----------------------------------------------------------- responsive -- */
 @media (max-width:64rem){
-  .hero{padding-top:calc(var(--topbar-h) + var(--sp-12))}
-  .flow{grid-template-columns:repeat(auto-fit,minmax(12rem,1fr))}
-  .flow::before,.flow::after{display:none}
-  .proof{grid-template-columns:minmax(0,1fr)}
+  .feature-in{grid-template-columns:minmax(0,1fr)}
+  .feature.flip .feature-copy{order:0}
+  .feature-copy .lede{max-width:40rem}
+  .tiles,.start-grid{grid-template-columns:minmax(0,1fr)}
+  .boards{grid-template-columns:minmax(0,1fr)}
+  .boards li,.boards li + li{padding:var(--sp-6) 0;border-left:0}
+  .boards li + li{border-top:var(--border-hair)}
+  .boards p{max-width:40rem}
 }
 @media (max-width:44rem){
-  :root{--glass-blur:16px}
-  .hero{padding-bottom:var(--sp-8)}
-  .hero-copy{padding-inline:var(--sp-5)}
-  .hero h1{font-size:clamp(2.7rem,13vw,4.4rem);letter-spacing:-.04em}
-  .scope-band{padding-inline:var(--sp-3)}
-  .scope-in{border-radius:var(--r-xl);padding:var(--sp-4)}
-  .scope-frame{margin-inline:calc(-1 * var(--sp-2));padding:var(--sp-2)}
-  .landing-page .scope-read .r{flex:1 1 calc(50% - var(--sp-2));min-width:0}
-  .landing-page .scope-verdict{width:100%;justify-content:center}
-  /* Three pills become one list: a figure and its label on one line each,
-     which is the same information in a third of the height. */
-  .strip{padding-inline:var(--sp-3);gap:0;display:grid;grid-template-columns:1fr}
-  .strip .stat-b{display:flex;align-items:baseline;justify-content:space-between;
-    gap:var(--sp-4);padding:var(--sp-3) var(--sp-5);border-radius:0;
-    border-bottom-width:0}
-  .strip .stat-b:first-child{border-radius:var(--r-lg) var(--r-lg) 0 0}
-  .strip .stat-b:last-child{border-radius:0 0 var(--r-lg) var(--r-lg);
-    border-bottom-width:var(--bw-hair)}
-  .strip .stat-b b{font-size:var(--fs-600)}
-  .strip .stat-b span{margin:0;text-align:right}
-  .sec{padding:var(--sp-16) 0}
-  .sec-in{padding:0 var(--sp-5)}
-  .sec-h h2{font-size:clamp(1.9rem,8.5vw,2.6rem)}
-  .flow{grid-template-columns:1fr;gap:var(--sp-2)}
-  .flow::before{display:block;left:1.1rem;right:auto;top:0;bottom:0;width:1px;height:auto;
-    background:linear-gradient(180deg,var(--accent-line),var(--line) 70%,transparent)}
-  .flow li{padding:0 0 var(--sp-6) 3.4rem;min-height:2.2rem}
-  .flow li:last-child{padding-bottom:0}
-  .landing-page .cardgrid .card{padding:var(--sp-6)}
-  .landing-page .cta .btn{width:100%}
+  .landing-page .topbar{padding-inline:var(--sp-5)}
+  .hero{padding-bottom:var(--sp-16)}
+  .hero h1{margin-top:var(--sp-10);font-size:clamp(2.6rem,13vw,3.6rem)}
+  .hero .cta{flex-direction:column;gap:var(--sp-4)}
+  .hero-pill{margin-bottom:var(--sp-8)}
+  .cue{display:none}
+  .sec-in,.feature-in{padding:0 var(--sp-5)}
+  .scope-in{padding:var(--sp-4);border-radius:var(--r-lg)}
+  .scope-head{font-size:var(--fs-100)}
+  .scope-read .r{padding:var(--sp-2) var(--sp-3)}
+  .vis-verify{min-height:0}
+  .vv-node{min-width:4.8rem}
+  .vv-ico{width:3.6rem;height:3.6rem;border-radius:1rem}
+  .vv-link{margin-top:1.8rem}
+  .vv-link span{font-size:.62rem}
+  .next{grid-template-columns:minmax(0,1fr)}
+  .closer .cta{flex-direction:column}
 }

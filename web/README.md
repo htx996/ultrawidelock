@@ -88,10 +88,11 @@ directory, so a fresh clone and CI build what a contributor builds.
 
 ## Design system
 
-`assets/design/` is vendored from the UltraWideLock v2 design system: mint on
-deep teal, Space Grotesk and JetBrains Mono, dark canonical with a light theme
-that holds AA. Token and class names are unchanged from that source, so it can
-be re-vendored by copying files over.
+`assets/design/` is the site's own design system, owned by this repository and
+recorded in `DESIGN.md`: clean white and light-grey panels by day, a cool
+charcoal by night, the platform's UI face for prose and display, and one mint
+signal. The theme follows the operating system; the toggle overrides it, and
+`.tone-dark` forces a dark band inside a light page.
 
 Two signals, not one accent. Mint is the first path: direct, line-of-sight,
 trusted. Amber is the late path: obstructed, or a relay's added delay. That is the
@@ -99,8 +100,9 @@ classifier the firmware ships, so the pair means the same thing on the landing
 hero, in the twin and in the guides. `--path-first` and `--path-late` in
 `tokens/colors.css`.
 
-Fonts are self-hosted WOFF2, declared by `tokens/typography.css`. The one
-external subresource on the whole site is `esp-web-tools` on the flasher page,
+The one webfont, JetBrains Mono, is self-hosted WOFF2 and declared by
+`tokens/typography.css`; it is the fallback for systems with no monospace of
+their own. The one external subresource on the whole site is `esp-web-tools` on the flasher page,
 pinned to an exact version with an SRI hash and constrained by that page's CSP.
 
 The source files are split for authoring and concatenated into a single

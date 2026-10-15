@@ -120,10 +120,10 @@ def head(title: str, desc: str, depth: int, canon: str, *,
          extra: str = "") -> str:
     """The <head> every page shares.
 
-    The font preloads matter more than they look. Fonts are only discovered
-    once the stylesheet has been fetched and parsed, so without these the two
-    faces start downloading a full round trip late and the page swaps under the
-    reader. Preloading moves them onto the wire beside the CSS.
+    No font preloads: prose and display are set in the platform's own face,
+    and the one self-hosted file (JetBrains Mono) is only a fallback for
+    systems without a monospace of their own, so preloading it would put
+    bytes on the wire that Apple devices never use.
     """
     rel = rel_to_root(depth)
     return f"""<meta charset="utf-8">
@@ -138,10 +138,6 @@ def head(title: str, desc: str, depth: int, canon: str, *,
 <meta property="og:image" content="{SITE}/assets/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="{rel}assets/favicon.svg" type="image/svg+xml">
-<link rel="preload" as="font" type="font/woff2" crossorigin
-      href="{rel}assets/design/fonts/space-grotesk.woff2">
-<link rel="preload" as="font" type="font/woff2" crossorigin
-      href="{rel}assets/design/fonts/jetbrains-mono.woff2">
 {THEME_BOOT}
 {JS_FLAG}
 <link rel="stylesheet" href="{rel}assets/design/styles.css">{extra}"""
@@ -155,6 +151,14 @@ THEME_BTN = ('<button class="icon-btn" data-theme-toggle aria-pressed="false" '
              '<circle cx="14.6" cy="8" r="1.1"/></svg>'
              '<svg class="moon" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">'
              '<path d="M8 1a7 7 0 1 0 7 7 5.5 5.5 0 0 1-7-7Z"/></svg></button>')
+
+# The mark: one ranging round, the anchor and two arcs of its pulse decaying
+# outward. Inline so it takes the accent colour of whichever theme is on.
+MARK = ('<svg class="mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+        '<circle cx="7" cy="12" r="2.6" fill="currentColor" stroke="none"/>'
+        '<path d="M11.4 7.6a6.2 6.2 0 0 1 0 8.8"/>'
+        '<path d="M15.3 4.3a10.9 10.9 0 0 1 0 15.4" opacity=".5"/></svg>')
 
 NAV_BTN = ('<button class="icon-btn navtoggle" data-nav-toggle aria-expanded="false" '
            'aria-controls="navlinks" aria-label="Menu">'
@@ -176,7 +180,7 @@ def nav(depth: int, current: str = "") -> str:
     links.append(f'<a class="navlink" href="{GITHUB}" data-ext>Source</a>')
     home = ' aria-current="page"' if not current else ""
     return (f'<header class="topbar">'
-            f'<a class="wordmark" href="{rel}index.html"{home}>UltraWideLock '
+            f'<a class="wordmark" href="{rel}index.html"{home}>{MARK}UltraWideLock '
             f'<span class="ver">v0.4.0</span></a>'
             f'<div class="spacer"></div>'
             f'<nav class="navlinks" id="navlinks" aria-label="Main">'
@@ -191,7 +195,7 @@ def footer(depth: int) -> str:
     return f"""<footer class="footer">
   <div class="footer-in">
     <div class="footer-col">
-      <a class="wordmark" href="{rel}index.html">UltraWideLock <span class="ver">v0.4.0</span></a>
+      <a class="wordmark" href="{rel}index.html">{MARK}UltraWideLock <span class="ver">v0.4.0</span></a>
       <p class="fine">Portable firmware for NFC and UWB smart locks, on nRF52833, nRF5340 and ESP32.
       ISC licensed.</p>
     </div>
@@ -352,7 +356,7 @@ def emit_meta(pages: list[str]) -> list[Path]:
     # A 404 that carries the site's own chrome, so a bad link lands somewhere
     # navigable instead of on GitHub's default page.
     put("404.html", f"""<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 {head("Page not found — UltraWideLock",
       "That page is not here. The guides, the twin, the flasher and the source are.",
@@ -854,7 +858,8 @@ def copy_trees() -> list[Path]:
 # missing one renders as a bare grey card in every chat app. The two captures
 # are the landing page's proof section, real phone screens recorded against
 # the lock on the bench, one per theme.
-SITE_ASSETS = ("social-preview.png", "grid-demo-dark.webp", "grid-demo-light.webp")
+SITE_ASSETS = ("social-preview.png", "grid-demo-dark.webp", "grid-demo-light.webp",
+               "twin-demo.webp")
 
 
 def stage_assets() -> list[Path]:
@@ -943,7 +948,7 @@ GH_MARK = ('<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" 
 def tool_bar(crumb: str, depth: int) -> str:
     rel = rel_to_root(depth)
     return (f'<header class="topbar toolbar">'
-            f'<a class="wordmark" href="{rel}index.html">UltraWideLock</a>'
+            f'<a class="wordmark" href="{rel}index.html">{MARK}UltraWideLock</a>'
             f'<span class="crumb-sep" aria-hidden="true">/</span>'
             f'<span class="crumb">{html_escape(crumb)}</span>'
             f'<div class="spacer"></div>'
