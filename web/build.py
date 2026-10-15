@@ -219,6 +219,7 @@ def footer(depth: int) -> str:
     <span>ISC &middot; no CLA</span>
     <span>built static, works offline</span>
     <span>bench defaults, not a product</span>
+    <span>independent project, not affiliated with or endorsed by Apple, the CSA or Thread Group; trademarks belong to their owners</span>
   </div>
 </footer>
 <script src="{rel}assets/design/site.js" defer></script>"""

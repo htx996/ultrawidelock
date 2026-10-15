@@ -96,6 +96,10 @@ Range is radio time of flight, so a relay can only make the phone look farther a
 [Porting](PORTING.md) ·
 [Contributing](CONTRIBUTING.md)
 
+## Trademarks
+
+UltraWideLock is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Apple Inc., the Connectivity Standards Alliance, Thread Group, Qorvo, Nordic Semiconductor, Espressif Systems, or any other company or standards body it names. Apple, iPhone, Apple Watch and Apple Wallet are trademarks of Apple Inc. Matter and Aliro are trademarks of the Connectivity Standards Alliance. Thread is a trademark of Thread Group, Inc. All other product names and trademarks belong to their respective owners and appear here only to describe compatibility.
+
 ## License
 
 [ISC](LICENSE) © 2026 asxeem and UltraWideLock contributors. Third-party terms are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
