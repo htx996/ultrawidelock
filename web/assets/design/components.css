@@ -25,28 +25,31 @@
 }
 
 /* ------------------------------------------------------------- top nav --- */
+/* Vibrancy, not a slab: the page shows through the bar, saturated and blurred,
+   the way a system bar does. */
 .topbar{position:sticky;top:0;z-index:var(--z-header);
   display:flex;align-items:center;gap:var(--sp-3);
   height:var(--topbar-h);padding:0 var(--sp-6);
-  background:color-mix(in srgb,var(--surface) 88%,transparent);
-  backdrop-filter:blur(12px);
+  background:color-mix(in srgb,var(--surface) 72%,transparent);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  backdrop-filter:saturate(180%) blur(20px);
   border-bottom:var(--border-hair)}
 .topbar .spacer{flex:1}
-.wordmark{display:inline-flex;align-items:baseline;gap:var(--sp-2);
-  font-weight:var(--fw-bold);font-size:var(--fs-400);letter-spacing:var(--tr-heading);
+/* The mark is one ranging round: the anchor, then two arcs of its pulse
+   decaying outward. Drawn by build.py so every bar carries the same one. */
+.wordmark{display:inline-flex;align-items:center;gap:var(--sp-2);
+  font-weight:var(--fw-semibold);font-size:1.0625rem;letter-spacing:-.02em;
   color:var(--strong);text-decoration:none}
-.wordmark::before{content:"";width:.5rem;height:.5rem;border-radius:var(--r-pill);
-  background:var(--accent);box-shadow:var(--accent-glow);align-self:center}
+.wordmark:hover{color:var(--strong)}
+.wordmark .mark{width:1.4rem;height:1.4rem;flex:none;color:var(--accent)}
 .wordmark .ver{font-family:var(--font-mono);font-size:var(--fs-200);color:var(--faint);
-  font-weight:var(--fw-regular)}
-.navlinks{display:flex;align-items:center;gap:var(--sp-1)}
-.navlink{padding:var(--sp-1) var(--sp-3);border-radius:var(--r-sm);
-  font-size:var(--fs-400);color:var(--muted);text-decoration:none;
-  transition:color var(--dur-1) var(--ease-out),background var(--dur-1) var(--ease-out)}
-.navlink:hover{color:var(--strong);background:var(--raise)}
-.navlink[aria-current]{color:var(--strong)}
-.navlink[aria-current]::after{content:"";display:block;height:var(--bw-2);
-  margin-top:var(--sp-1);background:var(--accent);border-radius:var(--r-pill)}
+  font-weight:var(--fw-regular);letter-spacing:0;margin-left:var(--sp-1)}
+.navlinks{display:flex;align-items:center;gap:var(--sp-2)}
+.navlink{padding:var(--sp-1) var(--sp-3);border-radius:var(--r-pill);
+  font-size:.8235rem;font-weight:var(--fw-medium);color:var(--muted);text-decoration:none;
+  transition:color var(--dur-2) var(--ease-out),background var(--dur-2) var(--ease-out)}
+.navlink:hover{color:var(--strong)}
+.navlink[aria-current]{color:var(--strong);background:var(--raise)}
 
 /* Mobile nav. Five links plus a wordmark and a toggle do not fit a 360px
    viewport, so below --bp-nav the links become a sheet under the bar and
@@ -76,8 +79,7 @@
       transform var(--dur-2) var(--ease-out)}
   .topbar .navlinks.on{max-height:22rem;opacity:1;pointer-events:auto;
     transform:none}
-  .navlink{padding:var(--sp-3);font-size:var(--fs-500)}
-  .navlink[aria-current]::after{display:none}
+  .navlink{padding:var(--sp-3);border-radius:var(--r-sm);font-size:var(--fs-500)}
   .navlink[aria-current]{background:var(--accent-tint);color:var(--accent-ink)}
 }
 
@@ -85,11 +87,11 @@
    `button {padding: …}` rule wins on any property this one leaves unset --
    element and class selectors do not compete, they just fill different gaps --
    and padding on a fixed 2rem grid button collapses the icon to nothing. */
-.icon-btn{display:inline-grid;place-items:center;width:2rem;height:2rem;padding:0;
-  border:var(--border);border-radius:var(--r-sm);background:transparent;
+.icon-btn{display:inline-grid;place-items:center;width:2.1rem;height:2.1rem;padding:0;
+  border:var(--bw-1) solid transparent;border-radius:var(--r-pill);background:transparent;
   color:var(--muted);cursor:pointer;
-  transition:color var(--dur-1) var(--ease-out),border-color var(--dur-1) var(--ease-out),background var(--dur-1) var(--ease-out)}
-.icon-btn:hover{color:var(--strong);background:var(--raise);border-color:var(--line-strong)}
+  transition:color var(--dur-2) var(--ease-out),border-color var(--dur-2) var(--ease-out),background var(--dur-2) var(--ease-out)}
+.icon-btn:hover{color:var(--strong);background:var(--raise)}
 .icon-btn svg{width:1rem;height:1rem;display:block}
 :root[data-theme="light"] .sun,:root:not([data-theme="dark"]) .sun{display:none}
 :root[data-theme="light"] .moon,:root:not([data-theme="dark"]) .moon{display:block}
@@ -173,8 +175,8 @@
 .doc li{margin-bottom:var(--sp-2)}
 .doc :is(p,li,td) code{font-size:var(--fs-300);padding:.1em .34em;
   border-radius:var(--r-xs);background:var(--raise);color:var(--strong)}
-.eyebrow{display:block;font-size:var(--fs-100);text-transform:uppercase;
-  letter-spacing:var(--tr-caps);color:var(--accent-ink);font-weight:var(--fw-medium);
+.eyebrow{display:block;font-size:var(--fs-200);text-transform:uppercase;
+  letter-spacing:var(--tr-caps);color:var(--accent-ink);font-weight:var(--fw-semibold);
   margin-bottom:var(--sp-3)}
 .lede{font-size:var(--fs-600);line-height:var(--lh-normal);color:var(--muted);
   max-width:var(--measure)}
@@ -187,26 +189,34 @@
 .section-h .rule{flex:1;height:var(--bw-hair);background:var(--line)}
 
 /* ------------------------------------------------------------- buttons --- */
+/* Capsules. A press compresses on a spring; the primary carries a bloom of
+   its own colour beneath it instead of a grey drop shadow. */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);
-  padding:var(--sp-2) var(--sp-5);min-height:2.35rem;
-  border:var(--border);border-radius:var(--r-md);
+  padding:var(--sp-2) var(--sp-5);min-height:2.45rem;
+  border:var(--border);border-radius:var(--r-pill);
   background:var(--surface);color:var(--strong);
   font:inherit;font-size:var(--fs-400);font-weight:var(--fw-medium);
   letter-spacing:var(--tr-body);text-decoration:none;cursor:pointer;
   box-shadow:var(--shadow-1);
-  transition:background var(--dur-1) var(--ease-out),border-color var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out),transform var(--dur-1) var(--ease-out)}
-.btn:hover{background:var(--raise);border-color:var(--line-strong)}
-.btn:active{transform:translateY(1px)}
-.btn-primary{background:var(--accent-solid);border-color:var(--accent-solid);color:var(--inverse);
-  box-shadow:var(--shadow-2)}
-.btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);
-  color:var(--inverse)}
+  transition:background var(--dur-2) var(--ease-out),border-color var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out),box-shadow var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-spring)}
+.btn:hover{background:var(--raise);border-color:var(--line-strong);color:var(--strong)}
+.btn:active{transform:scale(.96)}
+.btn-primary{background:var(--accent-solid);border-color:transparent;color:var(--inverse);
+  box-shadow:0 10px 30px -8px color-mix(in srgb,var(--accent-solid) 55%,transparent),
+    var(--shadow-1)}
+.btn-primary:hover{background:var(--accent-hover);border-color:transparent;
+  color:var(--inverse);transform:translateY(-1px) scale(1.015);
+  box-shadow:0 16px 40px -8px color-mix(in srgb,var(--accent-solid) 60%,transparent),
+    var(--shadow-1)}
+.btn-primary:active{transform:scale(.96)}
 .btn-ghost{background:transparent;border-color:transparent;color:var(--muted);
   box-shadow:none}
 .btn-ghost:hover{background:var(--raise);color:var(--strong);border-color:transparent}
 .btn-danger{border-color:var(--danger-line);color:var(--danger);background:var(--danger-tint)}
-.btn-sm{min-height:1.85rem;padding:var(--sp-1) var(--sp-3);font-size:var(--fs-300)}
+.btn-sm{min-height:1.95rem;padding:var(--sp-1) var(--sp-4);font-size:var(--fs-300)}
+.btn-lg{min-height:2.95rem;padding:var(--sp-3) var(--sp-6);font-size:var(--fs-500)}
 .btn[disabled],.btn[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
 .cta{display:flex;flex-wrap:wrap;gap:var(--sp-3);align-items:center}
 
@@ -513,20 +523,26 @@ table.data tbody tr:hover > :first-child::before,
 .toc-link.mono{font-family:var(--font-mono);font-size:var(--fs-200)}
 
 /* -------------------------------------------------------------- footer --- */
-.footer{border-top:var(--border-hair);background:var(--surface);
-  padding:var(--sp-12) var(--sp-8) var(--sp-10);font-size:var(--fs-400)}
+.footer{position:relative;background:var(--ground);
+  padding:var(--sp-16) var(--sp-8) var(--sp-10);font-size:var(--fs-400)}
+/* A rule that fades out at both ends, so the footer joins the page above it
+   instead of being cut off from it. */
+.footer::before{content:"";position:absolute;top:0;left:0;right:0;height:var(--bw-hair);
+  background:linear-gradient(to right,transparent,var(--line) 18%,var(--line) 82%,transparent)}
 .footer-in{max-width:var(--page-max);margin:0 auto;
-  display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:var(--sp-10)}
+  display:grid;grid-template-columns:1.6fr repeat(3,1fr);gap:var(--sp-10)}
 .footer-col{display:flex;flex-direction:column;gap:var(--sp-2)}
-.footer-cap{font-size:var(--fs-100);text-transform:uppercase;letter-spacing:var(--tr-caps);
-  color:var(--faint);margin-bottom:var(--sp-1)}
+.footer-cap{font-size:var(--fs-300);font-weight:var(--fw-semibold);
+  color:var(--strong);margin-bottom:var(--sp-1)}
 .footer a{color:var(--muted);text-decoration:none;font-size:var(--fs-300)}
 .footer a:hover{color:var(--strong)}
-.footer .fine{color:var(--faint);font-size:var(--fs-200);line-height:var(--lh-normal)}
-.footer-bar{max-width:var(--page-max);margin:var(--sp-10) auto 0;
+.footer .wordmark{color:var(--strong);font-size:1.125rem}
+.footer .fine{max-width:24rem;margin:var(--sp-2) 0 0;color:var(--faint);
+  font-size:var(--fs-300);line-height:var(--lh-normal)}
+.footer-bar{max-width:var(--page-max);margin:var(--sp-12) auto 0;
   padding-top:var(--sp-5);border-top:var(--border-hair);
-  display:flex;flex-wrap:wrap;gap:var(--sp-4);align-items:center;
-  font-family:var(--font-mono);font-size:var(--fs-200);color:var(--faint)}
+  display:flex;flex-wrap:wrap;gap:var(--sp-2) var(--sp-5);align-items:center;
+  font-size:var(--fs-200);color:var(--faint);line-height:var(--lh-normal)}
 @media (max-width:56rem){.footer-in{grid-template-columns:1fr 1fr}}
 
 /* ---------------------------------------------------------------- misc --- */
@@ -650,15 +666,13 @@ html[data-uwl-vt]::view-transition-old(root){
    with its own idea of how far "up" is. site.js adds .is-in; the no-JS and
    reduced-motion cases are handled by the two guards below, which is why the
    initial state is never applied unless JS is present to undo it. */
-/* The rise is joined by a slight scale and a 2px defocus, which is what makes
-   an arriving block read as coming into focus rather than sliding. --reveal-y
-   and --reveal-step are untouched, so every element on the site still travels
-   the same distance on the same beat as before. */
-.js [data-reveal]{opacity:0;transform:translateY(var(--reveal-y)) scale(.985);
-  filter:blur(2px);
-  transition:opacity var(--dur-4) var(--ease-out),
-    transform var(--dur-4) var(--ease-out),
-    filter var(--dur-4) var(--ease-out)}
+/* The rise is joined by a defocus, which is what makes an arriving block read
+   as coming into focus rather than sliding. One long exponential settle. */
+.js [data-reveal]{opacity:0;transform:translateY(var(--reveal-y));
+  filter:blur(8px);
+  transition:opacity var(--dur-6) var(--ease-out-expo),
+    transform var(--dur-6) var(--ease-out-expo),
+    filter var(--dur-6) var(--ease-out-expo)}
 .js [data-reveal].is-in{opacity:1;transform:none;filter:none}
 @media (prefers-reduced-motion:reduce){
   .js [data-reveal]{opacity:1;transform:none;filter:none;transition:none}

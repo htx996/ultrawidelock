@@ -1,56 +1,64 @@
-/* UltraWideLock tokens — color. Dark is canonical: deep sea-teal blacks with
-   a mint "ranging pulse" accent (#2ee6b8), lifted from the brand key art.
-   prefers-color-scheme picks the default; data-theme on <html> overrides. */
+/* UltraWideLock tokens — color. Clean neutral grounds with one mint signal:
+   white and Apple light grey by day, a cool charcoal by night. The signal is
+   the ranging pulse (#2ee6b8 on dark, a deeper teal that holds contrast on
+   white). prefers-color-scheme picks the default; data-theme on <html>
+   overrides it; .tone-dark forces a dark band locally inside a light page. */
 :root,
-:root[data-theme="dark"]{
+:root[data-theme="dark"],
+.tone-dark{
   color-scheme:dark;
 
-  --ground:#061012;
-  --surface:#0a1618;
-  --card:#0e1d1e;
-  --raise:#152827;
-  --sunken:#030a09;
+  --ground:#0c0e10;
+  --surface:#111416;
+  --card:#171b1e;
+  --raise:#1d2224;
+  --sunken:#08090b;
+  /* A panel set into the page: one step off the ground, either way. */
+  --panel:#111416;
 
-  --ink:#c9d8d2;
-  --strong:#f2faf6;
-  --muted:#8da39b;
-  --faint:#7b9188;
+  --ink:#d6dbd9;
+  --strong:#f2f4f3;
+  --muted:#a8b0ad;
+  --faint:#8c9491;
   --inverse:#04100c;
 
-  --line:rgba(198,232,218,.145);
-  --hairline:rgba(198,232,218,.075);
-  --line-strong:rgba(198,232,218,.30);
+  --line:rgba(255,255,255,.1);
+  --hairline:rgba(255,255,255,.06);
+  --line-strong:rgba(255,255,255,.2);
 
   --accent:#2ee6b8;
   --accent-ink:#5fecc4;
   --accent-hover:#8ff5d8;
-  /* The accent as a filled background carrying --inverse text. It is its own
-     token because the two themes disagree about what is safe there: on dark,
-     --inverse on --accent is 12.10:1 and --accent can be used directly; on
-     light, white on --accent is only 4.33:1, which is under the 4.5 the button
-     label needs, so the fill steps down to the darker --accent-ink value and
-     clears 6.05:1. Marks and rules keep using --accent in both. */
+  /* The accent as a filled background. Its own token because the themes
+     disagree about what is safe there: on dark, --inverse on mint is 12.1:1;
+     on light, white on the mark colour would be 3.2:1, so the fill steps down
+     to a deeper teal that carries white at 4.9:1. */
   --accent-solid:#2ee6b8;
-  --accent-tint:rgba(46,230,184,.11);
-  --accent-line:rgba(46,230,184,.42);
-  --accent-glow:0 0 0 1px rgba(46,230,184,.35),0 6px 26px -10px rgba(46,230,184,.5);
+  --accent-tint:rgba(46,230,184,.1);
+  --accent-line:rgba(46,230,184,.38);
+  --accent-glow:0 0 0 1px rgba(46,230,184,.3),0 6px 26px -10px rgba(46,230,184,.5);
 
-  --ok:#41c98a;      --ok-tint:rgba(65,201,138,.12);   --ok-line:rgba(65,201,138,.4);
-  --warn:#e0b341;    --warn-tint:rgba(224,179,65,.12); --warn-line:rgba(224,179,65,.4);
-  --danger:#f2717a;  --danger-tint:rgba(242,113,122,.12); --danger-line:rgba(242,113,122,.4);
+  --ok:#4cd38a;      --ok-tint:rgba(76,211,138,.12);   --ok-line:rgba(76,211,138,.4);
+  --warn:#ffb340;    --warn-tint:rgba(255,179,64,.12); --warn-line:rgba(255,179,64,.4);
+  --danger:#ff6961;  --danger-tint:rgba(255,105,97,.12); --danger-line:rgba(255,105,97,.4);
   --info:var(--accent-ink); --info-tint:var(--accent-tint); --info-line:var(--accent-line);
 
   --focus:#7ff0d4;
   --focus-ring:0 0 0 var(--bw-2) var(--ground),0 0 0 4px var(--focus);
   --selection:rgba(46,230,184,.28);
 
-  --shadow-1:0 1px 1px rgba(0,0,0,.6);
-  --shadow-2:0 1px 2px rgba(0,0,0,.6),0 10px 24px -14px rgba(0,0,0,.75);
-  --shadow-3:0 2px 4px rgba(0,0,0,.55),0 26px 60px -22px rgba(0,0,0,.85);
-  --shadow-inset:inset 0 1px 0 rgba(255,255,255,.035);
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);
+  --shadow-2:0 1px 2px rgba(0,0,0,.5),0 14px 34px -16px rgba(0,0,0,.8);
+  --shadow-3:0 2px 6px rgba(0,0,0,.45),0 34px 80px -30px rgba(0,0,0,.9);
+  --shadow-inset:inset 0 1px 0 rgba(255,255,255,.05);
 
-  --syn-plain:#c9d8d2;
-  --syn-comment:#7b9188;
+  /* Atmosphere: two lights behind the page, the signal and a cool sky. Lower
+     alpha than light mode, because a bright bloom on charcoal reads as glare. */
+  --glow-a:rgba(46,230,184,.2);
+  --glow-b:rgba(72,150,255,.17);
+
+  --syn-plain:#d6dbd9;
+  --syn-comment:#8c9491;
   --syn-keyword:#7fb8ff;
   --syn-type:#5fecc4;
   --syn-func:#a9d6ff;
@@ -58,81 +66,86 @@
   --syn-number:#e6c069;
   --syn-const:#d5a8f0;
   --syn-macro:#e59a76;
-  --syn-punct:#8da39b;
-  --syn-added:rgba(65,201,138,.14);
-  --syn-removed:rgba(242,113,122,.14);
-  --syn-gutter:#7b9188;
+  --syn-punct:#a8b0ad;
+  --syn-added:rgba(76,211,138,.14);
+  --syn-removed:rgba(255,105,97,.14);
+  --syn-gutter:#8c9491;
 }
 
 @media (prefers-color-scheme:light){
   :root:not([data-theme="dark"]){
     color-scheme:light;
 
-    --ground:#f4f9f6;
+    --ground:#ffffff;
     --surface:#ffffff;
     --card:#ffffff;
-    --raise:#eaf2ee;
-    --sunken:#e2ece7;
+    --raise:#f2f2f5;
+    --sunken:#f5f5f7;
+    --panel:#f5f5f7;
 
-    --ink:#23302b;
-    --strong:#0c1511;
-    --muted:#4f6058;
-    --faint:#61726a;
+    --ink:#3a3a3f;
+    --strong:#1d1d1f;
+    --muted:#56565c;
+    --faint:#6e6e73;
     --inverse:#ffffff;
 
-    --line:rgba(14,36,28,.14);
-    --hairline:rgba(14,36,28,.075);
-    --line-strong:rgba(14,36,28,.28);
+    --line:rgba(0,0,0,.1);
+    --hairline:rgba(0,0,0,.065);
+    --line-strong:rgba(0,0,0,.2);
 
-    --accent:#0e8a68;
-    --accent-ink:#0b7057;
-    --accent-hover:#085343;
-    --accent-solid:#0b7057;
-    --accent-tint:rgba(14,138,104,.09);
-    --accent-line:rgba(14,138,104,.32);
-    --accent-glow:0 0 0 1px rgba(14,138,104,.28),0 6px 22px -12px rgba(14,138,104,.4);
+    --accent:#00a383;
+    --accent-ink:#007a62;
+    --accent-hover:#006b56;
+    --accent-solid:#00806a;
+    --accent-tint:rgba(0,163,131,.08);
+    --accent-line:rgba(0,163,131,.32);
+    --accent-glow:0 0 0 1px rgba(0,163,131,.24),0 6px 22px -10px rgba(0,163,131,.45);
 
-    --ok:#0d7a4d;      --ok-tint:rgba(13,122,77,.09);    --ok-line:rgba(13,122,77,.3);
-    --warn:#8a5b06;    --warn-tint:rgba(138,91,6,.09);   --warn-line:rgba(138,91,6,.3);
-    --danger:#bd2f3a;  --danger-tint:rgba(189,47,58,.08);--danger-line:rgba(189,47,58,.3);
+    --ok:#0d7a4d;      --ok-tint:rgba(13,122,77,.08);    --ok-line:rgba(13,122,77,.3);
+    --warn:#9a5b00;    --warn-tint:rgba(214,132,0,.1);   --warn-line:rgba(154,91,0,.32);
+    --danger:#c41e3a;  --danger-tint:rgba(196,30,58,.07);--danger-line:rgba(196,30,58,.3);
     --info:var(--accent-ink); --info-tint:var(--accent-tint); --info-line:var(--accent-line);
 
-    --focus:#0b7057;
+    --focus:#00806a;
     --focus-ring:0 0 0 var(--bw-2) var(--surface),0 0 0 4px var(--focus);
-    --selection:rgba(14,138,104,.2);
+    --selection:rgba(0,163,131,.18);
 
-    --shadow-1:0 1px 1px rgba(10,32,24,.06);
-    --shadow-2:0 1px 2px rgba(10,32,24,.06),0 8px 22px -14px rgba(10,32,24,.24);
-    --shadow-3:0 2px 4px rgba(10,32,24,.07),0 22px 50px -22px rgba(10,32,24,.32);
-    --shadow-inset:inset 0 1px 0 rgba(255,255,255,.7);
+    --shadow-1:0 1px 2px rgba(0,0,0,.05);
+    --shadow-2:0 1px 2px rgba(0,0,0,.04),0 12px 32px -14px rgba(0,0,0,.16);
+    --shadow-3:0 2px 6px rgba(0,0,0,.04),0 30px 70px -28px rgba(0,0,0,.24);
+    --shadow-inset:inset 0 1px 0 rgba(255,255,255,.8);
 
-    --syn-plain:#23302b;
-    --syn-comment:#68786f;
+    --glow-a:rgba(0,214,166,.3);
+    --glow-b:rgba(64,160,255,.28);
+
+    --syn-plain:#3a3a3f;
+    --syn-comment:#6e6e73;
     --syn-keyword:#1c4fbd;
-    --syn-type:#0b7057;
+    --syn-type:#007a62;
     --syn-func:#2a4a86;
     --syn-string:#1c6b41;
-    --syn-number:#8a5b06;
+    --syn-number:#9a5b00;
     --syn-const:#6b3a9c;
     --syn-macro:#9c4a1e;
-    --syn-punct:#4f6058;
+    --syn-punct:#56565c;
     --syn-added:rgba(13,122,77,.1);
-    --syn-removed:rgba(189,47,58,.09);
-    --syn-gutter:#68786f;
+    --syn-removed:rgba(196,30,58,.09);
+    --syn-gutter:#6e6e73;
   }
 }
 
 /* --- semantics ------------------------------------------------------------
    Declared once, outside every theme block, because each one only aliases
-   primitives that are themed above. Adding a meaning here costs one line
-   instead of three, and the three can never drift apart.
+   primitives that are themed above. .tone-dark repeats the declaration so a
+   dark band inside a light page resolves them against its own primitives.
 
    The two signals are the classifier the firmware actually ships: mint is the
    first path (direct, line-of-sight, trusted), amber is the late path
    (obstructed, or a relay's added delay). Anywhere the site distinguishes a
    good measurement from a suspect one it uses this pair, so the colours carry
    the same meaning on the landing hero, in the twin and in the guides. */
-:root{
+:root,
+.tone-dark{
   --path-first:var(--accent);
   --path-first-ink:var(--accent-ink);
   --path-first-line:var(--accent-line);
@@ -146,9 +159,8 @@
   --refused-line:var(--danger-line);
   --refused-tint:var(--danger-tint);
 
-  /* Instrument surfaces: the dark field a trace is drawn on, and its grid.
-     --sunken is already the deepest surface in both themes, which is exactly
-     what a scope face wants. */
+  /* Instrument surfaces: the field a trace is drawn on, and its grid.
+     --sunken is the deepest surface in both themes. */
   --scope:var(--sunken);
   --scope-grid:var(--hairline);
   --scope-axis:var(--line);
@@ -157,55 +169,59 @@
 :root[data-theme="light"]{
   color-scheme:light;
 
-  --ground:#f4f9f6;
+  --ground:#ffffff;
   --surface:#ffffff;
   --card:#ffffff;
-  --raise:#eaf2ee;
-  --sunken:#e2ece7;
+  --raise:#f2f2f5;
+  --sunken:#f5f5f7;
+  --panel:#f5f5f7;
 
-  --ink:#23302b;
-  --strong:#0c1511;
-  --muted:#4f6058;
-  --faint:#61726a;
+  --ink:#3a3a3f;
+  --strong:#1d1d1f;
+  --muted:#56565c;
+  --faint:#6e6e73;
   --inverse:#ffffff;
 
-  --line:rgba(14,36,28,.14);
-  --hairline:rgba(14,36,28,.075);
-  --line-strong:rgba(14,36,28,.28);
+  --line:rgba(0,0,0,.1);
+  --hairline:rgba(0,0,0,.065);
+  --line-strong:rgba(0,0,0,.2);
 
-  --accent:#0e8a68;
-  --accent-ink:#0b7057;
-  --accent-hover:#085343;
-  --accent-solid:#0b7057;
-  --accent-tint:rgba(14,138,104,.09);
-  --accent-line:rgba(14,138,104,.32);
-  --accent-glow:0 0 0 1px rgba(14,138,104,.28),0 6px 22px -12px rgba(14,138,104,.4);
+  --accent:#00a383;
+  --accent-ink:#007a62;
+  --accent-hover:#006b56;
+  --accent-solid:#00806a;
+  --accent-tint:rgba(0,163,131,.08);
+  --accent-line:rgba(0,163,131,.32);
+  --accent-glow:0 0 0 1px rgba(0,163,131,.24),0 6px 22px -10px rgba(0,163,131,.45);
 
-  --ok:#0d7a4d;      --ok-tint:rgba(13,122,77,.09);    --ok-line:rgba(13,122,77,.3);
-  --warn:#8a5b06;    --warn-tint:rgba(138,91,6,.09);   --warn-line:rgba(138,91,6,.3);
-  --danger:#bd2f3a;  --danger-tint:rgba(189,47,58,.08);--danger-line:rgba(189,47,58,.3);
+  --ok:#0d7a4d;      --ok-tint:rgba(13,122,77,.08);    --ok-line:rgba(13,122,77,.3);
+  --warn:#9a5b00;    --warn-tint:rgba(214,132,0,.1);   --warn-line:rgba(154,91,0,.32);
+  --danger:#c41e3a;  --danger-tint:rgba(196,30,58,.07);--danger-line:rgba(196,30,58,.3);
   --info:var(--accent-ink); --info-tint:var(--accent-tint); --info-line:var(--accent-line);
 
-  --focus:#0b7057;
+  --focus:#00806a;
   --focus-ring:0 0 0 var(--bw-2) var(--surface),0 0 0 4px var(--focus);
-  --selection:rgba(14,138,104,.2);
+  --selection:rgba(0,163,131,.18);
 
-  --shadow-1:0 1px 1px rgba(10,32,24,.06);
-  --shadow-2:0 1px 2px rgba(10,32,24,.06),0 8px 22px -14px rgba(10,32,24,.24);
-  --shadow-3:0 2px 4px rgba(10,32,24,.07),0 22px 50px -22px rgba(10,32,24,.32);
-  --shadow-inset:inset 0 1px 0 rgba(255,255,255,.7);
+  --shadow-1:0 1px 2px rgba(0,0,0,.05);
+  --shadow-2:0 1px 2px rgba(0,0,0,.04),0 12px 32px -14px rgba(0,0,0,.16);
+  --shadow-3:0 2px 6px rgba(0,0,0,.04),0 30px 70px -28px rgba(0,0,0,.24);
+  --shadow-inset:inset 0 1px 0 rgba(255,255,255,.8);
 
-  --syn-plain:#23302b;
-  --syn-comment:#68786f;
+  --glow-a:rgba(0,214,166,.3);
+  --glow-b:rgba(64,160,255,.28);
+
+  --syn-plain:#3a3a3f;
+  --syn-comment:#6e6e73;
   --syn-keyword:#1c4fbd;
-  --syn-type:#0b7057;
+  --syn-type:#007a62;
   --syn-func:#2a4a86;
   --syn-string:#1c6b41;
-  --syn-number:#8a5b06;
+  --syn-number:#9a5b00;
   --syn-const:#6b3a9c;
   --syn-macro:#9c4a1e;
-  --syn-punct:#4f6058;
+  --syn-punct:#56565c;
   --syn-added:rgba(13,122,77,.1);
-  --syn-removed:rgba(189,47,58,.09);
-  --syn-gutter:#68786f;
+  --syn-removed:rgba(196,30,58,.09);
+  --syn-gutter:#6e6e73;
 }

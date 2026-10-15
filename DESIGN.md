@@ -1,713 +1,338 @@
 ---
 name: UltraWideLock
-description: An instrument-grade dark interface for firmware that measures the distance instead of trusting it.
+description: A product page whose hero is a working lock that ranges the visitor and opens at the firmware's own bound.
 colors:
-  ground: "#061012"
-  surface: "#0a1618"
-  card: "#0e1d1e"
-  raise: "#152827"
-  sunken: "#030a09"
-  ink: "#c9d8d2"
-  strong: "#f2faf6"
-  muted: "#8da39b"
-  faint: "#7b9188"
-  inverse: "#04100c"
-  line: "rgba(198,232,218,.145)"
-  hairline: "rgba(198,232,218,.075)"
-  line-strong: "rgba(198,232,218,.30)"
-  accent: "#2ee6b8"
-  accent-ink: "#5fecc4"
-  accent-hover: "#8ff5d8"
-  accent-solid: "#2ee6b8"
-  accent-tint: "rgba(46,230,184,.11)"
-  accent-line: "rgba(46,230,184,.42)"
-  ok: "#41c98a"
-  warn: "#e0b341"
-  danger: "#f2717a"
-  focus: "#7ff0d4"
-  selection: "rgba(46,230,184,.28)"
-  path-first: "#2ee6b8"
-  path-late: "#e0b341"
-  refused: "#f2717a"
-  scope: "#030a09"
+  ground: "#ffffff"
+  surface: "#ffffff"
+  card: "#ffffff"
+  panel: "#f5f5f7"
+  raise: "#f2f2f5"
+  ink: "#3a3a3f"
+  strong: "#1d1d1f"
+  muted: "#56565c"
+  faint: "#6e6e73"
+  inverse: "#ffffff"
+  line: "rgba(0,0,0,.1)"
+  hairline: "rgba(0,0,0,.065)"
+  line-strong: "rgba(0,0,0,.2)"
+  accent: "#00a383"
+  accent-ink: "#007a62"
+  accent-hover: "#006b56"
+  accent-solid: "#00806a"
+  warn: "#9a5b00"
+  ok: "#0d7a4d"
+  danger: "#c41e3a"
+  focus: "#00806a"
+  glow-a: "rgba(0,214,166,.3)"
+  glow-b: "rgba(64,160,255,.28)"
+  ground-dark: "#0c0e10"
+  surface-dark: "#111416"
+  card-dark: "#171b1e"
+  raise-dark: "#1d2224"
+  sunken-dark: "#08090b"
+  ink-dark: "#d6dbd9"
+  strong-dark: "#f2f4f3"
+  muted-dark: "#a8b0ad"
+  faint-dark: "#8c9491"
+  inverse-dark: "#04100c"
+  accent-dark: "#2ee6b8"
+  accent-ink-dark: "#5fecc4"
+  accent-hover-dark: "#8ff5d8"
+  warn-dark: "#ffb340"
+  ok-dark: "#4cd38a"
+  danger-dark: "#ff6961"
+  focus-dark: "#7ff0d4"
+  glow-a-dark: "rgba(46,230,184,.2)"
+  glow-b-dark: "rgba(72,150,255,.17)"
 typography:
   display:
-    fontFamily: "Space Grotesk, Helvetica Neue, Helvetica, Segoe UI, system-ui, sans-serif"
-    fontSize: "3.25rem"
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Helvetica, system-ui, sans-serif"
+    fontSize: "clamp(2.75rem, 8vw, 5.25rem)"
     fontWeight: 700
-    lineHeight: 1.06
-    letterSpacing: "-0.024em"
+    lineHeight: 1.02
+    letterSpacing: "-0.04em"
   headline:
-    fontFamily: "Space Grotesk, Helvetica Neue, Helvetica, Segoe UI, system-ui, sans-serif"
-    fontSize: "2.375rem"
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Helvetica, system-ui, sans-serif"
+    fontSize: "clamp(2.1rem, 5vw, 3.4rem)"
     fontWeight: 700
-    lineHeight: 1.24
-    letterSpacing: "-0.024em"
+    lineHeight: 1.05
+    letterSpacing: "-0.035em"
   title:
-    fontFamily: "Space Grotesk, Helvetica Neue, Helvetica, Segoe UI, system-ui, sans-serif"
-    fontSize: "1.75rem"
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Helvetica, system-ui, sans-serif"
+    fontSize: "1.375rem"
     fontWeight: 700
-    lineHeight: 1.24
-    letterSpacing: "-0.014em"
+    lineHeight: 1.2
+    letterSpacing: "-0.022em"
+  lede:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Helvetica, system-ui, sans-serif"
+    fontSize: "clamp(1.04rem, 1.7vw, 1.2rem)"
+    fontWeight: 400
+    lineHeight: 1.55
+    letterSpacing: "-0.011em"
   body:
-    fontFamily: "Space Grotesk, Helvetica Neue, Helvetica, Segoe UI, system-ui, sans-serif"
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Helvetica, system-ui, sans-serif"
     fontSize: "1rem"
     fontWeight: 400
-    lineHeight: 1.68
-    letterSpacing: "-0.006em"
+    lineHeight: 1.65
+    letterSpacing: "-0.011em"
   label:
-    fontFamily: "Space Grotesk, Helvetica Neue, Helvetica, Segoe UI, system-ui, sans-serif"
-    fontSize: "0.6875rem"
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Helvetica, system-ui, sans-serif"
+    fontSize: "0.75rem"
     fontWeight: 500
     lineHeight: 1.5
-    letterSpacing: "0.09em"
+    letterSpacing: "-0.011em"
   mono:
-    fontFamily: "JetBrains Mono, ui-monospace, SF Mono, Cascadia Mono, Menlo, Consolas, monospace"
+    fontFamily: "ui-monospace, \"SF Mono\", \"JetBrains Mono\", \"Cascadia Mono\", Menlo, Consolas, monospace"
     fontSize: "0.8125rem"
     fontWeight: 400
     lineHeight: 1.6
     letterSpacing: "0"
-    fontFeature: "tabular-nums"
 rounded:
-  xs: "2px"
-  sm: "4px"
-  md: "7px"
-  lg: "11px"
+  xs: "4px"
+  sm: "8px"
+  md: "12px"
+  lg: "18px"
+  xl: "28px"
   pill: "999px"
 spacing:
-  "1": "0.235rem"
-  "2": "0.47rem"
-  "3": "0.705rem"
-  "4": "0.94rem"
-  "5": "1.176rem"
-  "6": "1.41rem"
-  "8": "1.88rem"
-  "10": "2.35rem"
-  "12": "2.82rem"
-  "16": "3.76rem"
-  "20": "4.7rem"
-  "28": "6.58rem"
+  sp-1: "0.235rem"
+  sp-2: "0.47rem"
+  sp-3: "0.705rem"
+  sp-4: "0.94rem"
+  sp-5: "1.176rem"
+  sp-6: "1.41rem"
+  sp-8: "1.88rem"
+  sp-10: "2.35rem"
+  sp-12: "2.82rem"
+  sp-16: "3.76rem"
+  sp-20: "4.7rem"
+  sp-28: "6.58rem"
+  sp-40: "9.4rem"
 components:
   button-primary:
     backgroundColor: "{colors.accent-solid}"
     textColor: "{colors.inverse}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.pill}"
     padding: "0.47rem 1.176rem"
-    height: "2.35rem"
+    height: "2.45rem"
   button-primary-hover:
     backgroundColor: "{colors.accent-hover}"
     textColor: "{colors.inverse}"
+  button-primary-lg:
+    backgroundColor: "{colors.accent-solid}"
+    textColor: "{colors.inverse}"
+    rounded: "{rounded.pill}"
+    padding: "0.705rem 1.41rem"
+    height: "2.95rem"
   button-secondary:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.strong}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.pill}"
     padding: "0.47rem 1.176rem"
-    height: "2.35rem"
+    height: "2.45rem"
   button-secondary-hover:
     backgroundColor: "{colors.raise}"
     textColor: "{colors.strong}"
   button-ghost:
     backgroundColor: "transparent"
     textColor: "{colors.muted}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.pill}"
     padding: "0.47rem 1.176rem"
-  button-sm:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.strong}"
-    rounded: "{rounded.md}"
-    padding: "0.235rem 0.705rem"
-    height: "1.85rem"
-  icon-button:
-    backgroundColor: "transparent"
-    textColor: "{colors.muted}"
-    rounded: "{rounded.sm}"
-    padding: "0"
-    width: "2rem"
-    height: "2rem"
-  card:
-    backgroundColor: "{colors.card}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.lg}"
-    padding: "1.41rem"
-  field:
-    backgroundColor: "{colors.ground}"
-    textColor: "{colors.strong}"
-    rounded: "{rounded.md}"
-    padding: "0.47rem 0.705rem"
   pill:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.muted}"
     typography: "{typography.mono}"
     rounded: "{rounded.pill}"
     padding: "0.235rem 0.705rem"
-  pill-accent:
-    backgroundColor: "{colors.accent-tint}"
-    textColor: "{colors.accent-ink}"
-    typography: "{typography.mono}"
-    rounded: "{rounded.pill}"
-    padding: "0.235rem 0.705rem"
-  status-live:
-    backgroundColor: "{colors.accent-tint}"
-    textColor: "{colors.accent-ink}"
-    typography: "{typography.mono}"
-    rounded: "{rounded.pill}"
-    padding: "0.235rem 0.705rem"
   navlink:
-    backgroundColor: "transparent"
     textColor: "{colors.muted}"
-    rounded: "{rounded.sm}"
+    rounded: "{rounded.pill}"
     padding: "0.235rem 0.705rem"
   navlink-active:
-    backgroundColor: "transparent"
+    backgroundColor: "{colors.raise}"
     textColor: "{colors.strong}"
-    rounded: "{rounded.sm}"
-    padding: "0.235rem 0.705rem"
-  callout-note:
-    backgroundColor: "{colors.accent-tint}"
+  card:
+    backgroundColor: "{colors.card}"
+    rounded: "{rounded.lg}"
+    padding: "1.41rem"
+  panel:
+    backgroundColor: "{colors.panel}"
+    rounded: "{rounded.xl}"
+    padding: "clamp(1.1rem, 3vw, 2.2rem)"
+  field:
+    backgroundColor: "{colors.ground}"
     textColor: "{colors.ink}"
     rounded: "{rounded.md}"
-    padding: "0.94rem 1.176rem"
-  readout:
-    backgroundColor: "{colors.card}"
-    textColor: "{colors.strong}"
-    typography: "{typography.mono}"
-    rounded: "{rounded.sm}"
-    padding: "0.705rem"
+    padding: "0.47rem 0.705rem"
 ---
 
 # Design System: UltraWideLock
 
 ## Overview
 
-**Creative North Star: "Drawn To Scale"**
+**Creative North Star: "The Lock That Opens At The Bound"**
 
-The firmware's whole claim is that it measures instead of trusting, and the
-interface makes that same claim about itself. A hairline ruler runs down the
-left edge of the landing page, ticked every 4rem, and everything to the right
-of it inherits the posture: values are stated with their units, numbers are set
-in tabular mono so they can be compared, the unlock bound is drawn as a labelled
-decision line rather than as a gridline, and the scope band is a piece of
-equipment set into the page rather than a picture of one. The ruler is not
-decoration in the ornamental sense. It is decoration in the sense that a scale
-on a drawing is decoration: it says the thing is to size.
+An Apple-grade product page on neutral ground: white with `#f5f5f7` panels by day, a cool charcoal by night. The page is quiet so that one thing can speak: a mint signal that means a trusted measurement and an open lock. Everything visual that moves is a ranging pulse, an impulse leaving an anchor and decaying outward, because that is what the firmware does. The hero is a working lock orb that treats the pointer as a phone and opens at the firmware's own unlock bound (`UNLOCK_RANGE_CM`, 100 cm, read by `hero.js`).
 
-The canvas is calm dark and alive at exactly one point. Five near-black
-sea-teal surfaces carry the entire structure, held apart by 1px lines rather
-than by shadow, and against that stillness a single mint accent marks whatever
-is being measured right now: the wordmark's ranging dot, the live status pulse,
-the trace on the scope, the fill of a meter, the inset edge of a selected row.
-The restraint is what makes the accent legible as a signal instead of as
-styling. There is no gradient, no glass, no decorative motion, and no second
-brand colour competing for the same attention.
+Theme follows the OS (`prefers-color-scheme`); `data-theme` on `<html>` overrides it; `.tone-dark` forces a dark band locally inside a light page. The theme toggle does not cut, it sweeps: a view transition reveals the new theme as one expanding circle from the button, its edge tinted with the accent.
 
-Precision extends to the material itself. The palette has no true grey in it:
-every neutral is a teal held at very low chroma, and the text neutrals sit
-almost exactly on the accent's own hue, so the greys read as the same material
-as the signal rather than as a separate system laid underneath it. The surface
-ramp rotates steadily toward that hue as it rises. Amber and red exist, but they
-are not accents; they are verdicts, and they mean one specific thing each on
-every surface of the site.
+This world explicitly refuses the dark instrument-dashboard look of the retired "Drawn To Scale" system. Instruments still exist (the DS-TWR scope, the twin), but they sit inside soft panels on a light page, not as the page itself.
 
 **Key Characteristics:**
-
-- Measured: a ticked rail, stated units, tabular numerals, a labelled bound
-- Calm dark canonical, with a light theme held to the same standard
-- One accent, spent only on live measurement and current position
-- Hairline structure; shadow reserved for things that leave the page plane
-- Neutrals are the accent hue desaturated, never true grey
-- Mono for anything that is an identifier, a number, or an instrument label
+- Neutral ground in both themes; one mint signal, one amber counter-signal, nothing else chromatic outside status.
+- Platform SF type with tight display tracking; monospace only for measurements, identifiers and code.
+- Soft, object-like forms: 28px panels, 18px cards, capsule controls.
+- Depth from tonal panels, faint shadows and two slow blurred lights, never from heavy drop shadows.
+- One physics: exponential ease-out arrivals, spring presses, ranging rings that decay.
 
 ## Colors
 
-A near-black sea-teal field with one mint signal in it, plus two verdict colours
-that never do decorative work.
-
-Dark is canonical and is what the frontmatter carries. The light theme is a full
-peer, not a fallback: every token below has a light counterpart declared in the
-same file, and both must land in the same commit. The light values live in
-`.impeccable/design.json` under `colorMeta.<token>.light`.
+Neutral grey ground with a single mint signal and an amber counter-signal; every chromatic value carries a measurement meaning.
 
 ### Primary
-
-- **Ranging Mint** (`#2ee6b8`, `oklch(82.7% 0.154 170.5)`): the signal colour,
-  lifted from the brand key art. It marks the thing that is measuring or the
-  thing that is current, and nothing else. The wordmark's dot, the active nav
-  underline, the meter fill, the scope trace, the progress bar, the step
-  numerals, the pips, the inset edge on a selected row. Light theme drops to
-  **#0e8a68** (`oklch(56.4% 0.112 167.4)`) because the same mint on white is not
-  readable as text.
-- **Mint Ink** (`#5fecc4`): the accent as *text*. Links, active table-of-contents
-  entries, the eyebrow, the label inside an accent pill. Separate from the accent
-  proper because a colour bright enough to be a marker is not always dark enough
-  to be a foreground.
-- **Mint Hover** (`#8ff5d8`): the one step brighter that a hover moves to.
-  Light theme moves the other way, to **#085343**, since there brightening is
-  the wrong direction for emphasis.
-- **Solid Mint** (`#2ee6b8` dark, **#0b7057** light): the accent used as a
-  *filled background carrying `--inverse` text*, which is the primary button
-  and the skip link. It exists because the themes disagree about what is safe
-  there: on dark, `--inverse` on `--accent` is 12.10:1; on light, white on
-  `--accent` is only 4.33:1, so the fill steps down to the darker value and
-  clears 6.05:1. Marks, rules and fills that carry no text keep using
-  `--accent` in both themes.
+- **Ranging Mint** (`accent`, `accent-dark`): the signal. Open lock, trusted range, the first-path trace, the orb at the bound, the `.lit` second line of display headings, ranging rings. On white it is a mark colour (3.2:1), so it appears as text only at display size.
+- **Deep Mint Ink** (`accent-ink`, `accent-ink-dark`): the accent as readable text: links, arrow links, verdict text, active TOC entries, numbered step badges.
+- **Solid Mint** (`accent-solid`): the accent as a filled background. Its own token because themes disagree about what is safe: white on `#00806a` holds 4.9:1 on light; on dark the fill is the bright mint carrying `inverse-dark` at 12.1:1.
+- **Mint Hover** (`accent-hover`, `accent-hover-dark`): darker on light, lighter on dark; hover for links and the primary button.
 
 ### Secondary
-
-There is no secondary brand colour, and adding one would break the accent's
-meaning. What looks like a second and third accent is the verdict pair below.
+- **Relay Amber** (`warn`, `warn-dark`): the late path. A relay's added delay, an obstructed or suspect measurement, the relay button and its note. It is never decorative.
 
 ### Tertiary
-
-- **Verdict Amber** (`#e0b341`, `oklch(78.7% 0.138 86.7)`): the late path.
-  An obstructed measurement, or one carrying a relay's added delay. Also the
-  colour a meter turns when it is reporting a constraint rather than a
-  measurement, and the colour of the inline WebSerial warning.
-- **Refusal Red** (`#f2717a`, `oklch(70.4% 0.159 17.8)`): a rejection. A refused
-  unlock, a destructive action, a failed step.
-- **Pass Green** (`#41c98a`, `oklch(74.7% 0.149 159.0)`): a completed action,
-  distinct from the accent because "this finished" is not "this is live".
+- **Sky Light** (`glow-b`, `glow-b-dark`): the second of the two atmosphere lights, a cool blue blurred blob paired with the mint light (`glow-a`). Atmosphere only; never on text, borders or controls.
 
 ### Neutral
-
-Nothing here is grey. Every neutral holds chroma between 0.010 and 0.028, and
-the four text neutrals sit essentially on the accent's hue (164.9° to 171.6°
-against its 170.5°). The five surfaces run cooler, 186.6° to 210.9°, and close
-on the accent as they rise.
-
-- **Ground** (`#061012`): the page itself, and the deepest thing a reader
-  normally sees.
-- **Surface** (`#0a1618`): chrome. The top bar, the sidebar, the footer, the
-  command palette, the caption strip above a code block.
-- **Card** (`#0e1d1e`): content sitting on the page. Cards, code blocks, tables,
-  callouts, readouts.
-- **Raise** (`#152827`): the hover step, and the track behind a progress bar.
-  Never a resting state for a component.
-- **Sunken** (`#030a09`): deeper than the page. Used for exactly one thing: the
-  scope face, aliased as `--scope`, and the meter track.
-- **Ink** (`#c9d8d2`) / **Strong** (`#f2faf6`) / **Muted** (`#8da39b`) /
-  **Faint** (`#7b9188`): body text, headings and emphasis, secondary text and
-  labels, and captions or units respectively.
-- **Line** (`rgba(198,232,218,.145)`), **Hairline** (`.075`), **Line Strong**
-  (`.30`): the structural vocabulary. Hairline separates things that belong
-  together; line bounds a component; line-strong is a hover border or a
-  separator that has to be seen.
+- **Paper White** (`ground`, `surface`, `card`): page ground, the top bar's vibrancy base, card fill on light.
+- **Apple Light Grey** (`panel`, `#f5f5f7`, also `sunken` on light): panels set into the page (the scope, feature visuals, tiles, next-step links).
+- **Raised Grey** (`raise`): hover fills, active nav capsule, inline code.
+- **Cool Charcoal** (`ground-dark`, `surface-dark`, `card-dark`, `raise-dark`, `sunken-dark`): the night ground in five steps; on dark `panel` equals `surface-dark`, one step off the ground.
+- **Graphite text** (`strong`, `ink`, `muted`, `faint` and their `-dark` pairs): headings, body, secondary copy, captions. `faint` holds at least 4.5:1 on its ground in both themes.
+- **Hairlines** (`hairline`, `line`, `line-strong`): translucent black on light, translucent white on dark (`rgba(255,255,255,.06/.1/.2)`). Panels take `hairline`; cards and controls take `line`.
+- **Status** (`ok`, `danger` and pairs): success and failure in tools (flasher, callouts, `btn-danger`). Not part of the ranging vocabulary.
 
 ### Named Rules
+**The Two Signals Rule.** `--path-first` (aliasing the accent) is a direct, trusted first path and an open lock; `--path-late` (aliasing warn) is a late, obstructed or relayed path. Anywhere the site distinguishes a good measurement from a suspect one it uses this pair and only this pair, with the same meaning on the landing hero, in the twin and in the guides. A trace takes one state from one attribute, so it is never half mint and half amber.
 
-**The One Meaning Rule.** Mint is the first path: direct, line-of-sight,
-trusted. Amber is the late path: obstructed, or carrying a relay's added delay.
-Red is a refusal. That is the classifier the firmware actually ships, so a
-colour cannot mean one thing on the landing hero and something else in the twin
-or in a guide. This is product truth, not preference.
+**The Mark-Not-Text Rule.** On light, `accent` is a mark colour (dots, rings, strokes, display-size `.lit` text at 3.2:1). Body-size text in the signal colour uses `accent-ink`; fills that carry text use `accent-solid`.
 
-**The Alias Rule.** `--path-first`, `--path-late`, `--refused` and `--scope` are
-declared exactly once, outside every theme block, because each only aliases a
-primitive that is already themed. Add a meaning by adding an alias, never by
-adding a third hex to two theme blocks that can then drift apart.
-
-**The Rarity Rule.** The accent marks measurement and current position. If more
-than a small fraction of a screen is mint, the accent has stopped being a signal
-and the screen needs re-reading, not re-colouring.
-
-**The 4.5 Rule.** Small text is checked against the surface it actually lands
-on, not against the page. `landing.css` records `--faint` at 4.22:1 on the light
-theme's scope face, which is under 4.5, and `--muted` at 5.53:1 there; the
-diagram labels use `--muted` for that reason.
+**The Neutral Ground Rule.** Everything that is not a measurement is grey. The signal reads as signal because nothing around it competes.
 
 ## Typography
 
-**Display / Body Font:** Space Grotesk (with Helvetica Neue, Helvetica, Segoe
-UI, system-ui, sans-serif)
-**Label / Mono Font:** JetBrains Mono (with ui-monospace, SF Mono, Cascadia
-Mono, Menlo, Consolas, monospace)
+**Display Font:** the platform UI face (SF Pro on Apple devices, Segoe UI Variable, Roboto) via `-apple-system, BlinkMacSystemFont, …, system-ui, sans-serif`
+**Body Font:** the same stack
+**Label/Mono Font:** `ui-monospace, "SF Mono", "JetBrains Mono", …` with JetBrains Mono self-hosted (latin subset, `fonts/jetbrains-mono.woff2`) as the fallback where the system has no good monospace
 
-Both are self-hosted latin-subset variable WOFF2, 53,660 B for the pair
-(`space-grotesk.woff2` 22,320 B, `jetbrains-mono.woff2` 31,340 B), under
-SIL OFL 1.1. One file per family covers every weight the system asks for.
-
-**Character:** Space Grotesk is a grotesque with drawn, slightly mechanical
-details, so headings read as engineering rather than as marketing; the negative
-tracking at display sizes tightens it further. JetBrains Mono does the technical
-half of the work and carries real authority in the system: it is not only for
-code but for every identifier, numeral, unit and instrument label, which is what
-makes a readout look like a readout.
-
-Root font-size is 17px, not the browser default of 16px, so every rem in the
-type and space scales resolves against 17. Media-query rem does not: those
-resolve against the initial 16px. A `64rem` breakpoint is 1024px while `64rem`
-of layout width is 1088px, and that difference is deliberate rather than a bug.
+**Character:** the page is set in the same face as the Wallet sheet the key lives in, so on the devices this firmware pairs with it reads as native. Display is bold and tightly tracked; body is slightly negative-tracked for an Apple feel. The root size is 17px, so `1rem` is 17px everywhere.
 
 ### Hierarchy
-
-- **Display** (700, `3.25rem` / `--fs-1000`, 1.06, -0.024em): the landing
-  headline only, capped at 18ch and balanced. Drops to headline size below the
-  64rem breakpoint.
-- **Headline** (700, `2.375rem` / `--fs-900`, 1.24, -0.024em): the h1 of a guide
-  or a tool page.
-- **Title** (700, `1.75rem` / `--fs-800`, 1.24, -0.014em): h2. Carries a hairline
-  rule above it and 3.76rem of air, so a section break is visible before it is
-  read.
-- **Subtitle** (700, `1.375rem` / `--fs-700`, 1.24, -0.014em): h3, and the value
-  in a scope readout.
-- **Lede** (400, `1.125rem` / `--fs-600`, 1.5, muted): the sentence under a
-  headline, and the value in a dense readout. Capped at `--measure`.
-- **Body** (400, `1rem` / `--fs-500`, 1.68, -0.006em): prose, capped at
-  `--measure` (46rem) even when the column is wider.
-- **UI** (400, `0.9375rem` / `--fs-400`): buttons, card copy, table cells, tabs.
-- **Code** (400, `0.8125rem` / `--fs-300`, 1.6, mono): code blocks, sidebar
-  entries, dense rows, inline code.
-- **Label** (500, `0.6875rem` / `--fs-100`, 0.09em, uppercase): eyebrows, table
-  headers, sidebar captions, meter keys, readout keys, footer captions. The
-  smallest thing on the page, and never more than a few words.
-
-The scale is hand-tuned rather than a fixed ratio: near-linear at UI sizes
-(11, 12, 13, 15, 16px steps of a sixteenth of a rem each) and accelerating to
-roughly 1.37× per step at display sizes.
+- **Display** (700, `clamp(2.75rem, 8vw, 5.25rem)`, 1.02, -0.04em): the hero claim, two lines, second line in mint (`.lit`); the closer uses the same treatment at `clamp(2.4rem, 6vw, 4.25rem)`. Steps down to `clamp(2.75rem, 7vw, 4.6rem)` on laptop heights so the CTA stays above the fold.
+- **Headline** (700, `clamp(2.1rem, 5vw, 3.4rem)`, 1.05, -0.035em): section and feature headings (features use `clamp(2rem, 4.2vw, 3.1rem)`). Docs `h1` uses the token scale (`--fs-900`, 2.5rem) with the same display tracking.
+- **Title** (700, 1.375rem, 1.2, -0.022em): docs `h3`; tile and board titles run larger in bold at -0.03em.
+- **Lede** (400, `clamp(1.04rem, 1.7vw, 1.2rem)`, 1.45 to 1.6): the paragraph under every display or headline, in `muted`, held to 30 to 40ch or rem.
+- **Body** (400, 1rem / 17px, 1.65, -0.011em): prose, capped at the `--measure` of 46rem.
+- **Label** (500, 0.75rem or 0.735rem): status pills, scope header, fine print, captions.
+- **Mono** (400, 0.8125rem, 1.6): code, version tags, chip names, numbered steps, every number in the instrument, readouts at `--fs-700` with `tabular-nums`.
 
 ### Named Rules
+**The Platform Face Rule.** No webfont for prose or display. The system UI face is the brand face; only the monospace fallback is self-hosted, and never from a third party.
 
-**The Tabular Rule.** Any number a reader might compare against another number
-is set in JetBrains Mono with `font-variant-numeric: tabular-nums`. Stat blocks,
-meter values, readouts, progress percentages, scope readings, and every cell in
-a guide's tables of pins and registers. Numbers line up or they are not
-comparable.
-
-**The Caps Are Labels Rule.** Uppercase plus `--tr-caps` (0.09em) plus
-`--fs-100` is the label voice and nothing else uses it. It names a value; it
-never carries a sentence.
-
-**The Mono Means Machine Rule.** Mono marks things the machine owns: symbols,
-paths, constants, units, versions, states. Prose about those things stays in
-Space Grotesk. If a mono string is a full sentence, it is in the wrong face.
+**The Measurements Are Mono Rule.** Monospace marks things that are measured or literal: distances, times, percentages, identifiers, code. Prose, headings and button labels stay in the sans. Figures set in sans (the facts row, the flasher percentage) still take `tabular-nums`.
 
 ## Layout
 
-The site runs two shells. Documentation uses a fixed sidebar plus a fluid main
-column: `--side` (17.5rem) alongside `minmax(0, 1fr)`, with the article itself a
-`--measure` (46rem) column beside a `--toc` (14rem) rail, gapped by `--sp-12`.
-Marketing and tool pages use a centred `--page-max` (80rem) container with
-`--sp-8` of side padding. The top bar is `--topbar-h` (3.35rem), sticky, over a
-`blur(12px)` backdrop at 88% surface, and every `[id]` heading carries
-`scroll-margin-top` of that height plus `--sp-6` so an in-page link never lands
-under it.
+A single centred column with a `--page-max` of 70rem and `--sp-8` (1.88rem) gutters (`--sp-5` below 44rem). The spacing scale steps on a 0.235rem (about 4px at the 17px root) unit, from `--sp-1` to `--sp-40`.
 
-Spacing is a 4px grid expressed in rem against the 17px root: `--sp-1` is
-0.235rem, which is 3.995px. Every step is a multiple of that, up to `--sp-28`
-(6.58rem, 112px). Nothing in the system uses an off-grid gap.
+The landing runs as full-height chapters: a `100svh` centred hero, sections padded `clamp(5rem, 11vw, 8.5rem)` top and bottom, features at `clamp(4.5rem, 9vw, 7rem)`. Features are editorial pairs, copy beside a visual (`1fr / 1.12fr`), swapping sides on `.flip` and stacking below 64rem. Sibling features are separated by a hairline that fades out at both ends. Rows of facts and boards are divided by vertical hairlines that become horizontal on a phone.
 
-The landing page adds `--rail` (2.75rem) of left gutter carrying the ruler:
-a hairline at the edge and a 9px repeating tick every 4rem at 50% opacity. It
-appears only above 64rem, where there is width to spare, and is dropped entirely
-below that rather than being squeezed.
+The instrument panel is wider than any text column (max 64rem) because it is drawn to scale; below its natural width it keeps a 38rem minimum and scrolls inside its own frame.
 
-Breakpoints, all authored in rem against the initial 16px: **64rem** is the
-main one (sidebar collapses, hero goes single-column, split and TOC collapse,
-rail appears above it), **56rem** (footer to two columns, scope type scales up,
-narrow-only content hidden), **52rem** (nav collapses into a sheet), **44rem**
-(the ladder drops its middle column), **40rem** (rows stack, steps re-indent,
-page padding tightens), **34rem** (footer to one column).
+The docs are a two-column app: a 17.5rem sidebar beside a `--measure` (46rem) article and a 14rem TOC rail. Below 64rem the sidebar collapses behind a toggle and the TOC is dropped. The top bar is 3.5rem; the nav links become a sheet below 52rem.
 
-Below-fold sections marked `.defer-paint` use `content-visibility: auto` with
-`contain-intrinsic-size: auto 32rem`, so the scrollbar stays honest before they
-render.
-
-### Named Rules
-
-**The Measure Rule.** Prose stops at `--measure` (46rem) regardless of how wide
-the column is. A wider container is a wider container, not a longer line.
-
-**The Sideways Rule.** The page never scrolls horizontally. An element too wide
-for the viewport gets its own scroll box and a sensible minimum: the scope keeps
-`min-width: 38rem` inside `.scope-frame`, tables live in `.tablewrap`, tab
-strips scroll their own row. Squeezing an instrument until it is illegible is
-not responsive behaviour.
-
-**The Drop It Rule.** When there is no room, remove rather than shrink. The rail
-disappears below 64rem, `.hide-narrow` content disappears below 52rem, the row
-gutter collapses below 40rem. Nothing hidden this way is the only route to a
-piece of information.
+**The Dark Band Rule.** `.tone-dark` re-resolves every token against the night palette inside a light page. It is used for the get-started terminal band, inset from the viewport edge with `clamp(1.5rem, 3vw, 2.5rem)` corners and a faint mint radial at its top. It is the one place the page is a terminal.
 
 ## Elevation & Depth
 
-Depth is carried by 1px lines and a five-step tonal ramp, not by shadow. The
-ramp runs `--sunken` → `--ground` → `--surface` → `--card` → `--raise`, roughly
-3% of OKLCH lightness per step (13.5%, 16.4%, 19.0%, 21.8%, then a wider 26.0%
-for hover), and its hue rotates steadily toward the accent as it rises: 210.9°
-at ground, 209.1° at surface, 201.2° at card, 191.5° at raise, against the
-accent's 170.5°. Surfaces feel like they are made of the signal. `--sunken` sits
-outside that rotation at 186.6°, because it is the scope face rather than a step
-above the page.
-
-Shadows exist but are reserved. `--shadow-1` is a seam, not an elevation.
-`--shadow-inset` is a 3.5%-white top highlight that keeps a card from looking
-like a hole. Real shadow appears only where something has genuinely left the
-page plane.
+Tonal first, shadows faint. Panels are a grey step off the page with a hairline, not lifted. Shadows exist in three steps plus an inset highlight, and are much heavier on dark only because charcoal swallows them. The signature depth is atmosphere: two large blurred lights (mint `glow-a`, sky `glow-b`, `blur(48px)`) drifting slowly behind the hero and the closer, feathered top and bottom by a mask so they never end on a line.
 
 ### Shadow Vocabulary
-
-- **Seam** (`--shadow-1`: `0 1px 1px rgba(0,0,0,.6)`): buttons and cards at
-  rest. Enough to separate an edge from its background, not enough to read as
-  lift.
-- **Lifted** (`--shadow-2`: `0 1px 2px rgba(0,0,0,.6), 0 10px 24px -14px
-  rgba(0,0,0,.75)`): the primary button, the mobile nav sheet, and a card under
-  the cursor.
-- **Floating** (`--shadow-3`: `0 2px 4px rgba(0,0,0,.55), 0 26px 60px -22px
-  rgba(0,0,0,.85)`): the command palette, and nothing else currently.
-- **Inset highlight** (`--shadow-inset`: `inset 0 1px 0 rgba(255,255,255,.035)`):
-  cards and code blocks, paired with the seam.
-- **Accent glow** (`--accent-glow`): a 1px accent ring plus a tight mint bloom.
-  Reserved for the wordmark's dot and the scope's anchor. It marks a source of
-  signal, not an elevated surface.
+- **Rest** (`--shadow-1`: `0 1px 2px rgba(0,0,0,.05)` light): buttons, cards, the orb status pill.
+- **Float** (`--shadow-2`: `0 1px 2px rgba(0,0,0,.04), 0 12px 32px -14px rgba(0,0,0,.16)` light): the mobile nav sheet, icon tiles, the flasher card.
+- **Lift** (`--shadow-3`: `0 2px 6px rgba(0,0,0,.04), 0 30px 70px -28px rgba(0,0,0,.24)` light): hovered tiles, product shots, the terminal windows.
+- **Inset highlight** (`--shadow-inset`: `inset 0 1px 0 rgba(255,255,255,.8)` light): a top-edge highlight on cards.
+- **Signal bloom** (`0 8px 28px -10px var(--glow-a)`, growing to `0 14px 38px -10px` on hover): under the primary button, the lock icon, the orb body (`0 30px 80px -30px` of the orb colour).
 
 ### Named Rules
+**The Bloom Not Shadow Rule.** Things in the signal colour cast light of their own colour, not grey shadow. A primary action glows mint beneath it.
 
-**The On-Page / Off-Page Rule.** On the page: a line. Off the page: a shadow.
-Nothing in between. If a surface is not floating over other content, it is
-bounded by `--line` and separated by tone, and it gets at most the seam.
-
-**The Hairline First Rule.** Reach for `--hairline` before `--line`, and for
-`--line` before `--line-strong`. Hairline separates things that belong together
-(list rows, footer sections, a sidebar from its content); line bounds a
-component; line-strong is reserved for hover borders and for the one separator
-that must be seen.
+**The Vibrancy Over Atmosphere Rule.** Backdrop blur is reserved for chrome that floats over the atmosphere or the page: the scrolled top bar (`saturate(180%) blur(20px)` over 72% surface), the hero pill and orb status (`blur(12px)`), the orb body (`blur(18px)`). Each has a solid-surface fallback under `prefers-reduced-transparency`. Blurred layers move by translate only; scaling one re-rasterises the blur every frame.
 
 ## Shapes
 
-Rectilinear and tight. The radius scale is 2, 4, 7, 11, 16px, where each step
-grows by one more pixel than the last, which keeps small components crisp while
-still letting a card feel like an object. Assignment is by size and role rather
-than by taste: `--r-xs` (2px) for inline code, kbd caps and signal pips;
-`--r-sm` (4px) for icon buttons, list rows, search results and the focus ring's
-own corner; `--r-md` (7px) for buttons, fields, code blocks and tables;
-`--r-lg` (11px) for cards, the command palette and the ranging visualiser;
-`--r-pill` for things genuinely capsule-shaped, which is status chips, pills,
-progress tracks and step numerals.
+Soft and continuous, the way the hardware it pairs with is shaped: small parts stay crisp, panels read as objects.
 
-Two shapes are deliberately asymmetric, and both are load-bearing. A callout is
-`4px 7px 7px 4px`, tightening the left corners because a 3px accent rule runs
-down that edge and a large radius there would leave a visible gap. A meter fill
-is `0 4px 4px 0`, square at the near end so the bar visibly starts at the
-baseline instead of floating.
+- **Panels** (28px, `rounded.xl`): the scope, feature visuals, tiles. Shrinks to 18px on a phone.
+- **Cards and windows** (18px, `rounded.lg`): cards, feature links, next-step links, the terminal, the flasher card, the command palette.
+- **Fields and blocks** (12px, `rounded.md`): inputs, code blocks, tables, readout cells.
+- **Small parts** (4 to 8px): kbd, inline code, callouts, focus ring, icon badges.
+- **Capsules** (`rounded.pill`): every button, nav link, pill, verdict and status chip, sliders.
+- **Circles**: ranging rings, status dots, step numbers, the atmosphere lights. The orb body is a squircle (30% radius).
 
-Borders are 1px almost everywhere. `--bw-2` (2px) marks state rather than
-structure: the active tab's underline, the active nav item's bar, the inset edge
-of a selected row, the bottom of a kbd cap. `--bw-rule` (3px) is only the left
-edge of a callout or a blockquote.
-
-The recurring silhouette is the horizontal track: a scope band, a meter, a
-progress bar, the ranging visualiser, the ladder. Things that measure are drawn
-as a line with marks on it.
-
-### Named Rules
-
-**The Growing Step Rule.** Radii are 2, 4, 7, 11, 16. Do not interpolate a new
-step; pick the one whose size matches the component.
-
-**The Asymmetry Earns It Rule.** A non-uniform radius must be answering a
-specific geometric problem, as the callout and the meter fill do. Otherwise
-corners match.
+Borders are 1px hairlines; the 3px `--bw-rule` is used only for callout and blockquote left edges and coverage bars.
 
 ## Components
 
-Everything is restrained until addressed. At rest a control is a hairline border
-and muted text; hover and focus are the first moment it commits colour, and it
-commits fast, in `--dur-1` (80ms). Nothing pulses, glows or shifts to attract
-attention it has not been given, with one exception: a live measurement is
-allowed to move, because the movement is the information.
-
 ### Buttons
-
-- **Shape:** gently tightened corners (`--r-md`, 7px), minimum height 2.35rem
-  (40px), padding `--sp-2 --sp-5`.
-- **Secondary (the default `.btn`):** surface background, strong text, 1px
-  `--line` border, seam shadow. This is the ordinary button; primary is the
-  exception.
-- **Primary:** solid accent, `--inverse` text, accent border, lifted shadow.
-  Hover moves to `--accent-hover`.
-- **Ghost:** transparent with no border and muted text, filling to `--raise` on
-  hover. For actions that must be available without being offered.
-- **Danger:** `--danger-tint` background, `--danger-line` border, `--danger`
-  text. Never solid red.
-- **Hover / active:** 80ms background and border-colour transition; `:active`
-  presses down 1px. Disabled drops to 45% opacity and `not-allowed`.
-- **Small:** 1.85rem minimum height with code-size type, for toolbars and
-  inline actions.
-- **Icon button:** a 2rem square grid with `padding: 0` set explicitly, because
-  a page's own bare `button { padding }` rule would otherwise win on that
-  property and collapse the icon.
+Capsules that compress on a spring.
+- **Shape:** full capsule (999px), min height 2.45rem (`btn-sm` 1.95rem, `btn-lg` 2.95rem).
+- **Primary:** `accent-solid` fill, `inverse` text, weight 500, no border, carrying the signal bloom.
+- **Hover / Focus:** primary lifts 1px and scales to 1.015 with a larger bloom and `accent-hover` fill; every button presses to `scale(.96)` on `--ease-spring` over 240ms. Focus is the global ring: a 2px ground-coloured gap then a 4px `focus` ring, with a transparent outline kept for forced-colours mode.
+- **Secondary:** surface fill, `line` border, `strong` text, rest shadow; hover goes to `raise` with `line-strong` border.
+- **Ghost:** transparent and `muted`, `raise` on hover. **Warn** (relay) and **Danger** take the amber or red tint, line and text.
+- **Arrow link:** the tertiary action, medium weight in `accent-ink` (`strong` in the hero) with a stroked arrow that moves 3px toward where it goes on hover.
 
 ### Chips
-
-- **Pill:** capsule, 1px `--line`, mono at `--fs-200`, muted on surface. Metadata
-  that is a value rather than an action: a version, a board name, a licence.
-- **Pill accent:** accent tint, accent line, mint ink. Marks the pill that is
-  current or live.
-- **Status:** a pill with a `0.42rem` dot before the label, coloured by state
-  (idle faint, live mint, ok green, warn amber, error red). The live variant's
-  dot pulses opacity on a 1.8s ease-in-out loop. It is the one always-on
-  animation in the component set, and it earns it by meaning "this is happening
-  now".
+- **Pill:** capsule, `line` border, surface fill, mono 0.75rem in `muted`; the accent pill takes `accent-tint` fill, `accent-line` border, `accent-ink` text.
+- **Status pill:** sans label with a dot (7px) in the state colour, translucent surface with backdrop blur.
 
 ### Cards / Containers
-
-- **Corner style:** 11px (`--r-lg`), the largest radius in normal use.
-- **Background:** `--card`, one step above the page.
-- **Shadow strategy:** seam plus inset highlight at rest. A linked card gains
-  the lifted shadow, an `--accent-line` border and a 1px rise on hover, over
-  `--dur-2` (150ms). A static card gains nothing, because it is not offering
-  anything.
-- **Border:** 1px `--line`.
-- **Internal padding:** `--sp-6` (1.41rem); the feature-card variant uses
-  `--sp-5`. Grids are `auto-fit` with a 15rem to 19rem minimum, gapped `--sp-4`.
+- **Corner Style:** 18px cards, 28px panels.
+- **Background:** `card` for cards, `panel` (`#f5f5f7` / charcoal step) for panels.
+- **Shadow Strategy:** cards at rest shadow plus inset highlight; panels flat with a `hairline` border; tiles lift 4px to the Lift shadow on hover over 900ms `--ease-out-expo`.
+- **Border:** `line` on cards, `hairline` on panels.
+- **Internal Padding:** `--sp-6` (1.41rem) on cards; `clamp(1.6rem, 3.5vw, 2.5rem)` on tiles and visuals.
 
 ### Inputs / Fields
-
-- **Style:** `--ground` background sunk below the surface it sits on, 1px
-  `--line`, 7px corners, `--fs-400`.
-- **Focus:** the global ring, which is a 2px halo in the page colour (`--ground`
-  in dark, `--surface` in light) followed by a 4px `--focus` ring, so it reads
-  on any background without touching the element's own border. Under it sits a
-  transparent 2px `outline`, which is invisible normally and repainted by
-  forced-colours mode, where `box-shadow` is dropped entirely. The command
-  palette's search input is the exception:
-  it suppresses the ring because the whole floating panel is already the focus.
-- **Placeholder:** `--faint`.
-- **Search button:** not an input at all. A full-width button styled like a
-  field, with the shortcut key pushed to the right edge in a kbd cap.
+- **Style:** `ground` fill, `line` border, 12px radius, `--fs-400`.
+- **Range slider:** drawn, not native: a 4px capsule track in `line-strong`, the travelled part in the trace colour, a 1.25rem white thumb with a soft shadow.
+- **Focus:** the global focus ring.
 
 ### Navigation
+A sticky 3.5rem top bar. On the landing it starts transparent as part of the opening frame and becomes vibrancy (72% surface, saturate and blur, hairline bottom) once scrolled. The wordmark is the ranging mark (an anchor and two decaying arcs, in mint) beside the name in semibold. Links are medium-weight capsules in `muted`, `strong` on hover, `raise` fill when current. Below 52rem the links become a sheet that drops 4px and scales from .98 on the shared overlay curve; the current link there takes the accent tint.
 
-- Top bar links are muted `--fs-400` at rest, going strong on `--raise` on
-  hover. The current page is strong with a 2px accent underline drawn as an
-  `::after` bar, not a border, so it can carry the pill radius.
-- Below 52rem the links become a sheet under the bar, animated by `max-height`
-  so no measurement step is needed, and the current item swaps its underline for
-  an accent tint fill.
-- The documentation sidebar is a sticky full-height `--surface` column with a
-  scrollable tree. Selection is the inset marker, not a fill.
-- Breadcrumbs are `--fs-300`, muted links, `--line-strong` separators, with the
-  current item strong and ellipsised.
+### Lock Orb (signature)
+The hero lock, ranging. `hero.js` writes `--prox` (0 far, 1 at the bound) and `data-phase`; the orb colour is mixed in OKLab from `muted` toward the accent as the pointer-phone closes, and becomes the accent outright when granted. Three slow rings and two faster near-field rings (whose strength is their opacity, so the loop never restarts) pulse out from a blurred squircle body holding a stroked lock glyph; the shackle swaps to open at the bound and the body settles from 1.06 on a spring. A status pill under it reads the state and the distance in tabular figures. The whole orb floats 12px on a 7s cycle.
 
-### Signature: the Instrument Set
+### DS-TWR Scope (signature)
+The live instrument in a 28px panel: an SVG drawn to scale with mono labels and numbers, a dashed mint bound line, pulses that travel the real gap, a slider alternative to drag, three readout cells and a capsule verdict whose colour follows the single `data-state` attribute (grant mint, hold muted, relay amber). Crossing inside the bound fires a ring, a verdict stamp and a dimension flash.
 
-The components that make this system itself rather than a generic dark theme.
-
-- **Scope band:** a full-bleed `--sunken` band with a live SVG ranging round.
-  One `data-state` attribute on the SVG root drives `--trace` and `--trace-line`
-  for every mark inside it, so the instrument can never be half mint and half
-  amber. Pulse animations are transform-only against a `--travel` variable set
-  from the real geometry, so they run on the compositor with no per-frame
-  JavaScript.
-- **Readout (`.ro`):** a `--fs-100` uppercase key over a `--fs-600` mono tabular
-  value. The densest way this system states a measurement.
-- **Meter:** a labelled part-against-whole with both absolute values and the
-  percentage, on a `--sunken` track. Fill is `--path-first` and turns
-  `--path-late` past the point where it is reporting a constraint rather than a
-  measurement. Not a chart, deliberately: two numbers do not earn axes.
-- **Ranging ping / visualiser:** the identity animation. An impulse leaves the
-  anchor, the first-path echo returns, rings decay. Pure CSS and no JavaScript,
-  on a 28px grid: the inline ping loops at 2.8s with its second ring offset half
-  a cycle, the full visualiser at 3.4s with three rings a third of a cycle
-  apart.
-- **Ladder:** the unlock sequence as a numbered three-column grid (index, mono
-  step name, prose explanation), because the order is the content.
-- **Steps:** a numbered procedure with a hairline spine and accent-ringed mono
-  numerals, used where doing step three before step one would flash a board
-  whose radio is not wired yet.
-
-### Named Rules
-
-**The Inset Marker Rule.** A selected row is marked by `inset 2px 0 0
-var(--accent)` plus `--accent-tint`, never by a filled accent background. It
-applies to sidebar items, search results and the mobile nav alike, so
-"you are here" looks the same everywhere.
-
-**The Motion Is Information Rule.** The site animates three things: a live
-measurement, a state change, and an arrival. `--dur-1` (80ms) for a hover,
-`--dur-2` (150ms) for a card or a copy button, `--dur-3` (240ms) for a panel,
-`--dur-4` (420ms) for a scroll reveal, `--dur-5` (640ms) for a meter filling.
-One rise distance (`--reveal-y`, 14px) and one stagger (`--reveal-step`, 60ms)
-for every revealed element on the site, so nothing arrives with its own idea of
-how far up is. `site.js` reads that token once at startup rather than repeating
-the number. A revealed element travels the rise, scales from .985, and clears a
-2px blur, so a block reads as coming into focus rather than sliding; table rows
-carry their own `data-reveal` indices, so a table of readings arrives row by row
-into a frame that is already drawn.
-
-**The One Beat Rule.** The landing page has exactly one authored entrance and
-then it is quiet. Under the `.booted` class the markup ships with, the headline
-rises, the scope's ruler draws itself from the lock outwards, the metre ticks
-stamp 40ms apart, the DS-TWR round starts, and the readouts settle -- about
-1.8s of `animation-delay`, no JavaScript, no observer, and no way to replay it.
-The whole sequence lives inside `prefers-reduced-motion: no-preference` and is
-skipped rather than shortened, because the static SVG is already the finished
-instrument.
-
-**The Instruments Do Not Levitate Rule.** Hover on a card or a row means
-picking out one measurement, so it raises the surface one tonal step and grows
-a 2px `--accent` rule out of the centre of the left edge over `--dur-2`. Never
-a `translateY` lift and never a grown shadow: a card that rises under the
-cursor is claiming to be an object on a desk, and these are readings. Every
-overlay -- scrim, palette, mobile nav sheet -- shares one entrance instead:
-fade, 4px drift, .98 to 1, on `--dur-2 --ease-out`, with `@starting-style` and
-`transition-behavior: allow-discrete` behind an `@supports` so the palette
-animates open as well as shut.
-
-**The Reduced Motion Keeps The Instrument Rule.** Under
-`prefers-reduced-motion`, the duration tokens collapse to 0ms and animations are
-capped globally, but the diagram survives: the scope's three pulses park
-mid-flight rather than vanishing, so it still shows what travels where.
+### Motion
+**The One Physics Rule.** Every arrival uses `--ease-out-expo` (`cubic-bezier(.16,1,.3,1)`). Scroll reveals rise 28px out of an 8px blur over 900ms with a 90ms stagger; presses and grants overshoot on `--ease-spring`; released things coast on `--ease-decel`. Rings always expand and fade, never contract. Under `prefers-reduced-motion` durations collapse, decorative loops stop, and the instrument parks its pulses mid-flight so the diagram still reads.
 
 ## Do's and Don'ts
 
 ### Do:
-
-- **Do** put every colour through a token. Outside its print block,
-  `components.css` contains no literal colour at all, and the print block is the
-  one deliberate exception: it overrides the tokens with plain ink-on-paper
-  values because paper has no theme. A handful of literal dimensions survive
-  where no token would mean anything (a 9px scrollbar, a 2px pip gap, a 28px
-  diagram grid, animation loop lengths); colour is not one of them.
-- **Do** ship both theme values in the same commit. Dark is canonical; light is
-  a peer that has to hold up, and a token with only one half declared is a bug.
-- **Do** check small text against the surface it actually lands on. Use
-  `--muted` over `--faint` on the scope face, where `--faint` measures 4.22:1,
-  and on the graph's light bar, where it measures 3.93:1.
-- **Do** pair any `box-shadow` focus ring with a transparent `outline`.
-  Forced-colours mode drops shadows, and a ring that exists only as a shadow
-  leaves High Contrast keyboard users with no indicator at all.
-- **Do** mark a selection with the inset rule (`inset 2px 0 0 var(--accent)`
-  plus `--accent-tint`), on every list in the system.
-- **Do** give a too-wide element its own scroll box with a sensible minimum,
-  and let the page itself stay put.
+- **Do** use mint only for a trusted measurement, an open lock, or the ranging pulse, and amber only for the late path or a relay's delay (The Two Signals Rule).
+- **Do** set body-size signal text in `accent-ink` and filled signal surfaces in `accent-solid`; reserve raw `accent` for marks and display-size `.lit` lines.
+- **Do** put instruments and visuals in 28px `panel` containers with a hairline, and cards at 18px.
+- **Do** make every button a capsule, and give the primary its mint bloom rather than a grey shadow.
+- **Do** give every backdrop blur a solid fallback under `prefers-reduced-transparency` and every loop a reduced-motion state.
+- **Do** read product numbers (the unlock bound, timings) from the firmware's constants rather than inventing them in the page.
 
 ### Don't:
-
-- **Don't** add an `@import` between the source sheets. `build.py` concatenates
-  `CSS_PARTS` in authoring order into a single stylesheet; an `@import`
-  re-creates the serial fetch chain in front of first paint that the build was
-  written to remove.
-- **Don't** load a third-party font or stylesheet. Both faces are self-hosted
-  latin-subset variable WOFF2 under SIL OFL 1.1, which is a privacy decision on
-  a lock project's site as much as a performance one.
-- **Don't** let a page redeclare a component the design system already owns. The
-  twin once carried its own top bar, wordmark and theme toggle, which won every
-  conflict on source order including the ones it did not intend to. Page-scoped
-  CSS aliases tokens; it does not restyle shared components.
-- **Don't** read tokens from a canvas or WebGL surface every frame. Those
-  surfaces map design tokens to their own adapter names once and listen for the
-  `uwl:theme` event, because `getComputedStyle` at 60fps is a forced style
-  recalculation.
-- **Don't** detect an external link with `[href^="http"]`. The marker is a
-  build-time `data-ext` attribute, so an in-page anchor to an absolute URL on
-  our own host is not mislabelled.
-- **Don't** invent a hex for a state that already has a semantic alias. Mint,
-  amber and red are spoken for; a new state gets a new alias over an existing
-  primitive.
-- **Don't** add a token before checking the four that are still declared and
-  unreferenced: `--fs-1100`, `--article`, `--r-xl`, `--sp-40`. The other three
-  found their jobs: `--reveal-step` carries the scroll stagger, `--ease-spring`
-  the verdict stamp, and `--ease-decel` the ring and the dimension flash when a
-  grant lands.
-- **Don't** animate anything the global reduced-motion cap cannot stop, and
-  don't let that cap leave a diagram blank; park it in a readable state instead.
+- **Don't** return to the dark instrument-dashboard look as the page itself; dark is the night theme and the terminal band, not the identity.
+- **Don't** introduce a third chromatic signal, or use mint or amber as decoration.
+- **Don't** set prose, headings or button labels in monospace.
+- **Don't** load prose or display webfonts, or any font from a third-party host.
+- **Don't** place uppercase kickers or eyebrows above headings; uppercase tracked caps are for small data labels (table heads, result kinds) only.
+- **Don't** scale a blurred layer; translate it.
