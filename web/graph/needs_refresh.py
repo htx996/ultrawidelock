@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 asxeem
+# Copyright (c) 2026 UltraWideLock contributors
 # SPDX-License-Identifier: ISC
 #
 # Does graphify need to run again? Prints "absent", "stale", or nothing.

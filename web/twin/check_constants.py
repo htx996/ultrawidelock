@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 asxeem
+# Copyright (c) 2026 UltraWideLock contributors
 # SPDX-License-Identifier: ISC
 #
 # Drift gate for the walk-up digital twin web page: every constant that is
