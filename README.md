@@ -102,4 +102,4 @@ UltraWideLock is an independent open-source project. It is not affiliated with, 
 
 ## License
 
-[ISC](LICENSE) © 2026 asxeem and UltraWideLock contributors. Third-party terms are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+[ISC](LICENSE) © 2026 UltraWideLock contributors, for project-original code. The Qorvo UWB driver, Nordic code and other third-party components keep their own terms, listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES); a built image may be used only with the Qorvo and, where linked, Nordic silicon those terms name.

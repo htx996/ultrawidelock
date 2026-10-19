@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Line coverage for our own (asxeem) host-testable code, via clang source-based
+# Line coverage for our own host-testable code, via clang source-based
 # coverage. Instruments every host suite in the repo — the ultrawidelock_uwb KAT suite
 # (same sources as run.sh, see sources.sh) and the shared-core suites mirrored
 # from tests/shared/run.sh and merges their profiles into one report.
